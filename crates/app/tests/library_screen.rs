@@ -11,10 +11,12 @@ use std::time::Duration;
 
 use gamenode_app::{
     AccessKind, AddError, AppWindow, CollectionItem, CollectionsKind, EmptyKind, GameItem,
-    LibraryState, MatchKind, OptionItem, ProviderItem, StatusKind, SummaryItem, TargetItem, ViewKind,
-    Why,
+    LibraryState, MatchKind, OptionItem, ProviderItem, StatusKind, SummaryItem, TargetItem,
+    ViewKind, Why,
 };
-use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType};
+use slint::platform::software_renderer::{
+    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
+};
 use slint::platform::{Key, Platform, PlatformError, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, LogicalPosition, ModelRc, PhysicalSize, SharedString, VecModel};
 
@@ -39,15 +41,20 @@ fn key(ui: &AppWindow, key: Key) {
 }
 
 fn press(ui: &AppWindow, text: SharedString) {
-    ui.window().dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-    ui.window().dispatch_event(WindowEvent::KeyReleased { text });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
 }
 
 fn chord(ui: &AppWindow, modifier: Key, text: SharedString) {
     let modifier: SharedString = modifier.into();
-    ui.window().dispatch_event(WindowEvent::KeyPressed { text: modifier.clone() });
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: modifier.clone(),
+    });
     press(ui, text);
-    ui.window().dispatch_event(WindowEvent::KeyReleased { text: modifier });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: modifier });
 }
 
 fn take(log: &Log) -> Vec<String> {
@@ -99,7 +106,8 @@ fn open(log: &Log) -> AppWindow {
     ui.set_signed_in(true);
     ui.set_version("0.1.0".into());
     ui.show().unwrap();
-    ui.window().dispatch_event(WindowEvent::WindowActiveChanged(true));
+    ui.window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
 
     let state = ui.global::<LibraryState>();
     macro_rules! record {
@@ -139,7 +147,12 @@ fn open(log: &Log) -> AppWindow {
     let items = Rc::new(VecModel::from(vec![
         game("steam:1", "Portal 2", "Steam", MatchKind::Matched),
         game("steam:2", "Half-Life: Alyx", "Steam", MatchKind::Ambiguous),
-        game("steam:3", "Some Obscure Tool", "Steam", MatchKind::Unmatched),
+        game(
+            "steam:3",
+            "Some Obscure Tool",
+            "Steam",
+            MatchKind::Unmatched,
+        ),
         game("steam:4", "Valheim", "Steam", MatchKind::NoGame),
     ]));
     state.set_items(ModelRc::from(items));
@@ -166,7 +179,11 @@ fn open(log: &Log) -> AppWindow {
 fn library_screens_react_to_keyboard_and_pointer() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     window.set_size(PhysicalSize::new(WIDTH, HEIGHT));
-    slint::platform::set_platform(Box::new(Headless(window.clone(), std::time::Instant::now()))).unwrap();
+    slint::platform::set_platform(Box::new(Headless(
+        window.clone(),
+        std::time::Instant::now(),
+    )))
+    .unwrap();
     let shots = Shots {
         dir: std::env::var_os("GAMENODE_SHOTS").map(Into::into),
         window: window.clone(),
@@ -178,7 +195,9 @@ fn library_screens_react_to_keyboard_and_pointer() {
     shots.take("01-grid");
 
     // A click selects; Ctrl and Shift change the mode.
-    ui.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(300., 200.) });
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: LogicalPosition::new(300., 200.),
+    });
     ui.window().dispatch_event(WindowEvent::PointerPressed {
         position: LogicalPosition::new(300., 200.),
         button: slint::platform::PointerEventButton::Left,
@@ -189,7 +208,9 @@ fn library_screens_react_to_keyboard_and_pointer() {
     });
     let events = take(&log);
     assert!(
-        events.iter().any(|e| e.starts_with("select steam:") && e.ends_with("ctrl=false shift=false")),
+        events
+            .iter()
+            .any(|e| e.starts_with("select steam:") && e.ends_with("ctrl=false shift=false")),
         "click did not select: {events:?}"
     );
 
@@ -262,17 +283,25 @@ fn library_screens_react_to_keyboard_and_pointer() {
     state.set_match_open(false);
 
     state.set_add_targets(ModelRc::from(Rc::new(VecModel::from(vec![
-        TargetItem { title: "Portal 2".into(), matched: true },
-        TargetItem { title: "Some Obscure Tool".into(), matched: false },
+        TargetItem {
+            title: "Portal 2".into(),
+            matched: true,
+        },
+        TargetItem {
+            title: "Some Obscure Tool".into(),
+            matched: false,
+        },
     ]))));
     state.set_add_status(StatusKind::Planned);
     state.set_add_collections_kind(CollectionsKind::Loaded);
-    state.set_add_collections(ModelRc::from(Rc::new(VecModel::from(vec![CollectionItem {
-        id: "c1".into(),
-        name: "Backlog".into(),
-        picked: false,
-        forces: StatusKind::Planned,
-    }]))));
+    state.set_add_collections(ModelRc::from(Rc::new(VecModel::from(vec![
+        CollectionItem {
+            id: "c1".into(),
+            name: "Backlog".into(),
+            picked: false,
+            forces: StatusKind::Planned,
+        },
+    ]))));
     state.set_add_can_confirm(true);
     state.set_add_error(AddError::None);
     state.set_add_open(true);
@@ -340,8 +369,20 @@ fn library_screens_react_to_keyboard_and_pointer() {
             fired.insert(line.split(' ').next().unwrap_or_default().to_owned());
         }
     }
-    for expected in ["view", "rescan", "play", "install", "open-match", "open-add", "filter", "open-details"] {
-        assert!(fired.contains(expected), "{expected} is not reachable by keyboard: {fired:?}");
+    for expected in [
+        "view",
+        "rescan",
+        "play",
+        "install",
+        "open-match",
+        "open-add",
+        "filter",
+        "open-details",
+    ] {
+        assert!(
+            fired.contains(expected),
+            "{expected} is not reachable by keyboard: {fired:?}"
+        );
     }
 }
 

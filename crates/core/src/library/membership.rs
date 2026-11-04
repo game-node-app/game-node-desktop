@@ -97,6 +97,10 @@ impl LibraryMachine {
         result: Result<Option<LibraryEntry>, ApiError>,
     ) {
         self.membership_reads.remove(&game_id);
+        self.account_entries.remove(&game_id);
+        if let Ok(Some(entry)) = &result {
+            self.account_entries.insert(game_id, entry.clone());
+        }
         let membership = match result {
             Ok(Some(entry)) => Membership::InLibrary(entry.status),
             Ok(None) => Membership::NotInLibrary,

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Let the user add detected games to their GameNode library, with a status and collections they choose, through the API the web uses, without changing entries they already have.
+Let the user add detected games to their GameNode library, with a status and collections they choose, through the API the web uses, with explicit editing of existing entries for store-detected games only.
 
 ## ADDED Requirements
 
@@ -11,7 +11,7 @@ For a selected matched entry, the detail pane SHALL show whether the game is alr
 
 #### Scenario: Game already in the GameNode library
 - **WHEN** the user selects a matched game that is in their GameNode library as Finished
-- **THEN** the detail pane shows "In your GameNode library: Finished" and does not offer Add to GameNode
+- **THEN** the detail pane shows "In your GameNode library: Finished" and offers Edit in GameNode
 
 #### Scenario: Membership cannot be read
 - **WHEN** GameNode cannot be reached while the detail pane loads membership
@@ -33,8 +33,24 @@ Add to GameNode SHALL open a dialog where the user picks one status (Playing, Fi
 - **WHEN** the create request fails or is rejected
 - **THEN** a localized error is shown, the dialog keeps the user's choices, and the user can retry
 
-### Requirement: Never overwrite an existing entry
-The application SHALL check that the game is not already in the user's GameNode library immediately before creating an entry, and SHALL NOT send a create request for a game that is. The application SHALL NOT edit, move or remove existing GameNode library entries.
+### Requirement: Explicit editing of a detected game
+The application SHALL offer Edit for a selected store-detected matched game already in the account library, prefilled with its status and collections. Confirming SHALL save those choices while preserving owned platforms and passing through the completion date under the server’s date rules. Cancelling SHALL send no mutation. The full GameNode account library SHALL NOT be imported or displayed.
+
+#### Scenario: Edit an existing detected game
+- **WHEN** the user changes a detected game’s status and collections and confirms Edit
+- **THEN** those choices are saved and the game remains editable
+- **AND** its platforms and completion date are preserved according to the server’s status rules
+
+#### Scenario: Edit save fails
+- **WHEN** saving an edit fails
+- **THEN** the choices are retained for retry
+
+#### Scenario: Existing collections cannot be loaded
+- **WHEN** the dialog cannot load all existing collection choices
+- **THEN** saving is disabled until the collections can be loaded
+
+### Requirement: Multi-add never overwrites an existing entry
+The application SHALL check that the game is not already in the user's GameNode library immediately before creating an entry, and SHALL NOT send a create request for a game that is. Existing entries SHALL only be edited through the explicit single-game Edit flow. Multi-add SHALL NOT change them.
 
 #### Scenario: Added elsewhere while the dialog was open
 - **WHEN** the game was added on the web after the dialog opened and the user confirms

@@ -23,10 +23,9 @@ use slint::{ComponentHandle, Image, Model, ModelRc, VecModel};
 
 use crate::engine::Engine;
 use crate::{
-    AccessKind, AddError, AppWindow, CollectionItem, CollectionsKind,
-    EmptyKind, GameItem, LaunchNote, LibraryState, MatchKind, OptionItem, Outcome, ProviderItem,
-    SearchError, SortKind, SourceKind, Standing, StatusKind, SummaryItem, TargetItem, ViewKind,
-    Why,
+    AccessKind, AddError, AppWindow, CollectionItem, CollectionsKind, EmptyKind, GameItem,
+    LaunchNote, LibraryState, MatchKind, OptionItem, Outcome, ProviderItem, SearchError, SortKind,
+    SourceKind, Standing, StatusKind, SummaryItem, TargetItem, ViewKind, Why,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -264,7 +263,9 @@ pub fn pick_input(game_id: &str, now: i64) -> Option<LibInput> {
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Connects every `LibraryState` callback to the engine.
@@ -326,7 +327,9 @@ pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
     let e = engine.clone();
     state.on_close_match(move || e.library_input(LibInput::CloseMatch));
     let e = engine.clone();
-    state.on_match_query_edited(move |text| e.library_input(LibInput::SetMatchQuery(text.to_string())));
+    state.on_match_query_edited(move |text| {
+        e.library_input(LibInput::SetMatchQuery(text.to_string()))
+    });
     let e = engine.clone();
     state.on_match_search(move || e.library_input(LibInput::SearchMatch));
     let e = engine.clone();
@@ -501,7 +504,8 @@ impl Renderer {
                     id: provider.provider.as_str().into(),
                     name: provider.name.as_str().into(),
                     count: i32::try_from(provider.count).unwrap_or(i32::MAX),
-                    selected: layout.sidebar == SidebarSelection::Provider(provider.provider.clone()),
+                    selected: layout.sidebar
+                        == SidebarSelection::Provider(provider.provider.clone()),
                 })
                 .collect(),
         );
@@ -527,12 +531,22 @@ impl Renderer {
         state.set_detail_open(layout.detail_open);
     }
 
-    fn render_selection(&mut self, state: &LibraryState<'_>, view: &LibraryView, snapshot: &Snapshot) {
+    fn render_selection(
+        &mut self,
+        state: &LibraryState<'_>,
+        view: &LibraryView,
+        snapshot: &Snapshot,
+    ) {
         let actions: &Actions = &view.actions;
         state.set_selected_count(i32::try_from(actions.selected).unwrap_or(i32::MAX));
         state.set_play_why(availability(actions.play));
         state.set_install_why(availability(actions.install));
         state.set_match_why(availability(actions.match_game));
+        state.set_edit_existing(
+            view.detail
+                .as_ref()
+                .is_some_and(|d| matches!(d.membership, Membership::InLibrary(_))),
+        );
         state.set_add_why(availability(actions.add_to_gamenode));
         state.set_add_existing_status(match actions.add_to_gamenode {
             Availability::Disabled(Reason::AlreadyInLibrary(status)) => optional_status(status),
@@ -554,14 +568,23 @@ impl Renderer {
         state.set_detail_matched(row.matched_name.clone().unwrap_or_default().into());
         state.set_detail_provider(row.provider_name.as_str().into());
         state.set_detail_dir(detail.install_dir.as_str().into());
-        state.set_detail_year(detail.release_year.map(|y| y.to_string()).unwrap_or_default().into());
+        state.set_detail_year(
+            detail
+                .release_year
+                .map(|y| y.to_string())
+                .unwrap_or_default()
+                .into(),
+        );
         state.set_detail_kind(match_kind(&row.status));
         state.set_detail_source(source_kind(&row.status));
         state.set_detail_standing(standing);
         state.set_detail_standing_status(standing_status);
         state.set_detail_has_cover(cover.is_some());
         state.set_detail_cover(cover.unwrap_or_default());
-        state.set_launch_note(launch_note(snapshot.launch.as_ref(), Some(row.key.as_str())));
+        state.set_launch_note(launch_note(
+            snapshot.launch.as_ref(),
+            Some(row.key.as_str()),
+        ));
     }
 
     fn option(&mut self, option: &MatchOption) -> OptionItem {
@@ -569,7 +592,11 @@ impl Renderer {
         OptionItem {
             id: option.game_id.to_string().into(),
             name: option.name.as_str().into(),
-            year: option.release_year.map(|y| y.to_string()).unwrap_or_default().into(),
+            year: option
+                .release_year
+                .map(|y| y.to_string())
+                .unwrap_or_default()
+                .into(),
             has_cover: cover.is_some(),
             cover: cover.unwrap_or_default(),
             current: option.current,
@@ -612,6 +639,7 @@ impl Renderer {
             return;
         };
         state.set_add_open(true);
+        state.set_add_editing(dialog.editing_existing);
         sync(
             &self.targets,
             dialog
@@ -652,8 +680,16 @@ impl Renderer {
             }
         }
         state.set_add_running(dialog.progress.is_some() && dialog.summary.is_none());
-        state.set_add_done(dialog.progress.map_or(0, |p| i32::try_from(p.done).unwrap_or(0)));
-        state.set_add_total(dialog.progress.map_or(0, |p| i32::try_from(p.total).unwrap_or(0)));
+        state.set_add_done(
+            dialog
+                .progress
+                .map_or(0, |p| i32::try_from(p.done).unwrap_or(0)),
+        );
+        state.set_add_total(
+            dialog
+                .progress
+                .map_or(0, |p| i32::try_from(p.total).unwrap_or(0)),
+        );
         state.set_add_error(dialog.error.map_or(AddError::None, api_error));
         state.set_add_can_confirm(dialog.can_confirm);
         state.set_add_blocked(dialog.blocked.map_or(Why::Available, why));
@@ -665,7 +701,11 @@ impl Renderer {
         };
         state.set_add_has_summary(true);
         let count = |wanted: Outcome| {
-            let n = summary.items.iter().filter(|i| outcome(&i.outcome).0 == wanted).count();
+            let n = summary
+                .items
+                .iter()
+                .filter(|i| outcome(&i.outcome).0 == wanted)
+                .count();
             i32::try_from(n).unwrap_or(i32::MAX)
         };
         state.set_add_summary_added(count(Outcome::Added));

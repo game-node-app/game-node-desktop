@@ -1,8 +1,8 @@
 //! Confirming the Add to GameNode dialog.
 //!
 //! Games are handled one at a time. For each matched game GameNode is asked whether it is already
-//! in the library, and only when it is absent is it created, so an entry that exists is never
-//! overwritten and never sent a create request. Unmatched games are skipped. A failed game does
+//! in the library. Add and multi-add create absent entries and skip existing ones; explicit
+//! single-game edits update existing entries. Unmatched games are skipped. A failed game does
 //! not stop the others, except that a rejected session ends the run: every later game would be
 //! rejected too.
 
@@ -117,7 +117,11 @@ impl LibraryMachine {
             return vec![];
         };
         let ready = matches!(add.stage, Stage::Editing)
-            && !matches!(add.collections, Collections::Loading { .. });
+            && if add.editing_existing {
+                matches!(add.collections, Collections::Loaded(_))
+            } else {
+                !matches!(add.collections, Collections::Loading { .. })
+            };
         if !ready {
             self.add = Some(add);
             return vec![];
@@ -217,6 +221,23 @@ impl LibraryMachine {
         };
 
         match result {
+            Ok(Some(entry)) if add.editing_existing => {
+                let op = self.next_op();
+                let effect = Effect::UpdateEntry {
+                    op,
+                    game_id,
+                    status: run.status,
+                    collection_ids: run.collection_ids.clone(),
+                    existing: entry,
+                };
+                run.step = Some(Step {
+                    op,
+                    kind: StepKind::Creating,
+                    ..step
+                });
+                self.add = Some(add);
+                vec![effect]
+            }
             Ok(Some(entry)) => {
                 self.membership
                     .insert(game_id, Membership::InLibrary(entry.status));

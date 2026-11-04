@@ -657,7 +657,8 @@ async fn an_entry_reports_its_status_and_a_404_means_absent() {
     assert_eq!(
         api.library_entry(&cred(), 7).await,
         Ok(Some(LibraryEntry {
-            status: Some(EntryStatus::Finished)
+            status: Some(EntryStatus::Finished),
+            ..Default::default()
         }))
     );
     assert_eq!(api.library_entry(&cred(), 8).await, Ok(None));
@@ -675,7 +676,10 @@ async fn an_entry_with_an_unknown_status_is_still_an_entry() {
     });
     assert_eq!(
         client(&server).library_entry(&cred(), 7).await,
-        Ok(Some(LibraryEntry { status: None }))
+        Ok(Some(LibraryEntry {
+            status: None,
+            ..Default::default()
+        }))
     );
 }
 
@@ -798,4 +802,71 @@ fn statuses_use_the_wire_names() {
     }
     assert_eq!(EntryStatus::from_api_name("Playing"), None);
     assert_eq!(EntryStatus::ALL.len(), 5);
+}
+
+#[tokio::test]
+async fn editing_preserves_platforms_and_completion_date() {
+    let server = MockServer::start_async().await;
+    let read = server.mock(|when, then| {
+        when.method(GET).path("/v1/collections-entries/game/7");
+        then.status(200).json_body(json!({
+            "status": "finished", "collections": [{"id": "old"}],
+            "ownedPlatforms": [{"id": 6}, {"id": 48}],
+            "finishedAt": "2026-01-01T00:00:00Z"
+        }));
+    });
+    let save = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/collections-entries")
+            .header("authorization", "Bearer tok")
+            .json_body(json!({
+                "gameId": 7, "status": "finished", "collectionIds": ["new"],
+                "platformIds": [6, 48], "finishedAt": "2026-01-01T00:00:00Z"
+            }));
+        then.status(201);
+    });
+    let api = client(&server);
+    let entry = api.library_entry(&cred(), 7).await.unwrap().unwrap();
+    assert_eq!(entry.collection_ids, ["old"]);
+    assert_eq!(
+        api.update_entry(&cred(), 7, EntryStatus::Finished, &["new".into()], &entry)
+            .await,
+        Ok(())
+    );
+    read.assert_async().await;
+    save.assert_async().await;
+}
+
+#[tokio::test]
+async fn edit_errors_are_reported_and_missing_platforms_send_nothing() {
+    for (status, expected) in [(401, ApiError::Rejected), (500, ApiError::Failed)] {
+        let server = MockServer::start_async().await;
+        let save = server.mock(|when, then| {
+            when.method(POST).path("/v1/collections-entries");
+            then.status(status);
+        });
+        let api = client(&server);
+        assert_eq!(
+            api.update_entry(
+                &cred(),
+                7,
+                EntryStatus::Planned,
+                &[],
+                &LibraryEntry::default()
+            )
+            .await,
+            Err(ApiError::Failed)
+        );
+        assert_eq!(save.calls_async().await, 0);
+        let entry = LibraryEntry {
+            platform_ids: vec![6],
+            ..Default::default()
+        };
+        assert_eq!(
+            api.update_entry(&cred(), 7, EntryStatus::Planned, &[], &entry)
+                .await,
+            Err(expected)
+        );
+        save.assert_async().await;
+    }
 }

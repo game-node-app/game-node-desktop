@@ -8,10 +8,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gamenode_app::{
-    AccessKind, AppWindow, GameItem, LaunchNote, LibraryState, LibraryText, MatchKind, ProviderItem,
-    SourceKind, Standing, StatusKind, ViewKind, Why,
+    AccessKind, AppWindow, GameItem, LaunchNote, LibraryState, LibraryText, MatchKind,
+    ProviderItem, SourceKind, Standing, StatusKind, ViewKind, Why,
 };
-use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType};
+use slint::platform::software_renderer::{
+    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
+};
 use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -43,7 +45,9 @@ fn game(key: &str, title: &str, kind: MatchKind) -> GameItem {
 }
 
 fn shot(window: &MinimalSoftwareWindow, name: &str) {
-    let Ok(dir) = std::env::var("GAMENODE_SHOTS") else { return };
+    let Ok(dir) = std::env::var("GAMENODE_SHOTS") else {
+        return;
+    };
     std::thread::sleep(Duration::from_millis(400));
     slint::platform::update_timers_and_animations();
     let mut buffer = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
@@ -56,33 +60,50 @@ fn shot(window: &MinimalSoftwareWindow, name: &str) {
         bytes.extend_from_slice(&[pixel.red, pixel.green, pixel.blue]);
     }
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(std::path::Path::new(&dir).join(format!("{name}.ppm")), bytes).unwrap();
+    std::fs::write(
+        std::path::Path::new(&dir).join(format!("{name}.ppm")),
+        bytes,
+    )
+    .unwrap();
 }
 
 #[test]
 fn portuguese_translates_the_chrome_and_keeps_the_data() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
-    slint::platform::set_platform(Box::new(Headless(window.clone(), std::time::Instant::now()))).unwrap();
-    slint::select_bundled_translation("pt_BR").expect("the pt_BR catalog is bundled");
-
+    slint::platform::set_platform(Box::new(Headless(
+        window.clone(),
+        std::time::Instant::now(),
+    )))
+    .unwrap();
     let ui = AppWindow::new().unwrap();
+    slint::select_bundled_translation("pt_BR").expect("the pt_BR catalog is bundled");
     ui.set_signed_in(true);
     ui.set_version("0.1.0".into());
     ui.show().unwrap();
-    ui.window().dispatch_event(WindowEvent::WindowActiveChanged(true));
+    ui.window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
 
     let text = ui.global::<LibraryText>();
     assert_eq!(text.invoke_status(StatusKind::Playing), "Jogando");
     assert_eq!(text.invoke_status(StatusKind::Finished), "Zerado");
     assert_eq!(text.invoke_match_kind(MatchKind::Matched), "Associado");
-    assert_eq!(text.invoke_match_kind(MatchKind::NoGame), "Não está no GameNode");
-    assert_eq!(text.invoke_source(SourceKind::Chosen), "Você escolheu esta correspondência");
+    assert_eq!(
+        text.invoke_match_kind(MatchKind::NoGame),
+        "Não está no GameNode"
+    );
+    assert_eq!(
+        text.invoke_source(SourceKind::Chosen),
+        "Você escolheu esta correspondência"
+    );
     assert_eq!(
         text.invoke_standing(Standing::InLibrary, StatusKind::Planned),
         "Na sua biblioteca do GameNode como Planejado"
     );
-    assert_eq!(text.invoke_why(Why::NothingSelected, StatusKind::Unknown), "Selecione um jogo primeiro.");
+    assert_eq!(
+        text.invoke_why(Why::NothingSelected, StatusKind::Unknown),
+        "Selecione um jogo primeiro."
+    );
     assert_eq!(
         text.invoke_why(Why::AlreadyInLibrary, StatusKind::Finished),
         "Já está na sua biblioteca do GameNode como Zerado."
@@ -95,8 +116,18 @@ fn portuguese_translates_the_chrome_and_keeps_the_data() {
 
     // The screens: titles and store names are data, so they are shown as received.
     let state = ui.global::<LibraryState>();
-    let titles = ["Portal 2", "Half-Life: Alyx", "Ünïcode Jogo {} 日本語", "Valheim"];
-    let kinds = [MatchKind::Matched, MatchKind::Ambiguous, MatchKind::Unmatched, MatchKind::NoGame];
+    let titles = [
+        "Portal 2",
+        "Half-Life: Alyx",
+        "Ünïcode Jogo {} 日本語",
+        "Valheim",
+    ];
+    let kinds = [
+        MatchKind::Matched,
+        MatchKind::Ambiguous,
+        MatchKind::Unmatched,
+        MatchKind::NoGame,
+    ];
     let items: Vec<_> = titles
         .iter()
         .zip(kinds)

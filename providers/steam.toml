@@ -5,7 +5,7 @@ platforms = ["windows", "linux"]
 source = "steam"
 scan = { native = "steam" }
 launch = { uri = "steam://rungameid/{id}" }
-install = { uri = "steam://install/{id}" }
+install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
 
 # Steam apps that are tools, runtimes or redistributables, not games. This list is best effort:

@@ -248,6 +248,20 @@ struct CollectionRow {
 #[derive(Deserialize)]
 struct EntryRow {
     status: String,
+    #[serde(default)]
+    collections: Vec<IdRow>,
+    #[serde(rename = "ownedPlatforms", default)]
+    owned_platforms: Vec<PlatformRow>,
+    #[serde(rename = "finishedAt", default)]
+    finished_at: Option<String>,
+}
+#[derive(Deserialize)]
+struct IdRow {
+    id: String,
+}
+#[derive(Deserialize)]
+struct PlatformRow {
+    id: u64,
 }
 
 #[async_trait]
@@ -406,7 +420,41 @@ impl GameApi for GameNodeClient {
         let row: EntryRow = response.json().await.map_err(|_| ApiError::Failed)?;
         Ok(Some(LibraryEntry {
             status: EntryStatus::from_api_name(&row.status),
+            collection_ids: row.collections.into_iter().map(|c| c.id).collect(),
+            platform_ids: row.owned_platforms.into_iter().map(|p| p.id).collect(),
+            finished_at: row.finished_at,
         }))
+    }
+
+    async fn update_entry(
+        &self,
+        credential: &SessionCredential,
+        game_id: u64,
+        status: EntryStatus,
+        collection_ids: &[String],
+        existing: &LibraryEntry,
+    ) -> Result<(), ApiError> {
+        if existing.platform_ids.is_empty() {
+            return Err(ApiError::Failed);
+        }
+        let response = self
+            .authorized(
+                self.http.post(self.v1("collections-entries", |_| {})),
+                credential,
+            )
+            .json(&serde_json::json!({
+                "collectionIds": collection_ids, "gameId": game_id,
+                "platformIds": existing.platform_ids, "status": status.api_name(),
+                "finishedAt": existing.finished_at,
+            }))
+            .send()
+            .await
+            .map_err(|_| ApiError::Failed)?;
+        match response.status() {
+            StatusCode::OK | StatusCode::CREATED => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(ApiError::Rejected),
+            _ => Err(ApiError::Failed),
+        }
     }
 
     async fn create_entry(

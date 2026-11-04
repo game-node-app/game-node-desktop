@@ -36,6 +36,7 @@ pub(super) enum Stage {
 pub(super) struct AddDialog {
     /// The entries that were selected when the dialog opened, in display order.
     pub(super) targets: Vec<String>,
+    pub(super) editing_existing: bool,
     /// The status the user picked. A collection's default status can override it, see
     /// [`LibraryMachine::applied_status`].
     pub(super) status: EntryStatus,
@@ -81,6 +82,7 @@ pub struct AddProgress {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddDialogView {
     pub targets: Vec<AddTarget>,
+    pub editing_existing: bool,
     /// The status the user picked.
     pub status: EntryStatus,
     /// The status GameNode will apply: a picked collection's default, else `status`.
@@ -126,10 +128,19 @@ impl LibraryMachine {
             return vec![];
         };
         let op = self.next_op();
+        let existing = self
+            .selected_game()
+            .and_then(|id| self.account_entries.get(&id));
+        let editing_existing = existing.is_some();
         self.add = Some(AddDialog {
             targets: self.selected_keys(),
-            status: EntryStatus::Playing,
-            picked: BTreeSet::new(),
+            editing_existing,
+            status: existing
+                .and_then(|e| e.status)
+                .unwrap_or(EntryStatus::Playing),
+            picked: existing
+                .map(|e| e.collection_ids.iter().cloned().collect())
+                .unwrap_or_default(),
             collections: Collections::Loading { op },
             stage: Stage::Editing,
             error: None,
@@ -144,6 +155,9 @@ impl LibraryMachine {
         let Some(add) = self.add.take() else {
             return;
         };
+        if !matches!(add.stage, Stage::Editing) {
+            self.membership_focus = None;
+        }
         if let Stage::Running(run) = add.stage
             && let Some(game_id) = run.in_flight_game()
         {
@@ -195,6 +209,15 @@ impl LibraryMachine {
             return vec![];
         }
         add.collections = match result {
+            Ok(list)
+                if add.editing_existing
+                    && add
+                        .picked
+                        .iter()
+                        .any(|id| !list.iter().any(|c| &c.id == id)) =>
+            {
+                Collections::Failed(ApiError::Failed)
+            }
             Ok(list) => {
                 add.picked
                     .retain(|id| list.iter().any(|collection| &collection.id == id));
@@ -261,7 +284,11 @@ impl LibraryMachine {
         let editing = matches!(add.stage, Stage::Editing);
         let can_confirm = editing
             && blocked.is_none()
-            && !matches!(add.collections, Collections::Loading { .. })
+            && if add.editing_existing {
+                matches!(add.collections, Collections::Loaded(_))
+            } else {
+                !matches!(add.collections, Collections::Loading { .. })
+            }
             && targets.iter().any(|target| target.matched);
         Some(AddDialogView {
             collections: match &add.collections {
@@ -288,6 +315,7 @@ impl LibraryMachine {
             },
             applied_from: from.map(|collection| collection.name.clone()),
             targets,
+            editing_existing: add.editing_existing,
             status: add.status,
             applied_status,
             error: add.error,

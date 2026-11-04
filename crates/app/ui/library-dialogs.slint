@@ -163,7 +163,7 @@ export component AddDialog inherits Modal {
     changed summary => { root.reclaim-focus(); }
     private property <CollectionsKind> collections: LibraryState.add-collections-kind;
     changed collections => { root.reclaim-focus(); }
-    Heading { text: @tr("Library" => "Add to GameNode"); }
+    Heading { text: LibraryState.add-editing ? @tr("Library" => "Edit in GameNode") : @tr("Library" => "Add to GameNode"); }
 
     // Choosing.
     if !LibraryState.add-has-summary: VerticalLayout {
@@ -207,7 +207,7 @@ export component AddDialog inherits Modal {
             if LibraryState.add-collections-kind == CollectionsKind.loading: Caption { text: @tr("Library" => "Loading your collections…"); }
             if LibraryState.add-collections-kind == CollectionsKind.failed: HorizontalLayout {
                 spacing: 8px;
-                Text { horizontal-stretch: 1; text: @tr("Library" => "Could not load your collections. You can still add the game without one."); color: Theme.color-warning; wrap: word-wrap; vertical-alignment: center; }
+                Text { horizontal-stretch: 1; text: @tr("Library" => "Could not load your collections. Try again."); color: Theme.color-warning; wrap: word-wrap; vertical-alignment: center; }
                 Action { text: @tr("Library" => "Retry"); outlined: true; clicked => { LibraryState.add-retry-collections(); } }
             }
             if LibraryState.add-collections-kind == CollectionsKind.loaded && LibraryState.add-collections.length == 0: Caption { text: @tr("Library" => "You have no collections."); }
@@ -227,14 +227,14 @@ export component AddDialog inherits Modal {
         }
         if LibraryState.add-error != AddError.none: Text { text: LibraryText.add-error(LibraryState.add-error); color: Theme.color-danger; wrap: word-wrap; }
         if LibraryState.add-blocked != Why.available: Text { text: LibraryText.why(LibraryState.add-blocked, StatusKind.unknown); color: Theme.color-warning; wrap: word-wrap; }
-        if LibraryState.add-running: Caption { text: @tr("Library" => "Adding {} of {}…", min(LibraryState.add-done + 1, LibraryState.add-total), LibraryState.add-total); }
+        if LibraryState.add-running: Caption { text: @tr("Library" => "Saving {} of {}…", min(LibraryState.add-done + 1, LibraryState.add-total), LibraryState.add-total); }
     }
 
     // Done.
     if LibraryState.add-has-summary: VerticalLayout {
         spacing: 10px;
         Text {
-            text: @tr("Library" => "Added {} · already in your library {} · skipped {} · failed {}", LibraryState.add-summary-added, LibraryState.add-summary-present, LibraryState.add-summary-skipped, LibraryState.add-summary-failed);
+            text: @tr("Library" => "Saved {} · already in your library {} · skipped {} · failed {}", LibraryState.add-summary-added, LibraryState.add-summary-present, LibraryState.add-summary-skipped, LibraryState.add-summary-failed);
             color: Theme.color-text-default; wrap: word-wrap;
         }
         ScrollView {
@@ -255,7 +255,7 @@ export component AddDialog inherits Modal {
         spacing: 8px;
         Rectangle { horizontal-stretch: 1; }
         if !LibraryState.add-has-summary: Action { text: @tr("Library" => "Cancel"); clicked => { LibraryState.close-add(); } }
-        if !LibraryState.add-has-summary: Action { text: @tr("Library" => "Add"); primary: true; enabled: LibraryState.add-can-confirm; clicked => { LibraryState.add-confirm(); } }
+        if !LibraryState.add-has-summary: Action { text: LibraryState.add-editing ? @tr("Library" => "Save") : @tr("Library" => "Add"); primary: true; enabled: LibraryState.add-can-confirm; clicked => { LibraryState.add-confirm(); } }
         if LibraryState.add-has-summary: Action { text: @tr("Library" => "Close"); primary: true; clicked => { LibraryState.close-add(); } }
     }
 }

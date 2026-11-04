@@ -307,6 +307,6 @@ fn launch_and_install_uris_come_from_the_scanned_record() {
     );
     assert_eq!(
         steam.install_uri(&records[0]).unwrap().as_str(),
-        "steam://install/620"
+        "steam://nav/games/details/620"
     );
 }

@@ -115,6 +115,13 @@ pub enum Effect {
         status: EntryStatus,
         collection_ids: Vec<String>,
     },
+    UpdateEntry {
+        op: u64,
+        game_id: u64,
+        status: EntryStatus,
+        collection_ids: Vec<String>,
+        existing: LibraryEntry,
+    },
     PersistCoverReady {
         game_id: u64,
         file: String,
@@ -274,6 +281,7 @@ pub struct LibraryMachine {
     pub(super) grid_columns: usize,
     /// What GameNode last said about each matched game, read when its entry is selected.
     pub(super) membership: BTreeMap<u64, Membership>,
+    pub(super) account_entries: BTreeMap<u64, LibraryEntry>,
     /// The membership read outstanding for each game (its op id); other answers are ignored.
     pub(super) membership_reads: BTreeMap<u64, u64>,
     /// The game a read was planned for since the selection last changed.
@@ -308,6 +316,7 @@ impl LibraryMachine {
             selection: Selection::default(),
             grid_columns: 1,
             membership: BTreeMap::new(),
+            account_entries: BTreeMap::new(),
             membership_reads: BTreeMap::new(),
             membership_focus: None,
             add: None,
@@ -516,6 +525,7 @@ impl LibraryMachine {
         self.rescan_pending = false;
         self.selection = Selection::default();
         self.membership.clear();
+        self.account_entries.clear();
         self.membership_reads.clear();
         self.membership_focus = None;
         self.add = None;

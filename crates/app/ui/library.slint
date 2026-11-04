@@ -351,7 +351,7 @@ component DetailPane inherits Rectangle {
                 ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
                 ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
                 ActionWithReason { text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); why: LibraryState.match-why; clicked => { LibraryState.open-match(); } }
-                ActionWithReason { text: @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; status: LibraryState.add-existing-status; clicked => { LibraryState.open-add(); } }
+                ActionWithReason { text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; status: LibraryState.add-existing-status; clicked => { LibraryState.open-add(); } }
                 if LibraryState.add-why == Why.membership-unavailable: Action { text: @tr("Library" => "Check again"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.refresh-membership(); } }
                 if LibraryState.launch-note != LaunchNote.none: Rectangle {
                     background: LibraryState.launch-note == LaunchNote.opening-play || LibraryState.launch-note == LaunchNote.opening-install ? Theme.color-accent-subtle : Theme.color-danger-subtle;
@@ -382,7 +382,7 @@ component DetailPane inherits Rectangle {
             if !LibraryState.detail-valid && LibraryState.selected-count > 1: VerticalLayout {
                 spacing: 12px;
                 Text { text: @tr("Library" => "{} games selected", LibraryState.selected-count); color: Theme.color-text-default; font-weight: 500; }
-                ActionWithReason { text: @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; clicked => { LibraryState.open-add(); } }
+                ActionWithReason { text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; clicked => { LibraryState.open-add(); } }
             }
             if !LibraryState.detail-valid && LibraryState.selected-count <= 1: Caption { text: @tr("Library" => "Select a game to see its details."); wrap: word-wrap; }
         }
@@ -519,7 +519,7 @@ export component LibraryScreen inherits Rectangle {
             MenuItem { title: @tr("Library" => "Play"); enabled: LibraryState.play-why == Why.available; activated => { LibraryState.play(); } }
             MenuItem { title: @tr("Library" => "Install"); enabled: LibraryState.install-why == Why.available; activated => { LibraryState.install(); } }
             MenuItem { title: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); enabled: LibraryState.match-why == Why.available; activated => { LibraryState.open-match(); } }
-            MenuItem { title: @tr("Library" => "Add to GameNode…"); enabled: LibraryState.add-why == Why.available; activated => { LibraryState.open-add(); } }
+            MenuItem { title: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); enabled: LibraryState.add-why == Why.available; activated => { LibraryState.open-add(); } }
         }
     }
 }

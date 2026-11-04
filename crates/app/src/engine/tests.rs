@@ -54,6 +54,7 @@ struct FakeApi {
     covers_fetched: Mutex<Vec<String>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     created: Mutex<Vec<u64>>,
+    updated: Mutex<Vec<u64>>,
 }
 
 impl FakeApi {
@@ -170,6 +171,17 @@ impl GameApi for FakeApi {
     ) -> Result<Option<LibraryEntry>, ApiError> {
         self.pause().await;
         self.entry.lock().unwrap().clone().unwrap_or(Ok(None))
+    }
+    async fn update_entry(
+        &self,
+        _credential: &SessionCredential,
+        game_id: u64,
+        _status: EntryStatus,
+        _collection_ids: &[String],
+        _existing: &LibraryEntry,
+    ) -> Result<(), ApiError> {
+        self.updated.lock().unwrap().push(game_id);
+        Ok(())
     }
     async fn create_entry(
         &self,

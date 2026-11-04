@@ -118,10 +118,7 @@ fn a_matched_game_is_added_only_once_membership_says_it_is_absent() {
     machine
         .membership
         .insert(7, Membership::InLibrary(Some(EntryStatus::Finished)));
-    assert_eq!(
-        machine.actions().add_to_gamenode,
-        disabled(Reason::AlreadyInLibrary(Some(EntryStatus::Finished)))
-    );
+    assert_eq!(machine.actions().add_to_gamenode, Availability::Available);
     machine.membership.insert(7, Membership::NotInLibrary);
     assert!(machine.actions().add_to_gamenode.is_available());
 }

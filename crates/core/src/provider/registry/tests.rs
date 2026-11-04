@@ -214,7 +214,7 @@ fn actions_use_the_manifest_templates() {
     );
     assert_eq!(
         steam.install_uri(&record).unwrap().as_str(),
-        "steam://install/620"
+        "steam://nav/games/details/620"
     );
     assert!(steam.can_launch(&record) && steam.can_install(&record));
 

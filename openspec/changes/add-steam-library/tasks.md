@@ -22,7 +22,7 @@ Prerequisite: finish and archive `bootstrap-desktop-foundation` before applying 
 - [x] 3.1 Write the KeyValues parser in `core::provider::steam` (quoted and bare tokens, escapes, nested blocks, `//` comments, `[$COND]` tags) failing per file; verify table-driven tests including malformed input.
 - [x] 3.2 Implement the Steam scanner: canonicalize and deduplicate roots, read `steamapps/libraryfolders.vdf` (falling back to `config/libraryfolders.vdf`) in the current and old formats, always include the root, read every `appmanifest_*.acf`, keep numeric app ids whose `steamapps/common/<installdir>` exists, normalize Windows slashes, and drop `exclude_ids`; verify fixture tests using anonymized real files for Windows with two libraries, native Linux, Flatpak, a symlinked `~/.steam/steam`, the old `libraryfolders` format, an offline library folder, a malformed manifest and a tool app.
 - [x] 3.3 Add `providers/steam.toml` with Windows registry and Linux native and Flatpak roots, `steam://` launch and install templates, `external_category = 1`, and the tool, runtime, Proton and redistributable exclude list; verify the loader accepts it and a fixture containing app 228980, a Steam Linux Runtime and a Proton build yields no tool entries.
-- [ ] 3.4 Implement `HostFiles` with `std::fs` and `RootResolver` in `gamenode-platform` (home expansion, and `HKCU` string values via `windows-sys` on Windows); verify a Linux temp-directory test resolves `~` paths and a Windows test reads a value written under a test `HKCU` key and removes it afterwards.
+- [x] 3.4 Implement `HostFiles` with `std::fs` and `RootResolver` in `gamenode-platform` (home expansion, and `HKCU` string values via `windows-sys` on Windows); verify a Linux temp-directory test resolves `~` paths and a Windows test reads a value written under a test `HKCU` key and removes it afterwards.
 
 ## 4. Local storage
 
@@ -73,14 +73,19 @@ Prerequisite: finish and archive `bootstrap-desktop-foundation` before applying 
 - [ ] 10.4 Build the detail pane (cover, detected and matched titles, provider, install folder, match status and source, membership, actions with disabled reasons, Play progress and errors) and the empty-library and nothing-matches states; verify each spec scenario against fixtures.
 - [ ] 10.5 Build the Match and Add to GameNode overlay dialogs with focus trapping and Escape to cancel, reusing the step 1 overlay pattern, and the multi-add summary; verify both dialogs by keyboard only against a mock server.
 - [ ] 10.6 Save and restore the layout (view, sidebar selection, sort, pane sizes, detail open) and leave search empty on start; verify by changing each setting, restarting and checking the restored layout.
-- [ ] 10.7 Add every new UI and Rust-originated string to the English and Brazilian Portuguese catalogs under `i18n/`, showing game titles and collection names as received; verify catalog compilation, no missing keys on every library screen, and a pt-BR run that shows translated chrome and unchanged titles.
+- [x] 10.7 Add every new UI and Rust-originated string to the English and Brazilian Portuguese catalogs under `i18n/`, showing game titles and collection names as received; verify catalog compilation, no missing keys on every library screen, and a pt-BR run that shows translated chrome and unchanged titles.
 
 ## 11. Roadmap acceptance
 
-- [ ] 11.1 On a real Windows PC with Steam games in two library folders, install the build, sign in, and confirm the library lists the installed games with matches and covers, Play starts a game through Steam, Install opens Steam, Rescan picks up an uninstall, a manual match sticks, and Add to GameNode adds one game and a multi-selection without changing an existing entry; record version, revision and results.
+- [ ] 11.1 On a real Windows PC with Steam games in two library folders, install the build, sign in, and confirm the library lists the installed games with matches and covers, Play starts a game through Steam, Install opens Steam, Rescan picks up an uninstall, a manual match sticks, and Add to GameNode adds one game and a multi-selection while skipping existing entries in multi-add, and explicitly edits a detected game’s saved status and collections; record version, revision and results.
 - [ ] 11.2 Repeat 11.1 on Linux with native and Flatpak Steam and Proton installed, confirming no Proton, runtime or redistributable entries appear and that each game appears once; record results.
 - [ ] 11.3 On either OS, sign in, quit, disconnect the network and restart, and confirm the cached library, covers, Play and Install work, matching and Add are disabled with an explanation, and reconnecting and retrying enables them; then sign out and confirm sign-in is shown with no library; record results.
-- [ ] 11.4 Audit the shipped scope against the roadmap: no executable launches, user manifests, generic scanners, playtime, tracking, reporting of detections or edits to existing GameNode entries; record the result.
+- [ ] 11.4 Audit the shipped scope against the roadmap: no executable launches, user manifests, generic scanners, playtime, tracking, reporting of detections or importing the full GameNode library; record the result.
+
+## 12. Windows feedback
+
+- [x] 12.1 For store-detected games only, offer Edit for existing GameNode entries, prefill status and collections, save explicit changes while preserving platforms and completion date, retain choices on errors, and keep multi-add skipping existing entries; verify core, API and UI tests.
+- [x] 12.2 Make the Steam Install action open the selected game’s Steam library page, including already-installed games, and verify URI dispatch tests; real Windows acceptance remains in 11.1.
 
 ## Workflow follow-up
 
@@ -89,22 +94,22 @@ Prerequisite: finish and archive `bootstrap-desktop-foundation` before applying 
 
 ## Implementation status (paused)
 
-Tasks 1.x–9.3 are done and ticked. 3.4, 9.4, 10.x and 11.x are **not** ticked. What exists for them:
+Tasks 1.x–9.3, 10.7 and 12.x are done and ticked. 9.4, 10.1–10.6 and 11.x remain unticked. What exists for them:
 
 - **10.1–10.6 (UI built, not ticked)**: Slint screens (`library*.slint`), `crates/app/src/library_ui.rs` (engine ↔ UI wiring and the `Renderer`), and the `main.rs` hookup are written and compile. Verified so far:
   - 13 unit tests in `library_ui/tests.rs`, including a render test that copies hand-built snapshots into `LibraryState` (rows, selection, focus, filter, sort, view, pane sizes, detail, empty states, Match and Add dialogs, summary counts).
   - Headless test `crates/app/tests/library_screen.rs`: keyboard and pointer forwarding, Tab reachability, Escape in both dialogs, and screenshots (`GAMENODE_SHOTS=<dir>`) of grid, list, details, dialogs, empty states and focus ring.
   - Not yet checked at runtime: real `ContextMenuArea` and Menu / Shift+F10, sidebar `ResizeHandle` drag, multi-selection detail, the real engine → render path, and the layout restore after a real restart (10.6; the store-level restore is covered by existing core and platform tests).
-- **10.7 (partly done)**:
-  - Added all 109 `msgctxt "Library"` entries to `i18n/en` and `i18n/pt_BR`.
+- **10.7 (complete; headless verification)**:
+  - Added `msgctxt "Library"` entries to `i18n/en` and `i18n/pt_BR`.
   - `crates/app/tests/i18n_catalogs.rs` (3 tests, passing) checks that every `@tr` in `ui/*.slint` is in both catalogs, with no empty pt-BR text and the same `{}` placeholders.
   - `LibraryText` is now exported from `app.slint` so tests can read sentences per language.
-  - **Open**: `crates/app/tests/library_pt_br.rs` fails at `slint::select_bundled_translation("pt_BR")` with `NoTranslationsBundled`. Bundled translations are set in `build.rs` (`with_bundled_translations("../../i18n")`) but are not found. I did not find the cause. Fix it, then run the pt-BR screenshots and tick 10.7. Also check Rust-originated strings.
+  - Fixed `NoTranslationsBundled` by selecting pt_BR after creating `AppWindow`, which registers the bundled translations. The Portuguese screen test now passes; catalog tests cover all translated UI sentences and library Rust values are mapped to localized Slint enums.
   - Four `AppWindow` entries in the catalogs are used only from Rust (`main.rs`), so the check counts them as unused. That is expected.
 - **9.4**: the docs and fixture commands still need to be run as written, and `docs/development.md` should mention the `GAMENODE_SHOTS` screenshot test.
-- **3.4**: needs a Windows run (registry test).
+- **3.4 (complete)**: all four Windows host tests passed via WSL interoperability, including writing, reading and removing the test HKCU value.
 - **11.1–11.3**: manual acceptance on real PCs. **11.4**: scope audit still to do.
-- **Before finishing**: `cargo fmt`, Linux clippy `-D warnings`, `cargo xwin check`, and `cargo test --workspace --locked`. A Windows-only `clippy::needless_return` near `crates/app/src/main.rs:241` already existed and is unfixed.
+- **Verification this session**: 400 Linux tests passed (`cargo test --workspace --locked`), including the headless English/Portuguese screens. Formatting, Linux Clippy with `-D warnings`, Windows MSVC cross-check of all targets, and strict OpenSpec validation passed. Four actual Windows host tests passed. Windows-only Clippy and real Steam UI acceptance were not run.
 
 ### Deviations and gaps to review
 
@@ -115,3 +120,12 @@ Tasks 1.x–9.3 are done and ticked. 3.4, 9.4, 10.x and 11.x are **not** ticked.
 - Persist failures are only logged. An unreadable cache falls back to empty.
 - Check-then-create when adding is not atomic. Cancelling mid-run can't abort an in-flight request. A `Rejected` in a multi-add stops the run, and the rest count as failed.
 - A failed collections list still lets the user add with no collections. The predicted status after a create may differ from the server's. NoHandler detection is best effort.
+
+### Windows feedback follow-up
+
+- User reports Play works on Windows; Install had no visible effect and Add was disabled after creation.
+- Install now opens `steam://nav/games/details/<id>` for a visible game page instead of issuing an install command for an already-installed game. URI dispatch is tested; real Steam behavior needs a Windows retest under 11.1.
+- For a selected store-detected game, existing membership now offers Edit with status and collections prefilled. Explicit save re-reads the entry and preserves its current platform ids and completion date under server status/date rules. Missing collections block edits; failed saves retain choices. Multi-add still skips existing entries. The full GameNode library is never listed or imported.
+- Tests cover API payload preservation and failures, engine update wiring, edit prefill/save/retry/cancel, missing collections, UI edit flags and the existing multi-add skip behavior.
+
+- User retested the Windows feedback fixes and reports everything appears to be working. This confirms the reported Steam action and detected-game editing fixes; the broader acceptance checklist remains tracked above.

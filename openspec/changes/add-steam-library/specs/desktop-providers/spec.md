@@ -64,7 +64,7 @@ Play and Install SHALL open only a filled URI whose scheme is the scheme of the 
 
 #### Scenario: Install through the store client
 - **WHEN** the user chooses Install for a Steam game
-- **THEN** the OS opens `steam://install/<id>` and the application writes nothing to game folders
+- **THEN** the OS opens `steam://nav/games/details/<id>` and the application writes nothing to game folders
 
 #### Scenario: Handler is missing
 - **WHEN** the OS has no handler for the scheme or opening fails

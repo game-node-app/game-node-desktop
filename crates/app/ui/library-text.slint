@@ -82,12 +82,12 @@ export global LibraryText {
 
     pure public function add-error(kind: AddError) -> string {
         if kind == AddError.rejected { return @tr("Library" => "GameNode rejected your session. Sign in again."); }
-        if kind == AddError.failed { return @tr("Library" => "Could not add the game. Your choices are kept; try again."); }
+        if kind == AddError.failed { return @tr("Library" => "Could not save the game. Your choices are kept; try again."); }
         return "";
     }
 
     pure public function outcome(kind: Outcome, status: StatusKind) -> string {
-        if kind == Outcome.added { return @tr("Library" => "Added as {}", LibraryText.status(status)); }
+        if kind == Outcome.added { return @tr("Library" => "Saved as {}", LibraryText.status(status)); }
         if kind == Outcome.already-present {
             if status == StatusKind.unknown { return @tr("Library" => "Already in your library"); }
             return @tr("Library" => "Already in your library as {}", LibraryText.status(status));

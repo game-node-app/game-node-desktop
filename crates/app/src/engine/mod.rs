@@ -509,6 +509,34 @@ impl Engine {
                     engine.check_rejected(rejected);
                 });
             }
+            LibEffect::UpdateEntry {
+                op,
+                game_id,
+                status,
+                collection_ids,
+                existing,
+            } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::EntryCreated {
+                        op,
+                        game_id,
+                        result: Err(ApiError::Failed),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api
+                        .update_entry(&credential, game_id, status, &collection_ids, &existing)
+                        .await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::EntryCreated {
+                        op,
+                        game_id,
+                        result,
+                    });
+                    engine.check_rejected(rejected);
+                });
+            }
         }
     }
 

@@ -33,7 +33,7 @@ fn play_opens_the_launch_uri_and_install_the_install_uri() {
     open_action(&opener, &steam(), &portal, LaunchKind::Install).unwrap();
     assert_eq!(
         *opener.opened.lock().unwrap(),
-        ["steam://rungameid/620", "steam://install/620"]
+        ["steam://rungameid/620", "steam://nav/games/details/620"]
     );
 }
 

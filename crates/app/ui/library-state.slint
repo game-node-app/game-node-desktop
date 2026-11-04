@@ -149,6 +149,8 @@ export global LibraryState {
     in-out property <bool> match-can-clear;
 
     // --- the Add to GameNode dialog ---
+    in-out property <bool> edit-existing;
+    in-out property <bool> add-editing;
     in-out property <bool> add-open;
     in-out property <[TargetItem]> add-targets;
     in-out property <StatusKind> add-status: StatusKind.playing;

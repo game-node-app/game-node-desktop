@@ -1,4 +1,3 @@
-use gamenode_core::game_api::ApiError;
 use gamenode_core::library::{
     AddOutcome, Availability, Direction, EntryStatus, Input as LibInput, LaunchError, LaunchKind,
     LaunchState, LaunchStatus, MatchSource, MatchStatus, Membership, Reason, SearchFailure,
@@ -78,12 +77,24 @@ fn launch(kind: LaunchKind, state: LaunchState) -> LaunchStatus {
 #[test]
 fn launch_note_shows_only_for_the_selected_game() {
     let opening = launch(LaunchKind::Play, LaunchState::Opening);
-    assert_eq!(launch_note(Some(&opening), Some("steam:1")), LaunchNote::OpeningPlay);
-    assert_eq!(launch_note(Some(&opening), Some("steam:2")), LaunchNote::None);
+    assert_eq!(
+        launch_note(Some(&opening), Some("steam:1")),
+        LaunchNote::OpeningPlay
+    );
+    assert_eq!(
+        launch_note(Some(&opening), Some("steam:2")),
+        LaunchNote::None
+    );
     assert_eq!(launch_note(Some(&opening), None), LaunchNote::None);
     assert_eq!(launch_note(None, Some("steam:1")), LaunchNote::None);
-    let failed = launch(LaunchKind::Install, LaunchState::Failed(LaunchError::NoHandler));
-    assert_eq!(launch_note(Some(&failed), Some("steam:1")), LaunchNote::NoHandler);
+    let failed = launch(
+        LaunchKind::Install,
+        LaunchState::Failed(LaunchError::NoHandler),
+    );
+    assert_eq!(
+        launch_note(Some(&failed), Some("steam:1")),
+        LaunchNote::NoHandler
+    );
     let install = launch(LaunchKind::Install, LaunchState::Opening);
     assert_eq!(
         launch_note(Some(&install), Some("steam:1")),
@@ -98,8 +109,14 @@ fn search_failures_carry_the_blocking_reason() {
         search_error(Some(SearchFailure::Blocked(Reason::Offline))),
         (SearchError::Blocked, Some(Why::Offline))
     );
-    assert_eq!(search_error(Some(SearchFailure::Failed)).0, SearchError::Failed);
-    assert_eq!(search_error(Some(SearchFailure::Rejected)).0, SearchError::Rejected);
+    assert_eq!(
+        search_error(Some(SearchFailure::Failed)).0,
+        SearchError::Failed
+    );
+    assert_eq!(
+        search_error(Some(SearchFailure::Rejected)).0,
+        SearchError::Rejected
+    );
 }
 
 #[test]
@@ -113,7 +130,13 @@ fn add_outcomes_map_to_kind_and_status() {
         (Outcome::AlreadyPresent, StatusKind::Unknown)
     );
     assert_eq!(outcome(&AddOutcome::SkippedUnmatched).0, Outcome::Skipped);
-    assert_eq!(outcome(&AddOutcome::Failed(gamenode_core::game_api::ApiError::Failed)).0, Outcome::Failed);
+    assert_eq!(
+        outcome(&AddOutcome::Failed(
+            gamenode_core::game_api::ApiError::Failed
+        ))
+        .0,
+        Outcome::Failed
+    );
 }
 
 #[test]
@@ -188,7 +211,10 @@ fn filter_sort_view_and_sizes() {
 fn only_numeric_game_ids_can_be_picked() {
     assert!(matches!(
         pick_input("42", 9),
-        Some(LibInput::PickMatch { game_id: 42, now: 9 })
+        Some(LibInput::PickMatch {
+            game_id: 42,
+            now: 9
+        })
     ));
     assert!(pick_input("abc", 9).is_none());
     assert!(pick_input("", 9).is_none());
@@ -316,7 +342,14 @@ mod render {
 
         // Rows, selection, focus, filter, sort, view and pane sizes.
         let rows = vec![
-            row("steam:1", "Portal 2", MatchStatus::Matched { game_id: 7, source: MatchSource::Chosen }),
+            row(
+                "steam:1",
+                "Portal 2",
+                MatchStatus::Matched {
+                    game_id: 7,
+                    source: MatchSource::Chosen,
+                },
+            ),
             row("steam:2", "Valheim", MatchStatus::NoGame),
             row("steam:3", "Mystery", MatchStatus::Unmatched),
         ];
@@ -345,7 +378,7 @@ mod render {
         assert_eq!(state.get_focused_index(), 1);
         assert_eq!(state.get_view(), ViewKind::List);
         assert!(!state.get_all_selected());
-        assert_eq!(state.get_providers().row_data(0).unwrap().selected, true);
+        assert!(state.get_providers().row_data(0).unwrap().selected);
         assert!(state.get_descending());
         assert_eq!(state.get_sidebar_width(), 300);
         assert_eq!(state.get_detail_width(), 400);
@@ -356,7 +389,13 @@ mod render {
 
         // Titles are shown exactly as received, whatever characters they hold.
         let odd = "Ünïcode {} <b>% 100 日本語";
-        renderer.render(&ui, &snapshot(Some(view(vec![row("steam:9", odd, MatchStatus::Unmatched)])), None));
+        renderer.render(
+            &ui,
+            &snapshot(
+                Some(view(vec![row("steam:9", odd, MatchStatus::Unmatched)])),
+                None,
+            ),
+        );
         assert_eq!(state.get_items().row_data(0).unwrap().title, odd);
 
         // The detail pane and the launch note for the selected game only.
@@ -367,7 +406,7 @@ mod render {
             play: Availability::Available,
             install: Availability::Disabled(Reason::NoInstallRule),
             match_game: Availability::Available,
-            add_to_gamenode: Availability::Disabled(Reason::AlreadyInLibrary(Some(EntryStatus::Finished))),
+            add_to_gamenode: Availability::Available,
             change_match: true,
         };
         v.detail = Some(DetailView {
@@ -391,8 +430,8 @@ mod render {
         assert_eq!(state.get_detail_standing_status(), StatusKind::Finished);
         assert_eq!(state.get_play_why(), Why::Available);
         assert_eq!(state.get_install_why(), Why::NoInstallRule);
-        assert_eq!(state.get_add_why(), Why::AlreadyInLibrary);
-        assert_eq!(state.get_add_existing_status(), StatusKind::Finished);
+        assert_eq!(state.get_add_why(), Why::Available);
+        assert!(state.get_edit_existing());
         assert!(state.get_change_match());
         assert_eq!(state.get_launch_note(), LaunchNote::NoHandler);
         let other = LaunchStatus {
@@ -405,7 +444,9 @@ mod render {
 
         // Empty states.
         let mut v = view(vec![]);
-        v.empty = Some(EmptyState::NoGames { stores: vec!["Steam".into(), "GOG".into()] });
+        v.empty = Some(EmptyState::NoGames {
+            stores: vec!["Steam".into(), "GOG".into()],
+        });
         renderer.render(&ui, &snapshot(Some(v), None));
         assert_eq!(state.get_empty(), EmptyKind::NoGames);
         assert_eq!(state.get_stores(), "Steam, GOG");
@@ -436,7 +477,10 @@ mod render {
         assert_eq!(state.get_match_query(), "Portal 2");
         assert_eq!(state.get_match_candidates().row_data(0).unwrap().id, "7");
         assert!(state.get_match_candidates().row_data(0).unwrap().current);
-        assert_eq!(state.get_match_results().row_data(0).unwrap().name, "Portal");
+        assert_eq!(
+            state.get_match_results().row_data(0).unwrap().name,
+            "Portal"
+        );
         assert_eq!(state.get_match_error(), SearchError::Blocked);
         assert_eq!(state.get_match_blocked(), Why::Offline);
         assert!(state.get_match_can_clear());
@@ -445,16 +489,29 @@ mod render {
         v.match_dialog = Some(dialog("Portal 2", true));
         renderer.render(&ui, &snapshot(Some(v), None));
         assert!(state.get_match_searching());
-        assert_eq!(state.get_match_query(), "Portal 3 being typed", "typing must not be overwritten");
+        assert_eq!(
+            state.get_match_query(),
+            "Portal 3 being typed",
+            "typing must not be overwritten"
+        );
         renderer.render(&ui, &snapshot(Some(view(rows.clone())), None));
         assert!(!state.get_match_open());
 
         // The add dialog: choosing, then the summary with its counts.
         let mut v = view(rows.clone());
         v.add_dialog = Some(AddDialogView {
+            editing_existing: true,
             targets: vec![
-                AddTarget { entry_key: "steam:1".into(), title: "Portal 2".into(), matched: true },
-                AddTarget { entry_key: "steam:3".into(), title: "Mystery".into(), matched: false },
+                AddTarget {
+                    entry_key: "steam:1".into(),
+                    title: "Portal 2".into(),
+                    matched: true,
+                },
+                AddTarget {
+                    entry_key: "steam:3".into(),
+                    title: "Mystery".into(),
+                    matched: false,
+                },
             ],
             status: EntryStatus::Planned,
             applied_status: EntryStatus::Playing,
@@ -473,6 +530,7 @@ mod render {
         });
         renderer.render(&ui, &snapshot(Some(v.clone()), None));
         assert!(state.get_add_open());
+        assert!(state.get_add_editing());
         assert_eq!(state.get_add_targets().row_count(), 2);
         assert!(!state.get_add_targets().row_data(1).unwrap().matched);
         assert_eq!(state.get_add_status(), StatusKind::Planned);
@@ -480,7 +538,14 @@ mod render {
         assert_eq!(state.get_add_applied_from(), "Now playing");
         assert_eq!(state.get_add_collections_kind(), CollectionsKind::Loaded);
         let collection = state.get_add_collections().row_data(0).unwrap();
-        assert_eq!((collection.name.as_str(), collection.picked, collection.forces), ("Backlog", true, StatusKind::Planned));
+        assert_eq!(
+            (
+                collection.name.as_str(),
+                collection.picked,
+                collection.forces
+            ),
+            ("Backlog", true, StatusKind::Planned)
+        );
         assert!(state.get_add_can_confirm());
         assert!(!state.get_add_has_summary());
 
@@ -493,10 +558,26 @@ mod render {
         let dialog = v.add_dialog.as_mut().unwrap();
         dialog.summary = Some(AddSummary {
             items: vec![
-                AddItem { entry_key: "steam:1".into(), title: "Portal 2".into(), outcome: AddOutcome::Added(EntryStatus::Planned) },
-                AddItem { entry_key: "steam:2".into(), title: "Valheim".into(), outcome: AddOutcome::AlreadyPresent(None) },
-                AddItem { entry_key: "steam:3".into(), title: "Mystery".into(), outcome: AddOutcome::SkippedUnmatched },
-                AddItem { entry_key: "steam:4".into(), title: "Other".into(), outcome: AddOutcome::Failed(gamenode_core::game_api::ApiError::Failed) },
+                AddItem {
+                    entry_key: "steam:1".into(),
+                    title: "Portal 2".into(),
+                    outcome: AddOutcome::Added(EntryStatus::Planned),
+                },
+                AddItem {
+                    entry_key: "steam:2".into(),
+                    title: "Valheim".into(),
+                    outcome: AddOutcome::AlreadyPresent(None),
+                },
+                AddItem {
+                    entry_key: "steam:3".into(),
+                    title: "Mystery".into(),
+                    outcome: AddOutcome::SkippedUnmatched,
+                },
+                AddItem {
+                    entry_key: "steam:4".into(),
+                    title: "Other".into(),
+                    outcome: AddOutcome::Failed(gamenode_core::game_api::ApiError::Failed),
+                },
             ],
         });
         renderer.render(&ui, &snapshot(Some(v), None));

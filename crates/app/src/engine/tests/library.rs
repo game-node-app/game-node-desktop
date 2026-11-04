@@ -405,7 +405,7 @@ async fn play_and_install_open_the_providers_links_without_blocking() {
     h.until("done", |s| s.launch.is_none()).await;
     assert_eq!(
         *h.uri.opened.lock().unwrap(),
-        ["steam://rungameid/620", "steam://install/620"]
+        ["steam://rungameid/620", "steam://nav/games/details/620"]
     );
 }
 
@@ -662,4 +662,56 @@ async fn scanning_matching_launching_and_signing_in_never_create_entries() {
     .await;
 
     creates.assert_calls_async(0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn editing_a_store_game_uses_update_without_importing_the_account_library() {
+    use gamenode_core::game_api::LibraryEntry;
+    use gamenode_core::library::{EntryStatus, Input as LibInput, SelectMode};
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    *api.entry.lock().unwrap() = Some(Ok(Some(LibraryEntry {
+        status: Some(EntryStatus::Finished),
+        platform_ids: vec![6],
+        ..Default::default()
+    })));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("matched", |s| {
+        view(s).is_some_and(|v| {
+            v.rows
+                .first()
+                .is_some_and(|r| matches!(r.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Replace,
+    });
+    h.until("membership", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("ready to edit", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|d| d.editing_existing && d.can_confirm)
+        })
+    })
+    .await;
+    h.engine
+        .library_input(LibInput::SetAddStatus(EntryStatus::Planned));
+    h.engine.library_input(LibInput::ConfirmAdd);
+    let snapshot = h
+        .until("saved", |s| {
+            view(s).is_some_and(|v| v.add_dialog.as_ref().is_some_and(|d| d.summary.is_some()))
+        })
+        .await;
+    assert_eq!(*h.api.updated.lock().unwrap(), [7]);
+    assert!(h.api.created.lock().unwrap().is_empty());
+    assert_eq!(view(&snapshot).unwrap().rows.len(), 1);
 }

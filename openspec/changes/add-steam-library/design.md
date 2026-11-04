@@ -25,7 +25,7 @@ Cover URLs are IGDB URLs such as `//images.igdb.com/igdb/image/upload/t_thumb/<i
 
 **Goals:** Build a provider runtime that later stores plug into with only a manifest or a scanner. Keep all library logic (scan merge, match precedence, filter, sort, selection) in `core`, where it can be tested without a UI or an OS. Make the library usable from local data alone.
 
-**Non-Goals:** No generic scanners (`registry_subkeys`, `files`), no direct executable launches, no user manifests, no running-state or playtime fields, no reporting of detections or picks. No new server endpoints and no editing of existing GameNode library entries.
+**Non-Goals:** No generic scanners (`registry_subkeys`, `files`), no direct executable launches, no user manifests, no running-state or playtime fields, no reporting of detections or picks. No new server endpoints and no importing or displaying the full GameNode account library. Explicit editing is limited to selected store-detected games.
 
 ## Decisions
 
@@ -56,7 +56,7 @@ platforms = ["windows", "linux"]
 source = "steam"
 scan = { native = "steam" }
 launch = { uri = "steam://rungameid/{id}" }
-install = { uri = "steam://install/{id}" }
+install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
 exclude_ids = ["228980", "1070560", "1391110", "1628350", "1493710", ...]  # tools, runtimes, Proton
 
@@ -137,6 +137,8 @@ A new `GameApi` port, implemented by `GameNodeClient` with the stored bearer cre
 - `fetch_cover(url)`
 
 A 401 from any of these goes to the existing auth path, as a rejected session.
+
+Add/edit flow: when a matched store-detected entry is selected, membership is read, including status, collections, owned platforms and completion date. An existing entry offers Edit with saved status and collections prefilled. Saving re-reads that game and uses the same POST endpoint, preserving its latest platforms and completion date. Collection-loading failure blocks editing so missing choices cannot clear existing collections. Multi-add continues to skip existing entries. No account-library listing or import is performed.
 
 Add flow: when a matched entry is selected, membership is read. The dialog loads collections and shows a selected collection's `defaultEntryStatus` as the status that will apply. On confirm, the app reads membership again for each game, then creates the entry only if it is absent. Multi-add runs this per game, one at a time, and returns a summary.
 

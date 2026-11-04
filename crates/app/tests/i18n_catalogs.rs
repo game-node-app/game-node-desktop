@@ -75,7 +75,10 @@ fn slint_messages() -> BTreeSet<Key> {
     let mut keys = BTreeSet::new();
     for entry in std::fs::read_dir(ui).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_some_and(|extension| extension == "slint") {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "slint")
+        {
             keys.extend(translated(&std::fs::read_to_string(path).unwrap()));
         }
     }
@@ -96,13 +99,18 @@ fn catalog(locale: &str) -> BTreeMap<Key, String> {
     let text = std::fs::read_to_string(path).unwrap();
     let mut entries = BTreeMap::new();
     for entry in text.split("\n\n") {
-        let (Some(context), Some(id), Some(string)) =
-            (field(entry, "msgctxt"), field(entry, "msgid"), field(entry, "msgstr"))
-        else {
+        let (Some(context), Some(id), Some(string)) = (
+            field(entry, "msgctxt"),
+            field(entry, "msgid"),
+            field(entry, "msgstr"),
+        ) else {
             continue;
         };
         let duplicate = entries.insert((context.clone(), id.clone()), string);
-        assert!(duplicate.is_none(), "{locale}: {context}/{id:?} appears twice");
+        assert!(
+            duplicate.is_none(),
+            "{locale}: {context}/{id:?} appears twice"
+        );
     }
     entries
 }
@@ -115,7 +123,11 @@ fn placeholders(text: &str) -> usize {
 fn the_screens_translate_the_library_sentences() {
     let messages = slint_messages();
     assert!(
-        messages.iter().filter(|(context, _)| context == "Library").count() > 80,
+        messages
+            .iter()
+            .filter(|(context, _)| context == "Library")
+            .count()
+            > 80,
         "the extractor should see the library screens' sentences"
     );
 }
@@ -125,7 +137,10 @@ fn both_catalogs_cover_every_translated_sentence() {
     let messages = slint_messages();
     for locale in ["en", "pt_BR"] {
         let catalog = catalog(locale);
-        let missing: Vec<_> = messages.iter().filter(|key| !catalog.contains_key(*key)).collect();
+        let missing: Vec<_> = messages
+            .iter()
+            .filter(|key| !catalog.contains_key(*key))
+            .collect();
         assert!(missing.is_empty(), "{locale} is missing {missing:#?}");
     }
 }
@@ -144,6 +159,8 @@ fn translations_are_filled_and_keep_their_placeholders() {
     }
     let english_keys: BTreeSet<&Key> = english.keys().collect();
     let portuguese_keys: BTreeSet<&Key> = portuguese.keys().collect();
-    let only_in_one: Vec<_> = english_keys.symmetric_difference(&portuguese_keys).collect();
+    let only_in_one: Vec<_> = english_keys
+        .symmetric_difference(&portuguese_keys)
+        .collect();
     assert!(only_in_one.is_empty(), "catalogs differ: {only_in_one:#?}");
 }

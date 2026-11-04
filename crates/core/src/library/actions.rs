@@ -143,9 +143,7 @@ impl LibraryMachine {
                     Availability::Disabled(Reason::CheckingMembership)
                 }
                 Membership::Unavailable => Availability::Disabled(Reason::MembershipUnavailable),
-                Membership::InLibrary(status) => {
-                    Availability::Disabled(Reason::AlreadyInLibrary(status))
-                }
+                Membership::InLibrary(_) => Availability::Available,
             },
         };
         Actions {

@@ -117,7 +117,10 @@ pub(crate) fn answer_read(
 }
 
 pub(crate) fn entry(status: Option<EntryStatus>) -> LibraryEntry {
-    LibraryEntry { status }
+    LibraryEntry {
+        status,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn collection(id: &str, name: &str, default: Option<EntryStatus>) -> Collection {
@@ -209,28 +212,79 @@ fn nothing_is_read_without_a_verified_session_until_there_is_one() {
 }
 
 #[test]
-fn a_game_already_in_the_library_cannot_be_added_again() {
+fn an_existing_detected_game_can_be_edited_with_saved_choices() {
     let mut machine = library();
     let effects = select(&mut machine, "620");
-    answer_read(
-        &mut machine,
-        &effects,
-        Ok(Some(entry(Some(EntryStatus::Finished)))),
-    );
-
-    let view = machine.view().unwrap();
+    let existing = LibraryEntry {
+        status: Some(EntryStatus::Finished),
+        collection_ids: vec!["c".into()],
+        platform_ids: vec![6, 48],
+        finished_at: Some("2026-01-01T00:00:00Z".into()),
+    };
+    answer_read(&mut machine, &effects, Ok(Some(existing.clone())));
+    assert!(machine.actions().add_to_gamenode.is_available());
+    let effects = machine.handle(Input::OpenAdd);
+    assert!(creates(&effects).is_empty());
+    let (op, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(vec![collection("c", "Favorites", None)]),
+    });
+    let view = dialog(&mut machine);
+    assert!(view.editing_existing && view.can_confirm);
+    assert_eq!(view.status, EntryStatus::Finished);
+    let CollectionsView::Loaded(choices) = view.collections else {
+        panic!()
+    };
+    assert!(choices[0].picked);
+    machine.handle(Input::SetAddStatus(EntryStatus::Planned));
+    machine.handle(Input::ToggleAddCollection("c".into()));
+    let effects = machine.handle(Input::ConfirmAdd);
+    let updates = answer_read(&mut machine, &effects, Ok(Some(existing.clone())));
+    let [
+        Effect::UpdateEntry {
+            op,
+            game_id,
+            status,
+            collection_ids,
+            existing: saved,
+        },
+    ] = updates.as_slice()
+    else {
+        panic!("{updates:?}")
+    };
+    assert_eq!((*game_id, *status), (7, EntryStatus::Planned));
+    assert!(collection_ids.is_empty());
+    assert_eq!(saved, &existing);
+    let (op, game_id) = (*op, *game_id);
+    machine.handle(Input::EntryCreated {
+        op,
+        game_id,
+        result: Err(ApiError::Failed),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(view.status, EntryStatus::Planned);
+    assert!(view.can_confirm);
+    let effects = machine.handle(Input::ConfirmAdd);
+    let updates = answer_read(&mut machine, &effects, Ok(Some(existing)));
+    let [Effect::UpdateEntry { op, game_id, .. }] = updates.as_slice() else {
+        panic!()
+    };
+    machine.handle(Input::EntryCreated {
+        op: *op,
+        game_id: *game_id,
+        result: Ok(()),
+    });
     assert_eq!(
-        view.detail.unwrap().membership,
-        Membership::InLibrary(Some(EntryStatus::Finished))
+        machine.membership(7),
+        Membership::InLibrary(Some(EntryStatus::Planned))
     );
+    machine.handle(Input::CloseAdd);
     assert_eq!(
-        view.actions.add_to_gamenode,
-        crate::library::Availability::Disabled(Reason::AlreadyInLibrary(Some(
-            EntryStatus::Finished
-        )))
+        machine.installed_entries().count(),
+        5,
+        "editing does not import GameNode games"
     );
-    assert!(machine.handle(Input::OpenAdd).is_empty());
-    assert!(machine.view().unwrap().add_dialog.is_none());
 }
 
 #[test]
@@ -460,4 +514,44 @@ fn a_different_account_closes_the_dialog() {
     open_with(&mut machine, &["620"], vec![]);
     machine.handle(Input::AccountChanged(None));
     assert!(machine.add.is_none());
+}
+
+#[test]
+fn edit_waits_for_complete_collections_and_cancel_sends_no_write() {
+    let mut machine = library();
+    let effects = select(&mut machine, "620");
+    answer_read(
+        &mut machine,
+        &effects,
+        Ok(Some(LibraryEntry {
+            status: Some(EntryStatus::Finished),
+            collection_ids: vec!["c".into()],
+            platform_ids: vec![6],
+            ..Default::default()
+        })),
+    );
+    let effects = machine.handle(Input::OpenAdd);
+    let (op, _) = list_ops(&effects)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(vec![]),
+    });
+    assert!(
+        !dialog(&mut machine).can_confirm,
+        "missing saved collection must not be silently removed"
+    );
+    assert!(machine.handle(Input::ConfirmAdd).is_empty());
+    let retry = machine.handle(Input::RetryCollections);
+    let (op, _) = list_ops(&retry)[0].clone();
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(vec![collection("c", "Favorites", None)]),
+    });
+    assert!(dialog(&mut machine).can_confirm);
+    machine.handle(Input::ToggleAddCollection("c".into()));
+    assert!(machine.handle(Input::CloseAdd).is_empty());
+    assert_eq!(
+        machine.membership(7),
+        Membership::InLibrary(Some(EntryStatus::Finished))
+    );
 }

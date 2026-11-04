@@ -53,11 +53,14 @@ pub struct ExternalMatch {
 }
 
 /// The caller's entry for a game, as GameNode has it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LibraryEntry {
     /// `None` when GameNode sent a status this build does not know. The game is still in the
     /// library.
     pub status: Option<EntryStatus>,
+    pub collection_ids: Vec<String>,
+    pub platform_ids: Vec<u64>,
+    pub finished_at: Option<String>,
 }
 
 /// One of the user's GameNode collections.
@@ -112,6 +115,16 @@ pub trait GameApi: Send + Sync {
         credential: &SessionCredential,
         game_id: u64,
     ) -> Result<Option<LibraryEntry>, ApiError>;
+
+    /// Updates a detected game's existing entry, preserving platforms and completion date.
+    async fn update_entry(
+        &self,
+        credential: &SessionCredential,
+        game_id: u64,
+        status: EntryStatus,
+        collection_ids: &[String],
+        existing: &LibraryEntry,
+    ) -> Result<(), ApiError>;
 
     /// Adds a game to the library as a PC game that is not finished
     /// (`POST /v1/collections-entries`).

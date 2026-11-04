@@ -21,7 +21,7 @@ platforms = ["windows", "linux"]
 source = "steam"
 scan = { native = "steam" }
 launch = { uri = "steam://rungameid/{id}" }
-install = { uri = "steam://install/{id}" }
+install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
 exclude_ids = ["228980", "1628350", "1493710"]
 
@@ -90,3 +90,6 @@ itself, and reads every `steamapps/appmanifest_*.acf` in each library folder. A 
 its manifest has a numeric app id and `steamapps/common/<installdir>` exists. An unreadable or
 malformed file, or a library folder that is not available (an unplugged drive), is skipped and
 logged. Its games leave the library view but keep their saved matches.
+
+The bundled Steam Install action opens the game’s Steam library page, where Steam exposes its
+installation controls. This also gives a visible destination for an already-installed game.

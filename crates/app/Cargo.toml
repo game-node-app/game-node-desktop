@@ -1,0 +1,53 @@
+[package]
+name = "gamenode-app"
+description = "GameNode Desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[lib]
+name = "gamenode_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gamenode"
+path = "src/main.rs"
+
+[dependencies]
+gamenode-core.workspace = true
+gamenode-platform.workspace = true
+gamenode-api.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+url.workspace = true
+
+# Explicit Slint features: the winit backend with Skia (default renderer) and the software
+# renderer (persisted fallback). No Qt, FemtoVG, LinuxKMS or other backends.
+[dependencies.slint]
+version = "=1.18.1"
+default-features = false
+features = ["std", "backend-winit", "renderer-skia", "renderer-software", "accessibility", "compat-1-2"]
+
+[target.'cfg(target_os = "linux")'.dependencies.slint]
+version = "=1.18.1"
+default-features = false
+features = ["backend-winit-wayland", "backend-winit-x11"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,51 @@
+[package]
+name = "gamenode-platform"
+description = "GameNode Desktop OS adapters: data paths, SQLite, credentials, single instance, browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gamenode-core.workspace = true
+dirs = "7.0.0"
+getrandom.workspace = true
+open.workspace = true
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "io-util", "time", "sync"] }
+url.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", features = ["fs", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring-core = "1.0.1"
+# Secret Service over zbus, with async-io and pure-Rust crypto: no OpenSSL or Tokio needed.
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring-core = "1.0.1"
+windows-native-keyring-store = "1.1.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Graphics_Gdi",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

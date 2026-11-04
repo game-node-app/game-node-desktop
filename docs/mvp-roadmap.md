@@ -4,9 +4,13 @@ Started 2026-11-04. This repository is the desktop app's home, separate from the
 (`game-node-clients`). It replaces the Electron prototype on `feat/desktop-client-mvp` and its roadmap. Nothing is
 carried over from that code; the product direction below is restated here so this file stands on its own.
 
-MVP = a native Windows and Linux app, written in Rust with a Slint UI, that finds the games installed on this PC
-across stores, launches them, tracks playtime in the background, reports to GameNode, runs non-Steam games through
-Proton on Linux, and installs OptiScaler per game.
+MVP = a native Windows app, written in Rust with a Slint UI, that finds the games installed on this PC across stores,
+launches them, tracks playtime in the background, reports to GameNode, and installs OptiScaler per game.
+
+Linux follows as its own milestone after the Windows MVP (see [Linux milestone](#linux-milestone-after-the-mvp)).
+Development happens in WSL, which can build and unit-test Linux code but cannot exercise a real Linux desktop: no
+Wayland session, no Secret Service, no tray host, no Steam or Proton. Windows builds, by contrast, run and can be
+tested on the same PC. Linux work resumes when a real Linux setup is available.
 
 Each step below is meant to be planned and shipped as one change.
 
@@ -27,6 +31,8 @@ Each step below is meant to be planned and shipped as one change.
 - **Desktop reports back to GameNode.** Detected games and playtime are sent to the server, on by default with a
   setting to turn it off. The app works fully with it off. This is how desktop-only stores (Ubisoft, EA, Battle.net)
   reach the user's GameNode profile. Reported ownership is self-declared and must not feed anything trust-sensitive.
+- **Windows first, Linux-ready.** `core` stays free of OS calls, and every OS-specific piece sits behind a trait in
+  `platform`, so the Linux milestone adds adapters rather than reworking the app.
 
 ## Desktop UI principle
 
@@ -44,11 +50,11 @@ Nothing is shared with the TypeScript monorepo as code. What we share with web a
 
 - **Rust**, one Cargo workspace, toolchain pinned in `rust-toolchain.toml`.
 - **Slint** for the UI, using the Skia renderer. A setting switches to Slint's software renderer for machines where
-  GPU rendering fails (some Linux NVIDIA setups).
+  GPU rendering fails.
 - **Tokio** for networking, scanning and process work. The UI thread only runs Slint.
 - **SQLite** (`rusqlite`) for local data: scan results, matches, the playtime queue, settings and layout.
-- **The OS keyring** (`keyring`) for the session token: Windows Credential Manager, Secret Service on Linux. Where
-  Linux has no Secret Service, the token goes in a user-only file and Settings says so.
+- **The OS keyring** (`keyring`) for the session token: Windows Credential Manager. (Step 1 also built the Linux
+  Secret Service adapter and its private-file fallback; they are verified in the Linux milestone.)
 - **Translations** through Slint's `@tr()` and gettext `.po` files. English and Brazilian Portuguese at launch.
 
 ### Repository layout
@@ -58,14 +64,22 @@ Cargo.toml              workspace
 crates/
   core/                 library model, providers, manifests, matching, tracker, playtime queue, sync rules.
                         No OS calls and no UI: everything platform-specific comes in through traits.
-  platform/             Windows and Linux: process listing and exit waits, registry, keyring, autostart,
-                        URL scheme, single instance, running host commands from Flatpak.
+  platform/             OS adapters: process listing and exit waits, registry, keyring, autostart, URL scheme,
+                        single instance. Windows for the MVP; the Linux adapters from step 1 stay.
   api/                  GameNode HTTP client and types.
   app/                  the binary: Slint UI (ui/*.slint, theme, fonts, icons), tray, wiring.
 providers/              bundled provider manifests (*.toml), embedded in the binary.
 i18n/                   .po translations.
 docs/
 ```
+
+### Linux code during the MVP
+
+- **It keeps compiling.** WSL is the development host, so the workspace builds on Linux and `core` tests run there.
+- **New platform features are Windows-only.** A trait added after step 1 gets a Windows implementation; on Linux it
+  returns an "unsupported" error, or the feature is compiled out. No Linux adapter is written until the Linux
+  milestone.
+- **Nothing Linux-specific is verified by hand.** Linux checks in planned changes move to the Linux milestone.
 
 ### How the app runs
 
@@ -76,17 +90,14 @@ docs/
   Quit is in the tray menu and the app menu.
 - **The window is a view.** `core` owns all state and publishes snapshots; the UI renders them and sends commands
   back (`scan`, `launch`, `match`, ...). The UI never touches files, processes or the network itself.
-- **Tray.** Shown while GameNode runs in the background. On Linux desktops without a tray host (GNOME without the
-  AppIndicator extension), GameNode still runs, and launching it again opens the window.
-- **Autostart.** Windows: a `Run` entry under HKCU. Linux: an XDG autostart `.desktop` file; under Flatpak, the
-  Background portal.
+- **Tray.** Shown while GameNode runs in the background.
+- **Autostart.** A `Run` entry under HKCU.
 
 ### Sign-in
 
 Uses the server's existing mobile sign-in flow: the system browser opens the provider's page, and the server
-redirects back to `app.gamenode://` with the session. GameNode registers that scheme itself (HKCU `Software\Classes`
-on Windows, a `.desktop` handler on Linux; the Flatpak manifest declares it). A callback is only accepted if it
-matches the sign-in GameNode started.
+redirects back to `app.gamenode://` with the session. GameNode registers that scheme itself under HKCU
+`Software\Classes`. A callback is only accepted if it matches the sign-in GameNode started.
 
 ### Security rules
 
@@ -95,8 +106,8 @@ matches the sign-in GameNode started.
   executable inside the game's scanned `installDir`, started with a fixed argument list. No shell strings.
 - **Writes into game folders are task-specific.** Only OptiScaler install and uninstall write there, and only the
   files they record.
-- **Downloads come from fixed GitHub release sources over HTTPS** (umu, GE-Proton, OptiScaler), and are checked
-  against published checksums when the release has them.
+- **Downloads come from fixed GitHub release sources over HTTPS** (OptiScaler; later umu and GE-Proton), and are
+  checked against published checksums when the release has them.
 
 ## Providers
 
@@ -106,13 +117,14 @@ described by a manifest; parsing that a manifest cannot describe lives in a nati
 ### Manifest
 
 Manifests are TOML: they are written by hand, and will later be written by users (see Later), so comments matter.
-Bundled manifests live in `providers/` and are embedded at build time.
+Bundled manifests live in `providers/` and are embedded at build time. A manifest lists the platforms it supports;
+the format keeps per-platform roots so Linux entries can be added in the Linux milestone without a format change.
 
 ```toml
 # providers/steam.toml: data in the manifest, parsing in a native scanner
 id = "steam"
 name = "Steam"
-platforms = ["windows", "linux"]
+platforms = ["windows"]                            # "linux" added in the Linux milestone
 source = "steam"                                   # GameNode playtime source
 scan = { native = "steam" }                        # libraryfolders.vdf + appmanifest_*.acf
 playtime = { counter = "steam" }                   # Steam's own total, if step 3's spike proves it readable
@@ -124,11 +136,11 @@ match = { external_category = 1 }                  # GET /v1/game/external
 registry = 'HKCU\Software\Valve\Steam'
 value = "SteamPath"
 
-[[roots.linux]]
-path = "~/.steam/steam"
-
-[[roots.linux]]
-path = "~/.var/app/com.valvesoftware.Steam/.steam/steam"   # Flatpak Steam
+# Linux milestone:
+# [[roots.linux]]
+# path = "~/.steam/steam"
+# [[roots.linux]]
+# path = "~/.var/app/com.valvesoftware.Steam/.steam/steam"   # Flatpak Steam
 ```
 
 ```toml
@@ -150,10 +162,10 @@ Rules:
 - **A scanner returns plain records** `{ id, name?, install_dir, ...fields }`. The runtime fills the manifest's
   `{placeholders}` from those fields, so native and generic scanners are interchangeable.
 - **Generic scanners are added when a bundled store needs one.** Step 4 needs `registry_subkeys` (Ubisoft, GOG) and
-  `files` (a glob plus a JSON reader: Epic `.item` manifests, Heroic's installed lists). Others (`sqlite`, `vdf`)
-  only when a store requires them.
+  `files` (a glob plus a JSON reader: Epic `.item` manifests). Others (`sqlite`, `vdf`) only when a store requires
+  them.
 - **Native scanners are for formats a manifest cannot describe:** Steam's KeyValues files, Battle.net's protobuf
-  `product.db`, Lutris's database. Each one has fixture tests built from real, anonymized files.
+  `product.db`. Each one has fixture tests built from real, anonymized files.
 - **Manifests are validated when loaded.** An invalid manifest is skipped and logged; it never stops the others.
 - **The library key is `<provider>:<id>`.** The same game installed from two stores is two entries pointing to one
   GameNode game.
@@ -197,64 +209,70 @@ Rules both ways follow:
 ### Tracker
 
 - **One generic tracker for all providers.** A game is running while any process runs from inside its `install_dir`.
-  On Linux that includes Wine and Proton processes, whose Windows paths are translated through the prefix's drive
-  mapping.
-- **Starts are found by listing processes** periodically, through native APIs (Toolhelp on Windows, `/proc` on
-  Linux). **Exits are found by waiting on the process** (a process handle on Windows, a `pidfd` on Linux), so a
-  session ends when the game actually exits.
+- **Starts are found by listing processes** periodically, through native APIs (Toolhelp). **Exits are found by
+  waiting on the process handle**, so a session ends when the game actually exits.
 - **Sessions survive crashes.** An open session is written to SQLite when it starts and checkpointed while it runs;
   after a crash or power loss it closes at its last checkpoint. Sessions longer than 24 hours are split.
 - **Sessions belong to the signed-in account.** Signing out closes the open session; another account never sees or
   sends the previous account's queue.
+- **Process listing and exit waits are a `platform` trait.** The Linux milestone implements it with `/proc` and
+  `pidfd`, including Wine and Proton processes, whose Windows paths are translated through the prefix's drive mapping.
 
 ## Assumptions
 
 | Question | Assumed answer | Affects |
 | --- | --- | --- |
-| macOS in the MVP? | No. Windows and Linux only. | Steps 1, 9 |
+| macOS in the MVP? | No. | Step 8 |
+| Linux in the MVP? | No. Windows only. Linux is its own milestone once a real Linux setup is available. | All steps |
 | GameNode login required? | Yes. Matching, playtime and reporting go to the user's account. | Step 1 |
 | Background tracking at login | On by default. A setting to turn it off comes later. | Step 3 |
 | Slint license | GPLv3 if this repository is open source, otherwise Slint's royalty-free license. Decided in step 1. | Step 1 |
-| Windows code signing | Decided in step 9 (Azure Artifact Signing vs OV certificate). | Step 9 |
+| Windows code signing | Decided in step 8 (Azure Artifact Signing vs OV certificate). | Step 8 |
 
 Change an assumption and the matching step changes; the order does not.
 
 ## Order
 
 ```
-1 Foundation ─► 2 Steam library ─► 3 Playtime + background ─┬─► 4 Epic, GOG, Ubisoft, manual ─┬─► 5 EA, Battle.net, Heroic, Lutris
-                                                            │                                └─► 7 Proton runner ─► 8 OptiScaler
+1 Foundation ─► 2 Steam library ─► 3 Playtime + background ─┬─► 4 Epic, GOG, Ubisoft, manual ─┬─► 5 EA, Battle.net
+                                                            │                                └─► 7 OptiScaler
                                                             └─► 6 Reporting to GameNode (server)
-                                                                              9 Release builds ◄── all
+                                                                              8 Windows release ◄── all
+
+                                                         Linux milestone ◄── Windows MVP + a real Linux setup
 ```
 
 The first tester build is the end of step 3. Step 6's server work can start at any time; each store added later
-reports through it. Steps 5 and 7 can run in parallel after step 4. Step 8 needs step 7 for its Linux half only.
+reports through it. Steps 5 and 7 can run in parallel after step 4.
 
 ## Step 1: Foundation
 
 **User gets:** nothing on its own. This is the base every later step builds on.
 
 - Cargo workspace with the four crates, `rust-toolchain.toml`, formatting and lint config.
-- CI on GitHub Actions: build and test on Windows and Linux for every push, and upload a Windows installer and an
-  AppImage as artifacts. Unsigned until step 9.
+- Build and test for Windows (cross-built from WSL). Unsigned until step 8.
 - Slint app shell: the window with GameNode's theme (tokens, Roboto, logos), app menu, remembered window size and
   position, and the software-rendering setting.
-- Single instance and the `app.gamenode://` scheme on both OSes.
+- Single instance and the `app.gamenode://` scheme.
 - Sign-in through the browser, session in the keyring, sign-out, and the signed-in user in the top bar.
 - SQLite store with migrations, and Settings with an About page (version, licenses).
 - Translations wired with English and Brazilian Portuguese.
 - Decide the Slint license with the repository's own license.
 
-**Done when:** a CI build installs on Windows and Linux, signs in, restarts signed in, and shows the empty library.
+Step 1 also built Linux adapters (Unix-socket single instance, Secret Service with a private-file fallback, XDG
+scheme registration, a tar package). They stay in the tree and keep compiling. Their remaining live checks (Wayland,
+a real Secret Service, sign-in and session restore) move to the Linux milestone.
+
+**Done when:** a Windows build installs, signs in, restarts signed in, and shows the empty library.
 
 ## Step 2: Steam library
 
 **User gets:** their installed Steam games in a real library, matched to GameNode, launchable.
 
 - Provider runtime in `core`: manifest loading and validation, the scanner registry, placeholder filling, launch rules.
-- Steam: manifest plus native scanner for `libraryfolders.vdf` and `appmanifest_*.acf`, on Windows and on native and
-  Flatpak Steam on Linux, with fixture tests. Play uses `steam://rungameid`; Install opens `steam://install`.
+- Steam: manifest plus native scanner for `libraryfolders.vdf` and `appmanifest_*.acf`, with fixture tests. Windows
+  roots only; the scanner itself is OS-neutral, so Linux and Flatpak roots are a manifest change later. Play uses
+  `steam://rungameid`; Install opens `steam://install`.
 - Matching through `GET /v1/game/external` (category 1), with the prefilled search for unmatched games.
 - Covers from GameNode, cached on disk.
 - Library UI: grid and list, sidebar with provider filters, search, sort, keyboard navigation, multi-select, context
@@ -263,7 +281,7 @@ reports through it. Steps 5 and 7 can run in parallel after step 4. Step 8 needs
   API the web uses. Detected games are never added automatically.
 - Rescan on start, when the window opens, and on demand.
 
-**Done when:** on both OSes, a tester sees their installed Steam games matched to GameNode, matches one by hand,
+**Done when:** on Windows, a tester sees their installed Steam games matched to GameNode, matches one by hand,
 launches one, and adds one to their GameNode library.
 
 ## Step 3: Playtime and background mode
@@ -277,12 +295,10 @@ GameNode profile.
   PC) and record which fields, units and update timing it has. If it works, Steam submits its total through
   `POST /v1/playtime` with source `steam`, platform 6. If it doesn't, Steam uses measured sessions like every other
   provider.
-- Background mode: `--background` at login, the tray icon and menu, autostart on both OSes, and close-to-background.
+- Background mode: `--background` at login, the tray icon and menu, autostart through HKCU `Run`, and
+  close-to-background.
 - "Sync with GameNode" setting, on by default and explained on first run. Off means nothing leaves the PC except the
   lookups needed for matching.
-- Flatpak spike: from inside a test Flatpak sandbox, launch through `steam://`, see host game processes (native and
-  Proton), and autostart through the Background portal. Record what host access each needs. This decides the
-  Flathub permissions in step 9.
 
 **Done when:** after a reboot, GameNode is in the tray without being opened; a Steam game started from Steam itself
 is shown as running; and its playtime appears on GameNode (or is queued, if the spike chose measured sessions).
@@ -298,25 +314,20 @@ DRM-free game can be added by hand.
 - GOG: `registry_subkeys` over `GOG.com\Games`. Match by category 5. Launch through Galaxy, or the game's exe when
   Galaxy is absent.
 - Ubisoft: the manifest above, matched by name with the user's pick.
-- Manual: a built-in provider. The user picks an exe and a GameNode game. Runs directly on Windows; Linux launch comes
-  in step 7.
+- Manual: a built-in provider. The user picks an exe and a GameNode game, and it runs directly.
 - Playtime: measured sessions for all of the above.
 
 **Done when:** an Epic, a GOG, a Ubisoft and a manually added game each show as installed, launch, and record
-sessions on Windows.
+sessions.
 
-## Step 5: EA, Battle.net, Heroic and Lutris
+## Step 5: EA and Battle.net
 
-**User gets:** the rest of the major Windows launchers, and Linux users' Heroic and Lutris libraries.
+**User gets:** the rest of the major Windows launchers.
 
 - EA app and Battle.net: native scanners (study each format first: EA's install data, Battle.net's `product.db`),
   launched through their clients.
-- Heroic: `files` over its installed lists for Epic, GOG and Amazon. Matches use the original store's category and
-  playtime source. Launch through `heroic://launch`.
-- Lutris: native scanner over its database. Launch through `lutris:rungameid`.
 
-**Done when:** an EA and a Battle.net game launch and record sessions on Windows; an Epic game via Heroic and a Lutris
-game launch and record sessions on Linux.
+**Done when:** an EA and a Battle.net game launch and record sessions.
 
 ## Step 6: Reporting to GameNode
 
@@ -327,8 +338,8 @@ Server work (`game-node-server`):
 
 - **Playtime sessions endpoint:** `POST /v1/playtime/sessions`, as described in Playtime. Idempotent on
   `session_id`; rejects sessions that end in the future, have `ended_at <= started_at`, or last over 24 hours.
-- **New playtime sources:** `ubisoft`, `ea`, `amazon` and `manual`. `battlenet` and `emulator` already exist. A Lutris
-  game uses `emulator` when its runner is an emulator, `manual` otherwise.
+- **New playtime sources:** `ubisoft`, `ea`, `amazon` and `manual`. `battlenet` and `emulator` already exist.
+  (`amazon` is used by Heroic in the Linux milestone; adding it now keeps the server change in one place.)
 - **New GameNode-owned external categories:** Ubisoft, EA and Battle.net (the next ids after
   `NintendoTitleId = 1002`). Their unmapped ids go through the existing `registerUnmappedGames(category, entries,
   userId)`, and moderators map them with the existing tools.
@@ -357,49 +368,69 @@ Decided:
 **Done when:** a Ubisoft game found on desktop shows up in the web importer under GameNode Desktop; its playtime
 appears on the user's profile; and a session recorded offline is counted once after reconnecting.
 
-## Step 7: Linux Proton runner
+## Step 7: OptiScaler
 
-**User gets:** non-Steam Windows games (manual exes, GOG offline installers) playable on Linux from GameNode.
+**User gets:** one-click OptiScaler per game, reversible, and a clear warning where it could get them banned.
 
-- Download the umu zipapp from its GitHub releases on first use; if Python 3 is missing, tell the user.
-- Download and manage GE-Proton releases in the app's data folder; a default version and a per-game picker.
-- One Wine prefix per game; launch with `umu-run`. Playtime through the tracker.
-- Settings lists downloaded Proton versions and removes them.
-
-**Done when:** a manual Windows exe from step 4 launches on Linux (desktop and Steam Deck desktop mode) through umu
-and GE-Proton, and records sessions.
-
-## Step 8: OptiScaler
-
-**User gets:** one-click OptiScaler per game, reversible, and blocked where it could get them banned.
-
-- Anti-cheat block: refuse if the game folder contains EasyAntiCheat or BattlEye, or the game is on our blocklist.
+- Anti-cheat block: warn if the game folder contains EasyAntiCheat or BattlEye, or the game is on our blocklist.
   An explicit warning before any install.
 - Version picker; download the release `.7z` from GitHub, cache it, and extract it with a Rust 7z library. Show the
   source link and the GPL-3.0 license.
+Let the user select stable or nightly.
 - Place the files next to the main exe as `dxgi.dll` (fallback `winmm.dll` / `version.dll`); keep the
   `OptiScaler.ini` name.
+Check the Optiscaler wiki for the supported filenames, and use the first one.
 - Back up overwritten files and record installed files, so uninstall restores the folder exactly.
-- Linux: set `WINEDLLOVERRIDES=<dll>=n,b` for umu launches; for Steam games show the launch-options line with a copy
-  button.
 
-**Done when:** install then uninstall on a test game leaves the folder byte-identical; an EAC or BattlEye game is
-refused; OptiScaler loads in-game on Windows and under umu on Linux.
+**Done when:** install then uninstall on a test game leaves the folder byte-identical; an EAC or BattlEye game shows
+the warning before install; OptiScaler loads in-game.
 
-## Step 9: Release builds
+## Step 8: Windows release
 
-**User gets:** a trusted public download on Windows and Linux, and updates.
+**User gets:** a trusted public Windows download, and updates.
 
 - Signed Windows installer (Azure Artifact Signing or OV certificate, decided here). Signing also reduces antivirus
-  false positives from step 8.
-- AppImage, and Flatpak on Flathub with the host access step 3's spike proved necessary.
-- Updates: in-app updates for the Windows installer and the AppImage; Flathub updates the Flatpak. Pick the updater
-  here.
-- Releases from version tags in this repository: a tag builds, signs and publishes every package.
-- Steam Deck Game Mode doc: add GameNode as a non-Steam game.
+  false positives from step 7.
+- In-app updates for the installer. Pick the updater here.
+- Releases from version tags in this repository: a tag builds, signs and publishes the installer.
 
-**Done when:** a tagged release publishes the signed Windows installer, the AppImage and the Flathub build, and each
-installs, signs in, launches a game and records its playtime.
+**Done when:** a tagged release publishes the signed Windows installer, and it installs, signs in, launches a game,
+records its playtime, and updates to the next tagged version.
+
+## Linux milestone (after the MVP)
+
+Starts once the Windows MVP ships and a real Linux machine (and ideally a Steam Deck) is available for testing. It
+will be planned as its own set of changes; this is the scope carried over from the original roadmap.
+
+- **Foundation on Linux.** Finish step 1's Linux walkthrough: Secret Service present and absent (private-file
+  fallback and its disclosure), X11 and Wayland, sign-in and session restore, URI delivery, renderer selection
+  (including the software fallback on NVIDIA setups), both locales.
+- **Steam on Linux.** Native and Flatpak Steam roots in the manifest, with fixtures; Proton, runtime and
+  redistributable entries filtered out.
+- **Tracker on Linux.** Process listing through `/proc`, exits through `pidfd`, and Wine/Proton processes matched
+  through the prefix's drive mapping.
+- **Background mode on Linux.** XDG autostart `.desktop` file (Background portal under Flatpak). On desktops without
+  a tray host (GNOME without the AppIndicator extension), GameNode still runs, and launching it again opens the
+  window.
+- **Flatpak spike.** From inside a test Flatpak sandbox, launch through `steam://`, see host game processes (native
+  and Proton), run host commands, and autostart through the Background portal. Record what host access each needs;
+  this decides the Flathub permissions.
+- **Heroic and Lutris.** Heroic: `files` over its installed lists for Epic, GOG and Amazon, using the original
+  store's category and playtime source, launched through `heroic://launch`. Lutris: native scanner over its database,
+  launched through `lutris:rungameid`; source `emulator` when its runner is an emulator, `manual` otherwise.
+- **Proton runner.** Download the umu zipapp from its GitHub releases on first use (tell the user if Python 3 is
+  missing); download and manage GE-Proton releases in the app's data folder with a default version and a per-game
+  picker; one Wine prefix per game, launched with `umu-run`; Settings lists and removes downloaded Proton versions.
+  Manual Windows exes and GOG offline installers become playable on Linux.
+- **OptiScaler on Linux.** Set `WINEDLLOVERRIDES=<dll>=n,b` for umu launches; for Steam games show the launch-options
+  line with a copy button.
+- **Linux release.** AppImage with in-app updates, and Flatpak on Flathub with the host access the spike proved
+  necessary. Tags publish them alongside the Windows installer. A Steam Deck Game Mode doc: add GameNode as a
+  non-Steam game.
+
+**Done when:** on a real Linux desktop and on Steam Deck desktop mode, the Windows MVP's done-when checks pass, a
+manual Windows exe launches through umu and GE-Proton and records sessions, OptiScaler loads under umu, and the
+AppImage and Flathub builds install, sign in, launch a game and record its playtime.
 
 ## Later (designed for, not scheduled)
 
@@ -414,6 +445,8 @@ installs, signs in, launches a game and records its playtime.
 - **Code plugins.** WebAssembly plugins behind the provider interface, with host access limited to what the plugin's
   manifest declares (paths to read, schemes to launch). Extract that API only after the bundled providers have
   settled it.
+- **Heroic on Windows.** Heroic also runs on Windows; its scanner from the Linux milestone can be enabled there if
+  testers ask for it.
 
 ## Deferred (not in any step)
 

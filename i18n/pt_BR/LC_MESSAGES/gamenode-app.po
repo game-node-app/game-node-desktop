@@ -1,0 +1,245 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "AppWindow"
+msgid "Active renderer: Skia"
+msgstr "Renderizador ativo: Skia"
+
+msgctxt "AppWindow"
+msgid "Active renderer: Software"
+msgstr "Renderizador ativo: software"
+
+msgctxt "AppWindow"
+msgid "Active renderer: Software (automatic fallback)"
+msgstr "Renderizador ativo: software (fallback automático)"
+
+msgctxt "AppWindow"
+msgid "GameNode could not initialize either renderer.\nSkia error: {gpu}\nSoftware error: {software}\nYour saved settings and session were preserved. Update your graphics driver or contact support with these details."
+msgstr "O GameNode não conseguiu iniciar nenhum dos renderizadores.\nErro do Skia: {gpu}\nErro da renderização por software: {software}\nSuas configurações e sessão foram preservadas. Atualize o driver gráfico ou entre em contato com o suporte com estes detalhes."
+
+msgctxt "AppWindow"
+msgid "GameNode could not initialize software rendering.\nError: {software}\nYour saved settings and session were preserved. Update your graphics driver or contact support with these details."
+msgstr "O GameNode não conseguiu iniciar a renderização por software.\nErro: {software}\nSuas configurações e sessão foram preservadas. Atualize o driver gráfico ou entre em contato com o suporte com estes detalhes."
+
+msgctxt "AppWindow"
+msgid "Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver."
+msgstr "Falha ao iniciar o Skia: {gpu}\nO GameNode não conseguiu reiniciar com renderização por software: {error}\nSuas configurações e sessão foram preservadas. Reinicie após atualizar o driver gráfico."
+
+msgctxt "AppWindow"
+msgid "Back"
+msgstr "Voltar"
+
+msgctxt "AppWindow"
+msgid "Cancel sign-in"
+msgstr "Cancelar entrada"
+
+msgctxt "AppWindow"
+msgid "Complete sign-in in your browser."
+msgstr "Conclua a entrada no navegador."
+
+msgctxt "AppWindow"
+msgid "Continue with Discord"
+msgstr "Continuar com Discord"
+
+msgctxt "AppWindow"
+msgid "Continue with Google"
+msgstr "Continuar com Google"
+
+msgctxt "AppWindow"
+msgid "Continue with Twitter"
+msgstr "Continuar com Twitter"
+
+msgctxt "AppWindow"
+msgid "Could not connect. Your stored session is preserved; retry when online."
+msgstr "Não foi possível conectar. Sua sessão foi preservada; tente novamente quando estiver online."
+
+msgctxt "AppWindow"
+msgid "Could not open your browser. Please try again."
+msgstr "Não foi possível abrir o navegador. Tente novamente."
+
+msgctxt "AppWindow"
+msgid "Could not read your session from credential storage."
+msgstr "Não foi possível ler a sessão no armazenamento de credenciais."
+
+msgctxt "AppWindow"
+msgid "Could not remove the saved credential. Check credential storage before restarting."
+msgstr "Não foi possível remover a credencial salva. Verifique o armazenamento de credenciais antes de reiniciar."
+
+msgctxt "AppWindow"
+msgid "Could not save your session. Sign-in will not survive restart."
+msgstr "Não foi possível salvar a sessão. Será necessário entrar novamente após reiniciar."
+
+msgctxt "AppWindow"
+msgid "Could not start sign-in. Please try again."
+msgstr "Não foi possível iniciar a entrada. Tente novamente."
+
+msgctxt "AppWindow"
+msgid "GameNode artwork: GPL-3.0-only · Roboto: SIL Open Font License 1.1 · Slint: GPLv3"
+msgstr "Arte GameNode: GPL-3.0-only · Roboto: SIL Open Font License 1.1 · Slint: GPLv3"
+
+msgctxt "AppWindow"
+msgid "Library"
+msgstr "Biblioteca"
+
+msgctxt "AppWindow"
+msgid "Menu"
+msgstr "Menu"
+
+msgctxt "AppWindow"
+msgid "Quit"
+msgstr "Encerrar"
+
+msgctxt "AppWindow"
+msgid "Retry connection"
+msgstr "Tentar conectar novamente"
+
+msgctxt "AppWindow"
+msgid "Session storage: Secret Service"
+msgstr "Armazenamento da sessão: Secret Service"
+
+msgctxt "AppWindow"
+msgid "Session storage: Windows Credential Manager"
+msgstr "Armazenamento da sessão: Gerenciador de Credenciais do Windows"
+
+msgctxt "AppWindow"
+msgid "Session storage: a file readable only by your user account"
+msgstr "Armazenamento da sessão: arquivo acessível apenas pela sua conta de usuário"
+
+msgctxt "AppWindow"
+msgid "Settings / About"
+msgstr "Configurações / Sobre"
+
+msgctxt "AppWindow"
+msgid "Show license notices"
+msgstr "Mostrar avisos de licença"
+
+msgctxt "AppWindow"
+msgid "Sign in with your GameNode account in your browser."
+msgstr "Entre com sua conta GameNode pelo navegador."
+
+msgctxt "AppWindow"
+msgid "Sign out"
+msgstr "Sair da conta"
+
+msgctxt "AppWindow"
+msgid "Sign-in cancelled."
+msgstr "Entrada cancelada."
+
+msgctxt "AppWindow"
+msgid "Sign-in expired. Please try again."
+msgstr "A tentativa de entrada expirou. Tente novamente."
+
+msgctxt "AppWindow"
+msgid "Sign-in was rejected. Please try again."
+msgstr "A entrada foi recusada. Tente novamente."
+
+msgctxt "AppWindow"
+msgid "Signed out locally. Server sign-out could not be confirmed."
+msgstr "Você saiu localmente. Não foi possível confirmar a saída no servidor."
+
+msgctxt "AppWindow"
+msgid "The session was rejected. Please sign in again."
+msgstr "A sessão foi recusada. Entre novamente."
+
+msgctxt "AppWindow"
+msgid "Use software rendering (restart required)"
+msgstr "Usar renderização por software (requer reiniciar)"
+
+msgctxt "AppWindow"
+msgid "Welcome to GameNode"
+msgstr "Boas-vindas ao GameNode"
+
+msgctxt "AppWindow"
+msgid "Your library is empty."
+msgstr "Sua biblioteca está vazia."
+
+msgctxt "AppWindow"
+msgid "Your stored session expired. Please sign in again."
+msgstr "Sua sessão salva expirou. Entre novamente."
+
+msgctxt "AppWindow"
+msgid "YOUR SPACE"
+msgstr "SEU ESPAÇO"
+
+msgctxt "AppWindow"
+msgid "A home for your games."
+msgstr "Um lugar para os seus jogos."
+
+msgctxt "AppWindow"
+msgid "Your next session starts here."
+msgstr "Sua próxima sessão começa aqui."
+
+msgctxt "AppWindow"
+msgid "Make yourself at home."
+msgstr "Sinta-se em casa."
+
+msgctxt "AppWindow"
+msgid "You're all set. Your GameNode account is connected."
+msgstr "Tudo pronto. Sua conta GameNode está conectada."
+
+msgctxt "AppWindow"
+msgid "Connected to GameNode"
+msgstr "Conectado ao GameNode"
+
+msgctxt "AppWindow"
+msgid "Secure sign-in in your default browser."
+msgstr "Entre com segurança pelo seu navegador padrão."
+
+msgctxt "AppWindow"
+msgid "Make GameNode feel at home on your desktop."
+msgstr "Deixe o GameNode do seu jeito."
+
+msgctxt "AppWindow"
+msgid "Appearance & performance"
+msgstr "Aparência e desempenho"
+
+msgctxt "AppWindow"
+msgid "Software rendering"
+msgstr "Renderização por software"
+
+msgctxt "AppWindow"
+msgid "Use if you experience graphics issues. Takes effect after restarting GameNode."
+msgstr "Use se houver problemas gráficos. A alteração entra em vigor ao reiniciar o GameNode."
+
+msgctxt "AppWindow"
+msgid "On"
+msgstr "Ativada"
+
+msgctxt "AppWindow"
+msgid "Off"
+msgstr "Desativada"
+
+msgctxt "AppWindow"
+msgid "Session & security"
+msgstr "Sessão e segurança"
+
+msgctxt "AppWindow"
+msgid "Your session stays on this device, protected by your operating system."
+msgstr "Sua sessão fica neste dispositivo, protegida pelo sistema operacional."
+
+msgctxt "AppWindow"
+msgid "Version {}"
+msgstr "Versão {}"
+
+msgctxt "AppWindow"
+msgid "License notices"
+msgstr "Avisos de licença"
+
+msgctxt "AppWindow"
+msgid "Previous"
+msgstr "Anterior"
+
+msgctxt "AppWindow"
+msgid "Next"
+msgstr "Próxima"
+
+msgctxt "AppWindow"
+msgid "GameNode Desktop"
+msgstr "GameNode Desktop"
+
+msgctxt "AppWindow"
+msgid "Settings"
+msgstr "Configurações"

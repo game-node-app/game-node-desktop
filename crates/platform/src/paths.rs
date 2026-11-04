@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 /// File name of the SQLite database inside the data directory.
 pub const DATABASE_FILE: &str = "gamenode.sqlite3";
+/// Directory of cached game covers, created on first use. Files are named `<game id>.jpg`.
+pub const COVERS_DIR: &str = "covers";
 /// Directory (mode `0700`) that holds the Linux fallback credential file.
 pub const PRIVATE_DIR: &str = "private";
 /// File name of the Linux fallback credential file inside [`PRIVATE_DIR`].
@@ -50,6 +52,10 @@ impl DataPaths {
         self.data_dir.join(DATABASE_FILE)
     }
 
+    pub fn covers_dir(&self) -> PathBuf {
+        self.data_dir.join(COVERS_DIR)
+    }
+
     pub fn private_dir(&self) -> PathBuf {
         self.data_dir.join(PRIVATE_DIR)
     }
@@ -87,5 +93,6 @@ mod tests {
             paths.private_dir().join("session-token")
         );
         assert!(paths.credential_file().starts_with(paths.data_dir()));
+        assert_eq!(paths.covers_dir(), paths.data_dir().join("covers"));
     }
 }

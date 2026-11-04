@@ -243,3 +243,439 @@ msgstr "GameNode Desktop"
 msgctxt "AppWindow"
 msgid "Settings"
 msgstr "Settings"
+
+msgctxt "Library"
+msgid "A → Z"
+msgstr "A → Z"
+
+msgctxt "Library"
+msgid "Add"
+msgstr "Add"
+
+msgctxt "Library"
+msgid "Add to GameNode"
+msgstr "Add to GameNode"
+
+msgctxt "Library"
+msgid "Add to GameNode…"
+msgstr "Add to GameNode…"
+
+msgctxt "Library"
+msgid "Added as {}"
+msgstr "Added as {}"
+
+msgctxt "Library"
+msgid "Added {} · already in your library {} · skipped {} · failed {}"
+msgstr "Added {} · already in your library {} · skipped {} · failed {}"
+
+msgctxt "Library"
+msgid "Adding {} of {}…"
+msgstr "Adding {} of {}…"
+
+msgctxt "Library"
+msgid "All games"
+msgstr "All games"
+
+msgctxt "Library"
+msgid "Already in your GameNode library as {}."
+msgstr "Already in your GameNode library as {}."
+
+msgctxt "Library"
+msgid "Already in your GameNode library."
+msgstr "Already in your GameNode library."
+
+msgctxt "Library"
+msgid "Already in your library"
+msgstr "Already in your library"
+
+msgctxt "Library"
+msgid "Already in your library as {}"
+msgstr "Already in your library as {}"
+
+msgctxt "Library"
+msgid "Cancel"
+msgstr "Cancel"
+
+msgctxt "Library"
+msgid "Change match…"
+msgstr "Change match…"
+
+msgctxt "Library"
+msgid "Check again"
+msgstr "Check again"
+
+msgctxt "Library"
+msgid "Checking your GameNode library…"
+msgstr "Checking your GameNode library…"
+
+msgctxt "Library"
+msgid "Checking your GameNode session…"
+msgstr "Checking your GameNode session…"
+
+msgctxt "Library"
+msgid "Clear search"
+msgstr "Clear search"
+
+msgctxt "Library"
+msgid "Close"
+msgstr "Close"
+
+msgctxt "Library"
+msgid "Collections (optional)"
+msgstr "Collections (optional)"
+
+msgctxt "Library"
+msgid "Could not add the game. Your choices are kept; try again."
+msgstr "Could not add the game. Your choices are kept; try again."
+
+msgctxt "Library"
+msgid "Could not check your GameNode library"
+msgstr "Could not check your GameNode library"
+
+msgctxt "Library"
+msgid "Could not check your GameNode library. Try again."
+msgstr "Could not check your GameNode library. Try again."
+
+msgctxt "Library"
+msgid "Could not load your collections. You can still add the game without one."
+msgstr "Could not load your collections. You can still add the game without one."
+
+msgctxt "Library"
+msgid "Could not scan {}. Showing the last results."
+msgstr "Could not scan {}. Showing the last results."
+
+msgctxt "Library"
+msgid "Current"
+msgstr "Current"
+
+msgctxt "Library"
+msgid "Details"
+msgstr "Details"
+
+msgctxt "Library"
+msgid "Details for this game are missing. Rescan and try again."
+msgstr "Details for this game are missing. Rescan and try again."
+
+msgctxt "Library"
+msgid "Details this action needs are missing. Rescan to refresh them."
+msgstr "Details this action needs are missing. Rescan to refresh them."
+
+msgctxt "Library"
+msgid "Detected title"
+msgstr "Detected title"
+
+msgctxt "Library"
+msgid "Dismiss"
+msgstr "Dismiss"
+
+msgctxt "Library"
+msgid "Dropped"
+msgstr "Dropped"
+
+msgctxt "Library"
+msgid "Failed"
+msgstr "Failed"
+
+msgctxt "Library"
+msgid "Finished"
+msgstr "Finished"
+
+msgctxt "Library"
+msgid "GameNode cannot be reached right now."
+msgstr "GameNode cannot be reached right now."
+
+msgctxt "Library"
+msgid "GameNode cannot be reached. Showing your saved library."
+msgstr "GameNode cannot be reached. Showing your saved library."
+
+msgctxt "Library"
+msgid "GameNode game"
+msgstr "GameNode game"
+
+msgctxt "Library"
+msgid "GameNode rejected your session. Sign in again."
+msgstr "GameNode rejected your session. Sign in again."
+
+msgctxt "Library"
+msgid "GameNode suggests"
+msgstr "GameNode suggests"
+
+msgctxt "Library"
+msgid "GameNode will use {}, the default status of {}."
+msgstr "GameNode will use {}, the default status of {}."
+
+msgctxt "Library"
+msgid "Grid"
+msgstr "Grid"
+
+msgctxt "Library"
+msgid "In your GameNode library"
+msgstr "In your GameNode library"
+
+msgctxt "Library"
+msgid "In your GameNode library as {}"
+msgstr "In your GameNode library as {}"
+
+msgctxt "Library"
+msgid "Install"
+msgstr "Install"
+
+msgctxt "Library"
+msgid "Install a game, then choose Rescan."
+msgstr "Install a game, then choose Rescan."
+
+msgctxt "Library"
+msgid "Install folder"
+msgstr "Install folder"
+
+msgctxt "Library"
+msgid "List"
+msgstr "List"
+
+msgctxt "Library"
+msgid "Loading your collections…"
+msgstr "Loading your collections…"
+
+msgctxt "Library"
+msgid "Looked in: {}"
+msgstr "Looked in: {}"
+
+msgctxt "Library"
+msgid "Match"
+msgstr "Match"
+
+msgctxt "Library"
+msgid "Match status"
+msgstr "Match status"
+
+msgctxt "Library"
+msgid "Match this game to a GameNode game first."
+msgstr "Match this game to a GameNode game first."
+
+msgctxt "Library"
+msgid "Match to a GameNode game"
+msgstr "Match to a GameNode game"
+
+msgctxt "Library"
+msgid "Matched"
+msgstr "Matched"
+
+msgctxt "Library"
+msgid "Matched automatically"
+msgstr "Matched automatically"
+
+msgctxt "Library"
+msgid "Match…"
+msgstr "Match…"
+
+msgctxt "Library"
+msgid "No games found. Try different words."
+msgstr "No games found. Try different words."
+
+msgctxt "Library"
+msgid "No games match."
+msgstr "No games match."
+
+msgctxt "Library"
+msgid "No installed games found."
+msgstr "No installed games found."
+
+msgctxt "Library"
+msgid "None of the selected games is matched to a GameNode game."
+msgstr "None of the selected games is matched to a GameNode game."
+
+msgctxt "Library"
+msgid "Not in your GameNode library"
+msgstr "Not in your GameNode library"
+
+msgctxt "Library"
+msgid "Not matched"
+msgstr "Not matched"
+
+msgctxt "Library"
+msgid "Not on GameNode"
+msgstr "Not on GameNode"
+
+msgctxt "Library"
+msgid "Nothing in this view matches your search."
+msgstr "Nothing in this view matches your search."
+
+msgctxt "Library"
+msgid "Ongoing"
+msgstr "Ongoing"
+
+msgctxt "Library"
+msgid "Opening the game in its store…"
+msgstr "Opening the game in its store…"
+
+msgctxt "Library"
+msgid "Opening the store to install…"
+msgstr "Opening the store to install…"
+
+msgctxt "Library"
+msgid "Planned"
+msgstr "Planned"
+
+msgctxt "Library"
+msgid "Play"
+msgstr "Play"
+
+msgctxt "Library"
+msgid "Playing"
+msgstr "Playing"
+
+msgctxt "Library"
+msgid "Release year"
+msgstr "Release year"
+
+msgctxt "Library"
+msgid "Rescan"
+msgstr "Rescan"
+
+msgctxt "Library"
+msgid "Resize the details pane"
+msgstr "Resize the details pane"
+
+msgctxt "Library"
+msgid "Resize the sidebar"
+msgstr "Resize the sidebar"
+
+msgctxt "Library"
+msgid "Retry"
+msgstr "Retry"
+
+msgctxt "Library"
+msgid "Retry connection"
+msgstr "Retry connection"
+
+msgctxt "Library"
+msgid "Scanning for installed games…"
+msgstr "Scanning for installed games…"
+
+msgctxt "Library"
+msgid "Search"
+msgstr "Search"
+
+msgctxt "Library"
+msgid "Search GameNode"
+msgstr "Search GameNode"
+
+msgctxt "Library"
+msgid "Search results"
+msgstr "Search results"
+
+msgctxt "Library"
+msgid "Search your games (Ctrl+F)"
+msgstr "Search your games (Ctrl+F)"
+
+msgctxt "Library"
+msgid "Searching…"
+msgstr "Searching…"
+
+msgctxt "Library"
+msgid "Select a game first."
+msgstr "Select a game first."
+
+msgctxt "Library"
+msgid "Select a game to see its details."
+msgstr "Select a game to see its details."
+
+msgctxt "Library"
+msgid "Select a single game."
+msgstr "Select a single game."
+
+msgctxt "Library"
+msgid "Sets the status to {}"
+msgstr "Sets the status to {}"
+
+msgctxt "Library"
+msgid "Several possible matches"
+msgstr "Several possible matches"
+
+msgctxt "Library"
+msgid "Showing your saved library. Matching and adding to GameNode wait for your session to be verified."
+msgstr "Showing your saved library. Matching and adding to GameNode wait for your session to be verified."
+
+msgctxt "Library"
+msgid "Skipped: no GameNode match"
+msgstr "Skipped: no GameNode match"
+
+msgctxt "Library"
+msgid "Sort: {}"
+msgstr "Sort: {}"
+
+msgctxt "Library"
+msgid "Status"
+msgstr "Status"
+
+msgctxt "Library"
+msgid "Store"
+msgstr "Store"
+
+msgctxt "Library"
+msgid "The link could not be opened."
+msgstr "The link could not be opened."
+
+msgctxt "Library"
+msgid "The search failed. Check your connection and try again."
+msgstr "The search failed. Check your connection and try again."
+
+msgctxt "Library"
+msgid "The store application is not installed or cannot be opened."
+msgstr "The store application is not installed or cannot be opened."
+
+msgctxt "Library"
+msgid "This store cannot install games from GameNode."
+msgstr "This store cannot install games from GameNode."
+
+msgctxt "Library"
+msgid "This store cannot start games from GameNode."
+msgstr "This store cannot start games from GameNode."
+
+msgctxt "Library"
+msgid "This store does not support that action."
+msgstr "This store does not support that action."
+
+msgctxt "Library"
+msgid "Title"
+msgstr "Title"
+
+msgctxt "Library"
+msgid "Unknown status"
+msgstr "Unknown status"
+
+msgctxt "Library"
+msgid "Use the automatic match"
+msgstr "Use the automatic match"
+
+msgctxt "Library"
+msgid "You chose this match"
+msgstr "You chose this match"
+
+msgctxt "Library"
+msgid "You have no collections."
+msgstr "You have no collections."
+
+msgctxt "Library"
+msgid "Your GameNode session is not verified yet. Retry the connection."
+msgstr "Your GameNode session is not verified yet. Retry the connection."
+
+msgctxt "Library"
+msgid "Z → A"
+msgstr "Z → A"
+
+msgctxt "Library"
+msgid "{} (no GameNode match, will be skipped)"
+msgstr "{} (no GameNode match, will be skipped)"
+
+msgctxt "Library"
+msgid "{} from {}"
+msgstr "{} from {}"
+
+msgctxt "Library"
+msgid "{} games"
+msgstr "{} games"
+
+msgctxt "Library"
+msgid "{} games selected"
+msgstr "{} games selected"

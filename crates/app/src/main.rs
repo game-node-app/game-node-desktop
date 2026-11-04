@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use gamenode_app::AppWindow;
 use gamenode_app::engine::{Engine, Ports};
 use gamenode_core::geometry::{self, Display};
+use gamenode_core::library::LibraryStore;
 use gamenode_core::ports::SettingsStore;
 use gamenode_core::{AuthView, Input, RendererPreference, Snapshot, StorageMethod, WindowGeometry};
 use gamenode_platform::{
@@ -29,6 +30,7 @@ const SOFTWARE_RENDERER_ERROR: &str = "GameNode could not initialize software re
 const FALLBACK_RESTART_ERROR: &str = "Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver.";
 
 fn render(ui: &AppWindow, snapshot: Snapshot) {
+    gamenode_app::library_ui::render(ui, &snapshot);
     ui.set_signed_in(matches!(snapshot.auth, AuthView::SignedIn { .. }));
     ui.set_busy(matches!(
         snapshot.auth,
@@ -346,6 +348,14 @@ fn show_renderer_error(message: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Diagnostics (invalid provider manifests, skipped scan files) go to stderr; `RUST_LOG` tunes it.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -384,6 +394,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     paths.ensure_data_dir()?;
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
     let settings = store.load()?;
+    // Bundled provider manifests are validated once at startup; invalid ones are logged and skipped.
+    let platform = gamenode_core::provider::Platform::current()
+        .ok_or("GameNode Desktop supports Windows and Linux only")?;
+    let providers = gamenode_app::providers::load_bundled(platform).providers;
+    let library_store = Arc::new(store.library_store());
+    let layout = library_store.load_layout().unwrap_or_else(|error| {
+        tracing::warn!(%error, "could not read the saved library layout; using the default");
+        Default::default()
+    });
+    let library = gamenode_core::library::LibraryMachine::new(providers, layout);
     let renderer = renderer_for_startup(settings.renderer, fallback_process);
     if let Err(error) = slint::BackendSelector::new()
         .backend_name("winit".into())
@@ -488,17 +508,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "Credential storage initialization failed")?
     };
     let weak = ui.as_weak();
+    let client = Arc::new(gamenode_api::GameNodeClient::new(
+        gamenode_api::server_url_from_env()?,
+    )?);
     let engine = Engine::new(
         Ports {
             settings: store,
             credentials,
-            api: Arc::new(gamenode_api::GameNodeClient::new(
-                gamenode_api::server_url_from_env()?,
-            )?),
+            api: client.clone(),
             browser: Arc::new(SystemBrowser),
+            library: library_store,
+            games: client,
+            files: Arc::new(gamenode_platform::host::StdHostFiles),
+            roots: Arc::new(gamenode_platform::host::SystemRoots::new()),
+            uri: Arc::new(gamenode_platform::uri::SystemUriOpener),
+            covers_dir: paths.covers_dir(),
+            platform,
         },
         runtime.handle().clone(),
         settings,
+        library,
         Box::new(random::nonce),
         move |snapshot| {
             let weak = weak.clone();
@@ -509,6 +538,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         },
     );
+    gamenode_app::library_ui::install(&ui, &engine, paths.covers_dir());
     let e = engine.clone();
     ui.on_sign_in(move |index| {
         if let Some(provider) = gamenode_core::Provider::ALL.get(index as usize) {
@@ -544,6 +574,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let ipc::Message::AuthCallback { url } = message {
                 e.dispatch(Input::CallbackReceived(url));
             }
+            // Another launch is the user coming back: pick up games installed meanwhile.
+            e.rescan();
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {

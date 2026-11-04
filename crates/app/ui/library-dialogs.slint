@@ -1,0 +1,261 @@
+// The Match and Add to GameNode dialogs. Both cover the whole window (the same overlay pattern as
+// the license notices), hold the keyboard while open (everything behind them is inert) and close
+// on Escape without changing anything.
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Action, Caption, Heading, Rule } from "controls.slint";
+import { LibraryState, OptionItem, Why, SearchError, StatusKind, CollectionsKind, AddError, Outcome } from "library-state.slint";
+import { LibraryText } from "library-text.slint";
+import { Cover } from "library.slint";
+
+component Modal inherits Rectangle {
+    in property <length> dialog-width: 560px;
+    callback cancelled();
+    background: #161616E6;
+    // Clicks on the backdrop do nothing: leaving is Escape or a button.
+    TouchArea { }
+    // Gives the keyboard back to the dialog when the control that had it went away.
+    public function reclaim-focus() { scope.focus(); }
+    init => { scope.focus(); }
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.cancelled(); return accept; }
+            return reject;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(16px, (parent.height - self.height) / 2);
+            width: min(root.dialog-width, parent.width - 32px);
+            height: min(layout.preferred-height, parent.height - 32px);
+            background: Theme.color-secondary;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.color-border-subtle;
+            layout := VerticalLayout {
+                padding: 20px; spacing: 14px;
+                @children
+            }
+        }
+    }
+}
+
+// A pickable row: a click, Enter or Space chooses it.
+component ChoiceRow inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <image> cover;
+    in property <bool> has-cover;
+    in property <bool> current;
+    in property <bool> checkable;
+    in property <bool> checked;
+    callback chosen();
+    height: 52px;
+    forward-focus: scope;
+    accessible-role: checkbox;
+    accessible-label: root.title;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.chosen(); }
+    border-radius: Theme.radius-sm;
+    border-width: scope.has-focus ? 2px : 0px;
+    border-color: Theme.color-primary;
+    background: root.checked || root.current ? Theme.color-accent-subtle : touch.has-hover || scope.has-focus ? Theme.color-surface : transparent;
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 12px;
+        if root.checkable: Rectangle {
+            width: 18px; height: 18px; y: (root.height - 18px) / 2;
+            border-width: 1px; border-color: root.checked ? Theme.color-primary : Theme.color-text-dimmed; border-radius: 3px;
+            background: root.checked ? Theme.color-primary : transparent;
+            if root.checked: Text { text: "✓"; color: Theme.color-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        if !root.checkable: Cover { width: 32px; height: 42px; y: 5px; source: root.cover; has-image: root.has-cover; title: ""; text-size: 8px; }
+        VerticalLayout {
+            horizontal-stretch: 1; alignment: center; spacing: 2px;
+            Text { text: root.title; color: Theme.color-text-default; font-weight: 500; overflow: elide; }
+            if root.detail != "": Caption { text: root.detail; overflow: elide; }
+        }
+        if root.current: Text { text: @tr("Library" => "Current"); color: Theme.color-primary; vertical-alignment: center; }
+    }
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.chosen(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { scope.focus(); root.chosen(); } }
+}
+
+component Choices inherits VerticalLayout {
+    in property <[OptionItem]> options;
+    callback chosen(string);
+    alignment: start;
+    spacing: 2px;
+    for option in root.options: ChoiceRow {
+        title: option.name;
+        detail: option.year;
+        cover: option.cover;
+        has-cover: option.has-cover;
+        current: option.current;
+        chosen => { root.chosen(option.id); }
+    }
+}
+
+export component MatchDialog inherits Modal {
+    dialog-width: 620px;
+    cancelled => { LibraryState.close-match(); }
+    init => { query.focus(); }
+    Heading { text: @tr("Library" => "Match to a GameNode game"); }
+    Text {
+        text: @tr("Library" => "{} from {}", LibraryState.match-detected, LibraryState.match-provider);
+        color: Theme.color-text-dimmed; wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        query := LineEdit {
+            horizontal-stretch: 1;
+            text <=> LibraryState.match-query;
+            placeholder-text: @tr("Library" => "Search GameNode");
+            edited(text) => { LibraryState.match-query-edited(text); }
+            accepted => { LibraryState.match-search(); }
+        }
+        Action { text: @tr("Library" => "Search"); primary: true; clicked => { LibraryState.match-search(); } }
+    }
+    if LibraryState.match-error != SearchError.none || LibraryState.match-blocked != Why.available: Text {
+        text: LibraryState.match-error != SearchError.none ? LibraryText.search-error(LibraryState.match-error, LibraryState.match-blocked) : LibraryText.why(LibraryState.match-blocked, StatusKind.unknown);
+        color: Theme.color-warning; wrap: word-wrap;
+    }
+    if LibraryState.match-searching: Caption { text: @tr("Library" => "Searching…"); }
+    if LibraryState.match-no-results: Caption { text: @tr("Library" => "No games found. Try different words."); }
+    ScrollView {
+        height: 260px;
+        VerticalLayout {
+            alignment: start;
+            spacing: 6px;
+            if LibraryState.match-candidates.length > 0: Caption { text: @tr("Library" => "GameNode suggests"); }
+            Choices { options: LibraryState.match-candidates; chosen(id) => { LibraryState.pick-match(id); } }
+            if LibraryState.match-results.length > 0: Caption { text: @tr("Library" => "Search results"); }
+            Choices { options: LibraryState.match-results; chosen(id) => { LibraryState.pick-match(id); } }
+        }
+    }
+    Rule {}
+    HorizontalLayout {
+        spacing: 8px;
+        Action { text: @tr("Library" => "Not on GameNode"); outlined: true; clicked => { LibraryState.mark-no-game(); } }
+        if LibraryState.match-can-clear: Action { text: @tr("Library" => "Use the automatic match"); outlined: true; clicked => { LibraryState.clear-match(); } }
+        Rectangle { horizontal-stretch: 1; }
+        Action { text: @tr("Library" => "Cancel"); clicked => { LibraryState.close-match(); } }
+    }
+}
+
+component StatusChoice inherits Action {
+    in property <StatusKind> kind;
+    text: LibraryText.status(root.kind);
+    outlined: true;
+    selected: LibraryState.add-status == root.kind;
+    enabled: !LibraryState.add-running;
+    clicked => { LibraryState.add-set-status(root.kind); }
+}
+
+export component AddDialog inherits Modal {
+    dialog-width: 620px;
+    cancelled => { LibraryState.close-add(); }
+    private property <bool> summary: LibraryState.add-has-summary;
+    changed summary => { root.reclaim-focus(); }
+    private property <CollectionsKind> collections: LibraryState.add-collections-kind;
+    changed collections => { root.reclaim-focus(); }
+    Heading { text: @tr("Library" => "Add to GameNode"); }
+
+    // Choosing.
+    if !LibraryState.add-has-summary: VerticalLayout {
+        spacing: 12px;
+        if LibraryState.add-targets.length == 1: Text {
+            text: LibraryState.add-targets[0].title; color: Theme.color-text-default; font-weight: 500; wrap: word-wrap;
+        }
+        if LibraryState.add-targets.length > 1: VerticalLayout {
+            spacing: 4px;
+            Caption { text: @tr("Library" => "{} games", LibraryState.add-targets.length); }
+            ScrollView {
+                height: min(110px, LibraryState.add-targets.length * 22px);
+                VerticalLayout {
+                    alignment: start;
+                    for target in LibraryState.add-targets: Text {
+                        text: target.matched ? target.title : @tr("Library" => "{} (no GameNode match, will be skipped)", target.title);
+                        color: target.matched ? Theme.color-text-default : Theme.color-text-dimmed; overflow: elide;
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            Caption { text: @tr("Library" => "Status"); }
+            HorizontalLayout {
+                spacing: 6px;
+                StatusChoice { kind: StatusKind.playing; }
+                StatusChoice { kind: StatusKind.finished; }
+                StatusChoice { kind: StatusKind.planned; }
+                StatusChoice { kind: StatusKind.dropped; }
+                StatusChoice { kind: StatusKind.ongoing; }
+            }
+            if LibraryState.add-applied-from != "": Text {
+                text: @tr("Library" => "GameNode will use {}, the default status of {}.", LibraryText.status(LibraryState.add-applied-status), LibraryState.add-applied-from);
+                color: Theme.color-warning; wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            Caption { text: @tr("Library" => "Collections (optional)"); }
+            if LibraryState.add-collections-kind == CollectionsKind.loading: Caption { text: @tr("Library" => "Loading your collections…"); }
+            if LibraryState.add-collections-kind == CollectionsKind.failed: HorizontalLayout {
+                spacing: 8px;
+                Text { horizontal-stretch: 1; text: @tr("Library" => "Could not load your collections. You can still add the game without one."); color: Theme.color-warning; wrap: word-wrap; vertical-alignment: center; }
+                Action { text: @tr("Library" => "Retry"); outlined: true; clicked => { LibraryState.add-retry-collections(); } }
+            }
+            if LibraryState.add-collections-kind == CollectionsKind.loaded && LibraryState.add-collections.length == 0: Caption { text: @tr("Library" => "You have no collections."); }
+            if LibraryState.add-collections-kind == CollectionsKind.loaded && LibraryState.add-collections.length > 0: ScrollView {
+                height: min(150px, LibraryState.add-collections.length * 54px);
+                VerticalLayout {
+                    alignment: start;
+                    for collection in LibraryState.add-collections: ChoiceRow {
+                        checkable: true;
+                        checked: collection.picked;
+                        title: collection.name;
+                        detail: collection.forces == StatusKind.unknown ? "" : @tr("Library" => "Sets the status to {}", LibraryText.status(collection.forces));
+                        chosen => { LibraryState.add-toggle-collection(collection.id); }
+                    }
+                }
+            }
+        }
+        if LibraryState.add-error != AddError.none: Text { text: LibraryText.add-error(LibraryState.add-error); color: Theme.color-danger; wrap: word-wrap; }
+        if LibraryState.add-blocked != Why.available: Text { text: LibraryText.why(LibraryState.add-blocked, StatusKind.unknown); color: Theme.color-warning; wrap: word-wrap; }
+        if LibraryState.add-running: Caption { text: @tr("Library" => "Adding {} of {}…", min(LibraryState.add-done + 1, LibraryState.add-total), LibraryState.add-total); }
+    }
+
+    // Done.
+    if LibraryState.add-has-summary: VerticalLayout {
+        spacing: 10px;
+        Text {
+            text: @tr("Library" => "Added {} · already in your library {} · skipped {} · failed {}", LibraryState.add-summary-added, LibraryState.add-summary-present, LibraryState.add-summary-skipped, LibraryState.add-summary-failed);
+            color: Theme.color-text-default; wrap: word-wrap;
+        }
+        ScrollView {
+            height: min(240px, LibraryState.add-summary.length * 44px);
+            VerticalLayout {
+                alignment: start;
+                for item in LibraryState.add-summary: VerticalLayout {
+                    padding-top: 2px; padding-bottom: 2px;
+                    Text { text: item.title; color: Theme.color-text-default; font-weight: 500; overflow: elide; }
+                    Caption { text: LibraryText.outcome(item.outcome, item.status); }
+                }
+            }
+        }
+    }
+
+    Rule {}
+    HorizontalLayout {
+        spacing: 8px;
+        Rectangle { horizontal-stretch: 1; }
+        if !LibraryState.add-has-summary: Action { text: @tr("Library" => "Cancel"); clicked => { LibraryState.close-add(); } }
+        if !LibraryState.add-has-summary: Action { text: @tr("Library" => "Add"); primary: true; enabled: LibraryState.add-can-confirm; clicked => { LibraryState.add-confirm(); } }
+        if LibraryState.add-has-summary: Action { text: @tr("Library" => "Close"); primary: true; clicked => { LibraryState.close-add(); } }
+    }
+}

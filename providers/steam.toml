@@ -1,0 +1,49 @@
+# Steam: installed games found through Steam's own library files.
+id = "steam"
+name = "Steam"
+platforms = ["windows", "linux"]
+source = "steam"
+scan = { native = "steam" }
+launch = { uri = "steam://rungameid/{id}" }
+install = { uri = "steam://install/{id}" }
+match = { external_category = 1 }
+
+# Steam apps that are tools, runtimes or redistributables, not games. This list is best effort:
+# new runtimes and Proton builds are added here as Valve ships them.
+exclude_ids = [
+    "228980",  # Steamworks Common Redistributables
+    "1007",    # Steamworks Shared
+    "1070560", # Steam Linux Runtime 1.0 (scout)
+    "1391110", # Steam Linux Runtime 2.0 (soldier)
+    "1628350", # Steam Linux Runtime 3.0 (sniper)
+    "1493710", # Proton Experimental
+    "2180100", # Proton Hotfix
+    "1826330", # Proton EasyAntiCheat Runtime
+    "1161040", # Proton BattlEye Runtime
+    "858280",  # Proton 3.7
+    "930400",  # Proton 3.7 Beta
+    "961940",  # Proton 3.16
+    "996580",  # Proton 3.16 Beta
+    "1054830", # Proton 4.2
+    "1113280", # Proton 4.11
+    "1245040", # Proton 5.0
+    "1420170", # Proton 5.13
+    "1580130", # Proton 6.3
+    "1887720", # Proton 7.0
+    "2348590", # Proton 8.0
+    "2805730", # Proton 9.0
+    "3658110", # Proton 10.0
+]
+
+[[roots.windows]]
+registry = 'HKCU\Software\Valve\Steam'
+value = "SteamPath"
+
+[[roots.linux]]
+path = "~/.steam/steam"
+
+[[roots.linux]]
+path = "~/.local/share/Steam"
+
+[[roots.linux]]
+path = "~/.var/app/com.valvesoftware.Steam/.local/share/Steam"

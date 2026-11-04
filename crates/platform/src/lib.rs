@@ -4,9 +4,13 @@
 //! database and its migrations, credential storage, single-instance IPC and the system browser.
 
 pub mod browser;
+pub mod covers;
 pub mod credentials;
 pub mod db;
 pub mod display;
+pub mod host;
 pub mod ipc;
+pub mod library_db;
 pub mod paths;
 pub mod random;
+pub mod uri;

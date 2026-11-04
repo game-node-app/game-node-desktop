@@ -12,14 +12,48 @@ Only an absent Secret Service permits fallback; locked or failing services
 produce an error. Credentials are never settings. The keyring/fallback adapter
 handles tokens separately from SQLite.
 
-The foundation database contains `schema_migrations` (version, name and applied
-time) and `settings` (key/value). Its only supported settings are `renderer`,
-`window.x`, `window.y`, `window.width`, `window.height` and `window.maximized`.
-A fresh database defaults to GPU rendering and has no game records. No session
+The database contains `schema_migrations` (version, name and applied time),
+`settings` (key/value) and the library cache tables below. The only keys
+`settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
+`window.height`, `window.maximized`, `library.layout`, `account.last_id` and
+`account.last_name` (the `SETTING_KEYS` list in `db.rs`). A fresh database
+defaults to GPU rendering, the default library layout and no games. No session
 token, callback URL, or pending sign-in secret belongs in this database.
 
-Opening a fresh database creates migration history and applies the initial
-settings migration. Each pending migration and its history row commit in one
+## Library cache (migration `0002_library.sql`)
+
+| Table | Holds |
+| --- | --- |
+| `library_entries` | Every game a provider has detected, keyed `<provider>:<store id>`, with its install folder, extra scan fields, `installed` flag and first/last seen times. Rows are never deleted: a game a completed scan no longer finds is marked `installed = 0`, so its matches and cover return with it. |
+| `provider_scans` | Per provider, the time of the last successful scan and the last error. A failed scan records the error and keeps the entries. |
+| `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
+| `chosen_matches` | The user's own match per `(account_id, entry_key)`. A null `game_id` means "no GameNode game". Each account keeps its own choices. |
+| `games` | GameNode game name, release year, cover URL and cover state (`cover_file`, `cover_failed_at`) for display without the network. |
+
+Saving a provider's scan is one transaction: it either fully applies or leaves
+the previous entries as they were.
+
+`library.layout` is a JSON object with the view mode, sidebar selection, sort,
+sidebar and detail pane widths and whether the detail pane is open. The search
+text is never saved. A layout that cannot be read falls back to the default.
+
+`account.last_id` and `account.last_name` record the last signed-in account so
+the cached library can open before the session is verified. They hold no
+credential. Signing out deletes both keys; the library cache, chosen matches,
+covers and layout stay for a later sign-in by the same account. The next start
+without a session shows sign-in rather than a cached library.
+
+## Covers
+
+Cover images are files, not database rows: `covers/<game id>.jpg` below the
+application data directory (`DataPaths::covers_dir`). The folder is created on
+first use. Files are written atomically and are kept when a game is uninstalled
+or the user signs out. Unreferenced files are not cleaned up yet.
+
+Opening a fresh database creates migration history and applies every
+migration. A step 1 database gains the library tables and keeps its settings;
+a step 1 build refuses the upgraded database under its newer-schema rule and
+leaves it untouched. Each pending migration and its history row commit in one
 transaction, in ascending order. Reopening a current database leaves its values
 intact. A failed migration rolls back its changes; earlier completed migrations
 remain committed. The adapter rejects a foreign database and checks for a newer
@@ -39,6 +73,7 @@ If startup reports a database problem:
 5. For corruption or migration failures, retain the original and investigate a
    copy. Do not remove the database as a normal recovery procedure.
 
-The current platform repository has temporary-database tests for fresh creation,
-reopen, durable settings, ordered upgrade, rollback and unchanged newer-schema
-files. Window/UI composition is tracked separately in the foundation change.
+The platform repositories have temporary-database tests for fresh creation,
+reopen, durable settings, ordered upgrade (including from a step 1 database),
+rollback and unchanged newer-schema files, and for rescans, uninstalls, failed
+scans, per-account matches, the layout and sign-out.

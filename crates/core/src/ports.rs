@@ -1,8 +1,9 @@
 //! Adapter interfaces implemented outside `core`.
 //!
-//! Only what the foundation needs: settings persistence, credential storage, the GameNode auth
-//! API, and opening the system browser. Game, provider and tracking interfaces arrive with their
-//! roadmap steps.
+//! Settings persistence, credential storage, the GameNode auth API and opening the system browser,
+//! plus what provider scans need from the host: read-only file access ([`HostFiles`]) and root
+//! resolution ([`RootResolver`]). Library, game API and tracking interfaces sit next to the code
+//! that uses them (`library`, `game_api`) or arrive with their roadmap steps.
 
 use async_trait::async_trait;
 use url::Url;
@@ -78,4 +79,44 @@ pub struct BrowserError;
 /// Opens a URL in the user's default browser.
 pub trait BrowserOpener: Send + Sync {
     fn open(&self, url: &Url) -> Result<(), BrowserError>;
+}
+
+/// Why a provider URI could not be handed to the operating system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum UriError {
+    /// Nothing on this computer handles the URI's scheme (the store client is not installed).
+    #[error("no application handles this kind of link")]
+    NoHandler,
+    #[error("the link could not be opened")]
+    Failed,
+}
+
+/// Hands one provider-declared URI (`steam://rungameid/620`) to the OS handler for its scheme.
+///
+/// Separate from [`BrowserOpener`], which only opens web pages: the two have different rules about
+/// which URLs they accept. The URI is passed as a single argument, never through a shell. All calls
+/// may block until the OS has accepted the URI; run them on a blocking worker.
+pub trait UriOpener: Send + Sync {
+    fn open(&self, uri: &Url) -> Result<(), UriError>;
+}
+
+/// Read-only file access for provider scanners.
+///
+/// Paths are plain strings in the host's own style (`C:\Games\Steam` on Windows, `/home/me/.steam`
+/// on Linux), so scanners can be tested on any OS with an in-memory double. All calls may block.
+pub trait HostFiles: Send + Sync {
+    fn read_to_string(&self, path: &str) -> std::io::Result<String>;
+    /// File and folder names (not full paths) directly inside `path`.
+    fn read_dir(&self, path: &str) -> std::io::Result<Vec<String>>;
+    fn is_dir(&self, path: &str) -> bool;
+    /// The real path with links resolved; fails if the path does not exist.
+    fn canonicalize(&self, path: &str) -> std::io::Result<String>;
+}
+
+/// Turns the location hints of a provider manifest into concrete host paths.
+pub trait RootResolver: Send + Sync {
+    /// Replaces a leading `~` with the user's home folder. `None` if the home folder is unknown.
+    fn expand_home(&self, path: &str) -> Option<String>;
+    /// A string value under `HKEY_CURRENT_USER\<key>`. Always `None` where there is no registry.
+    fn registry_string(&self, key: &str, value: &str) -> Option<String>;
 }

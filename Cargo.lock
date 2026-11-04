@@ -1704,6 +1704,7 @@ dependencies = [
  "gamenode-api",
  "gamenode-core",
  "gamenode-platform",
+ "httpmock",
  "serde_json",
  "slint",
  "slint-build",
@@ -1722,7 +1723,10 @@ dependencies = [
  "async-trait",
  "percent-encoding",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "toml",
+ "tracing",
  "url",
 ]
 

@@ -1,7 +1,7 @@
 //! SQLite persistence: ordered, transactional migrations and the foundation settings repository.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use gamenode_core::ports::{SettingsStore, StorageError};
 use gamenode_core::{RendererPreference, Settings, WindowGeometry};
@@ -16,11 +16,18 @@ pub struct Migration {
 }
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial_settings",
-    sql: include_str!("../migrations/0001_initial_settings.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_settings",
+        sql: include_str!("../migrations/0001_initial_settings.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "library",
+        sql: include_str!("../migrations/0002_library.sql"),
+    },
+];
 
 const BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version    INTEGER PRIMARY KEY NOT NULL,
@@ -125,25 +132,36 @@ const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
 
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 6] = [
+pub const SETTING_KEYS: [&str; 9] = [
     KEY_RENDERER,
     KEY_X,
     KEY_Y,
     KEY_WIDTH,
     KEY_HEIGHT,
     KEY_MAXIMIZED,
+    crate::library_db::KEY_LAYOUT,
+    crate::library_db::KEY_ACCOUNT_ID,
+    crate::library_db::KEY_ACCOUNT_NAME,
 ];
 
 /// [`SettingsStore`] backed by the application database.
+///
+/// The connection is shared with [`crate::library_db::SqliteLibraryStore`] (see
+/// [`library_store`](Self::library_store)), so settings and library writes are serialized.
 pub struct SqliteSettingsStore {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteSettingsStore {
     pub fn new(conn: Connection) -> Self {
         Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         }
+    }
+
+    /// The library repository on the same database connection.
+    pub fn library_store(&self) -> crate::library_db::SqliteLibraryStore {
+        crate::library_db::SqliteLibraryStore::new(Arc::clone(&self.conn))
     }
 
     /// Opens and migrates the database at `path`.
@@ -151,11 +169,13 @@ impl SqliteSettingsStore {
         open(path).map(Self::new)
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        lock(&self.conn)
     }
+}
+
+pub(crate) fn lock(conn: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
+    conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn read(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
@@ -262,7 +282,10 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
         assert_eq!(
             versions(&store.conn()),
-            vec![(1, "initial_settings".to_string())]
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string())
+            ]
         );
     }
 
@@ -292,7 +315,7 @@ mod tests {
             .query_row("SELECT applied_at FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
         assert_eq!(applied_at, 7);
-        assert_eq!(versions(&store.conn()).len(), 1);
+        assert_eq!(versions(&store.conn()).len(), MIGRATIONS.len());
     }
 
     #[test]
@@ -332,13 +355,13 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
     }
 
-    const V2_OK: Migration = Migration {
-        version: 2,
+    const V3_OK: Migration = Migration {
+        version: 3,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V2_BAD: Migration = Migration {
-        version: 2,
+    const V3_BAD: Migration = Migration {
+        version: 3,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -355,17 +378,21 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let both = [MIGRATIONS[0], V2_OK];
-        let conn = open_with(&db_path(&dir), &both).unwrap();
+        let all = [MIGRATIONS[0], MIGRATIONS[1], V3_OK];
+        let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
             versions(&conn),
-            vec![(1, "initial_settings".into()), (2, "add_notes".into())]
+            vec![
+                (1, "initial_settings".into()),
+                (2, "library".into()),
+                (3, "add_notes".into())
+            ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
             .unwrap();
         drop(conn);
         assert_eq!(
-            SqliteSettingsStore::open_with_for_test(&db_path(&dir), &both)
+            SqliteSettingsStore::open_with_for_test(&db_path(&dir), &all)
                 .load()
                 .unwrap(),
             saved
@@ -390,11 +417,17 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let err = open_with(&db_path(&dir), &[MIGRATIONS[0], V2_BAD]).unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 2 });
+        let err = open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], V3_BAD]).unwrap_err();
+        assert_eq!(err, StorageError::MigrationFailed { version: 3 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
-        assert_eq!(versions(&conn), vec![(1, "initial_settings".to_string())]);
+        assert_eq!(
+            versions(&conn),
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string())
+            ]
+        );
         let leaked: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name = 'half_done'",
@@ -410,15 +443,15 @@ mod tests {
     fn newer_schema_is_rejected_and_the_file_is_unchanged() {
         let dir = TempDir::new().unwrap();
         let path = db_path(&dir);
-        drop(open_with(&path, &[MIGRATIONS[0], V2_OK]).unwrap());
+        drop(open_with(&path, &[MIGRATIONS[0], MIGRATIONS[1], V3_OK]).unwrap());
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 1
+        let err = open(&path).unwrap_err(); // this build only knows version 2
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: 2
             }
         );
         assert_eq!(
@@ -426,6 +459,65 @@ mod tests {
             before,
             "a newer database is not modified"
         );
+    }
+
+    /// The migrations a step 1 build shipped.
+    fn step_one() -> &'static [Migration] {
+        &MIGRATIONS[..1]
+    }
+
+    #[test]
+    fn a_step_one_database_gains_the_library_tables_and_keeps_its_settings() {
+        let dir = TempDir::new().unwrap();
+        let saved = Settings {
+            renderer: RendererPreference::Software,
+            window: Some(geometry()),
+        };
+        drop(Connection::open(db_path(&dir)).unwrap());
+        SqliteSettingsStore::new(open_with(&db_path(&dir), step_one()).unwrap())
+            .save(&saved)
+            .unwrap();
+
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        assert_eq!(store.load().unwrap(), saved);
+        assert_eq!(
+            versions(&store.conn()),
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string())
+            ]
+        );
+        for table in [
+            "library_entries",
+            "provider_scans",
+            "auto_matches",
+            "chosen_matches",
+            "games",
+        ] {
+            let rows: i64 = store
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "{table} starts empty");
+        }
+    }
+
+    #[test]
+    fn a_step_one_build_leaves_a_library_database_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        drop(open(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+
+        let err = open_with(&path, step_one()).unwrap_err();
+        assert_eq!(
+            err,
+            StorageError::NewerSchema {
+                found: 2,
+                supported: 1
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -445,10 +537,10 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 3,
-            ..V2_OK
+            version: 4,
+            ..V3_OK
         };
-        assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], skipping]).is_err());
+        assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
 
     #[test]
@@ -470,7 +562,20 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(tables, ["schema_migrations", "settings"]);
+        let mut sorted = tables.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            [
+                "auto_matches",
+                "chosen_matches",
+                "games",
+                "library_entries",
+                "provider_scans",
+                "schema_migrations",
+                "settings"
+            ]
+        );
         let schema: String = conn
             .query_row(
                 "SELECT group_concat(sql, ' ') FROM sqlite_master",

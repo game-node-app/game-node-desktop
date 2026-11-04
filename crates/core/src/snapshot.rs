@@ -3,6 +3,7 @@
 use crate::auth::{AuthMachine, AuthState, Stage, User};
 use crate::callback::Provider;
 use crate::credential::StorageMethod;
+use crate::library::{LaunchStatus, LibraryView};
 use crate::notice::Notice;
 use crate::settings::Settings;
 
@@ -33,10 +34,20 @@ pub struct Snapshot {
     pub notice: Option<Notice>,
     pub storage: StorageMethod,
     pub settings: Settings,
+    /// The game library, present while an account's library is open.
+    pub library: Option<LibraryView>,
+    /// The latest Play or Install, while it is opening or after it failed.
+    pub launch: Option<LaunchStatus>,
 }
 
 impl Snapshot {
-    pub fn new(machine: &AuthMachine, storage: StorageMethod, settings: Settings) -> Self {
+    pub fn new(
+        machine: &AuthMachine,
+        storage: StorageMethod,
+        settings: Settings,
+        library: Option<LibraryView>,
+        launch: Option<LaunchStatus>,
+    ) -> Self {
         let auth = match machine.state() {
             AuthState::Starting => AuthView::Starting,
             AuthState::SignedOut => AuthView::SignedOut,
@@ -54,6 +65,8 @@ impl Snapshot {
             notice: machine.notice(),
             storage,
             settings,
+            library,
+            launch,
         }
     }
 }

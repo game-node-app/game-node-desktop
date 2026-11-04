@@ -50,4 +50,5 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globa
 slint-build = "=1.18.1"
 
 [dev-dependencies]
+httpmock = "0.9.0"
 tempfile.workspace = true

@@ -1,0 +1,525 @@
+// The signed-in library: toolbar, game grid or list, and the detail pane. The sidebar entries
+// (`SidebarItem`) are placed by the shell in app.slint. Dialogs live in library-dialogs.slint.
+import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Action, Caption, Heading, Rule } from "controls.slint";
+import { LibraryState, GameItem, ViewKind, SortKind, MatchKind, Why, EmptyKind, AccessKind, LaunchNote, Standing, StatusKind, SourceKind } from "library-state.slint";
+import { LibraryText } from "library-text.slint";
+
+// A game's cover, or its title on a plain tile when there is none.
+export component Cover inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-image;
+    in property <string> title;
+    in property <length> text-size: Theme.font-size-xs;
+    background: Theme.color-surface;
+    border-radius: Theme.radius-sm;
+    clip: true;
+    if root.has-image: Image { width: 100%; height: 100%; source: root.source; image-fit: cover; }
+    if !root.has-image: Text {
+        x: 6px; width: parent.width - 12px; height: parent.height;
+        text: root.title; color: Theme.color-text-dimmed; font-size: root.text-size;
+        wrap: word-wrap; overflow: elide; horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component MatchDot inherits Rectangle {
+    in property <MatchKind> kind;
+    width: 8px; height: 8px; border-radius: 4px;
+    background: root.kind == MatchKind.matched ? Theme.color-success : root.kind == MatchKind.ambiguous ? Theme.color-warning : Theme.color-text-dimmed;
+}
+
+component GameTile inherits Rectangle {
+    in property <GameItem> item;
+    callback pressed(bool, bool);
+    callback context(Point);
+    callback activated();
+    width: 166px; height: 272px;
+    border-radius: Theme.radius-md;
+    border-width: root.item.focused ? 2px : root.item.selected ? 1px : 0px;
+    border-color: root.item.focused ? Theme.color-text-default : Theme.color-primary;
+    background: root.item.selected ? Theme.color-accent-subtle : touch.has-hover ? Theme.color-surface : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.title;
+    accessible-item-selected: root.item.selected;
+    Cover {
+        x: 8px; y: 8px; width: 150px; height: 200px;
+        source: root.item.cover; has-image: root.item.has-cover; title: root.item.title;
+    }
+    Text {
+        x: 8px; y: 214px; width: 150px; height: 34px;
+        text: root.item.title; color: Theme.color-text-default; font-weight: 500;
+        wrap: word-wrap; overflow: elide;
+    }
+    Rectangle {
+        x: 8px; y: 250px; width: 150px; height: 14px;
+        MatchDot { x: 0px; y: 3px; kind: root.item.kind; }
+        Text { x: 14px; width: parent.width - 14px; text: root.item.provider; color: Theme.color-text-dimmed; font-size: Theme.font-size-xs; overflow: elide; }
+    }
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                if e.button == PointerEventButton.left { root.pressed(e.modifiers.control, e.modifiers.shift); }
+                if e.button == PointerEventButton.right {
+                    root.context({ x: touch.absolute-position.x + touch.mouse-x, y: touch.absolute-position.y + touch.mouse-y });
+                }
+            }
+        }
+        double-clicked => { root.activated(); }
+    }
+}
+
+component GameRow inherits Rectangle {
+    in property <GameItem> item;
+    callback pressed(bool, bool);
+    callback context(Point);
+    callback activated();
+    height: 48px;
+    border-width: root.item.focused ? 2px : 0px;
+    border-color: Theme.color-text-default;
+    border-radius: Theme.radius-sm;
+    background: root.item.selected ? Theme.color-accent-subtle : touch.has-hover ? Theme.color-surface : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.title;
+    accessible-item-selected: root.item.selected;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 12px;
+        Cover {
+            width: 28px; height: 38px; y: 5px;
+            source: root.item.cover; has-image: root.item.has-cover; title: ""; text-size: 8px;
+        }
+        Text { horizontal-stretch: 1; text: root.item.title; color: Theme.color-text-default; font-weight: 500; vertical-alignment: center; overflow: elide; }
+        Text { width: 130px; text: root.item.provider; color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
+        Rectangle {
+            width: 170px;
+            MatchDot { x: 0px; y: (parent.height - self.height) / 2; kind: root.item.kind; }
+            Text { x: 16px; width: parent.width - 16px; height: parent.height; text: LibraryText.match-kind(root.item.kind); color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
+        }
+    }
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                if e.button == PointerEventButton.left { root.pressed(e.modifiers.control, e.modifiers.shift); }
+                if e.button == PointerEventButton.right {
+                    root.context({ x: touch.absolute-position.x + touch.mouse-x, y: touch.absolute-position.y + touch.mouse-y });
+                }
+            }
+        }
+        double-clicked => { root.activated(); }
+    }
+}
+
+// Games in rows of equal tiles; only the rows in view exist.
+component GameGrid inherits Rectangle {
+    callback pressed(string, bool, bool);
+    callback context(Point);
+    callback activated(string);
+    private property <length> tile-w: 166px;
+    private property <length> tile-h: 272px;
+    private property <length> gap: 12px;
+    out property <int> columns: max(1, floor((root.width - root.gap) / (root.tile-w + root.gap)));
+    private property <int> rows: ceil(LibraryState.items.length / root.columns);
+    private property <int> focus-row: LibraryState.focused-index < 0 ? 0 : floor(LibraryState.focused-index / root.columns);
+    changed focus-row => { root.reveal(); }
+    public function reveal() {
+        if LibraryState.focused-index >= 0 {
+            let top = root.focus-row * (root.tile-h + root.gap);
+            let bottom = top + root.tile-h + root.gap;
+            if top < -list.content-y {
+                list.content-y = -top;
+            } else if bottom > -list.content-y + list.visible-height {
+                list.content-y = list.visible-height - bottom;
+            }
+        }
+    }
+    public pure function focus-point() -> Point {
+        return {
+            x: root.absolute-position.x + root.gap + mod(max(0, LibraryState.focused-index), root.columns) * (root.tile-w + root.gap) + root.tile-w / 2,
+            y: root.absolute-position.y + list.content-y + root.focus-row * (root.tile-h + root.gap) + 60px,
+        };
+    }
+    list := ListView {
+        for r in root.rows: Rectangle {
+            height: root.tile-h + root.gap;
+            for c in root.columns: Rectangle {
+                if r * root.columns + c < LibraryState.items.length: GameTile {
+                    x: root.gap + c * (root.tile-w + root.gap);
+                    y: root.gap / 2;
+                    item: LibraryState.items[r * root.columns + c];
+                    pressed(ctrl, shift) => { root.pressed(self.item.key, ctrl, shift); }
+                    context(position) => { root.context(position); }
+                    activated => { root.activated(self.item.key); }
+                }
+            }
+        }
+    }
+}
+
+component GameList inherits Rectangle {
+    callback pressed(string, bool, bool);
+    callback context(Point);
+    callback activated(string);
+    private property <length> row-h: 48px;
+    private property <length> header-h: 28px;
+    changed focused => { root.reveal(); }
+    private property <int> focused: LibraryState.focused-index;
+    public function reveal() {
+        if LibraryState.focused-index >= 0 {
+            let top = LibraryState.focused-index * root.row-h;
+            let bottom = top + root.row-h;
+            if top < -list.content-y {
+                list.content-y = -top;
+            } else if bottom > -list.content-y + list.visible-height {
+                list.content-y = list.visible-height - bottom;
+            }
+        }
+    }
+    public pure function focus-point() -> Point {
+        return {
+            x: root.absolute-position.x + 120px,
+            y: root.absolute-position.y + root.header-h + list.content-y + max(0, LibraryState.focused-index) * root.row-h + root.row-h / 2,
+        };
+    }
+    Rectangle {
+        y: 0px; height: root.header-h;
+        background: Theme.color-chrome;
+        Caption { x: 64px; height: parent.height; text: @tr("Library" => "Title"); vertical-alignment: center; }
+        Caption { x: parent.width - 300px - 16px; height: parent.height; text: @tr("Library" => "Store"); vertical-alignment: center; }
+        Caption { x: parent.width - 170px - 16px; height: parent.height; text: @tr("Library" => "Match"); vertical-alignment: center; }
+    }
+    list := ListView {
+        y: root.header-h; height: root.height - root.header-h;
+        for entry in LibraryState.items: GameRow {
+            item: entry;
+            pressed(ctrl, shift) => { root.pressed(self.item.key, ctrl, shift); }
+            context(position) => { root.context(position); }
+            activated => { root.activated(self.item.key); }
+        }
+    }
+}
+
+// Holds the keyboard focus for the games and turns keys into library commands.
+component ItemsView inherits FocusScope {
+    callback context(Point);
+    public function open-context-menu() { root.context(LibraryState.view == ViewKind.grid ? grid.focus-point() : list-view.focus-point()); }
+    out property <int> columns: LibraryState.view == ViewKind.grid ? grid.columns : 1;
+    key-pressed(event) => {
+        if event.text == Key.UpArrow { LibraryState.move(0, event.modifiers.shift); return accept; }
+        if event.text == Key.DownArrow { LibraryState.move(1, event.modifiers.shift); return accept; }
+        if event.text == Key.LeftArrow { LibraryState.move(2, event.modifiers.shift); return accept; }
+        if event.text == Key.RightArrow { LibraryState.move(3, event.modifiers.shift); return accept; }
+        if event.text == Key.Home { LibraryState.move(4, event.modifiers.shift); return accept; }
+        if event.text == Key.End { LibraryState.move(5, event.modifiers.shift); return accept; }
+        if event.text == Key.Return {
+            if event.modifiers.control { LibraryState.play(); } else { LibraryState.open-details(); }
+            return accept;
+        }
+        if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+            root.open-context-menu();
+            return accept;
+        }
+        return reject;
+    }
+    grid := GameGrid {
+        visible: LibraryState.view == ViewKind.grid;
+        width: parent.width; height: parent.height;
+        pressed(key, ctrl, shift) => { LibraryState.select(key, ctrl, shift); root.focus(); }
+        context(position) => { root.context(position); }
+        activated(key) => { LibraryState.select(key, false, false); LibraryState.open-details(); }
+    }
+    list-view := GameList {
+        visible: LibraryState.view == ViewKind.list;
+        width: parent.width; height: parent.height;
+        pressed(key, ctrl, shift) => { LibraryState.select(key, ctrl, shift); root.focus(); }
+        context(position) => { root.context(position); }
+        activated(key) => { LibraryState.select(key, false, false); LibraryState.open-details(); }
+    }
+}
+
+// A thin bar between two panes. Drag it or use the arrow keys; the size is in logical pixels.
+export component ResizeHandle inherits Rectangle {
+    in property <string> label;
+    in property <int> size;
+    in property <int> min-size;
+    in property <int> max-size;
+    // Dragging towards the left makes the pane larger (a pane on the right of the handle).
+    in property <bool> grow-left;
+    in property <bool> inert;
+    callback live(int);
+    callback committed(int);
+    width: 8px;
+    forward-focus: scope;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.size;
+    accessible-value-minimum: root.min-size;
+    accessible-value-maximum: root.max-size;
+    background: scope.has-focus ? Theme.color-primary : touch.has-hover || touch.pressed ? Theme.color-tertiary : transparent;
+    Rectangle { x: (parent.width - 1px) / 2; width: 1px; background: Theme.color-border-subtle; }
+    function step(delta: int) {
+        let next = min(root.max-size, max(root.min-size, root.size + (root.grow-left ? -delta : delta)));
+        root.committed(next);
+    }
+    scope := FocusScope {
+        enabled: !root.inert;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow { root.step(-16); return accept; }
+            if event.text == Key.RightArrow { root.step(16); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        enabled: !root.inert;
+        mouse-cursor: col-resize;
+        moved => {
+            if self.pressed {
+                let delta = (self.mouse-x - self.pressed-x) / 1px;
+                root.live(min(root.max-size, max(root.min-size, root.size + (root.grow-left ? -delta : delta))));
+            }
+        }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.up && e.button == PointerEventButton.left { root.committed(root.size); }
+        }
+    }
+}
+
+// An entry of the shell's side navigation: a name and a count.
+export component SidebarItem inherits Rectangle {
+    in property <string> text;
+    in property <int> count: -1;
+    in property <bool> selected;
+    in property <bool> inert;
+    callback clicked();
+    height: Theme.size-control-height;
+    forward-focus: scope;
+    accessible-role: button;
+    accessible-label: root.count >= 0 ? root.text + ", " + root.count : root.text;
+    accessible-action-default => { root.clicked(); }
+    border-radius: Theme.radius-sm;
+    border-width: scope.has-focus ? 1px : 0px;
+    border-color: Theme.color-primary;
+    background: root.selected ? Theme.color-accent-subtle : touch.has-hover || scope.has-focus ? Theme.color-surface : transparent;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px;
+        Text { horizontal-stretch: 1; text: root.text; color: root.selected ? Theme.color-primary : Theme.color-text-default; font-weight: 500; vertical-alignment: center; overflow: elide; }
+        if root.count >= 0: Text { text: root.count; color: Theme.color-text-dimmed; vertical-alignment: center; }
+    }
+    scope := FocusScope {
+        enabled: !root.inert;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea { enabled: !root.inert; mouse-cursor: pointer; clicked => { scope.focus(); root.clicked(); } }
+}
+
+// One label and its value in the detail pane.
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 2px;
+    if root.value != "": Caption { text: root.label; }
+    if root.value != "": Text { text: root.value; color: Theme.color-text-default; wrap: word-wrap; }
+}
+
+// An action with the reason beside it while it is disabled.
+component ActionWithReason inherits VerticalLayout {
+    in property <string> text;
+    in property <bool> primary;
+    in property <Why> why;
+    in property <StatusKind> status: StatusKind.unknown;
+    callback clicked();
+    spacing: 4px;
+    Action { text: root.text; primary: root.primary; outlined: !root.primary; enabled: root.why == Why.available; inert: LibraryState.modal; clicked => { root.clicked(); } }
+    if root.why != Why.available: Caption { text: LibraryText.why(root.why, root.status); wrap: word-wrap; }
+}
+
+component DetailPane inherits Rectangle {
+    background: Theme.color-secondary;
+    ScrollView {
+        VerticalLayout {
+            padding: 16px; spacing: 12px;
+            HorizontalLayout {
+                spacing: 8px;
+                Heading { horizontal-stretch: 1; text: @tr("Library" => "Details"); font-size: Theme.font-size-lg; }
+                Action { text: @tr("Library" => "Close"); inert: LibraryState.modal; clicked => { LibraryState.set-detail-open(false); } }
+            }
+            if LibraryState.detail-valid: VerticalLayout {
+                spacing: 12px;
+                Heading { text: LibraryState.detail-title; font-size: Theme.font-size-lg; }
+                ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
+                ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
+                ActionWithReason { text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); why: LibraryState.match-why; clicked => { LibraryState.open-match(); } }
+                ActionWithReason { text: @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; status: LibraryState.add-existing-status; clicked => { LibraryState.open-add(); } }
+                if LibraryState.add-why == Why.membership-unavailable: Action { text: @tr("Library" => "Check again"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.refresh-membership(); } }
+                if LibraryState.launch-note != LaunchNote.none: Rectangle {
+                    background: LibraryState.launch-note == LaunchNote.opening-play || LibraryState.launch-note == LaunchNote.opening-install ? Theme.color-accent-subtle : Theme.color-danger-subtle;
+                    border-radius: Theme.radius-sm;
+                    VerticalLayout {
+                        padding: 10px; spacing: 8px;
+                        Text { text: LibraryText.launch(LibraryState.launch-note); color: Theme.color-text-default; wrap: word-wrap; }
+                        if LibraryState.launch-note != LaunchNote.opening-play && LibraryState.launch-note != LaunchNote.opening-install: Action { text: @tr("Library" => "Dismiss"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.dismiss-launch(); } }
+                    }
+                }
+                Rule {}
+                Cover {
+                    height: 160px;
+                    source: LibraryState.detail-cover; has-image: LibraryState.detail-has-cover; title: LibraryState.detail-title;
+                    text-size: Theme.font-size-md;
+                }
+                Field { label: @tr("Library" => "Detected title"); value: LibraryState.detail-detected; }
+                Field { label: @tr("Library" => "GameNode game"); value: LibraryState.detail-matched; }
+                Field { label: @tr("Library" => "Release year"); value: LibraryState.detail-year; }
+                Field { label: @tr("Library" => "Store"); value: LibraryState.detail-provider; }
+                Field { label: @tr("Library" => "Install folder"); value: LibraryState.detail-dir; }
+                Field {
+                    label: @tr("Library" => "Match");
+                    value: LibraryText.match-kind(LibraryState.detail-kind) + (LibraryState.detail-source == SourceKind.none ? "" : " · " + LibraryText.source(LibraryState.detail-source));
+                }
+                Field { label: @tr("Library" => "In your GameNode library"); value: LibraryText.standing(LibraryState.detail-standing, LibraryState.detail-standing-status); }
+            }
+            if !LibraryState.detail-valid && LibraryState.selected-count > 1: VerticalLayout {
+                spacing: 12px;
+                Text { text: @tr("Library" => "{} games selected", LibraryState.selected-count); color: Theme.color-text-default; font-weight: 500; }
+                ActionWithReason { text: @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; clicked => { LibraryState.open-add(); } }
+            }
+            if !LibraryState.detail-valid && LibraryState.selected-count <= 1: Caption { text: @tr("Library" => "Select a game to see its details."); wrap: word-wrap; }
+        }
+    }
+}
+
+component SortControls inherits HorizontalLayout {
+    spacing: 8px;
+    Action {
+        text: @tr("Library" => "Sort: {}", LibraryState.sort == SortKind.title ? @tr("Library" => "Title") : LibraryState.sort == SortKind.provider ? @tr("Library" => "Store") : @tr("Library" => "Match status"));
+        outlined: true; inert: LibraryState.modal;
+        clicked => { LibraryState.set-sort(LibraryState.sort == SortKind.title ? SortKind.provider : LibraryState.sort == SortKind.provider ? SortKind.match-status : SortKind.title, LibraryState.descending); }
+    }
+    Action {
+        text: LibraryState.descending ? @tr("Library" => "Z → A") : @tr("Library" => "A → Z");
+        outlined: true; inert: LibraryState.modal;
+        clicked => { LibraryState.set-sort(LibraryState.sort, !LibraryState.descending); }
+    }
+}
+
+component ViewControls inherits HorizontalLayout {
+    spacing: 8px;
+    Action { text: @tr("Library" => "Grid"); outlined: true; selected: LibraryState.view == ViewKind.grid; inert: LibraryState.modal; clicked => { LibraryState.set-view(ViewKind.grid); } }
+    Action { text: @tr("Library" => "List"); outlined: true; selected: LibraryState.view == ViewKind.list; inert: LibraryState.modal; clicked => { LibraryState.set-view(ViewKind.list); } }
+    Action { text: @tr("Library" => "Details"); outlined: true; selected: LibraryState.detail-open; inert: LibraryState.modal; clicked => { LibraryState.set-detail-open(!LibraryState.detail-open); } }
+}
+
+export component LibraryScreen inherits Rectangle {
+    in property <bool> can-retry;
+    in property <bool> busy;
+    callback retry();
+    private property <bool> wide: root.width > 860px;
+    private property <bool> detail-visible: LibraryState.detail-open && root.width > 560px;
+    private property <int> detail-live: -1;
+    private property <length> detail-w: min((root.detail-live >= 0 ? root.detail-live : LibraryState.detail-width) * 1px, root.width * 0.6);
+
+    public function focus-search() { search.focus(); }
+    public function focus-items() { items.focus(); }
+
+    changed items-columns => { LibraryState.set-columns(root.items-columns); }
+    private property <int> items-columns: items.columns;
+    init => { LibraryState.set-columns(root.items-columns); }
+    // When a dialog closes the keyboard returns to the games.
+    private property <bool> modal: LibraryState.modal;
+    changed modal => { if !root.modal { items.focus(); } }
+
+    screen-keys := FocusScope {
+        width: parent.width; height: parent.height;
+        enabled: !LibraryState.modal;
+        key-pressed(event) => {
+            if event.modifiers.control && event.text == "f" { search.focus(); return accept; }
+            if event.text == Key.F5 { LibraryState.rescan(); return accept; }
+            return reject;
+        }
+
+        VerticalLayout {
+            // Notices: what is being done and what is limited.
+            if LibraryState.scanning || LibraryState.failed-stores != "" || LibraryState.access != AccessKind.verified: Rectangle {
+                background: Theme.color-accent-subtle;
+                VerticalLayout {
+                    padding-left: 16px; padding-right: 16px; padding-top: 6px; padding-bottom: 6px; spacing: 4px;
+                    if LibraryState.scanning: Text { text: @tr("Library" => "Scanning for installed games…"); color: Theme.color-text-default; wrap: word-wrap; }
+                    if LibraryState.failed-stores != "": Text { text: @tr("Library" => "Could not scan {}. Showing the last results.", LibraryState.failed-stores); color: Theme.color-warning; wrap: word-wrap; }
+                    if LibraryState.access != AccessKind.verified: HorizontalLayout {
+                        spacing: 12px;
+                        Text { horizontal-stretch: 1; text: root.busy ? @tr("Library" => "Checking your GameNode session…") : LibraryText.access(LibraryState.access); color: Theme.color-text-default; wrap: word-wrap; vertical-alignment: center; }
+                        if root.can-retry: Action { text: @tr("Library" => "Retry connection"); outlined: true; inert: LibraryState.modal; clicked => { root.retry(); } }
+                    }
+                }
+            }
+            // Toolbar: one row when there is room, two otherwise.
+            VerticalLayout {
+                padding: 10px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    search := LineEdit { horizontal-stretch: 1; min-width: 100px; text <=> LibraryState.search; placeholder-text: @tr("Library" => "Search your games (Ctrl+F)"); enabled: !LibraryState.modal; edited(text) => { LibraryState.set-search(text); } }
+                    if root.wide: SortControls {}
+                    if root.wide: ViewControls {}
+                    Action { text: @tr("Library" => "Rescan"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.rescan(); } }
+                }
+                if !root.wide: HorizontalLayout {
+                    spacing: 8px;
+                    SortControls {}
+                    Rectangle { horizontal-stretch: 1; }
+                    ViewControls {}
+                }
+            }
+            Rule {}
+            HorizontalLayout {
+                vertical-stretch: 1;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    items := ItemsView {
+                        enabled: !LibraryState.modal;
+                        width: parent.width; height: parent.height;
+                        context(position) => { ctx.show({ x: position.x - ctx.absolute-position.x, y: position.y - ctx.absolute-position.y }); }
+                    }
+                    if LibraryState.empty == EmptyKind.no-games: Rectangle {
+                        VerticalLayout {
+                            alignment: center; spacing: 8px; padding: 32px;
+                            Heading { text: @tr("Library" => "No installed games found."); horizontal-alignment: center; }
+                            Text { text: @tr("Library" => "Looked in: {}", LibraryState.stores); color: Theme.color-text-dimmed; wrap: word-wrap; horizontal-alignment: center; }
+                            Text { text: @tr("Library" => "Install a game, then choose Rescan."); color: Theme.color-text-dimmed; wrap: word-wrap; horizontal-alignment: center; }
+                        }
+                    }
+                    if LibraryState.empty == EmptyKind.nothing-matches: Rectangle {
+                        VerticalLayout {
+                            alignment: center; spacing: 12px; padding: 32px;
+                            Heading { text: @tr("Library" => "No games match."); horizontal-alignment: center; }
+                            Text { text: @tr("Library" => "Nothing in this view matches your search."); color: Theme.color-text-dimmed; wrap: word-wrap; horizontal-alignment: center; }
+                            HorizontalLayout {
+                                alignment: center;
+                                Action { text: @tr("Library" => "Clear search"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.search = ""; LibraryState.set-search(""); LibraryState.set-filter(""); } }
+                            }
+                        }
+                    }
+                }
+                if root.detail-visible: ResizeHandle {
+                    label: @tr("Library" => "Resize the details pane");
+                    size: root.detail-live >= 0 ? root.detail-live : LibraryState.detail-width;
+                    min-size: 280; max-size: 640; grow-left: true; inert: LibraryState.modal;
+                    live(v) => { root.detail-live = v; }
+                    committed(v) => { root.detail-live = -1; LibraryState.detail-width = v; LibraryState.detail-width-changed(v); }
+                }
+                if root.detail-visible: DetailPane { width: root.detail-w; }
+            }
+        }
+    }
+
+    // Right-click, the Menu key and Shift+F10 open this menu on the selection.
+    ctx := ContextMenuArea {
+        width: 0px; height: 0px;
+        Menu {
+            MenuItem { title: @tr("Library" => "Play"); enabled: LibraryState.play-why == Why.available; activated => { LibraryState.play(); } }
+            MenuItem { title: @tr("Library" => "Install"); enabled: LibraryState.install-why == Why.available; activated => { LibraryState.install(); } }
+            MenuItem { title: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); enabled: LibraryState.match-why == Why.available; activated => { LibraryState.open-match(); } }
+            MenuItem { title: @tr("Library" => "Add to GameNode…"); enabled: LibraryState.add-why == Why.available; activated => { LibraryState.open-add(); } }
+        }
+    }
+}

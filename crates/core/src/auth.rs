@@ -162,6 +162,9 @@ pub enum Input {
     },
     /// Time passed; expires a stale attempt.
     Tick,
+    /// A GameNode request made with the signed-in session was answered `401`. Handled like a
+    /// rejected session check: the credential is dropped and sign-in is offered.
+    SessionRejected,
 }
 
 #[derive(Debug)]
@@ -207,6 +210,15 @@ impl AuthMachine {
     /// Why the most recent callback was ignored, if it was. Diagnostics only; carries no data.
     pub fn last_rejection(&self) -> Option<CallbackError> {
         self.last_rejection
+    }
+
+    /// The credential of the verified session, for requests made on the user's behalf. `None`
+    /// until verification succeeds, so nothing is sent with an unverified credential.
+    pub fn verified_credential(&self) -> Option<&SessionCredential> {
+        match self.state {
+            AuthState::SignedIn(_) => self.credential.as_ref(),
+            _ => None,
+        }
     }
 
     /// Whether a sign-in attempt is currently accepting a callback.
@@ -303,6 +315,14 @@ impl AuthMachine {
                     self.notice = Some(Notice::CredentialDeleteFailed);
                 }
                 vec![]
+            }
+            Input::SessionRejected => {
+                if !matches!(self.state, AuthState::SignedIn(_)) {
+                    return vec![];
+                }
+                self.op += 1;
+                self.fail_to_signed_out(Notice::SessionRejected);
+                vec![Effect::DeleteCredential]
             }
             Input::Tick => {
                 if let Some(attempt) = &self.attempt
@@ -926,6 +946,50 @@ mod tests {
         );
         m.handle(Input::CredentialDeleted { ok: false }, t);
         assert_eq!(m.notice(), Some(Notice::CredentialDeleteFailed));
+    }
+
+    #[test]
+    fn an_api_rejection_while_signed_in_drops_the_session() {
+        let mut m = machine();
+        let t = Instant::now();
+        let op = restoring(&mut m, t);
+        m.handle(
+            Input::SessionChecked {
+                op,
+                result: Ok(user()),
+            },
+            t,
+        );
+        assert!(m.verified_credential().is_some());
+
+        let effects = m.handle(Input::SessionRejected, t);
+        assert_eq!(effects, vec![Effect::DeleteCredential]);
+        assert_eq!(
+            (m.state(), m.notice()),
+            (&AuthState::SignedOut, Some(Notice::SessionRejected))
+        );
+        assert!(m.verified_credential().is_none());
+        // A second rejection (several requests were in flight) changes nothing.
+        assert!(m.handle(Input::SessionRejected, t).is_empty());
+    }
+
+    #[test]
+    fn an_api_rejection_is_ignored_unless_signed_in() {
+        let mut m = machine();
+        let t = Instant::now();
+        let op = restoring(&mut m, t);
+        // Still verifying: the pending check decides, not a stray library request.
+        assert!(m.handle(Input::SessionRejected, t).is_empty());
+        assert_eq!(m.state(), &AuthState::Verifying(Purpose::Restore));
+        assert!(m.verified_credential().is_none());
+        m.handle(
+            Input::SessionChecked {
+                op,
+                result: Ok(user()),
+            },
+            t,
+        );
+        assert_eq!(m.state(), &AuthState::SignedIn(user()));
     }
 
     #[test]

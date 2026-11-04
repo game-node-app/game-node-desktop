@@ -2,6 +2,15 @@ import "fonts/Roboto-Variable.ttf";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Action, Caption, Heading, Panel, Rule } from "controls.slint";
+import { LibraryState } from "library-state.slint";
+import { LibraryScreen, ResizeHandle, SidebarItem } from "library.slint";
+import { LibraryText } from "library-text.slint";
+import { AddDialog, MatchDialog } from "library-dialogs.slint";
+
+// The sentences are exported so a test can read them in each language.
+export { LibraryText }
+// The library screens read and write these; library_ui.rs connects them to the engine.
+export { LibraryState, GameItem, ProviderItem, OptionItem, CollectionItem, TargetItem, SummaryItem, MatchKind, SourceKind, StatusKind, Standing, EmptyKind, AccessKind, ViewKind, SortKind, Why, LaunchNote, SearchError, CollectionsKind, Outcome, AddError } from "library-state.slint";
 
 export component AppWindow inherits Window {
     title: "GameNode";
@@ -26,6 +35,9 @@ export component AppWindow inherits Window {
     in-out property <bool> software;
     in-out property <bool> settings-open;
     private property <bool> menu-open;
+    // The side navigation's width while it is being dragged (-1 otherwise).
+    private property <int> nav-live: -1;
+    private property <length> nav-w: (root.nav-live >= 0 ? root.nav-live : LibraryState.sidebar-width) * 1px;
     callback sign-in(int);
     callback cancel();
     callback retry();
@@ -62,22 +74,40 @@ export component AppWindow inherits Window {
         Text { x: 109px; height: 54px; text: "DESKTOP"; color: Theme.color-text-dimmed; font-size: 12px; vertical-alignment: center; }
         if root.signed-in: Rectangle { x: root.width - 288px; y: 23px; width: 8px; height: 8px; border-radius: 4px; background: Theme.color-success; }
         Text { x: root.width - 264px; width: 156px; height: 54px; text: root.identity; color: Theme.color-text-default; font-weight: 500; vertical-alignment: center; overflow: elide; }
-        Action { x: root.width - 96px; y: 9px; text: @tr("Menu"); width: 80px; clicked => { root.menu-open = !root.menu-open; } }
+        Action { x: root.width - 96px; y: 9px; text: @tr("Menu"); width: 80px; inert: LibraryState.modal; clicked => { root.menu-open = !root.menu-open; } }
     }
     Rectangle { y: 54px; width: root.width; height: 1px; background: Theme.color-border-subtle; }
     Rectangle {
-        x: 0px; y: 55px; width: 200px; height: root.height - 55px;
+        x: 0px; y: 55px; width: root.nav-w; height: root.height - 55px;
         background: Theme.color-chrome;
         Caption { x: 16px; y: 20px; text: @tr("YOUR SPACE"); }
-        Action { x: 16px; y: 56px; width: 168px; text: @tr("Library"); selected: !root.settings-open; leading: "library"; clicked => { root.settings-open = false; } }
-        Rule { x: 16px; y: parent.height - 100px; width: 168px; }
-        Action { x: 16px; y: parent.height - 84px; width: 168px; text: @tr("Settings"); selected: root.settings-open; leading: "settings"; clicked => { root.settings-open = true; } }
+        Action { x: 16px; y: 56px; width: parent.width - 32px; text: @tr("Library"); selected: !root.settings-open; leading: "library"; inert: LibraryState.modal; clicked => { root.settings-open = false; } }
+        if LibraryState.active: VerticalLayout {
+            x: 16px; y: 104px; width: parent.width - 32px; height: max(0px, parent.height - 104px - 116px);
+            spacing: 4px;
+            alignment: start;
+            SidebarItem {
+                text: @tr("Library" => "All games"); count: LibraryState.total; selected: LibraryState.all-selected && !root.settings-open; inert: LibraryState.modal;
+                clicked => { root.settings-open = false; LibraryState.set-filter(""); }
+            }
+            for provider in LibraryState.providers: SidebarItem {
+                text: provider.name; count: provider.count; selected: provider.selected && !root.settings-open; inert: LibraryState.modal;
+                clicked => { root.settings-open = false; LibraryState.set-filter(provider.id); }
+            }
+        }
+        Rule { x: 16px; y: parent.height - 100px; width: parent.width - 32px; }
+        Action { x: 16px; y: parent.height - 84px; width: parent.width - 32px; text: @tr("Settings"); selected: root.settings-open; leading: "settings"; inert: LibraryState.modal; clicked => { root.settings-open = true; } }
         Caption { x: 16px; y: parent.height - 32px; text: "GameNode · " + root.version; }
     }
-    Rectangle { x: 200px; y: 55px; width: 1px; height: root.height - 55px; background: Theme.color-border-subtle; }
+    Rectangle { x: root.nav-w; y: 55px; width: 1px; height: root.height - 55px; background: Theme.color-border-subtle; }
     Rectangle {
-        x: 201px; y: 55px; width: root.width - 201px; height: root.height - 55px;
-                if !root.settings-open: login-view := ScrollView {
+        x: root.nav-w + 1px; y: 55px; width: root.width - root.nav-w - 1px; height: root.height - 55px;
+                if !root.settings-open && LibraryState.active: LibraryScreen {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height - 36px - (root.status != "" ? 100px : 0px);
+                    can-retry: root.can-retry; busy: root.busy;
+                    retry => { root.retry(); }
+                }
+                if !root.settings-open && !LibraryState.active: login-view := ScrollView {
                     x: 0px; y: 0px; width: 100%; height: parent.height - 36px - (root.status != "" ? 100px : 0px);
                     VerticalLayout {
                     min-height: login-view.visible-height;
@@ -181,14 +211,23 @@ export component AppWindow inherits Window {
             Caption { x: parent.width - 80px; width: 60px; height: 36px; text: "v" + root.version; vertical-alignment: center; horizontal-alignment: right; }
         }
     }
+    ResizeHandle {
+        x: root.nav-w - 4px; y: 55px; height: root.height - 55px;
+        label: @tr("Library" => "Resize the sidebar");
+        size: root.nav-live >= 0 ? root.nav-live : LibraryState.sidebar-width;
+        min-size: 160; max-size: 360; inert: LibraryState.modal;
+        live(v) => { root.nav-live = v; }
+        committed(v) => { root.nav-live = -1; LibraryState.sidebar-width = v; LibraryState.sidebar-width-changed(v); }
+    }
     if root.menu-open: TouchArea { x: 0px; y: 0px; width: root.width; height: root.height; clicked => { root.menu-open = false; } }
     // Overlay menu leaves the content geometry stable.
     if root.menu-open: Rectangle {
-        x: root.width - 252px; y: 50px; width: 236px; height: root.signed-in || root.busy ? 208px : 164px;
+        x: root.width - 252px; y: 50px; width: 236px; height: (root.signed-in || root.busy ? 208px : 164px) + (LibraryState.active ? 44px : 0px);
         background: Theme.color-raised; border-radius: 8px; border-width: 1px; border-color: Theme.color-border-subtle;
         VerticalLayout {
             padding: 8px; spacing: 8px;
             Action { text: @tr("Library"); clicked => { root.settings-open = false; root.menu-open = false; } }
+            if LibraryState.active: Action { text: @tr("Library" => "Rescan"); clicked => { LibraryState.rescan(); root.menu-open = false; } }
             Action { text: @tr("Settings / About"); clicked => { root.settings-open = true; root.menu-open = false; } }
             if root.signed-in || root.busy: Action { text: @tr("Sign out"); clicked => { root.sign-out(); root.menu-open = false; } }
             Rule {}
@@ -218,5 +257,7 @@ export component AppWindow inherits Window {
             }
         }
     }
+    if LibraryState.match-open: MatchDialog { x: 0px; y: 0px; width: root.width; height: root.height; }
+    if LibraryState.add-open: AddDialog { x: 0px; y: 0px; width: root.width; height: root.height; }
     }
 }

@@ -67,6 +67,46 @@ application data. Unit/mock tests do not prove real-provider OAuth, native
 installation, keyboard navigation, or graphical X11/Wayland behavior. Record
 those separately using the change's acceptance tasks.
 
+## Scanner fixtures and running against a local Steam
+
+Scanner tests run over an in-memory file system (`MemoryFiles`, `FixedRoots`), so they behave the
+same on every OS. The files in `crates/core/src/provider/steam/fixtures/` follow the layout Steam
+writes; ids, paths and sizes are made up:
+
+```text
+<steam root>/steamapps/libraryfolders.vdf        fixtures/libraryfolders_{linux,windows,old}.vdf
+<steam root>/steamapps/appmanifest_<id>.acf      fixtures/appmanifest_portal2.acf, _malformed.acf
+<steam root>/steamapps/common/<installdir>/      an empty folder (a manifest without it is skipped)
+```
+
+To add a case, put the new file in `fixtures/`, include it with `include_str!` in
+`steam/tests.rs`, and build the file system with the `game(...)` helper there.
+
+To run the app against a throwaway Steam, build the layout under a temporary home folder and start
+the app with that `HOME` (Linux; the Steam roots are `~/.steam/steam` and
+`~/.local/share/Steam`). The scratch home also keeps your own data, settings and credentials out of
+the run: you sign in again inside it, and `XDG_DATA_HOME` and `XDG_CONFIG_HOME` must not point
+elsewhere.
+
+```sh
+fixture=$(mktemp -d)
+steam="$fixture/.steam/steam"
+mkdir -p "$steam/steamapps/common/Portal 2"
+sed "s#/home/me/.local/share/Steam#$steam#; s#/mnt/games/SteamLibrary#$fixture/Second#" \
+  crates/core/src/provider/steam/fixtures/libraryfolders_linux.vdf > "$steam/steamapps/libraryfolders.vdf"
+cp crates/core/src/provider/steam/fixtures/appmanifest_portal2.acf "$steam/steamapps/appmanifest_620.acf"
+HOME="$fixture" XDG_DATA_HOME= XDG_CONFIG_HOME= cargo run --locked -p gamenode-app
+```
+
+The library lists Portal 2. Play and Install hand `steam://` links to the operating system; without
+Steam installed the app shows that the Steam client could not be found. Rescan after editing the
+fixture (add or delete a manifest) to see games appear and leave. The second library folder does not
+exist, which shows the skipped-unplugged-drive case. Delete `$fixture` when done.
+
+On Windows the root comes from `HKCU\Software\Valve\Steam` (`SteamPath`); the registry test in
+`gamenode-platform` writes and removes a value under a test key, and a manual run can point
+`SteamPath` at a folder laid out as above.
+
 ## Build and run Windows executables from WSL
 
 WSL interoperability can launch the actual Windows binaries; a native Windows

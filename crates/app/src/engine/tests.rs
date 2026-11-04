@@ -4,10 +4,16 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use gamenode_core::callback::Provider;
 use gamenode_core::credential::StorageMethod;
+use gamenode_core::game_api::{
+    ApiError, Collection, CoverError, ExternalMatch, GameApi, GameSummary, LibraryEntry,
+};
+use gamenode_core::library::cover::CoverUrl;
+use gamenode_core::library::{EntryStatus, LibraryMachine};
 use gamenode_core::ports::{
     AuthApi, BrowserError, BrowserOpener, CredentialError, CredentialStore, SettingsStore,
     StorageError,
 };
+use gamenode_core::provider::{Platform, memory::FixedRoots};
 use gamenode_core::{
     AuthView, Input, Notice, RendererPreference, SessionCredential, SessionError, Settings,
     SignInFailure, Snapshot, User,
@@ -16,6 +22,9 @@ use tokio::sync::watch;
 use url::Url;
 
 use super::{Engine, Ports};
+
+mod library;
+use library::{FakeLibrary, FakeUri, SlowFiles};
 
 fn ana() -> User {
     User {
@@ -39,6 +48,12 @@ struct FakeApi {
     started: Mutex<Vec<(Provider, String, String)>>,
     verified: Mutex<Vec<String>>,
     signed_out: Mutex<Vec<String>>,
+    /// What GameNode answers to a lookup (`None`: it knows no game).
+    lookup_result: Mutex<Option<Result<Vec<ExternalMatch>, ApiError>>>,
+    lookups: Mutex<Vec<(u32, Vec<String>)>>,
+    covers_fetched: Mutex<Vec<String>>,
+    entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
+    created: Mutex<Vec<u64>>,
 }
 
 impl FakeApi {
@@ -105,6 +120,67 @@ impl AuthApi for FakeApi {
         } else {
             Err(())
         }
+    }
+}
+
+#[async_trait]
+impl GameApi for FakeApi {
+    async fn lookup_external(
+        &self,
+        _credential: &SessionCredential,
+        category: u32,
+        uids: &[String],
+    ) -> Result<Vec<ExternalMatch>, ApiError> {
+        self.pause().await;
+        self.lookups.lock().unwrap().push((category, uids.to_vec()));
+        self.lookup_result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(vec![]))
+    }
+    async fn search_games(
+        &self,
+        _credential: &SessionCredential,
+        _query: &str,
+    ) -> Result<Vec<GameSummary>, ApiError> {
+        self.pause().await;
+        Ok(vec![])
+    }
+    async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError> {
+        self.pause().await;
+        self.covers_fetched
+            .lock()
+            .unwrap()
+            .push(cover.as_url().to_string());
+        Ok(b"jpeg".to_vec())
+    }
+    async fn list_collections(
+        &self,
+        _credential: &SessionCredential,
+        _user_id: &str,
+    ) -> Result<Vec<Collection>, ApiError> {
+        self.pause().await;
+        Ok(vec![])
+    }
+    async fn library_entry(
+        &self,
+        _credential: &SessionCredential,
+        _game_id: u64,
+    ) -> Result<Option<LibraryEntry>, ApiError> {
+        self.pause().await;
+        self.entry.lock().unwrap().clone().unwrap_or(Ok(None))
+    }
+    async fn create_entry(
+        &self,
+        _credential: &SessionCredential,
+        game_id: u64,
+        _status: EntryStatus,
+        _collection_ids: &[String],
+    ) -> Result<(), ApiError> {
+        self.pause().await;
+        self.created.lock().unwrap().push(game_id);
+        Ok(())
     }
 }
 
@@ -209,16 +285,46 @@ struct Harness {
     creds: Arc<FakeCreds>,
     browser: Arc<FakeBrowser>,
     settings: Arc<FakeSettings>,
+    store: Arc<FakeLibrary>,
+    files: Arc<SlowFiles>,
+    uri: Arc<FakeUri>,
+    covers: tempfile::TempDir,
 }
 
 fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
+    harness_over(api, creds, None)
+}
+
+/// Like [`harness`], but the GameNode auth and game requests go through `remote` when given.
+fn harness_over(
+    api: Arc<FakeApi>,
+    creds: Arc<FakeCreds>,
+    remote: Option<Arc<gamenode_api::GameNodeClient>>,
+) -> Harness {
     let browser = Arc::new(FakeBrowser::default());
     let settings = Arc::new(FakeSettings::default());
+    let store = Arc::new(FakeLibrary::default());
+    let files = Arc::new(SlowFiles::steam_with_portal_2());
+    let uri = Arc::new(FakeUri::default());
+    let covers = tempfile::tempdir().unwrap();
     let ports = Ports {
         settings: settings.clone(),
         credentials: creds.clone(),
-        api: api.clone(),
+        api: match &remote {
+            Some(remote) => remote.clone(),
+            None => api.clone(),
+        },
         browser: browser.clone(),
+        library: store.clone(),
+        games: match &remote {
+            Some(remote) => remote.clone(),
+            None => api.clone(),
+        },
+        files: files.clone(),
+        roots: Arc::new(FixedRoots::with_home("/home/me")),
+        uri: uri.clone(),
+        covers_dir: covers.path().to_owned(),
+        platform: Platform::Linux,
     };
     let mut n = 0;
     let nonce: gamenode_core::auth::NonceSource = Box::new(move || {
@@ -230,11 +336,15 @@ fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
         notice: None,
         storage: StorageMethod::SecretService,
         settings: Settings::default(),
+        library: None,
+        launch: None,
     });
+    let providers = crate::providers::load_bundled(Platform::Linux).providers;
     let engine = Engine::new(
         ports,
         tokio::runtime::Handle::current(),
         Settings::default(),
+        LibraryMachine::new(providers, Default::default()),
         nonce,
         move |s| {
             let _ = tx.send(s);
@@ -247,6 +357,10 @@ fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
         creds,
         browser,
         settings,
+        store,
+        files,
+        uri,
+        covers,
     }
 }
 

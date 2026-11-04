@@ -142,6 +142,6 @@ Prerequisite satisfied: `add-steam-library` is archived. Its artifacts are left 
 
 ## 13. Visible playtime
 
-- [ ] 13.1 Add pure account-scoped display aggregation that selects store totals or internal sessions without merging, includes live session duration and distinguishes unknown store data from zero. Verify source switching, account isolation and live elapsed time.
-- [ ] 13.2 Load display history on the storage worker and propagate refreshed playtime into library rows and details after counter/session/account changes. Verify imported totals, internal running time and source switching in engine tests.
-- [ ] 13.3 Show translated playtime in grid, list and details, identify the source in details and verify formatted known/unknown values and UI bindings on Linux and Windows. Build an updated Windows package.
+- [x] 13.1 Add pure account-scoped display aggregation that selects store totals or internal sessions without merging, includes live session duration and distinguishes unknown store data from zero. Verify source switching, account isolation and live elapsed time.
+- [x] 13.2 Load display history on the storage worker and propagate refreshed playtime into library rows and details after counter/session/account changes. Verify imported totals, internal running time and source switching in engine tests.
+- [x] 13.3 Show translated playtime in grid, list and details, identify the source in details and verify formatted known/unknown values and UI bindings on Linux and Windows. Build an updated Windows package.

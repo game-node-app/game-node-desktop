@@ -163,3 +163,21 @@ Passed in this working tree on 2026-11-04:
 
 The physical desktop, reboot/Startup apps and install/uninstall checklist above
 is still pending. Automated tests do not claim those manual results.
+
+### Visible playtime — 2026-11-04
+
+Grid cards, list rows and game details now display the selected source's total;
+details also identify the source. Internal history includes the current open
+session. An unavailable store total is shown as an em dash rather than zero.
+
+Verified with account-scoped synthetic histories and the UI bindings: 754 Steam
+minutes display as 12 h 34 min, source changes preserve separate totals, active
+internal time advances, and unknown/zero values remain distinct. The Linux
+workspace suite and Clippy passed. Native Windows core/app suites and Windows
+workspace Clippy passed, including Portuguese formatting and headless rendering.
+
+Rebuilt the Windows package, invoked the installed app's Quit action through
+UI Automation, installed the new package and reopened it. The installed binary's
+SHA-256 matched the package binary. The native GameNode window was found, and
+UI Automation found seven playtime text elements. No forced process termination
+was used. The remaining reboot/Startup apps/manual tray checklist is unchanged.

@@ -347,7 +347,7 @@ mod render {
         assert_eq!(state.get_items().row_count(), 0);
 
         // Rows, selection, focus, filter, sort, view and pane sizes.
-        let rows = vec![
+        let mut rows = vec![
             row(
                 "steam:1",
                 "Portal 2",
@@ -359,6 +359,10 @@ mod render {
             row("steam:2", "Valheim", MatchStatus::NoGame),
             row("steam:3", "Mystery", MatchStatus::Unmatched),
         ];
+        Arc::make_mut(&mut rows[0]).playtime = gamenode_core::playtime::PlaytimeView {
+            seconds: Some(45240),
+            source: gamenode_core::playtime::PlaytimeSource::Store,
+        };
         let mut v = view(rows.clone());
         v.selected = vec!["steam:2".into()];
         v.focused = Some("steam:2".into());
@@ -376,6 +380,10 @@ mod render {
         let items = state.get_items();
         assert_eq!(items.row_count(), 3);
         assert_eq!(items.row_data(0).unwrap().title, "Portal 2");
+        assert!(items.row_data(0).unwrap().playtime_known);
+        assert_eq!(items.row_data(0).unwrap().playtime_hours, 12);
+        assert_eq!(items.row_data(0).unwrap().playtime_minutes, 34);
+        assert!(!items.row_data(1).unwrap().playtime_known);
         assert_eq!(items.row_data(0).unwrap().kind, MatchKind::Matched);
         assert_eq!(items.row_data(1).unwrap().kind, MatchKind::NoGame);
         assert!(items.row_data(1).unwrap().selected);
@@ -430,6 +438,10 @@ mod render {
         renderer.render(&ui, &snapshot(Some(v.clone()), Some(launch)));
         assert!(state.get_detail_valid());
         assert_eq!(state.get_detail_title(), "Portal 2");
+        assert!(state.get_detail_playtime_known());
+        assert_eq!(state.get_detail_playtime_hours(), 12);
+        assert_eq!(state.get_detail_playtime_minutes(), 34);
+        assert!(state.get_detail_playtime_from_store());
         assert_eq!(state.get_detail_year(), "2011");
         assert_eq!(state.get_detail_dir(), "C:\\Steam\\Portal 2");
         assert_eq!(state.get_detail_source(), SourceKind::Chosen);

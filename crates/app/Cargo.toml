@@ -46,6 +46,11 @@ features = ["backend-winit-wayland", "backend-winit-x11"]
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
 
+[target.'cfg(target_os = "windows")'.dependencies.slint]
+version = "=1.18.1"
+default-features = false
+features = ["system-tray"]
+
 [build-dependencies]
 slint-build = "=1.18.1"
 

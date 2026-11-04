@@ -1,0 +1,48 @@
+# Spec Delta
+
+## Purpose
+
+Give the user one switch, "Sync with GameNode", that decides whether what GameNode Desktop learns on this PC (playtime now, detected games in a later step) is sent to their GameNode account, and keep the app fully usable when it is off.
+
+## ADDED Requirements
+
+### Requirement: Sync with GameNode setting
+Settings SHALL offer a "Sync with GameNode" switch. It SHALL be on by default, SHALL take effect immediately and SHALL be kept across restarts. It SHALL be a setting of this PC, not of the GameNode account.
+
+#### Scenario: Default
+- **WHEN** a user opens Settings on a fresh installation
+- **THEN** "Sync with GameNode" is on
+
+#### Scenario: Turn it off
+- **WHEN** the user turns "Sync with GameNode" off and restarts the application
+- **THEN** the switch is still off and no playtime is sent
+
+### Requirement: What leaves the PC while sync is off
+While sync is off, the application SHALL NOT send playtime totals, sessions or detected games to GameNode. It SHALL still send the requests that sign-in, matching, game search, covers and Add to GameNode need. Playtime SHALL keep being recorded locally.
+
+#### Scenario: Play with sync off
+- **WHEN** the user plays a matched Steam game while sync is off
+- **THEN** no playtime request is sent, and the game's total is kept locally
+
+#### Scenario: Matching still works
+- **WHEN** sync is off and a scan finds a new game
+- **THEN** GameNode is still asked for its match and cover
+
+#### Scenario: Turn sync back on
+- **WHEN** the user turns sync on after playing with it off
+- **THEN** totals that changed meanwhile are submitted
+
+### Requirement: Sync is explained on first use
+After the first successful sign-in on this PC, the application SHALL show once what "Sync with GameNode" sends, that it is on, and where to turn it off. Until the user dismisses it, it SHALL be shown again the next time the window opens, and nothing SHALL be sent before it has been shown.
+
+#### Scenario: First sign-in
+- **WHEN** a user signs in for the first time on this PC
+- **THEN** the window explains Sync with GameNode with a way to keep it on or open its setting
+
+#### Scenario: First start is in the background
+- **WHEN** GameNode is installed, signed in, and then starts at login in the background before the explanation was ever shown
+- **THEN** playtime is recorded locally but not sent until the explanation has been shown in the window
+
+#### Scenario: Already explained
+- **WHEN** the user dismissed the explanation and signs in again later, as the same or another account
+- **THEN** the explanation is not shown again

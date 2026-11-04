@@ -50,11 +50,11 @@ On startup the application SHALL restore a persisted session and obtain the sign
 
 #### Scenario: Restart signed in
 - **WHEN** the application restarts with a valid stored credential and GameNode is reachable
-- **THEN** it shows the signed-in user and empty library without another browser sign-in
+- **THEN** it shows the signed-in user and their library without another browser sign-in
 
 #### Scenario: Session is rejected
 - **WHEN** GameNode rejects the restored credential as invalid or expired
-- **THEN** the application clears the rejected local credential and offers sign-in
+- **THEN** the application clears the rejected local credential, hides the cached library, and offers sign-in
 
 #### Scenario: Network unavailable during restoration
 - **WHEN** restoring a session fails because GameNode is temporarily unreachable
@@ -69,7 +69,6 @@ On startup the application SHALL restore a persisted session and obtain the sign
 #### Scenario: Verified account differs from the cached one
 - **WHEN** the verified session belongs to a different account than the cached library
 - **THEN** the cached library of the previous account is replaced by the verified account's library
-- **AND** Settings/About remains accessible
 
 ### Requirement: Sign-out clears local authentication
 Sign-out SHALL clear persisted credentials, in-memory identity, and pending sign-in attempts and return the shell to signed out. The application SHALL also attempt to invalidate the current server session. Server unavailability SHALL NOT prevent local sign-out, and unsuccessful credential deletion SHALL be reported.

@@ -33,6 +33,11 @@ impl Platform for Headless {
 
 fn game(key: &str, title: &str, kind: MatchKind) -> GameItem {
     GameItem {
+        playtime_known: true,
+        playtime_hours: 12,
+        playtime_minutes: 34,
+        playtime_seconds: 0,
+        running: false,
         key: key.into(),
         title: title.into(),
         provider: "Steam".into(),
@@ -84,7 +89,30 @@ fn portuguese_translates_the_chrome_and_keeps_the_data() {
     ui.window()
         .dispatch_event(WindowEvent::WindowActiveChanged(true));
 
+    let playtime = ui.global::<gamenode_app::PlaytimeText>();
+    assert_eq!(playtime.invoke_duration(true, 12, 34, 0), "12 h 34 min");
+    assert_eq!(playtime.invoke_duration(true, 0, 2, 5), "2 min");
+    assert_eq!(playtime.invoke_duration(true, 0, 0, 30), "30 s");
+    assert_eq!(playtime.invoke_duration(false, 0, 0, 0), "—");
+    assert_eq!(
+        playtime.invoke_source(true, "Steam".into()),
+        "Importado de Steam"
+    );
+    assert_eq!(
+        playtime.invoke_source(false, "Steam".into()),
+        "Contador interno"
+    );
+    assert_eq!(playtime.invoke_tray_open(), "Abrir GameNode");
+    assert_eq!(playtime.invoke_tray_quit(), "Encerrar");
+    assert_eq!(
+        playtime.invoke_tray_tooltip("Portal 2".into()),
+        "GameNode — Jogando Portal 2"
+    );
     let text = ui.global::<LibraryText>();
+    assert_eq!(
+        text.invoke_why(Why::Running, StatusKind::Unknown),
+        "Em execução"
+    );
     assert_eq!(text.invoke_status(StatusKind::Playing), "Jogando");
     assert_eq!(text.invoke_status(StatusKind::Finished), "Zerado");
     assert_eq!(text.invoke_match_kind(MatchKind::Matched), "Associado");

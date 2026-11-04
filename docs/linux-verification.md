@@ -40,3 +40,23 @@ Limits:
   actual sign-in/session restoration and both live storage states remain open.
 - Window geometry planning and persistence are implemented and unit-tested;
   live move/resize/maximize/restart interaction remains open.
+
+## Step 3: playtime and background acceptance
+
+Needs a native Linux machine; the native desktop acceptance run is left to the
+Linux milestone. WSL cannot establish these native Linux acceptance results.
+No item below is marked as executed by this change's automated checks.
+
+- [ ] Build and launch as in step 2; scan, matching, covers, Play and Add remain
+  usable, with the existing renderer and credential behavior.
+- [ ] Closing the window quits and releases the single-instance endpoint.
+- [ ] Tracking reports unavailable. No measured sessions are recorded, no running
+  indicator appears in grid/list/detail, and Play has no Running restriction.
+- [ ] No tray backend or tray icon is enabled for Linux.
+- [ ] No autostart entry is registered or changed (including XDG autostart and
+  systemd user units).
+- [ ] Sync preferences persist across restarts and remain keyboard accessible.
+
+The process adapter's Linux unit test asserts `Unsupported` for listing and
+watching. This tests the adapter contract; it does not replace the native
+window-close and integration checks above.

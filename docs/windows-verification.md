@@ -108,3 +108,58 @@ package the ZIP. Therefore the earlier installed-Windows results remain valid
 for the recorded binary, but they do not verify the latest renderer fallback,
 geometry, and Settings/About source changes. The missing build tools can be
 installed with `sudo apt install llvm lld cmake ninja-build`.
+
+## Step 3 foundation checks — 2026-11-04
+
+Steam counter parsing and the global Store/Internal source choice use synthetic
+fixtures and mock APIs. Native desktop acceptance is recorded separately below.
+
+Verified for the current working tree:
+
+- `cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc
+  --locked` passed with the Windows-only Slint tray feature enabled.
+- The Windows process adapter test executed as a native Windows binary through
+  WSL interoperability. It copied a child executable into a temporary folder,
+  found its full executable path and creation time, registered a thread-pool
+  exit wait, and received one callback with an exit time after creation.
+- Linux `cargo tree -p gamenode-app --locked` includes no tray backend. Lockfile
+  entries for other targets do not enable that backend on Linux.
+
+Still to execute on a real Windows PC once integration is complete:
+
+- [ ] Validate Steam counter parsing, units, multiple account folders and delayed writes with synthetic fixtures.
+- [ ] Install, reboot and verify the tray appears without opening a window.
+- [ ] Start an external child process under a scanned Steam fixture install folder and verify Running in the library and tray.
+- [ ] Exit the game and verify an accepted fixture counter total at the mock GameNode endpoint,
+  and, with Internal selected, a closed measured session in the local queue.
+- [ ] Close the window during play: tracking continues; Quit closes the session
+  and exits the process.
+- [ ] Interrupt power during play, restart, and verify the old session closes at
+  its last checkpoint.
+- [ ] Turn sync off, play, confirm no playtime is sent; turn it back on and verify
+  the stored changed total arrives after the explanation has been dismissed.
+- [ ] A background-first start sends nothing before the sync explanation is
+  dismissed; test keyboard focus and Escape on the explanation.
+- [ ] Disable GameNode in Windows Startup apps, restart GameNode and reboot:
+  the disabled choice survives. Uninstall removes the GameNode Run value.
+
+### Automated validation after Steam/source integration
+
+Passed in this working tree on 2026-11-04:
+
+- `cargo test --workspace --locked` on Linux, including the synthetic counter
+  fixtures, serialized submission gates, changing a counter while an older
+  submission completes, source selection, session close/flush, keyboard controls
+  and the sync explanation's focus/Escape behavior.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+- `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=/usr/bin/env cargo xwin test
+  --workspace --target x86_64-pc-windows-msvc --locked`, executing native Windows
+  test binaries through WSL interoperability. This includes the process-exit
+  test, SQLite source/sync persistence, autostart against an isolated test key,
+  and the headless UI tests for Portuguese tray text and keyboard navigation.
+- `cargo xwin clippy --workspace --all-targets --target
+  x86_64-pc-windows-msvc --locked -- -D warnings`.
+- `cargo fmt --all -- --check`, strict OpenSpec validation and `git diff --check`.
+
+The physical desktop, reboot/Startup apps and install/uninstall checklist above
+is still pending. Automated tests do not claim those manual results.

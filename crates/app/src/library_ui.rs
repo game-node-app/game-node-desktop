@@ -59,6 +59,7 @@ fn optional_status(status: Option<EntryStatus>) -> StatusKind {
 
 pub fn why(reason: Reason) -> Why {
     match reason {
+        Reason::Running => Why::Running,
         Reason::NothingSelected => Why::NothingSelected,
         Reason::MultipleSelected => Why::MultipleSelected,
         Reason::NoLaunchRule => Why::NoLaunchRule,
@@ -482,6 +483,14 @@ impl Renderer {
             }
             let cover = self.cover(row.cover_file.as_deref());
             items.push(GameItem {
+                playtime_known: row.playtime.seconds.is_some(),
+                playtime_hours: row
+                    .playtime
+                    .seconds
+                    .map_or(0, |s| i32::try_from(s / 3600).unwrap_or(i32::MAX)),
+                playtime_minutes: row.playtime.seconds.map_or(0, |s| ((s % 3600) / 60) as i32),
+                playtime_seconds: row.playtime.seconds.map_or(0, |s| (s % 60) as i32),
+                running: row.running,
                 key: row.key.as_str().into(),
                 title: row.title.as_str().into(),
                 provider: row.provider_name.as_str().into(),
@@ -562,6 +571,20 @@ impl Renderer {
         let row = &detail.row;
         let cover = self.cover(row.cover_file.as_deref());
         let (standing, standing_status) = standing(detail.membership);
+        state.set_detail_running(detail.running);
+        state.set_detail_playtime_known(row.playtime.seconds.is_some());
+        state.set_detail_playtime_hours(
+            row.playtime
+                .seconds
+                .map_or(0, |s| i32::try_from(s / 3600).unwrap_or(i32::MAX)),
+        );
+        state.set_detail_playtime_minutes(
+            row.playtime.seconds.map_or(0, |s| ((s % 3600) / 60) as i32),
+        );
+        state.set_detail_playtime_seconds(row.playtime.seconds.map_or(0, |s| (s % 60) as i32));
+        state.set_detail_playtime_from_store(
+            row.playtime.source == gamenode_core::playtime::PlaytimeSource::Store,
+        );
         state.set_detail_valid(true);
         state.set_detail_title(row.title.as_str().into());
         state.set_detail_detected(row.detected_name.as_str().into());

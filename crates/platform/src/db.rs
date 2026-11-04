@@ -27,6 +27,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "library",
         sql: include_str!("../migrations/0002_library.sql"),
     },
+    Migration {
+        version: 3,
+        name: "playtime",
+        sql: include_str!("../migrations/0003_playtime.sql"),
+    },
 ];
 
 const BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -132,7 +137,10 @@ const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
 
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 9] = [
+pub const SETTING_KEYS: [&str; 12] = [
+    crate::playtime_db::KEY_PLAYTIME_SOURCE,
+    crate::playtime_db::KEY_SYNC_ENABLED,
+    crate::playtime_db::KEY_SYNC_EXPLAINED,
     KEY_RENDERER,
     KEY_X,
     KEY_Y,
@@ -162,6 +170,11 @@ impl SqliteSettingsStore {
     /// The library repository on the same database connection.
     pub fn library_store(&self) -> crate::library_db::SqliteLibraryStore {
         crate::library_db::SqliteLibraryStore::new(Arc::clone(&self.conn))
+    }
+
+    /// The playtime repository on the same serialized connection.
+    pub fn playtime_store(&self) -> crate::playtime_db::SqlitePlaytimeStore {
+        crate::playtime_db::SqlitePlaytimeStore::new(Arc::clone(&self.conn))
     }
 
     /// Opens and migrates the database at `path`.
@@ -284,7 +297,8 @@ mod tests {
             versions(&store.conn()),
             vec![
                 (1, "initial_settings".to_string()),
-                (2, "library".to_string())
+                (2, "library".to_string()),
+                (3, "playtime".to_string())
             ]
         );
     }
@@ -355,13 +369,13 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
     }
 
-    const V3_OK: Migration = Migration {
-        version: 3,
+    const V4_OK: Migration = Migration {
+        version: 4,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V3_BAD: Migration = Migration {
-        version: 3,
+    const V4_BAD: Migration = Migration {
+        version: 4,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -378,14 +392,15 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let all = [MIGRATIONS[0], MIGRATIONS[1], V3_OK];
+        let all = [MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
             versions(&conn),
             vec![
                 (1, "initial_settings".into()),
                 (2, "library".into()),
-                (3, "add_notes".into())
+                (3, "playtime".into()),
+                (4, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -417,15 +432,20 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let err = open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], V3_BAD]).unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 3 });
+        let err = open_with(
+            &db_path(&dir),
+            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_BAD],
+        )
+        .unwrap_err();
+        assert_eq!(err, StorageError::MigrationFailed { version: 4 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
             versions(&conn),
             vec![
                 (1, "initial_settings".to_string()),
-                (2, "library".to_string())
+                (2, "library".to_string()),
+                (3, "playtime".to_string())
             ]
         );
         let leaked: i64 = conn
@@ -443,15 +463,15 @@ mod tests {
     fn newer_schema_is_rejected_and_the_file_is_unchanged() {
         let dir = TempDir::new().unwrap();
         let path = db_path(&dir);
-        drop(open_with(&path, &[MIGRATIONS[0], MIGRATIONS[1], V3_OK]).unwrap());
+        drop(open_with(&path, &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK]).unwrap());
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 2
+        let err = open(&path).unwrap_err(); // this build only knows version 3
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 3,
-                supported: 2
+                found: 4,
+                supported: 3
             }
         );
         assert_eq!(
@@ -484,7 +504,8 @@ mod tests {
             versions(&store.conn()),
             vec![
                 (1, "initial_settings".to_string()),
-                (2, "library".to_string())
+                (2, "library".to_string()),
+                (3, "playtime".to_string())
             ]
         );
         for table in [
@@ -513,7 +534,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 2,
+                found: 3,
                 supported: 1
             }
         );
@@ -537,8 +558,8 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 4,
-            ..V3_OK
+            version: 5,
+            ..V4_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -571,6 +592,8 @@ mod tests {
                 "chosen_matches",
                 "games",
                 "library_entries",
+                "playtime_sessions",
+                "playtime_totals",
                 "provider_scans",
                 "schema_migrations",
                 "settings"
@@ -590,7 +613,7 @@ mod tests {
             "password",
             "credential",
             "callback",
-            "session",
+            "session_token",
         ] {
             assert!(
                 !schema.to_lowercase().contains(forbidden),

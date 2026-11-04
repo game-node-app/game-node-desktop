@@ -33,7 +33,7 @@ While sync is off, the application SHALL NOT send playtime totals, sessions or d
 - **THEN** totals that changed meanwhile are submitted
 
 ### Requirement: Sync is explained on first use
-After the first successful sign-in on this PC, the application SHALL show once what "Sync with GameNode" sends, that it is on, and where to turn it off. Until the user dismisses it, it SHALL be shown again the next time the window opens, and nothing SHALL be sent before it has been shown.
+After the first successful sign-in on this PC, the application SHALL show once what "Sync with GameNode" sends, that it is on, and where to turn it off. Until the user dismisses it, it SHALL be shown again the next time the window opens, and no playtime SHALL be sent before it is dismissed.
 
 #### Scenario: First sign-in
 - **WHEN** a user signs in for the first time on this PC
@@ -41,7 +41,7 @@ After the first successful sign-in on this PC, the application SHALL show once w
 
 #### Scenario: First start is in the background
 - **WHEN** GameNode is installed, signed in, and then starts at login in the background before the explanation was ever shown
-- **THEN** playtime is recorded locally but not sent until the explanation has been shown in the window
+- **THEN** playtime is recorded locally but not sent until the explanation has been shown in the window and dismissed
 
 #### Scenario: Already explained
 - **WHEN** the user dismissed the explanation and signs in again later, as the same or another account

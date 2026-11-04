@@ -262,6 +262,8 @@ pub(super) struct ScanRun {
 }
 
 pub struct LibraryMachine {
+    pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
+    pub(super) running: BTreeSet<String>,
     pub(super) providers: Vec<Provider>,
     pub(super) phase: Phase,
     pub(super) account: Option<LastAccount>,
@@ -299,6 +301,8 @@ pub struct LibraryMachine {
 impl LibraryMachine {
     pub fn new(providers: Vec<Provider>, layout: LibraryLayout) -> Self {
         Self {
+            playtime: BTreeMap::new(),
+            running: BTreeSet::new(),
             providers,
             phase: Phase::Inactive,
             account: None,
@@ -343,6 +347,14 @@ impl LibraryMachine {
     /// Whether the library is shown (an account is set, even before it is verified).
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, Phase::Inactive)
+    }
+
+    pub fn set_playtime(&mut self, playtime: BTreeMap<String, crate::playtime::PlaytimeView>) {
+        self.playtime = playtime;
+    }
+
+    pub fn set_running(&mut self, running: BTreeSet<String>) {
+        self.running = running;
     }
 
     pub fn account(&self) -> Option<&LastAccount> {

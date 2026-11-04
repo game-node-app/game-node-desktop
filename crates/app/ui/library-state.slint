@@ -15,6 +15,7 @@ export enum SortKind { title, provider, match-status }
 // Why an action is unavailable; `available` means it is not.
 export enum Why {
     available,
+    running,
     nothing-selected,
     multiple-selected,
     no-launch-rule,
@@ -38,6 +39,11 @@ export enum Outcome { added, already-present, skipped, failed }
 export enum AddError { none, rejected, failed }
 
 export struct GameItem {
+    playtime-known: bool,
+    playtime-hours: int,
+    playtime-minutes: int,
+    playtime-seconds: int,
+    running: bool,
     key: string,
     title: string,
     provider: string,
@@ -120,6 +126,12 @@ export global LibraryState {
     in-out property <bool> change-match;
 
     // --- the detail of a single selected game ---
+    in-out property <bool> detail-playtime-known;
+    in-out property <int> detail-playtime-hours;
+    in-out property <int> detail-playtime-minutes;
+    in-out property <int> detail-playtime-seconds;
+    in-out property <bool> detail-playtime-from-store;
+    in-out property <bool> detail-running;
     in-out property <bool> detail-valid;
     in-out property <string> detail-title;
     in-out property <string> detail-detected;

@@ -63,6 +63,11 @@ fn take(log: &Log) -> Vec<String> {
 
 fn game(key: &str, title: &str, provider: &str, kind: MatchKind) -> GameItem {
     GameItem {
+        playtime_known: true,
+        playtime_hours: 12,
+        playtime_minutes: 34,
+        playtime_seconds: 0,
+        running: false,
         key: key.into(),
         title: title.into(),
         provider: provider.into(),
@@ -384,12 +389,57 @@ fn library_screens_react_to_keyboard_and_pointer() {
             "{expected} is not reachable by keyboard: {fired:?}"
         );
     }
+    let mut settings_actions = std::collections::BTreeSet::new();
+    for stops in 1..=40 {
+        let ui = open(&log);
+        ui.set_settings_open(true);
+        let sync_log = log.clone();
+        ui.on_sync_changed(move |enabled| {
+            sync_log.borrow_mut().push(format!("sync {enabled}"));
+        });
+        let source_log = log.clone();
+        ui.on_source_changed(move |store| {
+            source_log.borrow_mut().push(format!("source {store}"));
+        });
+        take(&log);
+        for _ in 0..stops {
+            key(&ui, Key::Tab);
+        }
+        key(&ui, Key::Return);
+        settings_actions.extend(take(&log));
+    }
+    for expected in ["sync false", "source true", "source false"] {
+        assert!(
+            settings_actions.contains(expected),
+            "Settings control not keyboard reachable: {expected}"
+        );
+    }
+
+    // The first-use explanation owns keyboard focus, including repeated Tab and Escape.
+    let ui = open(&log);
+    let dismissed = Rc::new(RefCell::new(0));
+    let observed = dismissed.clone();
+    ui.on_sync_dismissed(move || {
+        *observed.borrow_mut() += 1;
+    });
+    ui.set_sync_explanation(true);
+    take(&log);
+    for _ in 0..8 {
+        key(&ui, Key::Tab);
+    }
+    assert!(take(&log).is_empty(), "focus escaped the sync explanation");
+    key(&ui, Key::Escape);
+    assert_eq!(*dismissed.borrow(), 1);
 }
 
 /// The detail pane for one selected, matched game, with every action available.
 fn show_details(ui: &AppWindow) {
     let state = ui.global::<LibraryState>();
     state.set_detail_valid(true);
+    state.set_detail_playtime_known(true);
+    state.set_detail_playtime_hours(12);
+    state.set_detail_playtime_minutes(34);
+    state.set_detail_playtime_from_store(true);
     state.set_detail_title("Portal 2".into());
     state.set_detail_detected("Portal 2".into());
     state.set_detail_matched("Portal 2".into());

@@ -260,3 +260,23 @@ mod unix_only {
         assert!(guard.messages.try_recv().is_err());
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn second_background_launch_sends_nothing() {
+    let f = fixture();
+    let mut guard = owner(&f).serve(&tokio::runtime::Handle::current());
+    let Instance::Existing(existing) =
+        acquire(&f.endpoint, &tokio::runtime::Handle::current()).unwrap()
+    else {
+        panic!("expected existing")
+    };
+    forward_launch(&existing, &Message::Activate, true, WAIT).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), guard.messages.recv())
+            .await
+            .is_err()
+    );
+    // Prove the owner still responds to a subsequent ordinary launch.
+    forward(&f, Message::Activate).await.unwrap();
+    assert_eq!(guard.messages.recv().await, Some(Message::Activate));
+}

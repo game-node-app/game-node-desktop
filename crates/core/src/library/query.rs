@@ -12,6 +12,8 @@ use super::store::StoredEntry;
 /// One installed game as the view shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
+    pub playtime: crate::playtime::PlaytimeView,
+    pub running: bool,
     pub key: String,
     /// The matched game's title when there is one, else the detected title.
     pub title: String,
@@ -52,6 +54,8 @@ impl LibraryMachine {
             .map(|game| game.name.clone())
             .filter(|name| !name.is_empty());
         Row {
+            playtime: self.playtime.get(&entry.key).copied().unwrap_or_default(),
+            running: self.running.contains(&entry.key),
             key: entry.key.clone(),
             title: matched_name
                 .clone()

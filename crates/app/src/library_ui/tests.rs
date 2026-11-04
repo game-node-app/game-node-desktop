@@ -259,6 +259,8 @@ mod render {
 
     fn row(key: &str, title: &str, status: MatchStatus) -> Arc<Row> {
         Arc::new(Row {
+            playtime: Default::default(),
+            running: false,
             key: key.into(),
             title: title.into(),
             detected_name: title.into(),
@@ -304,6 +306,10 @@ mod render {
 
     fn snapshot(library: Option<LibraryView>, launch: Option<LaunchStatus>) -> Snapshot {
         Snapshot {
+            playtime_error: false,
+            tracking: Default::default(),
+            sync: Default::default(),
+            playtime_source: Default::default(),
             auth: AuthView::SignedOut,
             notice: None,
             storage: StorageMethod::PrivateFile,
@@ -410,6 +416,7 @@ mod render {
             change_match: true,
         };
         v.detail = Some(DetailView {
+            running: false,
             row: rows[0].clone(),
             install_dir: "C:\\Steam\\Portal 2".into(),
             release_year: Some(2011),

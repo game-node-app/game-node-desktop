@@ -28,6 +28,16 @@ pub enum ScanError {
     Failed(String),
 }
 
+pub type CounterFn =
+    fn(&ScanInput<'_>) -> std::collections::BTreeMap<String, steam::counter::CounterValue>;
+
+pub fn counter(name: &str) -> Option<CounterFn> {
+    match name {
+        "steam" => Some(steam::counter::read),
+        _ => None,
+    }
+}
+
 pub type ScanFn = fn(&ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError>;
 
 /// The scanners built into the application, by manifest name.
@@ -149,7 +159,7 @@ impl Provider {
         self.install.as_ref().is_some_and(|t| t.applies_to(record))
     }
 
-    fn resolve_roots(&self, platform: Platform, resolver: &dyn RootResolver) -> Vec<String> {
+    pub fn resolve_roots(&self, platform: Platform, resolver: &dyn RootResolver) -> Vec<String> {
         self.roots
             .iter()
             .filter(|(root_platform, _)| *root_platform == platform)
@@ -255,6 +265,11 @@ fn validate(manifest: Manifest) -> Result<Provider, String> {
     }
     let scanner = native_scanner(&manifest.scan.native)
         .ok_or_else(|| format!("unknown native scanner `{}`", manifest.scan.native))?;
+    if let Some(playtime) = &manifest.playtime
+        && counter(&playtime.counter).is_none()
+    {
+        return Err(format!("unknown playtime counter `{}`", playtime.counter));
+    }
     let launch = template(&manifest.launch, "launch")?;
     let install = template(&manifest.install, "install")?;
     if manifest.exclude_ids.iter().any(|id| id.trim().is_empty()) {

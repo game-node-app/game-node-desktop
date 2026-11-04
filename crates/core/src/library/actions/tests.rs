@@ -248,3 +248,23 @@ fn availability_helpers() {
     assert_eq!(disabled(Reason::Offline).reason(), Some(Reason::Offline));
     assert!(!disabled(Reason::Offline).is_available());
 }
+
+#[test]
+fn running_disables_play_and_updates_rows_and_details_until_exit() {
+    let mut machine = library(Access::Verified);
+    select(&mut machine, &["steam:620"]);
+    machine.set_running(std::collections::BTreeSet::from(["steam:620".into()]));
+    assert_eq!(machine.actions().play, disabled(Reason::Running));
+    let view = machine.view().unwrap();
+    assert!(
+        view.rows
+            .iter()
+            .find(|r| r.key == "steam:620")
+            .unwrap()
+            .running
+    );
+    assert!(view.detail.unwrap().running);
+    machine.set_running(Default::default());
+    assert!(machine.actions().play.is_available());
+    assert!(!machine.view().unwrap().detail.unwrap().running);
+}

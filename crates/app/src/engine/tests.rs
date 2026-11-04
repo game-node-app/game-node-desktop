@@ -24,6 +24,7 @@ use url::Url;
 use super::{Engine, Ports};
 
 mod library;
+mod playtime;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
 fn ana() -> User {
@@ -41,6 +42,8 @@ fn cred(v: &str) -> SessionCredential {
 
 #[derive(Default)]
 struct FakeApi {
+    playtimes: Mutex<Vec<gamenode_core::playtime::Submission>>,
+    playtime_delay: Mutex<Duration>,
     delay: Mutex<Duration>,
     begin: Mutex<Option<SignInFailure>>,
     session: Mutex<Option<Result<User, SessionError>>>,
@@ -291,6 +294,7 @@ impl SettingsStore for FakeSettings {
 }
 
 struct Harness {
+    processes: Arc<gamenode_core::tracker::scripted::ScriptedProcesses>,
     engine: Engine,
     snapshots: watch::Receiver<Snapshot>,
     api: Arc<FakeApi>,
@@ -319,7 +323,14 @@ fn harness_over(
     let files = Arc::new(SlowFiles::steam_with_portal_2());
     let uri = Arc::new(FakeUri::default());
     let covers = tempfile::tempdir().unwrap();
+    let playtime_db = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let ports = Ports {
+        processes: processes.clone(),
+        playtime: Arc::new(playtime_db.playtime_store()),
+        playtime_api: api.clone(),
         settings: settings.clone(),
         credentials: creds.clone(),
         api: match &remote {
@@ -344,6 +355,10 @@ fn harness_over(
         format!("nonce{n}")
     });
     let (tx, rx) = watch::channel(Snapshot {
+        playtime_error: false,
+        tracking: Default::default(),
+        sync: Default::default(),
+        playtime_source: Default::default(),
         auth: AuthView::Starting,
         notice: None,
         storage: StorageMethod::SecretService,
@@ -363,6 +378,7 @@ fn harness_over(
         },
     );
     Harness {
+        processes,
         engine,
         snapshots: rx,
         api,
@@ -869,4 +885,18 @@ async fn cold_start_callback_with_no_pending_attempt_is_rejected() {
     assert_eq!(h.engine.snapshot().auth, AuthView::SignedOut);
     assert!(h.api.verified.lock().unwrap().is_empty());
     assert_eq!(h.creds.stored(), None);
+}
+
+#[async_trait]
+impl gamenode_core::ports::PlaytimeApi for FakeApi {
+    async fn submit(
+        &self,
+        _credential: &SessionCredential,
+        total: &gamenode_core::playtime::Submission,
+    ) -> Result<(), gamenode_core::playtime::SubmitError> {
+        self.playtimes.lock().unwrap().push(total.clone());
+        let delay = *self.playtime_delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        Ok(())
+    }
 }

@@ -35,6 +35,8 @@ exclude_ids = [
     "3658110", # Proton 10.0
 ]
 
+playtime = { counter = "steam" }
+
 [[roots.windows]]
 registry = 'HKCU\Software\Valve\Steam'
 value = "SteamPath"

@@ -1,0 +1,17 @@
+export global PlaytimeText {
+    pure public function duration(known: bool, hours: int, minutes: int, seconds: int) -> string {
+        if !known { return "—"; }
+        if hours > 0 { return @tr("Library" => "{} h {} min", hours, minutes); }
+        if minutes > 0 { return @tr("Library" => "{} min", minutes); }
+        if seconds > 0 { return @tr("Library" => "{} s", seconds); }
+        return @tr("Library" => "{} min", 0);
+    }
+    pure public function source(store: bool, provider: string) -> string {
+        return store ? @tr("Library" => "Imported from {}", provider) : @tr("Library" => "Internal counter");
+    }
+    pure public function tray-open() -> string { return @tr("AppWindow" => "Open GameNode"); }
+    pure public function tray-quit() -> string { return @tr("AppWindow" => "Quit"); }
+    pure public function tray-tooltip(title: string) -> string {
+        return title == "" ? "GameNode" : @tr("AppWindow" => "GameNode — Playing {}", title);
+    }
+}

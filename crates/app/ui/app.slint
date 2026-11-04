@@ -1,4 +1,5 @@
 import "fonts/Roboto-Variable.ttf";
+import { SyncExplanation } from "playtime-ui.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Action, Caption, Heading, Panel, Rule } from "controls.slint";
@@ -8,6 +9,7 @@ import { LibraryText } from "library-text.slint";
 import { AddDialog, MatchDialog } from "library-dialogs.slint";
 
 // The sentences are exported so a test can read them in each language.
+export { PlaytimeText } from "playtime-text.slint";
 export { LibraryText }
 // The library screens read and write these; library_ui.rs connects them to the engine.
 export { LibraryState, GameItem, ProviderItem, OptionItem, CollectionItem, TargetItem, SummaryItem, MatchKind, SourceKind, StatusKind, Standing, EmptyKind, AccessKind, ViewKind, SortKind, Why, LaunchNote, SearchError, CollectionsKind, Outcome, AddError } from "library-state.slint";
@@ -22,6 +24,14 @@ export component AppWindow inherits Window {
     background: Theme.color-background;
     default-font-family: "Roboto";
     default-font-size: Theme.font-size-sm;
+    in property <bool> playtime-error;
+    in property <bool> sync-enabled: true;
+    in property <bool> store-playtime: true;
+    in property <bool> sync-explanation;
+    in property <bool> background-supported;
+    callback sync-changed(bool);
+    callback source-changed(bool);
+    callback sync-dismissed();
     in property <bool> signed-in;
     in property <bool> busy;
     in property <bool> can-retry;
@@ -57,6 +67,7 @@ export component AppWindow inherits Window {
     function open-licenses() { root.licenses-open = true; }
     forward-focus: shell-focus;
     shell-focus := FocusScope {
+        enabled: !root.sync-explanation;
         x: 0px; y: 0px; width: root.width; height: root.height;
         key-pressed(event) => {
             if event.text == Key.Escape {
@@ -174,6 +185,24 @@ export component AppWindow inherits Window {
                         Panel {
                             VerticalLayout {
                                 padding: 20px; spacing: 12px;
+                                Heading { text: @tr("Playtime & sync"); font-size: 16px; }
+                                HorizontalLayout {
+                                    Text { text: @tr("Sync with GameNode"); color: Theme.color-text-default; vertical-alignment: center; }
+                                    Action { width: 100px; text: root.sync-enabled ? @tr("On") : @tr("Off"); selected: root.sync-enabled; outlined: true; clicked => { root.sync-changed(!root.sync-enabled); } }
+                                }
+                                if root.playtime-error: Caption { text: @tr("Could not sync playtime. Your local data is preserved."); wrap: word-wrap; }
+                                Text { text: @tr("Playtime source"); color: Theme.color-text-default; font-weight: 500; }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Action { text: @tr("Import from store"); selected: root.store-playtime; outlined: true; clicked => { root.source-changed(true); } }
+                                    Action { text: @tr("Internal counter"); selected: !root.store-playtime; outlined: true; clicked => { root.source-changed(false); } }
+                                }
+                                Caption { text: @tr("Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate."); wrap: word-wrap; }
+                            }
+                        }
+                        Panel {
+                            VerticalLayout {
+                                padding: 20px; spacing: 12px;
                                 Heading { text: @tr("Session & security"); font-size: 16px; }
                                 Text { text: root.localized(root.storage); color: Theme.color-text-default; wrap: word-wrap; }
                                 Caption { text: @tr("Your session stays on this device, protected by your operating system."); wrap: word-wrap; }
@@ -260,4 +289,11 @@ export component AppWindow inherits Window {
     if LibraryState.match-open: MatchDialog { x: 0px; y: 0px; width: root.width; height: root.height; }
     if LibraryState.add-open: AddDialog { x: 0px; y: 0px; width: root.width; height: root.height; }
     }
+    SyncExplanation {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        shown: root.sync-explanation;
+        background-supported: root.background-supported;
+        dismissed(open-settings) => { if open-settings { root.settings-open = true; } root.sync-dismissed(); shell-focus.focus(); }
+    }
+
 }

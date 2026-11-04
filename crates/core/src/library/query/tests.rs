@@ -5,6 +5,8 @@ use crate::library::store::{AutoMatch, ChosenMatch, GameRecord, LibraryCache};
 
 fn row(provider: &str, id: &str, title: &str, status: MatchStatus) -> Row {
     Row {
+        playtime: Default::default(),
+        running: false,
         key: format!("{provider}:{id}"),
         title: title.to_owned(),
         detected_name: title.to_owned(),

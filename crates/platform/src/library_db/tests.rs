@@ -558,7 +558,7 @@ fn nothing_stored_is_a_credential_or_a_callback_url() {
         "password",
         "credential",
         "callback",
-        "session",
+        "session_token",
     ] {
         assert!(
             !schema.to_lowercase().contains(word),

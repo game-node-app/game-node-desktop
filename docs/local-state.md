@@ -16,7 +16,8 @@ The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
 `window.height`, `window.maximized`, `library.layout`, `account.last_id` and
-`account.last_name` (the `SETTING_KEYS` list in `db.rs`). A fresh database
+`account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
+(the `SETTING_KEYS` list in `db.rs`). A fresh database
 defaults to GPU rendering, the default library layout and no games. No session
 token, callback URL, or pending sign-in secret belongs in this database.
 
@@ -77,3 +78,33 @@ The platform repositories have temporary-database tests for fresh creation,
 reopen, durable settings, ordered upgrade (including from a step 1 database),
 rollback and unchanged newer-schema files, and for rescans, uninstalls, failed
 scans, per-account matches, the layout and sign-out.
+
+## Playtime (migration `0003_playtime.sql`)
+
+`playtime_sessions` holds `id`, `account_id`, `entry_key`, nullable `game_id`,
+`source`, `platform_id`, `started_at`, `checkpoint_at` and nullable `ended_at`.
+Times are Unix seconds UTC. A session is written when it starts and checkpointed
+at least once per minute. At startup, before tracking begins, open rows from all
+accounts are closed at `checkpoint_at`; time after that checkpoint is not counted.
+Rows whose end is at or before their start are dropped and logged. Sessions stay
+in the local queue; this version never submits or drains them. Signing out keeps
+the account's queue for its next sign-in.
+
+`playtime_totals` holds `account_id`, `entry_key`, `total_seconds`, nullable
+`last_played_at`, `accepted_game_id`, `accepted_seconds` and `rejected_seconds`.
+Its primary key is `(account_id, entry_key)`. Accounts never load or update each
+other's totals or sessions. Neither table contains process lists, executable
+paths or command lines. No session credential is stored here.
+
+The additional settings keys `sync_enabled` and `sync_explained` hold `1` or `0`.
+Missing values mean sync on and explanation not dismissed. An unreadable
+`sync_enabled` means off and explanation due again, preserving opt-out safety.
+They apply to this PC across accounts and survive sign-out.
+
+Upgrading from step 2 adds both tables without changing settings, library entries
+or matches. Step 2 builds refuse the newer schema and leave it untouched.
+
+`playtime_source` is a PC-wide setting: `store` (default) or `internal`. Missing
+or invalid values select `store`. Games without a supported store counter always
+use Internal. Changing source preserves store totals and internal sessions
+separately, without merging or deleting either history.

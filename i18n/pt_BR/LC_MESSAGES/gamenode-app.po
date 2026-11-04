@@ -691,3 +691,87 @@ msgstr "Editar no GameNode"
 msgctxt "Library"
 msgid "Save"
 msgstr "Salvar"
+
+msgctxt "AppWindow"
+msgid "Playtime & sync"
+msgstr "Tempo de jogo e sincronização"
+
+msgctxt "AppWindow"
+msgid "Sync with GameNode"
+msgstr "Sincronizar com o GameNode"
+
+msgctxt "AppWindow"
+msgid "Playtime source"
+msgstr "Fonte do tempo de jogo"
+
+msgctxt "AppWindow"
+msgid "Import from store"
+msgstr "Importar da loja"
+
+msgctxt "AppWindow"
+msgid "Internal counter"
+msgstr "Contador interno"
+
+msgctxt "AppWindow"
+msgid "Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate."
+msgstr "Vale para todos os jogos neste PC. Jogos sem contador de loja compatível sempre usam o contador interno. Os históricos da loja e interno ficam separados."
+
+msgctxt "AppWindow"
+msgid "Sync is on. Store playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+msgstr "A sincronização está ativada. O tempo de jogo da loja é enviado à sua conta GameNode. Você pode desativar a sincronização nas Configurações e continuar usando sua biblioteca."
+
+msgctxt "AppWindow"
+msgid "Closing the window keeps GameNode running in the tray. Use Quit to exit."
+msgstr "Fechar a janela mantém o GameNode na bandeja. Use Sair para encerrar."
+
+msgctxt "AppWindow"
+msgid "Keep sync on"
+msgstr "Manter sincronização"
+
+msgctxt "AppWindow"
+msgid "Open settings"
+msgstr "Abrir configurações"
+
+msgctxt "AppWindow"
+msgid "Open GameNode"
+msgstr "Abrir GameNode"
+
+msgctxt "AppWindow"
+msgid "GameNode — Playing {}"
+msgstr "GameNode — Jogando {}"
+
+msgctxt "Library"
+msgid "Running"
+msgstr "Em execução"
+
+msgctxt "AppWindow"
+msgid "Could not sync playtime. Your local data is preserved."
+msgstr "Não foi possível sincronizar o tempo de jogo. Seus dados locais foram preservados."
+
+msgctxt "Library"
+msgid "Playtime"
+msgstr "Tempo de jogo"
+
+msgctxt "Library"
+msgid "Playtime source"
+msgstr "Fonte do tempo de jogo"
+
+msgctxt "Library"
+msgid "{} h {} min"
+msgstr "{} h {} min"
+
+msgctxt "Library"
+msgid "{} min"
+msgstr "{} min"
+
+msgctxt "Library"
+msgid "{} s"
+msgstr "{} s"
+
+msgctxt "Library"
+msgid "Imported from {}"
+msgstr "Importado de {}"
+
+msgctxt "Library"
+msgid "Internal counter"
+msgstr "Contador interno"

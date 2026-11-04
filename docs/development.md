@@ -126,6 +126,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
   "$(wslpath -w "$PWD/dist/windows/gamenode-desktop/install.ps1")"
 ```
 
+For the full local workflow, run `scripts/install-windows-wsl.sh` from WSL. It
+builds the locked Windows MSVC executable, installs it for the current Windows
+user, and launches the installed app. It requires WSL Windows interop plus
+`powershell.exe` and `wslpath` on `PATH`.
+
 The unsigned development package installs below
 `%LOCALAPPDATA%\Programs\GameNode Desktop`, creates a Start Menu shortcut and
 registers a quoted URI command under HKCU. An existing URI handler is exported

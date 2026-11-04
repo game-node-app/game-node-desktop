@@ -84,6 +84,11 @@ fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
             "missing field `source`",
         ),
         (
+            "unknown counter",
+            format!("{}\nplaytime = {{ counter = \"missing\" }}", minimal("bad")),
+            "unknown playtime counter `missing`",
+        ),
+        (
             "unknown scanner",
             minimal("bad").replace("native = \"steam\"", "native = \"nope\""),
             "unknown native scanner `nope`",

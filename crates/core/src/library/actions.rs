@@ -11,6 +11,7 @@ use super::membership::{EntryStatus, Membership};
 /// Why an action is disabled. The UI turns each into a localized sentence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
+    Running,
     NothingSelected,
     /// The action works on one game at a time.
     MultipleSelected,
@@ -119,11 +120,15 @@ impl LibraryMachine {
         };
         let provider = self.provider(&entry.provider);
         let record = entry.record();
-        let play = rule(
-            provider.is_some_and(|p| p.has_launch()),
-            provider.is_some_and(|p| p.can_launch(&record)),
-            Reason::NoLaunchRule,
-        );
+        let play = if self.running.contains(key) {
+            Availability::Disabled(Reason::Running)
+        } else {
+            rule(
+                provider.is_some_and(|p| p.has_launch()),
+                provider.is_some_and(|p| p.can_launch(&record)),
+                Reason::NoLaunchRule,
+            )
+        };
         let install = rule(
             provider.is_some_and(|p| p.has_install()),
             provider.is_some_and(|p| p.can_install(&record)),

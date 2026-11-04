@@ -44,6 +44,7 @@ pub fn server_url_from_env() -> Result<Url, ClientError> {
 }
 
 mod game;
+mod playtime;
 
 #[derive(Clone)]
 pub struct GameNodeClient {

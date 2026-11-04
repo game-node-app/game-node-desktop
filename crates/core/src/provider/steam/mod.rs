@@ -5,6 +5,7 @@
 //! `steamapps/appmanifest_*.acf` and keep games that have a numeric app id and an install folder.
 //! Anything unreadable or malformed is skipped with a log so the other games still appear.
 
+pub mod counter;
 pub mod keyvalues;
 
 use std::collections::BTreeSet;

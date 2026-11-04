@@ -30,6 +30,15 @@ const SOFTWARE_RENDERER_ERROR: &str = "GameNode could not initialize software re
 const FALLBACK_RESTART_ERROR: &str = "Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver.";
 
 fn render(ui: &AppWindow, snapshot: Snapshot) {
+    ui.set_playtime_error(snapshot.playtime_error);
+    ui.set_sync_enabled(snapshot.sync.enabled);
+    ui.set_store_playtime(
+        snapshot.playtime_source == gamenode_core::playtime::PlaytimeSource::Store,
+    );
+    ui.set_sync_explanation(
+        !snapshot.sync.explained && matches!(snapshot.auth, AuthView::SignedIn { .. }),
+    );
+    ui.set_background_supported(cfg!(windows));
     gamenode_app::library_ui::render(ui, &snapshot);
     ui.set_signed_in(matches!(snapshot.auth, AuthView::SignedIn { .. }));
     ui.set_busy(matches!(
@@ -70,6 +79,20 @@ fn render(ui: &AppWindow, snapshot: Snapshot) {
             gamenode_core::Notice::CredentialDeleteFailed => "Could not remove the saved credential. Check credential storage before restarting.",
         }
     } else if matches!(snapshot.auth, AuthView::Pending { .. }) { "Complete sign-in in your browser." } else { "" }.into());
+}
+
+fn show_window(
+    ui: &AppWindow,
+    engine: &Engine,
+    errors: &std::sync::Mutex<Option<slint::PlatformError>>,
+) {
+    engine.window_shown();
+    if let Err(error) = ui.show() {
+        *errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+        let _ = slint::quit_event_loop();
+    }
 }
 
 fn restart_with_software(
@@ -159,6 +182,7 @@ fn should_retry_with_software(renderer: &str, fallback_process: bool) -> bool {
 }
 
 struct StartupArguments {
+    background: bool,
     fallback_process: bool,
     incoming: ipc::Message,
     gpu_error: Option<String>,
@@ -186,6 +210,7 @@ fn parse_startup_arguments(
         })
         .unwrap_or(ipc::Message::Activate);
     StartupArguments {
+        background: arguments.iter().any(|arg| arg == "--background"),
         fallback_process,
         incoming,
         gpu_error,
@@ -193,7 +218,8 @@ fn parse_startup_arguments(
 }
 
 fn is_internal_startup_argument(argument: &std::ffi::OsStr) -> bool {
-    argument == SOFTWARE_FALLBACK_ARG
+    argument == "--background"
+        || argument == SOFTWARE_FALLBACK_ARG
         || argument
             .to_str()
             .is_some_and(|value| value.starts_with(GPU_STARTUP_ERROR_ARG_PREFIX))
@@ -240,7 +266,7 @@ fn system_locale() -> String {
         if written > 0 {
             return String::from_utf16_lossy(&locale[..written as usize]);
         }
-        return String::new();
+        String::new()
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -384,12 +410,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(owner) = fallback_owner {
                 owner
             } else {
-                existing.forward(&incoming, ipc::FORWARD_WAIT)?;
+                ipc::forward_launch(&existing, &incoming, startup.background, ipc::FORWARD_WAIT)?;
                 return Ok(());
             }
         }
     };
     let mut owner = owner.serve(runtime.handle());
+    #[cfg(windows)]
+    if let Err(error) = gamenode_platform::autostart::register() {
+        tracing::warn!(%error,"could not register login startup");
+    }
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
@@ -419,6 +449,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         );
     }
+    let locale = system_locale();
+    let _ = slint::select_bundled_translation(if locale.to_ascii_lowercase().starts_with("pt") {
+        "pt_BR"
+    } else {
+        ""
+    });
     let ui = match AppWindow::new() {
         Ok(ui) => ui,
         Err(error) => {
@@ -432,6 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     };
+    let show_errors = Arc::new(std::sync::Mutex::new(None));
     let first_frame_rendered = Arc::new(AtomicBool::new(false));
     let rendered = first_frame_rendered.clone();
     if let Err(error) = ui.window().set_rendering_notifier(move |state, _| {
@@ -513,6 +550,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let engine = Engine::new(
         Ports {
+            processes: Arc::new(gamenode_platform::processes::HostProcesses::new()),
+            playtime: Arc::new(store.playtime_store()),
+            playtime_api: client.clone(),
             settings: store,
             credentials,
             api: client.clone(),
@@ -561,7 +601,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
     });
-    ui.on_quit(|| {
+    let e = engine.clone();
+    ui.on_sync_changed(move |enabled| e.set_sync(enabled));
+    let e = engine.clone();
+    ui.on_source_changed(move |store| {
+        e.set_playtime_source(if store {
+            gamenode_core::playtime::PlaytimeSource::Store
+        } else {
+            gamenode_core::playtime::PlaytimeSource::Internal
+        })
+    });
+    let e = engine.clone();
+    ui.on_sync_dismissed(move || e.dismiss_sync_explanation());
+    let e = engine.clone();
+    ui.on_quit(move || {
+        e.shutdown();
         let _ = slint::quit_event_loop();
     });
     let weak = ui.as_weak();
@@ -569,17 +623,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (placeholder_sender, placeholder_receiver) = tokio::sync::mpsc::channel(1);
     drop(placeholder_sender);
     let mut owner_messages = std::mem::replace(&mut owner.messages, placeholder_receiver);
+    let ipc_errors = show_errors.clone();
     let ipc_task = runtime.spawn(async move {
         while let Some(message) = owner_messages.recv().await {
             if let ipc::Message::AuthCallback { url } = message {
                 e.dispatch(Input::CallbackReceived(url));
             }
             // Another launch is the user coming back: pick up games installed meanwhile.
-            e.rescan();
+            let engine = e.clone();
+            let errors = ipc_errors.clone();
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {
-                    let _ = ui.show();
+                    show_window(&ui, &engine, &errors);
                 }
             });
         }
@@ -595,6 +651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(1),
         move || {
             e.dispatch(Input::Tick);
+            e.maintenance();
             if !ready.load(Ordering::Acquire) {
                 return;
             }
@@ -621,7 +678,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let ipc::Message::AuthCallback { url } = incoming {
         engine.dispatch(Input::CallbackReceived(url));
     }
-    let result = ui.run();
+    #[cfg(windows)]
+    let tray = {
+        let tray = gamenode_app::Tray::new()?;
+        let weak = ui.as_weak();
+        let e = engine.clone();
+        let errors = show_errors.clone();
+        tray.on_open(move || {
+            if let Some(ui) = weak.upgrade() {
+                show_window(&ui, &e, &errors);
+            }
+        });
+        let e = engine.clone();
+        tray.on_quit(move || {
+            e.shutdown();
+            let _ = slint::quit_event_loop();
+        });
+        tray
+    };
+    #[cfg(windows)]
+    {
+        let e = engine.clone();
+        let current = current_geometry.clone();
+        let weak = ui.as_weak();
+        ui.window().on_close_requested(move || {
+            if let Some(ui) = weak.upgrade() {
+                let geometry = capture_window_geometry(
+                    ui.window(),
+                    *current
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    can_position,
+                );
+                e.update_settings(|s| s.window = Some(geometry));
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+    #[cfg(windows)]
+    let tray_timer = {
+        let weak = tray.as_weak();
+        let e = engine.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                if let Some(tray) = weak.upgrade() {
+                    let snapshot = e.snapshot();
+                    let title = &snapshot.tracking.title;
+                    tray.set_playing_title(title.as_str().into());
+                }
+            },
+        );
+        timer
+    };
+    let result = if cfg!(windows) {
+        if !startup.background {
+            engine.window_shown();
+            ui.show().and_then(|_| slint::run_event_loop_until_quit())
+        } else {
+            slint::run_event_loop_until_quit()
+        }
+    } else {
+        ui.run()
+    };
+    let result = show_errors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .map_or(result, Err);
+    engine.shutdown();
+    #[cfg(windows)]
+    {
+        tray_timer.stop();
+        drop(tray);
+    }
     ipc_task.abort();
     timer.stop();
     drop(engine);
@@ -692,6 +824,25 @@ mod tests {
             ipc::Message::AuthCallback {
                 url: "app.gamenode://home?cookie=one%20two".into()
             }
+        );
+    }
+
+    #[test]
+    fn background_is_an_internal_argument_and_is_dropped_on_renderer_restart() {
+        let startup = parse_startup_arguments(["--background".into()]);
+        assert!(startup.background);
+        assert_eq!(startup.incoming, ipc::Message::Activate);
+        let args: Vec<std::ffi::OsString> =
+            ["--background", SOFTWARE_FALLBACK_ARG, "app.gamenode://home"]
+                .map(Into::into)
+                .into();
+        let retained: Vec<_> = args
+            .into_iter()
+            .filter(|arg| !is_internal_startup_argument(arg))
+            .collect();
+        assert_eq!(
+            retained,
+            vec![std::ffi::OsString::from("app.gamenode://home")]
         );
     }
 

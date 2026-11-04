@@ -27,12 +27,17 @@ use gamenode_core::{
 use gamenode_platform::covers::write_cover;
 use tokio::runtime::Handle;
 
+mod playtime;
+
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The adapters the engine drives.
 #[derive(Clone)]
 pub struct Ports {
+    pub processes: Arc<dyn gamenode_core::ports::Processes>,
+    pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
+    pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
     pub settings: Arc<dyn SettingsStore>,
     pub credentials: Arc<dyn CredentialStore>,
     pub api: Arc<dyn AuthApi>,
@@ -83,6 +88,7 @@ impl StorageWorker {
 }
 
 struct State {
+    playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
     library: LibraryMachine,
@@ -122,6 +128,7 @@ impl Engine {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
+                    playtime: playtime::Playtime::new(ports.platform),
                     machine: AuthMachine::new(nonce),
                     settings,
                     library,
@@ -150,14 +157,30 @@ impl Engine {
     }
 
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
+        self.update_playtime_view(state, unix_now());
         let library = state.library.view();
-        Snapshot::new(
+        let mut snapshot = Snapshot::new(
             &state.machine,
             self.shared.ports.credentials.method(),
             state.settings,
             library,
             state.launch.clone(),
-        )
+        );
+        snapshot.playtime_error = state.playtime.error;
+        snapshot.sync = state.playtime.preferences;
+        snapshot.playtime_source = state.playtime.source;
+        snapshot.tracking = gamenode_core::snapshot::TrackingView {
+            title: state
+                .library
+                .all_rows()
+                .into_iter()
+                .find(|r| r.running)
+                .map(|r| r.title)
+                .unwrap_or_default(),
+            available: state.playtime.available,
+            running: state.playtime.tracker.running(),
+        };
+        snapshot
     }
 
     fn publish(&self, state: &mut State) {
@@ -170,6 +193,9 @@ impl Engine {
     pub fn start(&self) {
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
+            if let Err(error) = engine.start_playtime() {
+                tracing::warn!(%error,"playtime initialization failed");
+            }
             let account = store.load_last_account().unwrap_or_else(|error| {
                 tracing::warn!(%error, "could not read the last account");
                 None
@@ -182,19 +208,46 @@ impl Engine {
     /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
     pub fn dispatch(&self, input: Input) {
         let mut state = self.lock();
+        if matches!(&input, Input::SignOut | Input::SessionRejected) {
+            self.stop_tracking(&mut state);
+        }
+        let submit_trigger = !matches!(&input, Input::Tick);
         let effects = state.machine.handle(input, Instant::now());
         // Effects are launched under the lock so storage jobs keep their dispatch order.
         for effect in effects {
             self.execute(effect);
         }
         self.sync_library(&mut state);
+        self.sync_tracker(&mut state);
+        if submit_trigger {
+            self.submit_totals(&mut state);
+        }
         self.publish(&mut state);
     }
 
     /// Feeds an input to the library and launches its effects. Never blocks on I/O.
     pub fn library_input(&self, input: LibInput) {
         let mut state = self.lock();
+        let read_trigger = matches!(
+            &input,
+            LibInput::Loaded { .. } | LibInput::ProviderScanned { .. }
+        );
+        let submit_trigger = read_trigger
+            || matches!(
+                &input,
+                LibInput::PickMatch { .. }
+                    | LibInput::MarkNoGame { .. }
+                    | LibInput::ClearMatch
+                    | LibInput::LookupDone { .. }
+            );
         self.run_library(&mut state, input);
+        self.sync_tracker(&mut state);
+        if read_trigger {
+            self.read_counters(&mut state);
+        }
+        if submit_trigger {
+            self.submit_totals(&mut state);
+        }
         self.publish(&mut state);
     }
 
@@ -214,6 +267,9 @@ impl Engine {
     /// snapshot's `launch`: "opening" until the operating system accepted the link.
     pub fn open_entry(&self, entry_key: String, kind: LaunchKind) {
         let mut state = self.lock();
+        if kind == LaunchKind::Play && state.playtime.tracker.running().contains(&entry_key) {
+            return;
+        }
         let Some(entry) = state.library.entry(&entry_key).cloned() else {
             return;
         };

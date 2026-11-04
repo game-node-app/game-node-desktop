@@ -42,5 +42,10 @@ fn main() {
     let config = slint_build::CompilerConfiguration::new()
         .with_style("fluent-dark".into())
         .with_bundled_translations("../../i18n");
-    slint_build::compile_with_config("ui/app.slint", config).expect("Slint compilation failed");
+    let entry = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "ui/windows.slint"
+    } else {
+        "ui/app.slint"
+    };
+    slint_build::compile_with_config(entry, config).expect("Slint compilation failed");
 }

@@ -51,6 +51,20 @@ pub enum Instance {
     Existing(Existing),
 }
 
+/// A redundant login/background start does not activate or send anything to the owner.
+pub fn forward_launch(
+    existing: &Existing,
+    message: &Message,
+    background: bool,
+    wait: Duration,
+) -> Result<(), IpcError> {
+    if background {
+        Ok(())
+    } else {
+        existing.forward(message, wait)
+    }
+}
+
 /// Becomes the owner, or finds the existing one. Call before any database access.
 ///
 /// `runtime` hosts the owner's IPC server; it must be provided (and entered) because the Windows

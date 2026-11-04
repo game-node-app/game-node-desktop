@@ -38,6 +38,8 @@ pub struct Manifest {
     pub source: String,
     pub scan: ScanSpec,
     #[serde(default)]
+    pub playtime: Option<PlaytimeSpec>,
+    #[serde(default)]
     pub launch: Option<UriAction>,
     #[serde(default)]
     pub install: Option<UriAction>,
@@ -96,4 +98,10 @@ pub struct RootSpec {
     pub path: Option<String>,
     pub registry: Option<String>,
     pub value: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaytimeSpec {
+    pub counter: String,
 }

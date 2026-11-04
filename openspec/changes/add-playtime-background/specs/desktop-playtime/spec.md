@@ -49,7 +49,7 @@ The application SHALL track only while an account's library is open, including a
 - **THEN** no processes are tracked and no sessions are recorded
 
 ### Requirement: Measured sessions
-For a provider without a store counter, every period from a game's first running process to the exit of its last one SHALL be recorded as a session with a client-generated unique id, the game's library key, its matched GameNode game if any, the provider's playtime source, platform 6 and its start and end times. A session SHALL start at the creation time of its first process.
+For a provider without a store counter, or while the global Internal preference is selected, every period from a game's first running process to the exit of its last one SHALL be recorded as a session with a client-generated unique id, the game's library key, its matched GameNode game if any, the provider's playtime source, platform 6 and its start and end times. A session SHALL start at the creation time of its first process.
 
 #### Scenario: Play an unmatched game
 - **WHEN** the user plays a game that has no GameNode match
@@ -87,7 +87,7 @@ Recorded sessions SHALL stay in the local queue, in order, until a sessions endp
 - **THEN** the sessions remain in the local queue and no session request is made
 
 ### Requirement: Providers with a store counter submit totals
-For a provider that declares a store counter, the application SHALL NOT record measured sessions. It SHALL read the store's total for a game after that game stops running, when the application starts and after each scan, and SHALL submit it to GameNode as that game's total for the provider's source and platform 6.
+While the global Store preference is selected, for a provider that declares a store counter, the application SHALL NOT record measured sessions. It SHALL read the store's total for a game after that game stops running, when the application starts and after each scan, and SHALL submit it to GameNode as that game's total for the provider's source and platform 6.
 
 #### Scenario: Steam game exits
 - **WHEN** a matched Steam game exits, Steam's counter is declared, and sync is on
@@ -119,3 +119,22 @@ Process tracking SHALL run on Windows. On other platforms the application SHALL 
 #### Scenario: Running on Linux
 - **WHEN** the application runs on Linux
 - **THEN** no entry is ever shown as running, no session is recorded, and the library works as before
+
+### Requirement: Global playtime source preference
+Settings SHALL offer a PC-wide Store (default) or Internal preference. Store SHALL use supported provider counters; games without one SHALL always use Internal. Internal SHALL measure sessions and prevent store-total submissions. Switching SHALL apply immediately and preserve histories separately without merging imported totals into session durations.
+
+#### Scenario: Default Steam source
+- **WHEN** a user plays a Steam game with default preferences
+- **THEN** Steam's store total is imported and no measured session is created
+
+#### Scenario: Internal selected globally
+- **WHEN** the user selects Internal and plays Steam and non-Steam games
+- **THEN** all games use measured sessions and no store-total request is sent
+
+#### Scenario: No store counter
+- **WHEN** Store is selected and a game has no supported store counter
+- **THEN** that game uses measured sessions
+
+#### Scenario: Switching during play
+- **WHEN** the user changes the preference while a game is running
+- **THEN** the source changes immediately without merging histories or counting earlier imported time as a new internal session

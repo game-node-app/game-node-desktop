@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Manifest playtime counter
-A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store counter built into the application. A provider with a counter SHALL get its playtime from that counter, and a provider without one SHALL get measured sessions. A counter that cannot read a game's total SHALL leave that game's total unchanged, not set it to zero.
+A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store counter built into the application. With Store selected, a provider with a counter SHALL use that counter. With Internal selected, or without a supported counter, it SHALL use measured sessions. A counter that cannot read a game's total SHALL leave that game's total unchanged, not set it to zero.
 
 #### Scenario: Provider without a counter
 - **WHEN** a manifest has no `playtime` field
@@ -14,7 +14,7 @@ A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store count
 - **THEN** no total is submitted for that game and the failure is logged without file contents
 
 ### Requirement: Steam playtime counter
-When the Steam manifest declares the `steam` counter, the application SHALL read each Steam account's per-game total and last-played time from that account's `localconfig.vdf` under every scanned Steam root. A game's total SHALL come from the Steam account that played it most recently. Units and fields SHALL be the ones recorded in the Steam counter spike notes in `docs/`.
+When the Steam manifest declares the `steam` counter, the application SHALL read each Steam account's per-game total and last-played time from that account's `localconfig.vdf` under every scanned Steam root. A game's total SHALL come from the Steam account that played it most recently. Fields SHALL follow `docs/steam-playtime-counter.md`: Playtime minutes converted to seconds and LastPlayed Unix seconds.
 
 #### Scenario: One Steam account
 - **WHEN** one Steam account on the PC has 754 minutes recorded for app `620`

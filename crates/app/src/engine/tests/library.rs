@@ -370,6 +370,10 @@ async fn verified_lookups_match_games_and_download_covers() {
         [(1, vec!["620".to_owned()])]
     );
     assert!(h.covers.path().join("7.jpg").exists());
+    eventually("cover persisted", || {
+        !h.store.covers_ready.lock().unwrap().is_empty()
+    })
+    .await;
     assert_eq!(
         *h.store.covers_ready.lock().unwrap(),
         [(7, "7.jpg".to_owned())]

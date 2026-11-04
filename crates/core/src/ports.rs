@@ -120,3 +120,63 @@ pub trait RootResolver: Send + Sync {
     /// A string value under `HKEY_CURRENT_USER\<key>`. Always `None` where there is no registry.
     fn registry_string(&self, key: &str, value: &str) -> Option<String>;
 }
+
+/// A process identity includes creation time because operating systems reuse pids.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub created_at: std::time::SystemTime,
+    pub exe_path: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ProcessError {
+    #[error("process tracking is unavailable on this platform")]
+    Unsupported,
+    #[error("the process could not be inspected or watched")]
+    Failed,
+}
+
+/// Read executable paths and observe exits. Calls may block; adapters own all OS handles.
+pub trait Processes: Send + Sync {
+    fn list(&self) -> Result<Vec<ProcessInfo>, ProcessError>;
+    /// Calls `on_exit` once with the actual exit time. A failed watch falls back to listings.
+    fn watch(
+        &self,
+        process: &ProcessInfo,
+        on_exit: Box<dyn FnOnce(std::time::SystemTime) + Send>,
+    ) -> Result<(), ProcessError>;
+}
+
+/// Durable playtime operations. The engine runs these on its FIFO storage thread.
+/// Every account-scoped operation must include the owning account id.
+pub trait PlaytimeStore: Send + Sync {
+    fn load_source(&self) -> Result<crate::playtime::PlaytimeSource, StorageError>;
+    fn save_source(&self, source: crate::playtime::PlaytimeSource) -> Result<(), StorageError>;
+    fn open_session(&self, session: &crate::playtime::Session) -> Result<(), StorageError>;
+    fn checkpoint(&self, account: &str, id: &str, at: i64) -> Result<(), StorageError>;
+    fn close_session(
+        &self,
+        account: &str,
+        id: &str,
+        at: i64,
+        game_id: Option<u64>,
+    ) -> Result<(), StorageError>;
+    /// Startup-only repair, across all accounts, before tracking begins.
+    fn recover(&self) -> Result<(), StorageError>;
+    fn sessions(&self, account: &str) -> Result<Vec<crate::playtime::Session>, StorageError>;
+    fn totals(&self, account: &str) -> Result<Vec<crate::playtime::Total>, StorageError>;
+    fn save_total(&self, total: &crate::playtime::Total) -> Result<(), StorageError>;
+    fn load_sync(&self) -> Result<crate::sync::SyncPreferences, StorageError>;
+    fn save_sync(&self, preferences: crate::sync::SyncPreferences) -> Result<(), StorageError>;
+}
+
+/// The absolute provider-total endpoint; measured sessions have no sender in this step.
+#[async_trait]
+pub trait PlaytimeApi: Send + Sync {
+    async fn submit(
+        &self,
+        credential: &SessionCredential,
+        total: &crate::playtime::Submission,
+    ) -> Result<(), crate::playtime::SubmitError>;
+}

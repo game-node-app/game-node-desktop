@@ -12,5 +12,10 @@ pub mod host;
 pub mod ipc;
 pub mod library_db;
 pub mod paths;
+pub mod playtime_db;
+pub mod processes;
 pub mod random;
 pub mod uri;
+
+#[cfg(windows)]
+pub mod autostart;

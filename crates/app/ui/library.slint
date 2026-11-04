@@ -5,6 +5,7 @@ import { Theme } from "theme.slint";
 import { Action, Caption, Heading, Rule } from "controls.slint";
 import { LibraryState, GameItem, ViewKind, SortKind, MatchKind, Why, EmptyKind, AccessKind, LaunchNote, Standing, StatusKind, SourceKind } from "library-state.slint";
 import { LibraryText } from "library-text.slint";
+import { PlaytimeText } from "playtime-text.slint";
 
 // A game's cover, or its title on a plain tile when there is none.
 export component Cover inherits Rectangle {
@@ -34,7 +35,7 @@ component GameTile inherits Rectangle {
     callback pressed(bool, bool);
     callback context(Point);
     callback activated();
-    width: 166px; height: 272px;
+    width: 166px; height: 294px;
     border-radius: Theme.radius-md;
     border-width: root.item.focused ? 2px : root.item.selected ? 1px : 0px;
     border-color: root.item.focused ? Theme.color-text-default : Theme.color-primary;
@@ -48,13 +49,18 @@ component GameTile inherits Rectangle {
     }
     Text {
         x: 8px; y: 214px; width: 150px; height: 34px;
-        text: root.item.title; color: Theme.color-text-default; font-weight: 500;
+        text: root.item.title + (root.item.running ? " · " + @tr("Library" => "Running") : ""); color: Theme.color-text-default; font-weight: 500;
         wrap: word-wrap; overflow: elide;
     }
     Rectangle {
         x: 8px; y: 250px; width: 150px; height: 14px;
         MatchDot { x: 0px; y: 3px; kind: root.item.kind; }
         Text { x: 14px; width: parent.width - 14px; text: root.item.provider; color: Theme.color-text-dimmed; font-size: Theme.font-size-xs; overflow: elide; }
+    }
+    Caption {
+        x: 8px; y: 270px; width: 150px; height: 18px;
+        text: PlaytimeText.duration(root.item.playtime-known, root.item.playtime-hours, root.item.playtime-minutes, root.item.playtime-seconds);
+        overflow: elide;
     }
     touch := TouchArea {
         pointer-event(e) => {
@@ -88,7 +94,12 @@ component GameRow inherits Rectangle {
             width: 28px; height: 38px; y: 5px;
             source: root.item.cover; has-image: root.item.has-cover; title: ""; text-size: 8px;
         }
-        Text { horizontal-stretch: 1; text: root.item.title; color: Theme.color-text-default; font-weight: 500; vertical-alignment: center; overflow: elide; }
+        if root.item.running: Caption { text: @tr("Library" => "Running"); color: Theme.color-success; vertical-alignment: center; }
+        VerticalLayout {
+            horizontal-stretch: 1; alignment: center; spacing: 2px;
+            Text { text: root.item.title; color: Theme.color-text-default; font-weight: 500; overflow: elide; }
+            Caption { text: PlaytimeText.duration(root.item.playtime-known, root.item.playtime-hours, root.item.playtime-minutes, root.item.playtime-seconds); overflow: elide; }
+        }
         Text { width: 130px; text: root.item.provider; color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
         Rectangle {
             width: 170px;
@@ -115,7 +126,7 @@ component GameGrid inherits Rectangle {
     callback context(Point);
     callback activated(string);
     private property <length> tile-w: 166px;
-    private property <length> tile-h: 272px;
+    private property <length> tile-h: 294px;
     private property <length> gap: 12px;
     out property <int> columns: max(1, floor((root.width - root.gap) / (root.tile-w + root.gap)));
     private property <int> rows: ceil(LibraryState.items.length / root.columns);
@@ -347,7 +358,13 @@ component DetailPane inherits Rectangle {
             }
             if LibraryState.detail-valid: VerticalLayout {
                 spacing: 12px;
+                if LibraryState.detail-running: Caption { text: @tr("Library" => "Running"); color: Theme.color-success; }
                 Heading { text: LibraryState.detail-title; font-size: Theme.font-size-lg; }
+                Field {
+                    label: @tr("Library" => "Playtime");
+                    value: PlaytimeText.duration(LibraryState.detail-playtime-known, LibraryState.detail-playtime-hours, LibraryState.detail-playtime-minutes, LibraryState.detail-playtime-seconds);
+                }
+                Field { label: @tr("Library" => "Playtime source"); value: PlaytimeText.source(LibraryState.detail-playtime-from-store, LibraryState.detail-provider); }
                 ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
                 ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
                 ActionWithReason { text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); why: LibraryState.match-why; clicked => { LibraryState.open-match(); } }

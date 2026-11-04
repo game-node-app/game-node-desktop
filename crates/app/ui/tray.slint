@@ -1,0 +1,13 @@
+import { PlaytimeText } from "playtime-text.slint";
+export component Tray inherits SystemTrayIcon {
+    in property <string> playing-title;
+    icon: @image-url("icons/gamenode.png");
+    tooltip: PlaytimeText.tray-tooltip(root.playing-title);
+    callback open();
+    callback quit();
+    clicked => { root.open(); }
+    Menu {
+        MenuItem { title: PlaytimeText.tray-open(); activated => { root.open(); } }
+        MenuItem { title: PlaytimeText.tray-quit(); activated => { root.quit(); } }
+    }
+}

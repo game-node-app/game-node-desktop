@@ -44,7 +44,7 @@ fn is_path_safe_id(id: &str) -> bool {
 
 impl GameNodeClient {
     /// `<base>/v1/<path>`, with the query set by `build`.
-    fn v1(
+    pub(crate) fn v1(
         &self,
         path: &str,
         build: impl FnOnce(&mut url::form_urlencoded::Serializer<'_, url::UrlQuery<'_>>),
@@ -57,7 +57,7 @@ impl GameNodeClient {
         url
     }
 
-    fn authorized(
+    pub(crate) fn authorized(
         &self,
         request: RequestBuilder,
         credential: &SessionCredential,

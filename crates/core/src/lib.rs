@@ -13,10 +13,13 @@ pub mod game_api;
 pub mod geometry;
 pub mod library;
 pub mod notice;
+pub mod playtime;
 pub mod ports;
 pub mod provider;
 pub mod settings;
 pub mod snapshot;
+pub mod sync;
+pub mod tracker;
 
 pub use auth::{AuthMachine, AuthState, Effect, Input, SessionError, SignInFailure, User};
 pub use callback::{CallbackError, ParsedCallback, Provider};

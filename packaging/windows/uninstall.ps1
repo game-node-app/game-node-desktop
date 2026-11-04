@@ -15,6 +15,7 @@ if ((Test-Path $scheme) -and ((Get-ItemProperty $scheme).GameNodeDesktopOwner -e
         if ($LASTEXITCODE -ne 0) { throw 'Could not restore the previous URI handler; backup retained' }
     }
 }
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'GameNode Desktop' -ErrorAction SilentlyContinue
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'GameNode Desktop.lnk'
 if (Test-Path -LiteralPath $shortcutPath) {
     $shell = New-Object -ComObject WScript.Shell

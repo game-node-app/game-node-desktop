@@ -93,3 +93,11 @@ logged. Its games leave the library view but keep their saved matches.
 
 The bundled Steam Install action opens the game’s Steam library page, where Steam exposes its
 installation controls. This also gives a visible destination for an already-installed game.
+
+## Playtime counters
+
+An optional top-level `playtime = { counter = "steam" }` selects a built-in store
+counter. Unknown counters invalidate only that manifest. Steam declares `steam`;
+its fields and read schedule are documented in `steam-playtime-counter.md`.
+The global Store preference uses that counter; Internal uses measured sessions.
+Providers without a supported counter always use measured sessions.

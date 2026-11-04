@@ -39,6 +39,7 @@ export global LibraryText {
 
     // The sentence beside a disabled action.
     pure public function why(reason: Why, status: StatusKind) -> string {
+        if reason == Why.running { return @tr("Library" => "Running"); }
         if reason == Why.nothing-selected { return @tr("Library" => "Select a game first."); }
         if reason == Why.multiple-selected { return @tr("Library" => "Select a single game."); }
         if reason == Why.no-launch-rule { return @tr("Library" => "This store cannot start games from GameNode."); }

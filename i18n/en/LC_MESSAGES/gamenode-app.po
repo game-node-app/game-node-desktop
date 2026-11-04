@@ -691,3 +691,87 @@ msgstr "Edit in GameNode"
 msgctxt "Library"
 msgid "Save"
 msgstr "Save"
+
+msgctxt "AppWindow"
+msgid "Playtime & sync"
+msgstr "Playtime & sync"
+
+msgctxt "AppWindow"
+msgid "Sync with GameNode"
+msgstr "Sync with GameNode"
+
+msgctxt "AppWindow"
+msgid "Playtime source"
+msgstr "Playtime source"
+
+msgctxt "AppWindow"
+msgid "Import from store"
+msgstr "Import from store"
+
+msgctxt "AppWindow"
+msgid "Internal counter"
+msgstr "Internal counter"
+
+msgctxt "AppWindow"
+msgid "Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate."
+msgstr "Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate."
+
+msgctxt "AppWindow"
+msgid "Sync is on. Store playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+msgstr "Sync is on. Store playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+
+msgctxt "AppWindow"
+msgid "Closing the window keeps GameNode running in the tray. Use Quit to exit."
+msgstr "Closing the window keeps GameNode running in the tray. Use Quit to exit."
+
+msgctxt "AppWindow"
+msgid "Keep sync on"
+msgstr "Keep sync on"
+
+msgctxt "AppWindow"
+msgid "Open settings"
+msgstr "Open settings"
+
+msgctxt "AppWindow"
+msgid "Open GameNode"
+msgstr "Open GameNode"
+
+msgctxt "AppWindow"
+msgid "GameNode — Playing {}"
+msgstr "GameNode — Playing {}"
+
+msgctxt "Library"
+msgid "Running"
+msgstr "Running"
+
+msgctxt "AppWindow"
+msgid "Could not sync playtime. Your local data is preserved."
+msgstr "Could not sync playtime. Your local data is preserved."
+
+msgctxt "Library"
+msgid "Playtime"
+msgstr "Playtime"
+
+msgctxt "Library"
+msgid "Playtime source"
+msgstr "Playtime source"
+
+msgctxt "Library"
+msgid "{} h {} min"
+msgstr "{} h {} min"
+
+msgctxt "Library"
+msgid "{} min"
+msgstr "{} min"
+
+msgctxt "Library"
+msgid "{} s"
+msgstr "{} s"
+
+msgctxt "Library"
+msgid "Imported from {}"
+msgstr "Imported from {}"
+
+msgctxt "Library"
+msgid "Internal counter"
+msgstr "Internal counter"

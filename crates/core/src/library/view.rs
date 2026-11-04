@@ -19,6 +19,7 @@ use super::query::{ProviderCount, Row};
 /// The full details of the single selected entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetailView {
+    pub running: bool,
     pub row: Arc<Row>,
     pub install_dir: String,
     pub release_year: Option<i32>,
@@ -171,6 +172,7 @@ impl LibraryMachine {
         let entry = self.entries.get(&row.key);
         let game_id = row.status.game_id();
         DetailView {
+            running: row.running,
             row: Arc::clone(row),
             install_dir: entry.map(|e| e.install_dir.clone()).unwrap_or_default(),
             release_year: game_id

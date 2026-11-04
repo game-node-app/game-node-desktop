@@ -30,6 +30,10 @@ pub enum AuthView {
 /// A complete, immutable view of the application for the UI. Never contains credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    pub playtime_error: bool,
+    pub tracking: TrackingView,
+    pub sync: crate::sync::SyncPreferences,
+    pub playtime_source: crate::playtime::PlaytimeSource,
     pub auth: AuthView,
     pub notice: Option<Notice>,
     pub storage: StorageMethod,
@@ -61,6 +65,10 @@ impl Snapshot {
             AuthState::SigningOut => AuthView::SigningOut,
         };
         Self {
+            playtime_error: false,
+            tracking: TrackingView::default(),
+            sync: Default::default(),
+            playtime_source: Default::default(),
             auth,
             notice: machine.notice(),
             storage,
@@ -69,4 +77,11 @@ impl Snapshot {
             launch,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackingView {
+    pub title: String,
+    pub available: bool,
+    pub running: std::collections::BTreeSet<String>,
 }

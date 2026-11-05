@@ -77,6 +77,78 @@ application data. Unit/mock tests do not prove real-provider OAuth, native
 installation, keyboard navigation, or graphical X11/Wayland behavior. Record
 those separately using the change's acceptance tasks.
 
+## Live UI Screen Studio and hot-reload (WSL / Linux)
+
+For day-to-day UI iteration, visual inspection, keyboard/mouse testing, and
+AI-agent verification—including Windows-gated DRM-free and local save-protection
+screens—prefer the isolated software-rendered screen studio over cross-building
+and reinstalling the Windows package on every edit.
+
+[`crates/app/examples/ui-review.rs`](../crates/app/examples/ui-review.rs) runs
+`AppWindow` inside Slint's deterministic `MinimalSoftwareWindow` with in-memory
+fixture state (no database, credential store, or network access) and encodes
+frames directly to PNG or PPM. [`scripts/dev-screen.sh`](../scripts/dev-screen.sh)
+wraps it with a background file watcher and CLI driver.
+
+### Starting from scratch
+
+```sh
+./scripts/dev-screen.sh start
+```
+
+This builds `ui-review` (`--locked`), starts the HTTP studio on
+`http://127.0.0.1:4777`, keeps the latest rendered frame at
+`/tmp/gamenode-screen.png`, and watches `crates/app/ui/**`,
+`crates/app/examples/ui-review.rs`, and `i18n/**`. Whenever a watched file
+changes, it automatically rebuilds and restarts the server while restoring the
+active preset, locale, and window size from `/tmp/gamenode-ui-state.json`.
+
+### Driving the screen from the CLI or browser
+
+- **Browser / T3 Code Preview**: open `http://127.0.0.1:4777` to see the live
+  1:1 canvas, click/drag/scroll/type directly on the Slint window, switch
+  presets/locales/window sizes from the top toolbar, and inspect the live state
+  JSON in the side panel.
+- **CLI subcommands** (each command updates `/tmp/gamenode-screen.png` and
+  prints the updated state JSON):
+  ```sh
+  ./scripts/dev-screen.sh status                         # Print current screen & property state JSON
+  ./scripts/dev-screen.sh preset drm-detail en           # Open a preset (with optional locale and WxH)
+  ./scripts/dev-screen.sh preset restore pt_BR 1100x720  # Save protection + restore preview in pt_BR
+  ./scripts/dev-screen.sh preset editor en               # DRM-free game settings editor modal
+  ./scripts/dev-screen.sh locale pt_BR                   # Switch between en and pt_BR
+  ./scripts/dev-screen.sh resize 640x420                 # Test compact (640x420) or wide (1440x900) sizes
+  ./scripts/dev-screen.sh click 520 340                  # Click logical coordinates (x, y)
+  ./scripts/dev-screen.sh key Escape                     # Send key (Escape, Tab, Return, DownArrow, F5, ...)
+  ./scripts/dev-screen.sh type "Celeste"                 # Type text into focused input
+  ./scripts/dev-screen.sh shot /tmp/review.png           # Save a PNG or PPM screenshot to a custom path
+  ./scripts/dev-screen.sh stop                           # Stop the background server and watcher
+  ```
+- **One-shot snapshot mode** (without starting the server):
+  ```sh
+  cargo run --locked -p gamenode-app --example ui-review -- /tmp/shot.png library protection pt_BR
+  ```
+- **Headless integration tests** (can also dump per-step PPM screenshots when
+  `GAMENODE_SHOTS=<dir>` is set):
+  ```sh
+  GAMENODE_SHOTS=/tmp/shots cargo test --locked -p gamenode-app --test library_screen --test library_pt_br
+  ```
+
+### Scope and limitations
+
+The live screen studio verifies `.slint` layouts, responsive sizing, focus
+scopes, keyboard navigation, localization (`en` and `pt_BR`), and UI callback
+wiring, but it **does not** exercise:
+- Native Winit/OS window decorations, DPI scale factors from a physical monitor,
+  or the Windows system tray (`ui/windows.slint` / `ui/tray.slint`).
+- Skia GPU rendering or automatic GPU-to-software startup fallback.
+- Real OS adapters (`gamenode-platform`): Windows Credential Manager, Secret
+  Service, native file dialogs, Windows process/parent tracking, directory-change
+  notifications, registry access, or Ludusavi helper execution.
+
+Use the WSL-to-Windows test and packaging routes below to verify those native
+platform integrations.
+
 ## Scanner fixtures and running against a local Steam
 
 Scanner tests run over an in-memory file system (`MemoryFiles`, `FixedRoots`), so they behave the

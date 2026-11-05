@@ -999,3 +999,207 @@ msgstr "Transferir monitoramento"
 msgctxt "DRM-free"
 msgid "Inferred from local evidence: {}"
 msgstr "Inferido de evidências locais: {}"
+
+msgctxt "Settings"
+msgid "Signed in"
+msgstr "Conectado"
+
+msgctxt "Settings"
+msgid "No session"
+msgstr "Sem sessão"
+
+msgctxt "Settings"
+msgid "SETTINGS"
+msgstr "CONFIGURAÇÕES"
+
+msgctxt "Settings"
+msgid "Account"
+msgstr "Conta"
+
+msgctxt "Settings"
+msgid "Stores"
+msgstr "Lojas"
+
+msgctxt "Settings"
+msgid "Backups"
+msgstr "Backups"
+
+msgctxt "Settings"
+msgid "Advanced"
+msgstr "Avançado"
+
+msgctxt "Settings"
+msgid "About"
+msgstr "Sobre"
+
+msgctxt "Settings"
+msgid "Your GameNode connection and what this PC syncs."
+msgstr "Sua conexão com o GameNode e o que este PC sincroniza."
+
+msgctxt "Settings"
+msgid "Stores found on this PC and how playtime is read."
+msgstr "Lojas encontradas neste PC e como o tempo de jogo é lido."
+
+msgctxt "Settings"
+msgid "Local protection for your DRM-free game saves."
+msgstr "Proteção local dos saves dos seus jogos DRM-free."
+
+msgctxt "Settings"
+msgid "Rendering and troubleshooting options."
+msgstr "Renderização e opções para solucionar problemas."
+
+msgctxt "Settings"
+msgid "Version, license and third-party notices."
+msgstr "Versão, licença e avisos de terceiros."
+
+msgctxt "Settings"
+msgid "Session and identity"
+msgstr "Sessão e identidade"
+
+msgctxt "Settings"
+msgid "Your session stays on this device, protected by your operating system."
+msgstr "Sua sessão permanece neste dispositivo, protegida pelo sistema operacional."
+
+msgctxt "Settings"
+msgid "Sign out"
+msgstr "Sair"
+
+msgctxt "Settings"
+msgid "Sync"
+msgstr "Sincronização"
+
+msgctxt "Settings"
+msgid "Playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+msgstr "O tempo total de jogo é enviado para a sua conta GameNode. Você pode desativar a sincronização em Configurações e continuar usando sua biblioteca."
+
+msgctxt "Settings"
+msgid "Detected stores"
+msgstr "Lojas detectadas"
+
+msgctxt "Settings"
+msgid "Game providers configured on this system."
+msgstr "Provedores de jogos configurados neste sistema."
+
+msgctxt "Settings"
+msgid "Last scan failed"
+msgstr "O último escaneamento falhou"
+
+msgctxt "Settings"
+msgid "installed games"
+msgstr "jogos instalados"
+
+msgctxt "Settings"
+msgid "No installed games found"
+msgstr "Nenhum jogo instalado encontrado"
+
+msgctxt "Settings"
+msgid "Failed"
+msgstr "Falhou"
+
+msgctxt "Settings"
+msgid "Playtime source"
+msgstr "Fonte do tempo de jogo"
+
+msgctxt "Settings"
+msgid "Store"
+msgstr "Loja"
+
+msgctxt "Settings"
+msgid "Internal"
+msgstr "Interno"
+
+msgctxt "Settings"
+msgid "Watched folders and local discoveries."
+msgstr "Pastas monitoradas e descobertas locais."
+
+msgctxt "Settings"
+msgid "Unavailable on this system"
+msgstr "Indisponível neste sistema"
+
+msgctxt "Settings"
+msgid "Automatic protection"
+msgstr "Proteção automática"
+
+msgctxt "Settings"
+msgid "Generates local backups automatically."
+msgstr "Gera cópias de segurança locais automaticamente."
+
+msgctxt "Settings"
+msgid "Local folder where DRM-free game backups are saved."
+msgstr "Pasta local onde os backups de jogos DRM-free são salvos."
+
+msgctxt "Settings"
+msgid "Choose folder…"
+msgstr "Escolher pasta…"
+
+msgctxt "Settings"
+msgid "Discard"
+msgstr "Descartar"
+
+msgctxt "Settings"
+msgid "Save changes"
+msgstr "Salvar alterações"
+
+msgctxt "Settings"
+msgid "Unsaved changes"
+msgstr "Alterações não salvas"
+
+msgctxt "Settings"
+msgid "Per-game controls are in each game's details."
+msgstr "Os controles por jogo ficam nos detalhes de cada jogo."
+
+msgctxt "Settings"
+msgid "Requires restart"
+msgstr "Requer reinício"
+
+msgctxt "Settings"
+msgid "Active renderer"
+msgstr "Renderizador ativo"
+
+msgctxt "Settings"
+msgid "About GameNode Desktop"
+msgstr "Sobre o GameNode Desktop"
+
+msgctxt "Settings"
+msgid "Close"
+msgstr "Fechar"
+
+msgctxt "Settings"
+msgid "Close settings"
+msgstr "Fechar configurações"
+
+msgctxt "Settings"
+msgid "Discard changes?"
+msgstr "Descartar alterações?"
+
+msgctxt "Settings"
+msgid "You have unsaved changes. Do you want to discard them?"
+msgstr "Você tem alterações não salvas. Deseja descartá-las?"
+
+msgctxt "Settings"
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgctxt "DRM-free"
+msgid "DRM-free games"
+msgstr "Jogos DRM-free"
+
+msgctxt "Settings"
+msgid "Library rescanned"
+msgstr "Biblioteca reescaneada"
+
+msgctxt "Settings"
+msgid "Backup destination saved"
+msgstr "Destino de backup salvo"
+
+msgctxt "DRM-free"
+msgid "Checking watched folders…"
+msgstr "Verificando pastas monitoradas…"
+
+msgctxt "DRM-free"
+msgid "Some folders could not be checked completely."
+msgstr "Não foi possível verificar algumas pastas por completo."
+
+msgctxt "DRM-free"
+msgid "No new games found. Only recognized games are listed for review."
+msgstr "Nenhum jogo novo encontrado. Somente jogos reconhecidos aparecem para revisão."

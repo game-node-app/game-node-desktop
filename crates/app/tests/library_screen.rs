@@ -166,6 +166,7 @@ fn open(log: &Log) -> AppWindow {
         name: "Steam".into(),
         count: 4,
         selected: false,
+        failed: false,
     }]))));
     state.set_total(4);
     state.set_all_selected(true);

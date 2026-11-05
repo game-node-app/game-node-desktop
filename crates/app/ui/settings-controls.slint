@@ -1,0 +1,1208 @@
+import { SettingsStyle } from "settings-style.slint";
+
+export component SettingsGroupHeader inherits Text {
+    color: SettingsStyle.text-muted;
+    font-size: SettingsStyle.type-group;
+    font-weight: SettingsStyle.type-group-weight;
+    letter-spacing: SettingsStyle.type-group-letter-spacing;
+}
+
+export component Kbd inherits Rectangle {
+    in property <string> text: "Esc";
+    height: self.preferred-height;
+    background: SettingsStyle.bg-raised;
+    border-width: 1px;
+    border-color: SettingsStyle.border-subtle;
+    border-radius: SettingsStyle.radius-kbd;
+    accessible-role: none;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.kbd-padding-y;
+        padding-bottom: SettingsStyle.kbd-padding-y;
+        padding-left: SettingsStyle.kbd-padding-x;
+        padding-right: SettingsStyle.kbd-padding-x;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: SettingsStyle.type-kbd;
+            font-weight: SettingsStyle.type-kbd-weight;
+            color: SettingsStyle.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SettingsCloseButton inherits Rectangle {
+    callback clicked();
+
+    width: SettingsStyle.close-button;
+    height: SettingsStyle.close-button;
+    border-radius: SettingsStyle.radius-control;
+    background: touch.pressed ? SettingsStyle.bg-raised.darker(8%) : (touch.has-hover ? SettingsStyle.bg-raised.brighter(8%) : SettingsStyle.bg-raised);
+    accessible-role: button;
+    accessible-label: @tr("Settings" => "Close settings");
+
+    Image {
+        width: SettingsStyle.icon-md;
+        height: SettingsStyle.icon-md;
+        source: @image-url("icons/settings/close.svg");
+        colorize: touch.has-hover ? SettingsStyle.text-primary : SettingsStyle.text-secondary;
+        image-fit: contain;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SettingsNavItem inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> selected: false;
+    in property <bool> has-pill: false;
+    in property <string> pill-text: "";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: SettingsStyle.nav-item-height;
+    border-radius: SettingsStyle.radius-nav;
+    background: root.selected ? SettingsStyle.bg-raised : (touch.has-hover && root.enabled ? SettingsStyle.bg-surface : Colors.transparent);
+    animate background { duration: 120ms; }
+    accessible-role: list-item;
+    accessible-item-selected: root.selected;
+    accessible-label: root.text;
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.nav-item-padding-y;
+        padding-bottom: SettingsStyle.nav-item-padding-y;
+        padding-left: SettingsStyle.nav-item-padding-x;
+        padding-right: SettingsStyle.nav-item-padding-x;
+        spacing: SettingsStyle.nav-item-gap;
+        alignment: start;
+
+        Image {
+            width: SettingsStyle.icon-md;
+            height: SettingsStyle.icon-md;
+            source: root.icon;
+            colorize: root.selected ? SettingsStyle.accent : (touch.has-hover && root.enabled ? SettingsStyle.text-primary : SettingsStyle.text-secondary);
+            image-fit: contain;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            color: root.selected ? SettingsStyle.text-primary : (touch.has-hover && root.enabled ? SettingsStyle.text-primary : SettingsStyle.text-secondary);
+            font-size: root.selected ? SettingsStyle.type-label : SettingsStyle.type-body;
+            font-weight: root.selected ? SettingsStyle.type-label-weight : SettingsStyle.type-body-weight;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        if root.has-pill : Rectangle {
+            border-radius: self.height / 2;
+            background: SettingsStyle.bg-raised;
+            y: (parent.height - self.height) / 2;
+
+            HorizontalLayout {
+                padding-top: SettingsStyle.pill-padding-y;
+                padding-bottom: SettingsStyle.pill-padding-y;
+                padding-left: SettingsStyle.pill-padding-x;
+                padding-right: SettingsStyle.pill-padding-x;
+
+                Text {
+                    text: root.pill-text;
+                    font-size: SettingsStyle.type-pill;
+                    font-weight: SettingsStyle.type-pill-weight;
+                    color: SettingsStyle.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component SettingsUserBlock inherits Rectangle {
+    in property <string> display-name: "";
+    in property <string> status-text: "";
+    in property <bool> signed-in: false;
+    in property <string> initial: "";
+
+    accessible-role: text;
+    accessible-label: root.signed-in ? root.display-name + ", " + root.status-text : root.status-text;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.user-block-padding-y;
+        padding-bottom: SettingsStyle.user-block-padding-y;
+        padding-left: SettingsStyle.user-block-padding-x;
+        padding-right: SettingsStyle.user-block-padding-x;
+        spacing: SettingsStyle.user-block-gap;
+        alignment: start;
+
+        // Avatar 32x32
+        Rectangle {
+            width: SettingsStyle.user-avatar;
+            height: SettingsStyle.user-avatar;
+            border-radius: self.height / 2;
+            background: root.signed-in ? SettingsStyle.accent-subtle : SettingsStyle.bg-raised;
+
+            if root.signed-in : Text {
+                text: root.initial != "" ? root.initial : "U";
+                font-size: SettingsStyle.type-label;
+                font-weight: SettingsStyle.type-label-weight;
+                color: SettingsStyle.accent;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if !root.signed-in : Image {
+                width: SettingsStyle.icon-md;
+                height: SettingsStyle.icon-md;
+                source: @image-url("icons/settings/user.svg");
+                colorize: SettingsStyle.text-muted;
+                image-fit: contain;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.signed-in ? root.display-name : root.status-text;
+                font-size: SettingsStyle.type-label;
+                font-weight: SettingsStyle.type-label-weight;
+                color: SettingsStyle.text-primary;
+                overflow: elide;
+            }
+
+            if root.signed-in : HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: SettingsStyle.success;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: root.status-text;
+                    font-size: SettingsStyle.type-meta;
+                    font-weight: SettingsStyle.type-meta-weight;
+                    color: SettingsStyle.text-muted;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+export component SettingsPanelHeader inherits Rectangle {
+    in property <string> title: "";
+    in property <string> description: "";
+    in property <bool> show-close: true;
+    callback close();
+
+    border-width: 0px;
+
+    VerticalLayout {
+        padding-top: SettingsStyle.header-padding-top;
+        padding-bottom: SettingsStyle.header-padding-bottom;
+        padding-left: SettingsStyle.header-padding-left;
+        padding-right: SettingsStyle.header-padding-right;
+
+        HorizontalLayout {
+            spacing: SettingsStyle.header-gap;
+            alignment: space-between;
+
+            VerticalLayout {
+                spacing: SettingsStyle.title-gap;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: root.title;
+                    font-size: SettingsStyle.type-title;
+                    font-weight: SettingsStyle.type-title-weight;
+                    color: SettingsStyle.text-primary;
+                    wrap: word-wrap;
+                }
+
+                if root.description != "" : Text {
+                    text: root.description;
+                    font-size: SettingsStyle.type-caption;
+                    font-weight: SettingsStyle.type-caption-weight;
+                    color: SettingsStyle.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.show-close : HorizontalLayout {
+                spacing: SettingsStyle.close-cluster-gap;
+                alignment: end;
+                y: 0px;
+
+                Kbd {
+                    text: "Esc";
+                    y: (parent.height - self.height) / 2;
+                }
+
+                SettingsCloseButton {
+                    clicked => { root.close(); }
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+    }
+
+    // Linha divisória inferior
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        width: 100%;
+        background: SettingsStyle.border-subtle;
+    }
+}
+
+export component SettingsSection inherits VerticalLayout {
+    in property <string> title: "";
+    in property <string> description: "";
+
+    spacing: SettingsStyle.section-header-gap;
+    alignment: start;
+
+    VerticalLayout {
+        spacing: SettingsStyle.title-gap;
+        alignment: start;
+
+        if root.title != "" : Text {
+            text: root.title;
+            font-size: SettingsStyle.type-section;
+            font-weight: SettingsStyle.type-section-weight;
+            color: SettingsStyle.text-primary;
+            wrap: word-wrap;
+        }
+
+        if root.description != "" : Text {
+            text: root.description;
+            font-size: SettingsStyle.type-caption;
+            font-weight: SettingsStyle.type-caption-weight;
+            color: SettingsStyle.text-secondary;
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+export component SettingsCard inherits Rectangle {
+    background: SettingsStyle.bg-surface;
+    border-width: 1px;
+    border-color: SettingsStyle.border-subtle;
+    border-radius: SettingsStyle.radius-card;
+    clip: true;
+
+    @children
+}
+
+export component SettingsRow inherits Rectangle {
+    in property <string> title: "";
+    in property <string> description: "";
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <bool> has-divider: false;
+    in property <bool> enabled: true;
+
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.row-padding-y;
+        padding-bottom: SettingsStyle.row-padding-y;
+        padding-left: SettingsStyle.row-padding-x;
+        padding-right: SettingsStyle.row-padding-x;
+        spacing: SettingsStyle.row-gap;
+        alignment: space-between;
+
+        HorizontalLayout {
+            spacing: SettingsStyle.row-gap;
+            horizontal-stretch: 1;
+            alignment: start;
+
+            if root.has-icon : Rectangle {
+                width: SettingsStyle.tile;
+                height: SettingsStyle.tile;
+                border-radius: SettingsStyle.radius-tile;
+                background: SettingsStyle.bg-raised;
+                y: (parent.height - self.height) / 2;
+
+                Image {
+                    width: SettingsStyle.icon-lg;
+                    height: SettingsStyle.icon-lg;
+                    source: root.icon;
+                    colorize: SettingsStyle.text-secondary;
+                    image-fit: contain;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+
+            VerticalLayout {
+                spacing: SettingsStyle.row-text-gap;
+                alignment: center;
+                horizontal-stretch: 1;
+
+                if root.title != "" : Text {
+                    text: root.title;
+                    font-size: SettingsStyle.type-label;
+                    font-weight: SettingsStyle.type-label-weight;
+                    color: SettingsStyle.text-primary;
+                    wrap: word-wrap;
+                }
+
+                if root.description != "" : Text {
+                    text: root.description;
+                    font-size: SettingsStyle.type-caption;
+                    font-weight: SettingsStyle.type-caption-weight;
+                    color: SettingsStyle.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // Slot de controle
+        HorizontalLayout {
+            alignment: end;
+            y: (parent.height - self.height) / 2;
+            @children
+        }
+    }
+
+    if root.has-divider : Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        width: 100%;
+        background: SettingsStyle.border-subtle;
+    }
+}
+
+export component SettingsToggle inherits Rectangle {
+    in-out property <bool> checked: false;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    width: SettingsStyle.toggle-width + 2px;
+    height: SettingsStyle.toggle-height + 2px;
+    border-radius: self.height / 2;
+    border-width: 1px;
+    border-color: SettingsStyle.toggle-border;
+    background: root.checked ? SettingsStyle.toggle-track-on : SettingsStyle.toggle-track-off;
+    opacity: root.enabled ? 1.0 : 0.45;
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+
+    if focus-scope.has-focus : Rectangle {
+        x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+        border-width: SettingsStyle.focus-ring-width;
+        border-color: SettingsStyle.focus-ring;
+    }
+
+    // Knob 14px
+    Rectangle {
+        width: SettingsStyle.toggle-knob;
+        height: SettingsStyle.toggle-knob;
+        border-radius: self.height / 2;
+        background: root.checked ? SettingsStyle.toggle-knob-on : SettingsStyle.toggle-knob-off;
+        y: SettingsStyle.toggle-inset;
+        x: root.checked ? parent.width - self.width - SettingsStyle.toggle-inset - 1px : SettingsStyle.toggle-inset;
+        animate x { duration: 120ms; }
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" {
+                if root.enabled {
+                    root.checked = !root.checked;
+                    root.toggled(root.checked);
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            focus-scope.focus();
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+export component SettingsSegmented inherits Rectangle {
+    in-out property <int> selected-index: 0;
+    in property <[string]> options: [];
+    in property <bool> enabled: true;
+    callback changed(int);
+
+    background: SettingsStyle.bg-base;
+    border-width: 1px;
+    border-color: SettingsStyle.border-subtle;
+    border-radius: SettingsStyle.radius-control;
+    opacity: root.enabled ? 1.0 : 0.45;
+    accessible-role: tab-list;
+    accessible-enabled: root.enabled;
+
+    if focus-scope.has-focus : Rectangle {
+        x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+        border-width: SettingsStyle.focus-ring-width;
+        border-color: SettingsStyle.focus-ring;
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                if root.selected-index > 0 {
+                    root.selected-index = root.selected-index - 1;
+                    root.changed(root.selected-index);
+                    return accept;
+                }
+            }
+            if event.text == Key.RightArrow {
+                if root.selected-index + 1 < root.options.length {
+                    root.selected-index = root.selected-index + 1;
+                    root.changed(root.selected-index);
+                    return accept;
+                }
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding: SettingsStyle.segmented-padding;
+        spacing: SettingsStyle.segmented-gap;
+
+        for option[index] in root.options : Rectangle {
+            property <bool> is-selected: index == root.selected-index;
+            border-radius: SettingsStyle.radius-nav;
+            background: is-selected ? SettingsStyle.bg-raised : (item-touch.has-hover && root.enabled ? SettingsStyle.bg-surface : Colors.transparent);
+            accessible-role: tab;
+            accessible-item-selected: is-selected;
+            accessible-label: option;
+
+            item-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    focus-scope.focus();
+                    if root.selected-index != index {
+                        root.selected-index = index;
+                        root.changed(index);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-top: SettingsStyle.segmented-item-padding-y;
+                padding-bottom: SettingsStyle.segmented-item-padding-y;
+                padding-left: SettingsStyle.segmented-item-padding-x;
+                padding-right: SettingsStyle.segmented-item-padding-x;
+                alignment: center;
+
+                Text {
+                    text: option;
+                    font-size: is-selected ? SettingsStyle.type-button : SettingsStyle.type-control;
+                    font-weight: is-selected ? SettingsStyle.type-button-weight : SettingsStyle.type-control-weight;
+                    color: is-selected ? SettingsStyle.text-primary : (item-touch.has-hover && root.enabled ? SettingsStyle.text-primary : SettingsStyle.text-secondary);
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <string> variant: "secondary";
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    callback clicked();
+
+    property <bool> is-primary: root.variant == "primary";
+    property <bool> is-danger: root.variant == "danger";
+    property <bool> is-ghost: root.variant == "ghost";
+    property <bool> is-secondary: !root.is-primary && !root.is-danger && !root.is-ghost;
+
+    border-radius: SettingsStyle.radius-control;
+    border-width: root.is-secondary ? 1px : 0px;
+    border-color: root.is-secondary ? SettingsStyle.border-subtle : Colors.transparent;
+    background: root.is-primary ? (touch.pressed ? SettingsStyle.accent-pressed : (touch.has-hover ? SettingsStyle.accent-hover : SettingsStyle.accent)) :
+                root.is-danger ? (touch.pressed ? SettingsStyle.danger.darker(8%) : (touch.has-hover ? SettingsStyle.danger-hover : SettingsStyle.danger)) :
+                root.is-ghost ? (touch.has-hover ? SettingsStyle.bg-surface : Colors.transparent) :
+                (touch.pressed ? SettingsStyle.bg-raised.darker(8%) : (touch.has-hover ? SettingsStyle.bg-raised.brighter(8%) : SettingsStyle.bg-raised));
+
+    opacity: (!root.enabled || root.busy) ? 0.45 : 1.0;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled && !root.busy;
+
+    if focus-scope.has-focus : Rectangle {
+        x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+        border-width: SettingsStyle.focus-ring-width;
+        border-color: SettingsStyle.focus-ring;
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled && !root.busy;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" {
+                if root.enabled && !root.busy {
+                    root.clicked();
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && !root.busy;
+        clicked => {
+            focus-scope.focus();
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.button-padding-y;
+        padding-bottom: SettingsStyle.button-padding-y;
+        padding-left: SettingsStyle.button-padding-x;
+        padding-right: SettingsStyle.button-padding-x;
+        spacing: SettingsStyle.button-icon-gap;
+        alignment: center;
+
+        if root.has-icon : Image {
+            width: SettingsStyle.icon-sm;
+            height: SettingsStyle.icon-sm;
+            source: root.icon;
+            colorize: root.is-ghost ? (touch.has-hover ? SettingsStyle.text-primary : SettingsStyle.text-secondary) : SettingsStyle.text-primary;
+            image-fit: contain;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            font-size: SettingsStyle.type-button;
+            font-weight: SettingsStyle.type-button-weight;
+            color: root.is-ghost ? (touch.has-hover ? SettingsStyle.text-primary : SettingsStyle.text-secondary) : SettingsStyle.text-primary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SettingsIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: SettingsStyle.radius-control;
+    background: touch.pressed ? SettingsStyle.bg-raised.darker(8%) : (touch.has-hover ? SettingsStyle.bg-raised : Colors.transparent);
+    opacity: root.enabled ? 1.0 : 0.45;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+
+    if focus-scope.has-focus : Rectangle {
+        x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+        border-width: SettingsStyle.focus-ring-width;
+        border-color: SettingsStyle.focus-ring;
+    }
+
+    Image {
+        width: SettingsStyle.icon-md;
+        height: SettingsStyle.icon-md;
+        source: root.icon;
+        colorize: touch.has-hover ? SettingsStyle.text-primary : SettingsStyle.text-secondary;
+        image-fit: contain;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" {
+                if root.enabled { root.clicked(); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            focus-scope.focus();
+            root.clicked();
+        }
+    }
+}
+
+export component SettingsCheckbox inherits Rectangle {
+    in-out property <bool> checked: false;
+    in property <bool> enabled: true;
+    in property <string> text: "";
+    callback toggled(bool);
+
+    opacity: root.enabled ? 1.0 : 0.45;
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+
+    HorizontalLayout {
+        spacing: SettingsStyle.row-gap;
+        alignment: start;
+
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            border-radius: SettingsStyle.radius-kbd;
+            border-width: 1.5px;
+            border-color: root.checked ? SettingsStyle.accent : SettingsStyle.text-muted;
+            background: root.checked ? SettingsStyle.accent : Colors.transparent;
+            y: (parent.height - self.height) / 2;
+
+            if root.checked : Image {
+                width: SettingsStyle.icon-sm;
+                height: SettingsStyle.icon-sm;
+                source: @image-url("icons/settings/check.svg");
+                colorize: SettingsStyle.text-primary;
+                image-fit: contain;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+
+            if focus-scope.has-focus : Rectangle {
+                x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+                y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+                width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+                height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+                border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+                border-width: SettingsStyle.focus-ring-width;
+                border-color: SettingsStyle.focus-ring;
+            }
+        }
+
+        if root.text != "" : Text {
+            text: root.text;
+            font-size: SettingsStyle.type-body;
+            font-weight: SettingsStyle.type-body-weight;
+            color: SettingsStyle.text-primary;
+            vertical-alignment: center;
+        }
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" {
+                if root.enabled {
+                    root.checked = !root.checked;
+                    root.toggled(root.checked);
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            focus-scope.focus();
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+export component SettingsInput inherits VerticalLayout {
+    in-out property <string> text: "";
+    in property <string> placeholder: "";
+    in property <string> help-text: "";
+    in property <string> error-text: "";
+    in property <bool> has-error: false;
+    in property <bool> is-valid: false;
+    in property <string> counter-text: "";
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted(string);
+
+    spacing: 4px;
+
+    Rectangle {
+        background: SettingsStyle.bg-base;
+        border-radius: SettingsStyle.radius-control;
+        border-width: (root.has-error || root.is-valid || input.has-focus) ? 1.5px : 1px;
+        border-color: root.has-error ? SettingsStyle.danger :
+                     root.is-valid ? SettingsStyle.success :
+                     input.has-focus ? SettingsStyle.accent : SettingsStyle.border-subtle;
+        opacity: root.enabled ? 1.0 : 0.45;
+
+        if root.text == "" && !input.has-focus : Text {
+            x: SettingsStyle.input-padding-x;
+            y: (parent.height - self.height) / 2;
+            text: root.placeholder;
+            color: SettingsStyle.text-muted;
+            font-size: SettingsStyle.type-body;
+        }
+
+        HorizontalLayout {
+            padding-top: SettingsStyle.input-padding-y;
+            padding-bottom: SettingsStyle.input-padding-y;
+            padding-left: SettingsStyle.input-padding-x;
+            padding-right: SettingsStyle.input-padding-x;
+            spacing: 8px;
+            alignment: space-between;
+
+            input := TextInput {
+                text: root.text;
+                color: SettingsStyle.text-primary;
+                font-size: SettingsStyle.type-body;
+                font-weight: SettingsStyle.type-body-weight;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                enabled: root.enabled;
+                accessible-role: text-input;
+                accessible-description: root.has-error ? root.error-text : root.help-text;
+                edited => {
+                    root.text = self.text;
+                    root.edited(self.text);
+                }
+                accepted => {
+                    root.accepted(self.text);
+                }
+            }
+
+            if root.is-valid : Image {
+                width: SettingsStyle.icon-md;
+                height: SettingsStyle.icon-md;
+                source: @image-url("icons/settings/check.svg");
+                colorize: SettingsStyle.success;
+                image-fit: contain;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    if root.has-error || root.help-text != "" || root.counter-text != "" : HorizontalLayout {
+        alignment: space-between;
+
+        if root.has-error : Text {
+            text: root.error-text;
+            font-size: SettingsStyle.type-caption;
+            font-weight: SettingsStyle.type-caption-weight;
+            color: SettingsStyle.danger;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        if !root.has-error && root.help-text != "" : Text {
+            text: root.help-text;
+            font-size: SettingsStyle.type-caption;
+            font-weight: SettingsStyle.type-caption-weight;
+            color: SettingsStyle.text-secondary;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        if root.counter-text != "" : Text {
+            text: root.counter-text;
+            font-size: SettingsStyle.type-meta;
+            font-weight: SettingsStyle.type-meta-weight;
+            color: SettingsStyle.text-muted;
+            horizontal-alignment: right;
+        }
+    }
+}
+
+export component Pill inherits Rectangle {
+    in property <string> text: "";
+    in property <string> variant: "neutral"; // neutral, accent, success, warning
+    height: self.preferred-height;
+
+    property <bool> is-accent: root.variant == "accent";
+    property <bool> is-success: root.variant == "success";
+    property <bool> is-warning: root.variant == "warning";
+
+    border-radius: self.height / 2;
+    background: root.is-accent ? SettingsStyle.accent-subtle :
+                root.is-success ? SettingsStyle.success-subtle :
+                root.is-warning ? SettingsStyle.warning-subtle : SettingsStyle.bg-raised;
+    accessible-role: none;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.pill-padding-y;
+        padding-bottom: SettingsStyle.pill-padding-y;
+        padding-left: SettingsStyle.pill-padding-x;
+        padding-right: SettingsStyle.pill-padding-x;
+        alignment: center;
+
+        Text {
+            text: root.text;
+            font-size: SettingsStyle.type-pill;
+            font-weight: SettingsStyle.type-pill-weight;
+            color: root.is-accent ? SettingsStyle.accent :
+                   root.is-success ? SettingsStyle.success :
+                   root.is-warning ? SettingsStyle.warning : SettingsStyle.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component InfoBox inherits Rectangle {
+    in property <string> text: "";
+    in property <image> icon;
+    in property <bool> has-icon: false;
+
+    background: SettingsStyle.bg-base;
+    border-width: 1px;
+    border-color: SettingsStyle.border-subtle;
+    border-radius: SettingsStyle.radius-control;
+    accessible-role: none;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.infobox-padding-y;
+        padding-bottom: SettingsStyle.infobox-padding-y;
+        padding-left: SettingsStyle.infobox-padding-x;
+        padding-right: SettingsStyle.infobox-padding-x;
+        spacing: SettingsStyle.infobox-gap;
+        alignment: start;
+
+        if root.has-icon : Image {
+            width: SettingsStyle.icon-md;
+            height: SettingsStyle.icon-md;
+            source: root.icon;
+            colorize: SettingsStyle.text-muted;
+            image-fit: contain;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            font-size: SettingsStyle.type-caption;
+            font-weight: SettingsStyle.type-caption-weight;
+            color: SettingsStyle.text-secondary;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SettingsActionBar inherits HorizontalLayout {
+    in property <bool> dirty: false;
+    in property <bool> saving: false;
+    in property <string> unsaved-text: @tr("Settings" => "Unsaved changes");
+    in property <string> discard-text: @tr("Settings" => "Discard");
+    in property <string> save-text: @tr("Settings" => "Save changes");
+    callback discard();
+    callback save();
+
+    spacing: SettingsStyle.actions-gap;
+    alignment: end;
+
+    if root.dirty : Text {
+        text: root.unsaved-text;
+        font-size: SettingsStyle.type-caption;
+        font-weight: SettingsStyle.type-caption-weight;
+        color: SettingsStyle.warning;
+        vertical-alignment: center;
+    }
+
+    if root.dirty : SettingsButton {
+        text: root.discard-text;
+        variant: "ghost";
+        enabled: !root.saving;
+        clicked => { root.discard(); }
+    }
+
+    if root.dirty : SettingsButton {
+        text: root.save-text;
+        variant: "primary";
+        busy: root.saving;
+        clicked => { root.save(); }
+    }
+}
+
+export component SettingsScroll inherits Rectangle {
+    out property <length> viewport-y <=> flick.content-y;
+    out property <length> viewport-height <=> flick.content-height;
+
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        @children
+    }
+
+    // Polegar da barra de rolagem (4px)
+    if flick.content-height > flick.height : Rectangle {
+        x: parent.width - SettingsStyle.scrollbar-width - 4px;
+        y: (-flick.content-y / flick.content-height) * flick.height;
+        width: SettingsStyle.scrollbar-width;
+        height: max(24px, (flick.height / flick.content-height) * flick.height);
+        border-radius: SettingsStyle.radius-scrollbar;
+        background: SettingsStyle.scrollbar-thumb;
+    }
+
+    // Fade inferior de 72px
+    if flick.content-y > -(flick.content-height - flick.height) : Rectangle {
+        y: parent.height - SettingsStyle.fade-height;
+        height: SettingsStyle.fade-height;
+        width: 100%;
+        border-bottom-right-radius: SettingsStyle.radius-fade;
+        background: @linear-gradient(180deg, SettingsStyle.fade-start 0%, SettingsStyle.fade-end 100%);
+    }
+}
+
+export component Toast inherits Rectangle {
+    in property <string> text: "";
+    in property <string> kind: "success"; // success, warning, danger
+    in property <bool> open: false;
+    callback close();
+
+    property <bool> is-success: root.kind == "success";
+    property <bool> is-warning: root.kind == "warning";
+    property <bool> is-danger: root.kind == "danger";
+
+    visible: root.open;
+    border-radius: SettingsStyle.radius-tile;
+    border-width: 1px;
+    border-color: SettingsStyle.border-subtle;
+    background: SettingsStyle.bg-raised;
+    drop-shadow-color: SettingsStyle.shadow-toast-color;
+    drop-shadow-offset-y: SettingsStyle.shadow-toast-offset-y;
+    drop-shadow-blur: SettingsStyle.shadow-toast-blur;
+    accessible-role: none;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-top: SettingsStyle.toast-padding-y;
+        padding-bottom: SettingsStyle.toast-padding-y;
+        padding-left: SettingsStyle.toast-padding-left;
+        padding-right: SettingsStyle.toast-padding-right;
+        spacing: SettingsStyle.toast-gap;
+        alignment: center;
+
+        Image {
+            width: SettingsStyle.icon-md;
+            height: SettingsStyle.icon-md;
+            source: root.is-success ? @image-url("icons/settings/check.svg") : @image-url("icons/settings/alert.svg");
+            colorize: root.is-success ? SettingsStyle.success : (root.is-warning ? SettingsStyle.warning : SettingsStyle.danger);
+            image-fit: contain;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            font-size: SettingsStyle.type-label;
+            font-weight: SettingsStyle.type-label-weight;
+            color: SettingsStyle.text-primary;
+            vertical-alignment: center;
+        }
+
+        SettingsButton {
+            text: @tr("Settings" => "Close");
+            variant: "ghost";
+            clicked => { root.close(); }
+            y: (parent.height - self.height) / 2;
+        }
+    }
+}
+
+export component AlertDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title: "";
+    in property <string> message: "";
+    in property <string> cancel-text: @tr("Settings" => "Cancel");
+    in property <string> confirm-text: @tr("Settings" => "Discard");
+    in property <string> confirm-variant: "danger";
+    callback cancel();
+    callback confirm();
+
+    visible: root.open;
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+
+    // Segundo overlay
+    overlay-rect := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: SettingsStyle.overlay;
+
+        TouchArea {
+            clicked => { root.cancel(); }
+        }
+    }
+
+    dialog-box := Rectangle {
+        x: max(16px, (parent.width - self.width) / 2);
+        y: max(16px, (parent.height - self.height) / 2);
+        width: min(SettingsStyle.alert-width, parent.width - 32px);
+        background: SettingsStyle.bg-surface;
+        border-width: 1px;
+        border-color: SettingsStyle.border-subtle;
+        border-radius: SettingsStyle.radius-modal;
+        drop-shadow-color: SettingsStyle.shadow-alert-color;
+        drop-shadow-offset-y: SettingsStyle.shadow-alert-offset-y;
+        drop-shadow-blur: SettingsStyle.shadow-alert-blur;
+        clip: true;
+
+        VerticalLayout {
+            spacing: 0px;
+
+            // Corpo
+            VerticalLayout {
+                padding-top: SettingsStyle.alert-padding-top;
+                padding-left: SettingsStyle.alert-padding-x;
+                padding-right: SettingsStyle.alert-padding-x;
+                padding-bottom: SettingsStyle.alert-padding-bottom;
+                spacing: SettingsStyle.alert-gap;
+
+                HorizontalLayout {
+                    spacing: SettingsStyle.alert-header-gap;
+                    alignment: start;
+
+                    Rectangle {
+                        width: SettingsStyle.tile-lg;
+                        height: SettingsStyle.tile-lg;
+                        border-radius: SettingsStyle.radius-tile;
+                        background: SettingsStyle.danger-subtle;
+                        y: (parent.height - self.height) / 2;
+
+                        Image {
+                            width: SettingsStyle.icon-md;
+                            height: SettingsStyle.icon-md;
+                            source: @image-url("icons/settings/alert.svg");
+                            colorize: SettingsStyle.danger;
+                            image-fit: contain;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: SettingsStyle.title-gap;
+                        horizontal-stretch: 1;
+                        alignment: center;
+
+                        Text {
+                            text: root.title;
+                            font-size: SettingsStyle.type-title;
+                            font-weight: SettingsStyle.type-title-weight;
+                            color: SettingsStyle.text-primary;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    Kbd {
+                        text: "Esc";
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                Text {
+                    text: root.message;
+                    font-size: SettingsStyle.type-body;
+                    font-weight: SettingsStyle.type-body-weight;
+                    color: SettingsStyle.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Barra de ações
+            Rectangle {
+                background: SettingsStyle.bg-base;
+
+                HorizontalLayout {
+                    padding-top: SettingsStyle.alert-actions-padding-y;
+                    padding-bottom: SettingsStyle.alert-actions-padding-y;
+                    padding-left: SettingsStyle.alert-actions-padding-x;
+                    padding-right: SettingsStyle.alert-actions-padding-x;
+                    spacing: SettingsStyle.actions-gap;
+                    alignment: end;
+
+                    cancel-btn := SettingsButton {
+                        text: root.cancel-text;
+                        variant: "secondary";
+                        clicked => { root.cancel(); }
+                    }
+
+                    confirm-btn := SettingsButton {
+                        text: root.confirm-text;
+                        variant: root.confirm-variant;
+                        clicked => { root.confirm(); }
+                    }
+                }
+            }
+        }
+
+        TouchArea {
+            // Consome cliques para não fechar clicando dentro do card
+        }
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.open;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if event.text == Key.Tab {
+                // Focus trap: alterna entre Cancelar e Confirmar
+                return accept;
+            }
+            return reject;
+        }
+    }
+}

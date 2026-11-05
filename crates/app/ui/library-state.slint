@@ -1,7 +1,4 @@
-// What the library screen shows and the commands it sends. The Rust side (`library_ui.rs`) fills
-// the properties from each engine snapshot and connects the callbacks to the engine; this file
-// holds no logic of its own. Every sentence the screens show is written in Slint with `@tr()`
-// (context "Library"), so Rust sends only enums, numbers and names taken from the data.
+import { SettingsState } from "settings-state.slint";
 
 export enum MatchKind { matched, ambiguous, unmatched, no-game }
 export enum SourceKind { none, chosen, automatic }
@@ -59,6 +56,7 @@ export struct ProviderItem {
     name: string,
     count: int,
     selected: bool,
+    failed: bool,
 }
 
 // A game offered by the match dialog. `id` is the GameNode game id as text.
@@ -185,7 +183,7 @@ export global LibraryState {
     in-out property <int> add-summary-failed;
 
     // True while a dialog is open: the screen behind it takes no focus.
-    out property <bool> modal: match-open || add-open;
+    out property <bool> modal: match-open || add-open || SettingsState.open;
 
     // --- commands ---
     callback select(string, bool, bool);          // key, ctrl, shift

@@ -1,0 +1,213 @@
+import { Theme } from "theme.slint";
+
+export global SettingsStyle {
+    // Cores (aliases para Theme onde coincide)
+    out property <color> bg-base: #0B0B0B;
+    out property <color> bg-sidebar: Theme.color-chrome;
+    out property <color> bg-surface: Theme.color-secondary;
+    out property <color> bg-raised: Theme.color-raised;
+    out property <color> border-subtle: Theme.color-border-subtle;
+    out property <color> text-primary: #FFFFFF;
+    out property <color> text-secondary: #ADADAD;
+    out property <color> text-muted: #7A7A7A;
+    out property <color> accent: Theme.color-primary;
+    out property <color> accent-subtle: Theme.color-accent-subtle;
+    out property <color> accent-hover: Theme.color-primary.brighter(10%);
+    out property <color> accent-pressed: Theme.color-tertiary;
+    out property <color> success: Theme.color-success;
+    out property <color> success-subtle: #3DD68C1F;
+    out property <color> warning: #F5A524;
+    out property <color> warning-subtle: #F5A5241F;
+    out property <color> danger: Theme.color-danger;
+    out property <color> danger-subtle: Theme.color-danger-subtle;
+    out property <color> danger-hover: Theme.color-danger.brighter(10%);
+    out property <color> overlay: #0000009E;
+    out property <color> scrollbar-thumb: #FFFFFF38;
+    out property <color> fade-start: #0B0B0B00;
+    out property <color> fade-end: #0B0B0B;
+    out property <color> toggle-track-on: #1A1A1A;
+    out property <color> toggle-track-off: #2E2E2E;
+    out property <color> toggle-border: #2E2E2E;
+    out property <color> toggle-knob-on: #F15025;
+    out property <color> toggle-knob-off: #7A7A7A;
+    out property <color> focus-ring: #F15025;
+
+    // Sombras
+    out property <color> shadow-modal-color: #0000008C;
+    out property <length> shadow-modal-offset-y: 32px;
+    out property <length> shadow-modal-blur: 80px;
+
+    out property <color> shadow-alert-color: #00000099;
+    out property <length> shadow-alert-offset-y: 24px;
+    out property <length> shadow-alert-blur: 64px;
+
+    out property <color> shadow-toast-color: #00000080;
+    out property <length> shadow-toast-offset-y: 12px;
+    out property <length> shadow-toast-blur: 32px;
+
+    // Tipografia
+    out property <length> type-title: 20px;
+    out property <int> type-title-weight: 500;
+
+    out property <length> type-section: 16px;
+    out property <int> type-section-weight: 500;
+
+    out property <length> type-label: 14px;
+    out property <int> type-label-weight: 600;
+
+    out property <length> type-body: 14px;
+    out property <int> type-body-weight: 400;
+
+    out property <length> type-caption: 13px;
+    out property <int> type-caption-weight: 400;
+    out property <length> space-caption-gap: 5px;
+
+    out property <length> type-button: 13px;
+    out property <int> type-button-weight: 500;
+
+    out property <length> type-control: 13px;
+    out property <int> type-control-weight: 400;
+
+    out property <length> type-meta: 12px;
+    out property <int> type-meta-weight: 400;
+
+    out property <length> type-pill: 12px;
+    out property <int> type-pill-weight: 500;
+
+    out property <length> type-kbd: 11px;
+    out property <int> type-kbd-weight: 500;
+
+    out property <length> type-group: 11px;
+    out property <int> type-group-weight: 600;
+    out property <length> type-group-letter-spacing: 0.6px;
+
+    // Espaçamentos e tamanhos
+    out property <length> modal-max-width: 960px;
+    out property <length> modal-max-height: 720px;
+    out property <length> modal-margin: 24px;
+    out property <length> modal-margin-compact: 16px;
+
+    out property <length> sidebar-width: 216px;
+    out property <length> sidebar-width-compact: 176px;
+    out property <length> sidebar-padding-y: 16px;
+    out property <length> sidebar-padding-x: 10px;
+    out property <length> sidebar-gap: 14px;
+
+    out property <length> user-avatar: 32px;
+    out property <length> user-block-padding-y: 4px;
+    out property <length> user-block-padding-x: 6px;
+    out property <length> user-block-gap: 10px;
+
+    out property <length> nav-gap: 2px;
+    out property <length> nav-group-padding-bottom: 6px;
+    out property <length> nav-group-padding-left: 10px;
+    out property <length> nav-item-height: 32px;
+    out property <length> nav-item-padding-y: 8px;
+    out property <length> nav-item-padding-x: 10px;
+    out property <length> nav-item-gap: 10px;
+
+    out property <length> icon-sm: 14px;
+    out property <length> icon-md: 16px;
+    out property <length> icon-lg: 18px;
+
+    out property <length> footer-padding-top: 6px;
+    out property <length> footer-padding-left: 10px;
+
+    out property <length> header-padding-top: 18px;
+    out property <length> header-padding-left: 32px;
+    out property <length> header-padding-right: 16px;
+    out property <length> header-padding-bottom: 16px;
+    out property <length> header-gap: 24px;
+    out property <length> title-gap: 4px;
+    out property <length> close-cluster-gap: 8px;
+    out property <length> close-button: 32px;
+
+    out property <length> scroll-padding-top: 28px;
+    out property <length> scroll-padding-x: 32px;
+    out property <length> scroll-padding-x-compact: 20px;
+    out property <length> scroll-padding-bottom: 40px;
+
+    out property <length> section-gap: 32px;
+    out property <length> section-header-gap: 16px;
+
+    out property <length> row-padding-y: 16px;
+    out property <length> row-padding-x: 20px;
+    out property <length> row-gap: 16px;
+    out property <length> row-text-gap: 4px;
+
+    out property <length> table-row-padding-y: 14px;
+    out property <length> table-header-padding-y: 12px;
+    out property <length> table-col: 76px;
+
+    out property <length> tile: 36px;
+    out property <length> tile-lg: 40px;
+
+    out property <length> scrollbar-width: 4px;
+    out property <length> fade-height: 72px;
+
+    out property <length> toggle-width: 33px;
+    out property <length> toggle-height: 16px;
+    out property <length> toggle-knob: 14px;
+    out property <length> toggle-inset: 2px;
+
+    out property <length> radio: 18px;
+    out property <length> radio-on-border: 5px;
+    out property <length> radio-off-border: 1.5px;
+
+    out property <length> button-padding-y: 7px;
+    out property <length> button-padding-x: 12px;
+    out property <length> button-icon-gap: 6px;
+
+    out property <length> input-padding-y: 10px;
+    out property <length> input-padding-x: 12px;
+
+    out property <length> select-padding-y: 7px;
+    out property <length> select-padding-left: 12px;
+    out property <length> select-padding-right: 10px;
+    out property <length> select-gap: 8px;
+
+    out property <length> segmented-padding: 3px;
+    out property <length> segmented-gap: 2px;
+    out property <length> segmented-item-padding-y: 5px;
+    out property <length> segmented-item-padding-x: 12px;
+
+    out property <length> pill-padding-y: 3px;
+    out property <length> pill-padding-x: 8px;
+
+    out property <length> kbd-padding-y: 2px;
+    out property <length> kbd-padding-x: 6px;
+
+    out property <length> infobox-padding-y: 12px;
+    out property <length> infobox-padding-x: 14px;
+    out property <length> infobox-gap: 6px;
+
+    out property <length> actions-gap: 8px;
+
+    out property <length> alert-width: 440px;
+    out property <length> alert-padding-top: 24px;
+    out property <length> alert-padding-x: 24px;
+    out property <length> alert-padding-bottom: 20px;
+    out property <length> alert-gap: 14px;
+    out property <length> alert-header-gap: 12px;
+    out property <length> alert-actions-padding-y: 16px;
+    out property <length> alert-actions-padding-x: 24px;
+
+    out property <length> toast-padding-y: 10px;
+    out property <length> toast-padding-left: 14px;
+    out property <length> toast-padding-right: 10px;
+    out property <length> toast-gap: 12px;
+
+    out property <length> focus-ring-width: 2px;
+    out property <length> focus-ring-offset: 2px;
+
+    // Raios
+    out property <length> radius-scrollbar: 2px;
+    out property <length> radius-kbd: 4px;
+    out property <length> radius-nav: 6px;
+    out property <length> radius-control: 8px;
+    out property <length> radius-tile: 10px;
+    out property <length> radius-card: 12px;
+    out property <length> radius-modal: 16px;
+    out property <length> radius-fade: 15px;
+    out property <length> radius-pill: 999px;
+}

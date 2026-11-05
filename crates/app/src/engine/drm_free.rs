@@ -53,6 +53,9 @@ impl Engine {
             view.restore = state.local.restore.clone();
             view.review_selected = state.local.review_selected.clone();
             view.discovery_incomplete = state.local.discovery_incomplete.clone();
+            view.discovery_scanning = state.local.discovery_scanning;
+            view.discovery_completed = state.local.discovery_completed;
+            view.discovery_error = state.local.discovery_error.clone();
             state.local = view;
             engine.publish(&mut state);
         });
@@ -219,6 +222,22 @@ impl Engine {
             let view = engine.load_local_view();
             {
                 let mut state = engine.lock();
+                let mut view = view;
+                view.discovery_incomplete = state.local.discovery_incomplete.clone();
+                view.discovery_scanning = state.local.discovery_scanning;
+                view.discovery_completed = state.local.discovery_completed;
+                view.discovery_error = state.local.discovery_error.clone();
+                view.review_selected = state
+                    .local
+                    .review_selected
+                    .iter()
+                    .filter(|id| {
+                        view.candidates
+                            .iter()
+                            .any(|candidate| !candidate.ignored && &candidate.fingerprint == *id)
+                    })
+                    .cloned()
+                    .collect();
                 state.local = view;
                 state.local.error = result.err().map(|e| e.to_string());
                 engine.publish(&mut state);
@@ -242,7 +261,7 @@ impl Engine {
                         .iter()
                         .any(|watch| watch.enabled && watch.id == candidate.watch)
                         && !registrations.iter().any(|r| {
-                            r.root.eq_ignore_ascii_case(&candidate.root)
+                            candidate_matches_registration(candidate, r)
                                 && (!r.removed || !r.rediscovery_allowed)
                         })
                 })
@@ -280,6 +299,18 @@ impl Engine {
 }
 fn local_storage(error: StorageError) -> LocalError {
     LocalError::Failed(error.to_string())
+}
+
+pub(super) fn candidate_matches_registration(
+    candidate: &gamenode_core::drm_free::Candidate,
+    registration: &Registration,
+) -> bool {
+    candidate.root.eq_ignore_ascii_case(&registration.root)
+        || candidate.targets.iter().any(|target| {
+            gamenode_core::provider::path::normalize(target).eq_ignore_ascii_case(
+                &gamenode_core::provider::path::normalize(&registration.executable),
+            )
+        })
 }
 
 impl Engine {
@@ -975,10 +1006,23 @@ impl Engine {
                 .store(true, Ordering::Release);
             return;
         }
+        {
+            let mut state = self.lock();
+            state.local.discovery_scanning = true;
+            state.local.discovery_error = None;
+            self.publish(&mut state);
+        }
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
             use gamenode_core::drm_free::*;
             let Some(store) = &engine.shared.ports.local_games else {
+                {
+                    let mut state = engine.lock();
+                    state.local.discovery_scanning = false;
+                    state.local.discovery_completed = true;
+                    state.local.discovery_error = Some(LocalError::Unsupported.to_string());
+                    engine.publish(&mut state);
+                }
                 engine
                     .shared
                     .local_discovering
@@ -1020,7 +1064,7 @@ impl Engine {
                             .iter()
                             .any(|old| old.fingerprint == candidate.fingerprint && old.ignored)
                             || registrations.iter().any(|r| {
-                                r.root.eq_ignore_ascii_case(&candidate.root)
+                                candidate_matches_registration(&candidate, r)
                                     && (!r.removed || !r.rediscovery_allowed)
                             })
                         {
@@ -1032,9 +1076,11 @@ impl Engine {
                 engine.lock().local.discovery_incomplete = incomplete;
                 Ok::<_, LocalError>(())
             })();
-            if let Err(error) = result {
+            {
                 let mut state = engine.lock();
-                state.local.error = Some(error.to_string());
+                state.local.discovery_scanning = false;
+                state.local.discovery_completed = true;
+                state.local.discovery_error = result.err().map(|error| error.to_string());
                 engine.publish(&mut state);
             }
             engine.refresh_local_games();
@@ -1370,6 +1416,7 @@ impl Engine {
                 let mut next_roots = Instant::now();
                 let mut reconcile = Instant::now();
                 let mut changed = None;
+                let mut was_scanning = false;
                 loop {
                     let Some(shared) = weak.upgrade() else {
                         break;
@@ -1396,7 +1443,9 @@ impl Engine {
                                             &root.path,
                                         )
                                         .ok();
-                                    changed = Some(now);
+                                    if entry.1.is_some() {
+                                        changed = Some(now);
+                                    }
                                 }
                             }
                         }
@@ -1408,16 +1457,22 @@ impl Engine {
                     {
                         changed = Some(now);
                     }
-                    if now >= reconcile
-                        || changed
-                            .is_some_and(|at| now.duration_since(at) >= Duration::from_secs(1))
+                    let scanning = shared.local_discovering.load(Ordering::Acquire);
+                    if was_scanning && !scanning {
+                        reconcile = now + Duration::from_secs(30 * 60);
+                    }
+                    was_scanning = scanning;
+                    if !scanning
+                        && (now >= reconcile
+                            || changed
+                                .is_some_and(|at| now.duration_since(at) >= Duration::from_secs(1)))
                     {
                         Engine {
                             shared: shared.clone(),
                         }
                         .rescan_local_folders();
                         changed = None;
-                        reconcile = now + Duration::from_secs(60);
+                        reconcile = now + Duration::from_secs(30 * 60);
                     }
                     drop(shared);
                     std::thread::sleep(Duration::from_millis(200));
@@ -1463,6 +1518,21 @@ impl Engine {
 }
 
 impl Engine {
+    pub fn pick_local_watch_folder(&self) {
+        let engine = self.clone();
+        self.shared.runtime.spawn_blocking(move || {
+            match gamenode_platform::installations::pick_save_location(true) {
+                Ok(Some(path)) => engine.watch_local_folder(path),
+                Ok(None) => {}
+                Err(error) => {
+                    let mut state = engine.lock();
+                    state.local.error = Some(error.to_string());
+                    engine.publish(&mut state);
+                }
+            }
+        });
+    }
+
     pub fn pick_local_saves(&self, id: String, folder: bool) {
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {

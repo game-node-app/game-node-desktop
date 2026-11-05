@@ -336,6 +336,36 @@ pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
     local.on_backup_settings(move |automatic, destination| {
         e.set_local_backup_settings(automatic, destination.to_string())
     });
+    let weak = ui.as_weak();
+    local.on_destination_pick(move || {
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            match gamenode_platform::installations::pick_save_location(true) {
+                Ok(Some(path)) => {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let settings_state = ui.global::<crate::SettingsState>();
+                            let local = ui.global::<crate::LocalGames>();
+                            settings_state.set_destination_edit(path.clone().into());
+                            settings_state.set_dirty(path != local.get_destination().as_str());
+                        }
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let settings_state = ui.global::<crate::SettingsState>();
+                            settings_state.invoke_trigger_toast(
+                                crate::ToastKind::Danger,
+                                error.to_string().into(),
+                            );
+                        }
+                    });
+                }
+            }
+        });
+    });
     let e = engine.clone();
     local.on_game_backup_automatic(move |automatic| {
         if let Some(id) = selected_local_id(&e) {
@@ -362,6 +392,8 @@ pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
     });
     let e = engine.clone();
     local.on_watch_folder(move |path| e.watch_local_folder(path.to_string()));
+    let e = engine.clone();
+    local.on_watch_folder_pick(move || e.pick_local_watch_folder());
     let e = engine.clone();
     local.on_watch_remove(move |id| e.remove_local_watch(id.to_string()));
     let e = engine.clone();
@@ -496,10 +528,39 @@ thread_local! {
     static RENDERER: RefCell<Option<Renderer>> = const { RefCell::new(None) };
 }
 
+fn same_discovery_rows(
+    model: &slint::ModelRc<crate::DiscoveryRow>,
+    rows: &[crate::DiscoveryRow],
+) -> bool {
+    model.row_count() == rows.len()
+        && rows.iter().enumerate().all(|(i, row)| {
+            model.row_data(i).is_some_and(|old| {
+                old.fingerprint == row.fingerprint
+                    && old.title == row.title
+                    && old.folder == row.folder
+                    && old.executable == row.executable
+                    && old.picked == row.picked
+                    && old.resolved == row.resolved
+                    && old.targets.iter().eq(row.targets.iter())
+            })
+        })
+}
+
 /// Copies the snapshot's library into the screens. Does nothing before [`install`].
 pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
     let local = ui.global::<crate::LocalGames>();
     local.set_busy(snapshot.local_games.busy);
+    local.set_discovery_scanning(snapshot.local_games.discovery_scanning);
+    local.set_discovery_completed(snapshot.local_games.discovery_completed);
+    local.set_discovery_incomplete(!snapshot.local_games.discovery_incomplete.is_empty());
+    local.set_discovery_error(
+        snapshot
+            .local_games
+            .discovery_error
+            .clone()
+            .unwrap_or_default()
+            .into(),
+    );
     local.set_claim_open(snapshot.local_games.pending_claim.is_some());
     local.set_claim_title(
         snapshot
@@ -511,39 +572,48 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .into(),
     );
 
-    local.set_watches(slint::ModelRc::new(slint::VecModel::from(
-        snapshot
-            .local_games
-            .watches
-            .iter()
-            .filter(|w| w.enabled)
-            .map(|w| crate::DiscoveryRow {
-                fingerprint: w.id.clone().into(),
-                folder: w.path.clone().into(),
-                ..Default::default()
-            })
-            .collect::<Vec<_>>(),
-    )));
+    let watches = snapshot
+        .local_games
+        .watches
+        .iter()
+        .filter(|w| w.enabled)
+        .map(|w| crate::DiscoveryRow {
+            fingerprint: w.id.clone().into(),
+            folder: w.path.clone().into(),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    if !same_discovery_rows(&local.get_watches(), &watches) {
+        local.set_watches(slint::ModelRc::new(slint::VecModel::from(watches)));
+    }
 
-    local.set_candidates(slint::ModelRc::new(slint::VecModel::from(
-        snapshot
-            .local_games
-            .candidates
-            .iter()
-            .filter(|c| !c.ignored)
-            .map(|c| crate::DiscoveryRow {
-                fingerprint: c.fingerprint.clone().into(),
-                title: c.title.clone().into(),
-                folder: c.root.clone().into(),
-                executable: c.selected_target.clone().unwrap_or_default().into(),
-                picked: snapshot
-                    .local_games
-                    .review_selected
-                    .contains(&c.fingerprint),
-                resolved: c.selected_target.is_some(),
-            })
-            .collect::<Vec<_>>(),
-    )));
+    let candidates = snapshot
+        .local_games
+        .candidates
+        .iter()
+        .filter(|c| !c.ignored)
+        .map(|c| crate::DiscoveryRow {
+            fingerprint: c.fingerprint.clone().into(),
+            title: c.title.clone().into(),
+            folder: c.root.clone().into(),
+            executable: c.selected_target.clone().unwrap_or_default().into(),
+            targets: slint::ModelRc::new(slint::VecModel::from(
+                c.targets
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect::<Vec<slint::SharedString>>(),
+            )),
+            picked: snapshot
+                .local_games
+                .review_selected
+                .contains(&c.fingerprint),
+            resolved: c.selected_target.is_some(),
+        })
+        .collect::<Vec<_>>();
+    if !same_discovery_rows(&local.get_candidates(), &candidates) {
+        local.set_candidates(slint::ModelRc::new(slint::VecModel::from(candidates)));
+    }
 
     local.set_error(
         snapshot
@@ -699,6 +769,9 @@ struct Renderer {
     collections: Rc<VecModel<CollectionItem>>,
     summary: Rc<VecModel<SummaryItem>>,
     match_was_open: bool,
+    was_scanning: bool,
+    last_destination: Option<String>,
+    last_error: Option<String>,
 }
 
 /// Replaces the model's rows, touching only the rows that differ when the length is unchanged.
@@ -728,6 +801,9 @@ impl Renderer {
             collections: Rc::default(),
             summary: Rc::default(),
             match_was_open: false,
+            was_scanning: false,
+            last_destination: None,
+            last_error: None,
         }
     }
 
@@ -752,6 +828,33 @@ impl Renderer {
     }
 
     fn render(&mut self, ui: &AppWindow, snapshot: &Snapshot) {
+        let is_scanning = snapshot.library.as_ref().is_some_and(|l| l.scanning);
+        if self.was_scanning && !is_scanning {
+            let settings = ui.global::<crate::SettingsState>();
+            settings.invoke_trigger_toast(crate::ToastKind::Success, "Library rescanned".into());
+        }
+        self.was_scanning = is_scanning;
+
+        let current_destination = snapshot.local_games.settings.destination.clone();
+        if let Some(last) = &self.last_destination {
+            if last != &current_destination && !current_destination.is_empty() {
+                let settings = ui.global::<crate::SettingsState>();
+                settings.invoke_trigger_toast(
+                    crate::ToastKind::Success,
+                    "Backup destination saved".into(),
+                );
+            }
+        }
+        self.last_destination = Some(current_destination);
+
+        if let Some(error) = &snapshot.local_games.error {
+            if self.last_error.as_ref() != Some(error) {
+                let settings = ui.global::<crate::SettingsState>();
+                settings.invoke_trigger_toast(crate::ToastKind::Danger, error.clone().into());
+            }
+        }
+        self.last_error = snapshot.local_games.error.clone();
+
         self.artwork.clear_focus();
         let state = ui.global::<LibraryState>();
         let Some(view) = &snapshot.library else {
@@ -814,6 +917,10 @@ impl Renderer {
                     count: i32::try_from(provider.count).unwrap_or(i32::MAX),
                     selected: layout.sidebar
                         == SidebarSelection::Provider(provider.provider.clone()),
+                    failed: view
+                        .failed_providers
+                        .iter()
+                        .any(|f| f == &provider.name || f == provider.provider.as_str()),
                 })
                 .collect(),
         );

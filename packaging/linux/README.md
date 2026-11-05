@@ -13,8 +13,23 @@ Plasma 6.8.2, Firefox 159.0 and kernel `7.2.14-zen1-1-zen`.
 Extract the complete archive, then run `./gamenode.sh` from its directory in a
 graphical user session. No `sudo` is needed. The launcher creates the menu entry,
 registers `app.gamenode://` for the current user, verifies the association, and
-starts GameNode. Launching the `gamenode` binary directly skips this preparation.
+starts GameNode. The binary is internal, at `libexec/gamenode`; launching it
+directly skips this preparation. Use `gamenode.sh` or the GameNode Desktop menu
+entry for normal use.
 The browser may ask permission to open GameNode when completing sign-in.
+
+```text
+gamenode-desktop/
+├── gamenode.sh          # Run this launcher
+├── libexec/gamenode     # Internal executable
+├── VERSION
+└── build-manifest.json
+```
+
+When upgrading from a package with the binary at its root, extract into a fresh
+directory rather than overlaying the old archive: tar extraction does not remove
+obsolete files. Remove the old registration using its uninstaller before switching
+directories. Stable-path installation upgrades remove the managed old root binary.
 
 Keep the extracted directory while using the application. If you move it, run
 `./gamenode.sh` from the new location to update registration. Paths with spaces

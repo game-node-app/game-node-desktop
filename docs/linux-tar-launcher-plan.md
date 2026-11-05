@@ -4,8 +4,9 @@ Issue: [#2 — Linux tar.gz package with automatic integration (Arch + KDE)](htt
 
 Status: launcher, shared registration, packaging and documentation implemented;
 launcher startup by double-click and existing-session restoration were reported
-successful by the user. Full browser-login acceptance remains pending, as does
-the package-layout decision below. Basic isolated script checks do not replace
+successful by the user with the original flat layout. The `libexec` layout is
+implemented; graphical acceptance of the rebuilt package and full browser login
+remain pending. Basic isolated script checks do not replace
 the manual acceptance below.
 
 ## Goal and scope
@@ -46,17 +47,20 @@ Move the binary to `libexec/gamenode` during tar packaging, leaving the launcher
 as the user-facing entry point at the archive root. This is a Unix/Linux packaging
 convention, not a Rust requirement: Cargo output remains in `target/release`.
 
-Motivation: the binary and launcher currently sit side by side. Users can easily
+Motivation: the original package placed the binary and launcher side by side. Users could easily
 open the binary directly, bypassing protocol preparation and its error dialogs.
 Separating internal executables makes the recommended path clearer without
 blocking direct execution for development or diagnosis. The menu entry must
 continue to invoke the launcher, not the internal binary.
 
-Implementation is pending. Update packaging, launcher binary lookup, stable-path
-installation and cleanup together, then rebuild the archive and repeat startup
-and callback checks. Do not treat the successful test of the current flat layout
-as validation of the future `libexec` layout. A launcher rename is not required
-by this decision.
+Packaging, launcher binary lookup, stable-path installation and cleanup now use
+`libexec/gamenode`. The menu and protocol handler continue to invoke the root
+launcher. Stable-path upgrades retire the old managed root binary; portable users
+should extract into a fresh directory to avoid retaining files from older archives.
+The rebuilt archive and isolated launcher/callback checks passed. Repeat the
+graphical walkthrough: the successful user test of the original flat layout is
+not validation of the new `libexec` layout. A launcher rename is not required by
+this decision.
 
 ## Decision: identify each distributed build
 

@@ -14,8 +14,8 @@ esac
 integration_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$integration_dir/desktop-integration.sh"
 integration_mode=portable
-[[ -x "$integration_dir/gamenode" ]] || {
-    integration_error 'GameNode binary is missing or not executable. Extract the complete package again.'
+[[ -x "$integration_dir/libexec/gamenode" ]] || {
+    integration_error 'GameNode internal binary (libexec/gamenode) is missing or not executable. Extract the complete package again.'
     exit 1
 }
 # Preserve installed mode when launched from the stable installation.
@@ -25,4 +25,4 @@ if [[ -f "$integration_dir/.gamenode-desktop-install" ]] &&
 fi
 integration_prepare
 integration_register
-exec "$integration_dir/gamenode" "$@"
+exec "$integration_dir/libexec/gamenode" "$@"

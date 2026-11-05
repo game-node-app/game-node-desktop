@@ -22,6 +22,10 @@ done < "$marker"
 [[ "$product" == 'app.gamenode.desktop' ]] || { echo 'Installation is not owned by GameNode Desktop' >&2; exit 1; }
 [[ "$data_home" == /* && "$config_home" == /* ]] || { echo 'Installation marker is incomplete' >&2; exit 1; }
 [[ "$mode" == installed || "$mode" == portable ]] || { echo 'Unknown installation mode; use the original uninstaller' >&2; exit 1; }
+if [[ "$mode" == installed && -L "$install_dir/libexec" ]]; then
+    echo 'Refusing symlink libexec directory' >&2
+    exit 1
+fi
 
 desktop_file="$data_home/applications/gamenode-desktop.desktop"
 if [[ -L "$desktop_file" ]]; then
@@ -76,6 +80,10 @@ if [[ -f "$desktop_file" ]] &&
 fi
 
 if [[ "$mode" == installed ]]; then
+    rm -f "$install_dir/libexec/gamenode"
+    if [[ -d "$install_dir/libexec" ]]; then
+        rmdir "$install_dir/libexec" 2>/dev/null || true
+    fi
     rm -f "$install_dir/gamenode" "$install_dir/gamenode.png" "$install_dir/LICENSE" "$install_dir/README.md"
     rm -f "$install_dir/install.sh" "$install_dir/uninstall.sh" "$install_dir/gamenode.sh" "$install_dir/desktop-integration.sh"
     rm -f "$install_dir/VERSION" "$install_dir/build-manifest.json"

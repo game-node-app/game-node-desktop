@@ -125,7 +125,8 @@ development association, so this is not proof of an untouched first installation
 After this test, the user agreed to move the packaged binary into `libexec/` to
 make the launcher the obvious entry point. See the
 [packaging decision](linux-tar-launcher-plan.md#decision-keep-the-packaged-binary-under-libexec).
-That layout change has not yet been implemented or validated.
+The layout change was subsequently implemented and checked as described below;
+the user-reported graphical result above still refers to the old layout.
 
 ### Distributed build identity
 
@@ -135,3 +136,18 @@ the build version agrees across the embedded binary string, `VERSION`,
 SHA-256 sidecar and the latest-build alias were verified. An isolated installation
 with a substitute executable also confirmed metadata copying and removal.
 Visual display of the longer version in the real UI remains a manual check.
+
+### libexec package layout
+
+The rebuilt release archive places the binary only at `libexec/gamenode`; the
+root launcher and desktop entry remain the user-facing entry points. Isolated
+checks with a capture executable covered exact callback forwarding, real GIO
+dispatch, paths with spaces, relocation, portable cleanup, stable-path install
+and upgrade from the managed flat layout. Cleanup preserved unrelated files in
+`libexec`, and installation/uninstallation refused symlinked binary directories.
+A missing internal binary produced an error instead of falling back to a stale
+root binary. Archive file hashes, permissions and checksum were verified.
+
+Double-click startup, session restoration and a fresh browser login with this
+new layout still need graphical acceptance. Extract portable upgrades into a
+fresh directory, since extracting tar archives does not remove obsolete files.

@@ -1,5 +1,8 @@
 # Native development
 
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the commit-message convention used
+by developers and AI agents.
+
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
 rustfmt and Clippy; Slint and slint-build are pinned together to 1.18.1. Install
 Rust using rustup, then let rustup install the toolchain when invoking Cargo.

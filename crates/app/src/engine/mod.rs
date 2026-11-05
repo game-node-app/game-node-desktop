@@ -237,11 +237,22 @@ impl Engine {
     /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
     pub fn dispatch(&self, input: Input) {
         let mut state = self.lock();
+        let is_tick = matches!(&input, Input::Tick);
+        let auth_before = is_tick.then(|| (state.machine.state().clone(), state.machine.notice()));
         if matches!(&input, Input::SignOut | Input::SessionRejected) {
             self.stop_tracking(&mut state);
         }
-        let submit_trigger = !matches!(&input, Input::Tick);
+        let submit_trigger = !is_tick;
         let effects = state.machine.handle(input, Instant::now());
+        if effects.is_empty()
+            && let Some((previous_state, previous_notice)) = auth_before
+            && previous_state == *state.machine.state()
+            && previous_notice == state.machine.notice()
+        {
+            // Tick only expires pending authentication attempts. Avoid rebuilding the library,
+            // tracker input, and full UI snapshot on every idle timer tick.
+            return;
+        }
         // Effects are launched under the lock so storage jobs keep their dispatch order.
         for effect in effects {
             self.execute(effect);
@@ -316,6 +327,13 @@ impl Engine {
     /// snapshot's `launch`: "opening" until the operating system accepted the link.
     pub fn open_entry(&self, entry_key: String, kind: LaunchKind) {
         let mut state = self.lock();
+        if state.launch.as_ref().is_some_and(|launch| {
+            launch.entry_key == entry_key
+                && launch.kind == kind
+                && matches!(launch.state, LaunchState::Opening)
+        }) {
+            return;
+        }
         if kind == LaunchKind::Play && state.playtime.tracker.running().contains(&entry_key) {
             return;
         }

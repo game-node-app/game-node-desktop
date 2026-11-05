@@ -339,8 +339,22 @@ mod render {
         let ui = AppWindow::new().unwrap();
         let state = ui.global::<LibraryState>();
         let dir = tempfile::tempdir().unwrap();
-        let mut renderer = Renderer::new(dir.path().to_owned());
+        let mut renderer = Renderer::new(dir.path().to_owned(), &ui);
         renderer.attach(&ui);
+
+        // Disk-backed covers are unavailable on the calling thread and decoded by the worker.
+        std::fs::write(
+            dir.path().join("async.png"),
+            include_bytes!("../../ui/icons/gamenode.png"),
+        )
+        .unwrap();
+        assert!(renderer.cover(Some("async.png")).is_none());
+        let (file, decoded) = renderer
+            .cover_results
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(file, "async.png");
+        assert!(decoded.is_some());
 
         // No library: the screen is off and nothing is listed.
         renderer.render(&ui, &snapshot(None, None));

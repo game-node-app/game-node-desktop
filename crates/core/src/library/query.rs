@@ -103,12 +103,20 @@ impl LibraryMachine {
 
     /// Installed games per loaded provider, in provider order. Not affected by search.
     pub fn provider_counts(&self) -> Vec<ProviderCount> {
-        counts(
-            &self.all_rows(),
-            self.providers
-                .iter()
-                .map(|provider| (provider.id(), provider.name())),
-        )
+        // Counts need only the provider id; building full rows here duplicates title,
+        // match, and cover resolution every time the view is refreshed.
+        let mut installed = std::collections::HashMap::<&str, usize>::new();
+        for entry in self.installed_entries() {
+            *installed.entry(entry.provider.as_str()).or_default() += 1;
+        }
+        self.providers
+            .iter()
+            .map(|provider| ProviderCount {
+                provider: provider.id().to_owned(),
+                name: provider.name().to_owned(),
+                count: installed.get(provider.id()).copied().unwrap_or_default(),
+            })
+            .collect()
     }
 }
 

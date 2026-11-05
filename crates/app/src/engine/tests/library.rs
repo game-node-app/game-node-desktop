@@ -394,6 +394,10 @@ async fn play_and_install_open_the_providers_links_without_blocking() {
     h.uri.gate.close();
     h.engine
         .open_entry("steam:620".to_owned(), LaunchKind::Play);
+    // Repeated activation while the OS opener is still working must not enqueue a second
+    // launch for the same action.
+    h.engine
+        .open_entry("steam:620".to_owned(), LaunchKind::Play);
     assert_eq!(
         h.engine.snapshot().launch.unwrap().state,
         LaunchState::Opening

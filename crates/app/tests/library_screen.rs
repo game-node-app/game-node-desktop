@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use gamenode_app::{
     AccessKind, AddError, AppWindow, CollectionItem, CollectionsKind, EmptyKind, GameItem,
-    LibraryState, MatchKind, OptionItem, ProviderItem, StatusKind, SummaryItem, TargetItem,
-    ViewKind, Why,
+    LibraryState, MatchKind, OptionItem, ProviderItem, SettingsState, SettingsTopic, StatusKind,
+    SummaryItem, TargetItem, ViewKind, Why,
 };
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
@@ -38,6 +38,21 @@ type Log = Rc<RefCell<Vec<String>>>;
 
 fn key(ui: &AppWindow, key: Key) {
     press(ui, key.into());
+}
+
+fn click(ui: &AppWindow, x: f32, y: f32) {
+    let position = LogicalPosition::new(x, y);
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    slint::platform::update_timers_and_animations();
 }
 
 fn press(ui: &AppWindow, text: SharedString) {
@@ -390,28 +405,124 @@ fn library_screens_react_to_keyboard_and_pointer() {
             "{expected} is not reachable by keyboard: {fired:?}"
         );
     }
-    let mut settings_actions = std::collections::BTreeSet::new();
+    // Moving focus between settings controls must not consume the first click.
+    let ui = open(&log);
+    ui.set_settings_open(true);
+    shots.take("11-settings-account");
+    for (y, topic) in [
+        (188., SettingsTopic::Stores),
+        (222., SettingsTopic::Backups),
+        (256., SettingsTopic::Advanced),
+        (290., SettingsTopic::About),
+        (154., SettingsTopic::Account),
+        (188., SettingsTopic::Stores),
+    ] {
+        click(&ui, 150., y);
+        assert_eq!(
+            ui.global::<SettingsState>().get_topic(),
+            topic,
+            "Settings tab must activate on its first click"
+        );
+    }
+    shots.take("12-settings-stores");
+    take(&log);
+    click(&ui, 360., 285.);
+    assert_eq!(take(&log), ["rescan"], "first click on Settings Rescan");
+    let source_log = log.clone();
+    ui.on_source_changed(move |store| {
+        source_log.borrow_mut().push(format!("source {store}"));
+    });
+    ui.set_store_playtime(true);
+    click(&ui, 940., 434.);
+    assert_eq!(
+        take(&log),
+        ["source false"],
+        "first click on playtime source"
+    );
+    click(&ui, 150., 154.);
+    ui.set_sync_enabled(true);
+    let sync_log = log.clone();
+    ui.on_sync_changed(move |enabled| {
+        sync_log.borrow_mut().push(format!("sync {enabled}"));
+    });
+    click(&ui, 960., 319.);
+    assert_eq!(take(&log), ["sync false"], "first click on Sync toggle");
+    click(&ui, 998., 64.);
+    assert!(!ui.get_settings_open(), "first click must close Settings");
+
+    let mut sync_is_keyboard_reachable = false;
     for stops in 1..=40 {
         let ui = open(&log);
+        ui.global::<SettingsState>()
+            .set_topic(SettingsTopic::Account);
+        ui.set_sync_enabled(true);
         ui.set_settings_open(true);
         let sync_log = log.clone();
         ui.on_sync_changed(move |enabled| {
             sync_log.borrow_mut().push(format!("sync {enabled}"));
-        });
-        let source_log = log.clone();
-        ui.on_source_changed(move |store| {
-            source_log.borrow_mut().push(format!("source {store}"));
         });
         take(&log);
         for _ in 0..stops {
             key(&ui, Key::Tab);
         }
         key(&ui, Key::Return);
-        settings_actions.extend(take(&log));
+        if take(&log).iter().any(|line| line == "sync false") {
+            sync_is_keyboard_reachable = true;
+            break;
+        }
     }
-    for expected in ["sync false", "source true", "source false"] {
+    assert!(
+        sync_is_keyboard_reachable,
+        "Sync setting is not keyboard reachable"
+    );
+
+    let mut stores_is_keyboard_reachable = false;
+    for stops in 1..=40 {
+        let ui = open(&log);
+        ui.set_settings_open(true);
+        for _ in 0..stops {
+            key(&ui, Key::Tab);
+        }
+        key(&ui, Key::Return);
+        if ui.global::<SettingsState>().get_topic() == SettingsTopic::Stores {
+            stores_is_keyboard_reachable = true;
+            break;
+        }
+    }
+    assert!(
+        stores_is_keyboard_reachable,
+        "Stores settings are not keyboard reachable"
+    );
+
+    // The segmented source control changes with the arrow keys. Start from each opposite value
+    // so the callback records a real change rather than re-emitting the selected option.
+    for (baseline, key_to_change, expected) in [
+        (false, Key::LeftArrow, "source true"),
+        (true, Key::RightArrow, "source false"),
+    ] {
+        let mut source_is_keyboard_reachable = false;
+        for stops in 1..=40 {
+            let ui = open(&log);
+            let settings = ui.global::<SettingsState>();
+            settings.set_topic(SettingsTopic::Stores);
+            ui.set_store_playtime(baseline);
+            ui.set_settings_open(true);
+            let source_log = log.clone();
+            ui.on_source_changed(move |store| {
+                source_log.borrow_mut().push(format!("source {store}"));
+            });
+            take(&log);
+            for _ in 0..stops {
+                key(&ui, Key::Tab);
+            }
+            key(&ui, key_to_change);
+            if take(&log).iter().any(|line| line == expected) {
+                source_is_keyboard_reachable = true;
+                break;
+            }
+        }
         assert!(
-            settings_actions.contains(expected),
+            source_is_keyboard_reachable,
             "Settings control not keyboard reachable: {expected}"
         );
     }

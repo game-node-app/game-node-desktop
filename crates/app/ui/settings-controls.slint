@@ -68,14 +68,36 @@ export component SettingsNavItem inherits Rectangle {
     border-radius: SettingsStyle.radius-nav;
     background: root.selected ? SettingsStyle.bg-raised : (touch.has-hover && root.enabled ? SettingsStyle.bg-surface : Colors.transparent);
     animate background { duration: 120ms; }
-    accessible-role: list-item;
-    accessible-item-selected: root.selected;
+    forward-focus: focus-scope;
+    accessible-role: button;
     accessible-label: root.text;
+    accessible-enabled: root.enabled;
     opacity: root.enabled ? 1.0 : 0.45;
+
+    if focus-scope.has-focus : Rectangle {
+        x: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        y: - SettingsStyle.focus-ring-offset - SettingsStyle.focus-ring-width;
+        width: parent.width + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        height: parent.height + 2 * (SettingsStyle.focus-ring-offset + SettingsStyle.focus-ring-width);
+        border-radius: parent.border-radius + SettingsStyle.focus-ring-offset;
+        border-width: SettingsStyle.focus-ring-width;
+        border-color: SettingsStyle.focus-ring;
+    }
+
+    focus-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { root.clicked(); }
+        clicked => { focus-scope.focus(); root.clicked(); }
     }
 
     HorizontalLayout {

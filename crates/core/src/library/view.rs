@@ -90,25 +90,27 @@ impl LibraryMachine {
     }
 
     fn build_view(&self, previous: Option<&LibraryView>) -> LibraryView {
-        let reusable: BTreeMap<&str, &Arc<Row>> = previous
-            .map(|view| {
-                view.rows
-                    .iter()
-                    .map(|row| (row.key.as_str(), row))
-                    .collect()
-            })
-            .unwrap_or_default();
         let fresh = self.visible_rows(&self.search);
         let rows: Arc<[Arc<Row>]> = match previous {
             // An unchanged list reuses the whole slice.
             Some(prev) if rows_equal(&prev.rows, &fresh) => prev.rows.clone(),
-            _ => fresh
-                .into_iter()
-                .map(|row| match reusable.get(row.key.as_str()) {
-                    Some(old) if ***old == row => Arc::clone(old),
-                    _ => Arc::new(row),
-                })
-                .collect(),
+            _ => {
+                let reusable: BTreeMap<&str, &Arc<Row>> = previous
+                    .map(|view| {
+                        view.rows
+                            .iter()
+                            .map(|row| (row.key.as_str(), row))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                fresh
+                    .into_iter()
+                    .map(|row| match reusable.get(row.key.as_str()) {
+                        Some(old) if ***old == row => Arc::clone(old),
+                        _ => Arc::new(row),
+                    })
+                    .collect()
+            }
         };
 
         let shown: Vec<String> = rows.iter().map(|row| row.key.clone()).collect();

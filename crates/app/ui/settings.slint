@@ -923,6 +923,8 @@ export component SettingsModal inherits Rectangle {
 
     focus-scope := FocusScope {
         enabled: SettingsState.open;
+        // This shortcut scope spans the modal. Let the actual controls receive presses.
+        focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
                 if root.licenses-open {

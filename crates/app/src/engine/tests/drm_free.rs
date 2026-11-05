@@ -186,6 +186,12 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
 
     // Verify chosen match overrides local inference
     let key = format!("manual:{}", inferences_u1[0].installation);
+    h.until("manual game is available in the library", |s| {
+        s.library
+            .as_ref()
+            .is_some_and(|lib| lib.rows.iter().any(|row| row.key == key))
+    })
+    .await;
     h.engine
         .library_input(gamenode_core::library::Input::Select {
             key: key.clone(),
@@ -343,6 +349,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     }
     h.signed_out().await;
     h.sign_in("token").await;
+    eventually(|| h.engine.lock().playtime.ready).await;
 
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().to_path_buf();
@@ -384,6 +391,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
             .is_some_and(|r| r.gameplay.is_empty() && !r.launchers.is_empty())
     })
     .await;
+    eventually(|| !h.engine.lock().playtime.listing).await;
 
     // 1. Process listing includes an outside-root executable and an uninstaller.
     // They must not be learned or tracked.
@@ -452,6 +460,11 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     );
     // After 10s settling delay has elapsed (e.g. now + 20):
     h.engine.maintenance_at(now + 20);
+    eventually(|| !h.engine.lock().playtime.listing).await;
+    // The asynchronous exit callback can race the first listing. A second periodic listing
+    // observes the persistent launcher after the settling window in either ordering.
+    h.engine.maintenance_at(now + 35);
+    eventually(|| !h.engine.lock().playtime.listing).await;
     h.until("gameplay stopped despite persistent launcher", |s| {
         !s.tracking.running.contains(&key)
     })
@@ -485,7 +498,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
         parent: None,
     };
     h.processes.start(game_proc2.clone());
-    h.engine.maintenance_at(now + 35);
+    h.engine.maintenance_at(now + 55);
     h.until("externally started learned game tracked", |s| {
         s.tracking.running.contains(&key)
     })
@@ -533,7 +546,14 @@ async fn drm_free_session_tracking_restart_recovery_and_no_http_submission() {
     .await;
 
     let key = store.registrations().unwrap()[0].key();
+    h.until("manual row available", |s| {
+        s.library
+            .as_ref()
+            .is_some_and(|v| v.rows.iter().any(|r| r.key == key))
+    })
+    .await;
     eventually(|| h.engine.lock().playtime.ready).await;
+    eventually(|| !h.engine.lock().playtime.listing).await;
     let now = super::super::unix_now() + 10;
     let game_proc = ProcessInfo {
         pid: 300,

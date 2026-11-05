@@ -18,7 +18,7 @@ The application SHALL embed the TOML provider manifests from the repository's `p
 - **THEN** that provider is not loaded and not shown as a filter
 
 ### Requirement: Manifest validation isolates failures
-The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, a duplicate provider id, malformed placeholders, and launch or install templates that are not URIs. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
+The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, an unknown playtime counter, a duplicate provider id, malformed placeholders, and launch or install templates that are not URIs. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
 
 #### Scenario: One manifest is invalid
 - **WHEN** one bundled manifest fails validation
@@ -28,6 +28,10 @@ The application SHALL validate every manifest when it loads. Validation SHALL re
 #### Scenario: Unknown native scanner
 - **WHEN** a manifest names a native scanner the application does not have
 - **THEN** that manifest is rejected and no scan runs for it
+
+#### Scenario: Unknown playtime counter
+- **WHEN** a manifest names a playtime counter the application does not have
+- **THEN** that manifest is rejected with a diagnostic naming the counter
 
 ### Requirement: Scanners return plain records
 Each scan SHALL produce records with a provider-local `id`, an optional `name`, an `install_dir`, and further named text fields. Native and generic scanners SHALL produce the same record shape, so the runtime treats them alike. A record without a usable `id` or `install_dir` SHALL be dropped and logged.
@@ -99,3 +103,29 @@ The Steam scanner SHALL read every library folder that `libraryfolders.vdf` list
 #### Scenario: Steam tools are hidden
 - **WHEN** Steam Linux Runtime, Proton or Steamworks Common Redistributables are installed
 - **THEN** they are not shown as games
+
+### Requirement: Manifest playtime counter
+A manifest MAY declare `playtime = { counter = "<name>" }`, naming a store counter built into the application. With Store selected, a provider with a counter SHALL use that counter. With Internal selected, or without a supported counter, it SHALL use measured sessions. A counter that cannot read a game's total SHALL leave that game's total unchanged, not set it to zero.
+
+#### Scenario: Provider without a counter
+- **WHEN** a manifest has no `playtime` field
+- **THEN** its games' play is recorded as measured sessions
+
+#### Scenario: Counter cannot read a game
+- **WHEN** the counter's file is missing, unreadable or has no entry for a game
+- **THEN** no total is submitted for that game and the failure is logged without file contents
+
+### Requirement: Steam playtime counter
+When the Steam manifest declares the `steam` counter, the application SHALL read each Steam account's per-game total and last-played time from that account's `localconfig.vdf` under every scanned Steam root. A game's total SHALL come from the Steam account that played it most recently. Fields SHALL follow `docs/steam-playtime-counter.md`: Playtime minutes converted to seconds and LastPlayed Unix seconds.
+
+#### Scenario: One Steam account
+- **WHEN** one Steam account on the PC has 754 minutes recorded for app `620`
+- **THEN** the total for `steam:620` is 45240 seconds, with that account's last-played time
+
+#### Scenario: Two Steam accounts played the same game
+- **WHEN** two Steam accounts on the PC have totals for app `620`
+- **THEN** the total from the account with the later last-played time is used
+
+#### Scenario: Malformed config
+- **WHEN** one account's `localconfig.vdf` is malformed
+- **THEN** that account is skipped and logged, and the other accounts' totals are still read

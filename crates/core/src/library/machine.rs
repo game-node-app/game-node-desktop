@@ -274,6 +274,7 @@ pub(super) struct ScanRun {
 }
 
 pub struct LibraryMachine {
+    pub(super) local_inferences: BTreeMap<String, u64>,
     pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
     pub(super) running: BTreeSet<String>,
     pub(super) providers: Vec<Provider>,
@@ -320,6 +321,7 @@ pub struct LibraryMachine {
 impl LibraryMachine {
     pub fn new(providers: Vec<Provider>, layout: LibraryLayout) -> Self {
         Self {
+            local_inferences: BTreeMap::new(),
             playtime: BTreeMap::new(),
             running: BTreeSet::new(),
             providers,
@@ -410,6 +412,12 @@ impl LibraryMachine {
         self.chosen.get(key)
     }
 
+    pub fn set_local_inference(&mut self, key: String, game_id: Option<u64>, game: Option<GameRecord>) {
+        if let Some(game_id) = game_id { self.local_inferences.insert(key,game_id); }
+        else { self.local_inferences.remove(&key); }
+        if let Some(game)=game { self.games.insert(game.game_id,game); }
+        self.view_cache=None;
+    }
     pub fn game(&self, game_id: u64) -> Option<&GameRecord> {
         self.games.get(&game_id)
     }
@@ -620,6 +628,7 @@ impl LibraryMachine {
     }
 
     fn reset_data(&mut self) {
+        self.local_inferences.clear();
         self.entries.clear();
         self.scans.clear();
         self.auto_matches.clear();

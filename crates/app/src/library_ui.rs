@@ -273,6 +273,43 @@ fn unix_now() -> i64 {
 
 /// Connects every `LibraryState` callback to the engine.
 pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
+    let local = ui.global::<crate::LocalGames>();
+    local.set_supported(cfg!(windows));
+    let e = engine.clone();
+    local.on_add(move || e.pick_local_executable(None));
+    let e = engine.clone();
+    local.on_locate(move || {
+        if let Some(id) = selected_local_id(&e) {
+            e.pick_local_executable(Some(id));
+        }
+    });
+    let e = engine.clone();
+    local.on_remove(move || {
+        if let Some(id) = selected_local_id(&e) {
+            e.remove_local_game(id);
+        }
+    });
+    let e = engine.clone();
+    local.on_save(move |title, executable, folder, working, arguments| {
+        let snapshot = e.snapshot();
+        if let Some(id) = selected_local_id(&e) {
+            if let Some(mut value) = snapshot
+                .local_games
+                .registrations
+                .into_iter()
+                .find(|r| r.id == id)
+            {
+                if let Ok(arguments) = gamenode_core::drm_free::parse_arguments(&arguments) {
+                    value.title = title.to_string();
+                    value.executable = executable.to_string();
+                    value.root = folder.to_string();
+                    value.working_directory = working.to_string();
+                    value.arguments = arguments;
+                    e.edit_local_game(value);
+                }
+            }
+        }
+    });
     let state = ui.global::<LibraryState>();
     let send = |engine: &Engine, input: Option<LibInput>| {
         if let Some(input) = input {
@@ -385,6 +422,39 @@ thread_local! {
 
 /// Copies the snapshot's library into the screens. Does nothing before [`install`].
 pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
+    let local = ui.global::<crate::LocalGames>();
+    local.set_busy(snapshot.local_games.busy);
+    local.set_error(
+        snapshot
+            .local_games
+            .error
+            .clone()
+            .unwrap_or_default()
+            .into(),
+    );
+    let selected = snapshot.library.as_ref().and_then(|v| {
+        if v.selected.len() == 1 {
+            v.selected[0].strip_prefix("manual:")
+        } else {
+            None
+        }
+    });
+    local.set_selected_id(selected.unwrap_or_default().into());
+    if let Some(registration) = selected.and_then(|id| {
+        snapshot
+            .local_games
+            .registrations
+            .iter()
+            .find(|r| r.id == id)
+    }) {
+        local.set_title(registration.title.clone().into());
+        local.set_executable(registration.executable.clone().into());
+        local.set_folder(registration.root.clone().into());
+        local.set_working_directory(registration.working_directory.clone().into());
+        local.set_arguments(
+            gamenode_core::drm_free::format_arguments(&registration.arguments).into(),
+        );
+    }
     RENDERER.with(|slot| {
         if let Some(renderer) = slot.borrow_mut().as_mut() {
             renderer.render(ui, snapshot);
@@ -774,3 +844,12 @@ fn load_cover(dir: &Path, file: &str) -> Option<Image> {
 
 #[cfg(test)]
 mod tests;
+
+fn selected_local_id(engine: &Engine) -> Option<String> {
+    let view = engine.snapshot().library?;
+    if let [key] = view.selected.as_slice() {
+        key.strip_prefix("manual:").map(str::to_owned)
+    } else {
+        None
+    }
+}

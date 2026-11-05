@@ -1,0 +1,26 @@
+{
+  "helper_version": "0.31.0",
+  "manifest_revision": "b58576fb97d128089fc3017033d8b9aff695465d",
+  "inputs": {
+    "helper_archive": {
+      "url": "https://github.com/mtkennerly/ludusavi/releases/download/v0.31.0/ludusavi-v0.31.0-win64.zip",
+      "sha256": "f47a8ad8c708f01d2eb124704973beffab205e292f5287a10fc4a101f8d68706"
+    },
+    "manifest.yaml": {
+      "url": "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/b58576fb97d128089fc3017033d8b9aff695465d/data/manifest.yaml",
+      "sha256": "4afb9770b29ab89eda1bc45be552e118390f1726b783c3e8fd7ed80e77563c4d"
+    },
+    "manifest-LICENSE": {
+      "url": "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/b58576fb97d128089fc3017033d8b9aff695465d/LICENSE",
+      "sha256": "dba5a9bdc2280142b90a68fcd76134f48e6c765f14bfde7356b19b55370b27aa"
+    },
+    "ludusavi-LICENSE": {
+      "url": "https://raw.githubusercontent.com/mtkennerly/ludusavi/v0.31.0/LICENSE",
+      "sha256": "dba5a9bdc2280142b90a68fcd76134f48e6c765f14bfde7356b19b55370b27aa"
+    },
+    "cli-contract.md": {
+      "url": "https://raw.githubusercontent.com/mtkennerly/ludusavi/v0.31.0/docs/cli.md",
+      "sha256": "0500761d2599de075dec8a055b31b2211079332bb8c7ae55e1845898eed8daa2"
+    }
+  }
+}

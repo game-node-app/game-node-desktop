@@ -30,6 +30,7 @@ pub enum AuthView {
 /// A complete, immutable view of the application for the UI. Never contains credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    pub local_games: crate::drm_free::LocalView,
     pub playtime_error: bool,
     pub tracking: TrackingView,
     pub sync: crate::sync::SyncPreferences,
@@ -65,6 +66,7 @@ impl Snapshot {
             AuthState::SigningOut => AuthView::SigningOut,
         };
         Self {
+            local_games: Default::default(),
             playtime_error: false,
             tracking: TrackingView::default(),
             sync: Default::default(),

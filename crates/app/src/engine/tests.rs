@@ -342,6 +342,9 @@ fn harness_over(
     );
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let ports = Ports {
+        backups: None,
+        local_games: None,
+        installations: None,
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -369,6 +372,7 @@ fn harness_over(
         format!("nonce{n}")
     });
     let (tx, rx) = watch::channel(Snapshot {
+        local_games: Default::default(),
         playtime_error: false,
         tracking: Default::default(),
         sync: Default::default(),

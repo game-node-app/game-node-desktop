@@ -306,6 +306,7 @@ mod render {
 
     fn snapshot(library: Option<LibraryView>, launch: Option<LaunchStatus>) -> Snapshot {
         Snapshot {
+            local_games: Default::default(),
             playtime_error: false,
             tracking: Default::default(),
             sync: Default::default(),

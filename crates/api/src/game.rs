@@ -288,6 +288,10 @@ struct SearchResponse {
 #[derive(Deserialize)]
 struct SearchData {
     items: Vec<SearchItem>,
+    #[serde(default, rename = "hasNextPage")]
+    has_next_page: Option<bool>,
+    #[serde(default)]
+    total: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -375,9 +379,19 @@ impl GameApi for GameNodeClient {
         credential: &SessionCredential,
         query: &str,
     ) -> Result<Vec<GameSummary>, ApiError> {
+        Ok(self.search_page(credential, query).await?.games)
+    }
+    async fn search_page(
+        &self,
+        credential: &SessionCredential,
+        query: &str,
+    ) -> Result<gamenode_core::game_api::SearchPage, ApiError> {
         let query: String = query.trim().chars().take(MAX_QUERY_LEN).collect();
         if query.is_empty() {
-            return Ok(Vec::new());
+            return Ok(gamenode_core::game_api::SearchPage {
+                games: vec![],
+                complete: Some(true),
+            });
         }
         let response = self
             .authorized(self.http.post(self.v1("search/games", |_| {})), credential)
@@ -394,7 +408,16 @@ impl GameApi for GameNodeClient {
             }
         }
         let body: SearchResponse = response.json().await.map_err(|_| ApiError::Failed)?;
-        Ok(body
+        let count = body.data.items.len();
+        let complete = if count >= SEARCH_LIMIT {
+            Some(false)
+        } else {
+            body.data
+                .has_next_page
+                .map(|more| !more)
+                .or_else(|| body.data.total.map(|total| total <= count))
+        };
+        let games = body
             .data
             .items
             .into_iter()
@@ -404,7 +427,8 @@ impl GameApi for GameNodeClient {
                 release_year: item.first_release_date.as_deref().and_then(year_of),
                 cover_url: item.cover_url.filter(|url| !url.is_empty()),
             })
-            .collect())
+            .collect();
+        Ok(gamenode_core::game_api::SearchPage { games, complete })
     }
 
     async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError> {

@@ -108,3 +108,29 @@ or matches. Step 2 builds refuse the newer schema and leave it untouched.
 or invalid values select `store`. Games without a supported store counter always
 use Internal. Changing source preserves store totals and internal sessions
 separately, without merging or deleting either history.
+
+## DRM-free installations and local protection
+
+Migration `0004_drm_free_backups.sql` adds Windows-user-owned tables:
+
+- `manual_registrations`: stable `id`, canonical `file_identity`, `removed` tombstone
+  and serialized launch/tracking `payload`. A unique partial index rejects duplicate
+  active file identities. Missing executables remain unavailable registrations.
+- `discovery_watches`: watch `id` and configuration `payload`.
+- `discovery_candidates`: stable `fingerprint` and review/ignore `payload`.
+- `local_inferences`: account-scoped `account_id`, `installation_id`, evidence and
+  automatic catalog `payload`; chosen matches retain their existing account scope.
+- `save_profiles`: `id`, `installation_id`, `revision`, frozen definition `payload`.
+- `backup_jobs`: `id`, `installation_id`, `profile_id`, `revision`, `play_period`,
+  `destination`, `state` and result `payload`. A play-period identity deduplicates
+  automatic work. Profile changes cancel obsolete queued jobs transactionally.
+- `backup_destinations`: previously used local destination `path` values.
+
+The `backup_settings` settings key stores independent automatic-backup control
+and destination. Save profiles and protection belong to the OS user and survive
+GameNode account changes. They never inherit a catalog rematch. Backup bytes use
+`backups/manual/<installation UUID>/<profile ID>/`, outside SQLite; removing a
+registration preserves archives. Recovery snapshots are retained separately from
+ordinary history. Interrupted jobs remain durable and require reconciliation
+against actual archives before success or retry. Older binaries refuse this
+schema; uninstall keeps user data and archives under the existing keep-data policy.

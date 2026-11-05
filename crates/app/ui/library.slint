@@ -1,3 +1,4 @@
+import { LocalGames } from "drm-free.slint";
 // The signed-in library: toolbar, game grid or list, and the detail pane. The sidebar entries
 // (`SidebarItem`) are placed by the shell in app.slint. Dialogs live in library-dialogs.slint.
 import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
@@ -385,6 +386,13 @@ component DetailPane inherits Rectangle {
                     source: LibraryState.detail-cover; has-image: LibraryState.detail-has-cover; title: LibraryState.detail-title;
                     text-size: Theme.font-size-md;
                 }
+                if LocalGames.selected-id != "": VerticalLayout {
+                    spacing: 6px;
+                    Action { text: @tr("DRM-free" => "Game settings"); clicked => { LocalGames.editing = true; } }
+                    Action { text: @tr("DRM-free" => "Locate executable"); inert: LocalGames.busy; clicked => { LocalGames.locate(); } }
+                    Action { text: @tr("DRM-free" => "Remove from library"); inert: LocalGames.busy; clicked => { LocalGames.remove(); } }
+                }
+                if LocalGames.error != "": Caption { text: LocalGames.error; wrap: word-wrap; }
                 Field { label: @tr("Library" => "Detected title"); value: LibraryState.detail-detected; }
                 Field { label: @tr("Library" => "GameNode game"); value: LibraryState.detail-matched; }
                 Field { label: @tr("Library" => "Release year"); value: LibraryState.detail-year; }
@@ -478,6 +486,7 @@ export component LibraryScreen inherits Rectangle {
                     search := LineEdit { horizontal-stretch: 1; min-width: 100px; text <=> LibraryState.search; placeholder-text: @tr("Library" => "Search your games (Ctrl+F)"); enabled: !LibraryState.modal; edited(text) => { LibraryState.set-search(text); } }
                     if root.wide: SortControls {}
                     if root.wide: ViewControls {}
+                    if LocalGames.supported: Action { text: @tr("DRM-free" => "Add game"); inert: LocalGames.busy || LibraryState.modal; clicked => { LocalGames.add(); } }
                     Action { text: @tr("Library" => "Rescan"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.rescan(); } }
                 }
                 if !root.wide: HorizontalLayout {
@@ -502,6 +511,7 @@ export component LibraryScreen inherits Rectangle {
                             alignment: center; spacing: 8px; padding: 32px;
                             Heading { text: @tr("Library" => "No installed games found."); horizontal-alignment: center; }
                             Text { text: @tr("Library" => "Looked in: {}", LibraryState.stores); color: Theme.color-text-dimmed; wrap: word-wrap; horizontal-alignment: center; }
+                            if LocalGames.supported: Action { text: @tr("DRM-free" => "Add game"); inert: LocalGames.busy; clicked => { LocalGames.add(); } }
                             Text { text: @tr("Library" => "Install a game, then choose Rescan."); color: Theme.color-text-dimmed; wrap: word-wrap; horizontal-alignment: center; }
                         }
                     }

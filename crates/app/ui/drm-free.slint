@@ -1,0 +1,53 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Action, Caption, Heading } from "controls.slint";
+import { Theme } from "theme.slint";
+export global LocalGames {
+    in property <bool> supported;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> selected-id;
+    in property <string> title;
+    in property <string> executable;
+    in property <string> folder;
+    in property <string> working-directory;
+    in property <string> arguments;
+    in-out property <bool> editing;
+    callback add();
+    callback locate();
+    callback remove();
+    callback save(string,string,string,string,string);
+}
+export component LocalGameEditor inherits Rectangle {
+    background: #0008;
+    TouchArea { }
+    FocusScope {
+        forward-focus: title;
+        key-pressed(event) => { if event.text == Key.Escape { LocalGames.editing = false; return accept; } return reject; }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(12px, (parent.height - self.height) / 2);
+            width: min(parent.width - 32px, 640px);
+            height: min(parent.height - 24px, 540px);
+            background: Theme.color-background;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 10px;
+                Heading { text: @tr("DRM-free" => "Game settings"); }
+                Caption { text: @tr("DRM-free" => "Title"); }
+                title := LineEdit { text: LocalGames.title; }
+                Caption { text: @tr("DRM-free" => "Executable"); }
+                executable := LineEdit { text: LocalGames.executable; }
+                Caption { text: @tr("DRM-free" => "Game folder"); }
+                folder := LineEdit { text: LocalGames.folder; }
+                Caption { text: @tr("DRM-free" => "Working directory"); }
+                working := LineEdit { text: LocalGames.working-directory; }
+                Caption { text: @tr("DRM-free" => "Arguments"); }
+                arguments := LineEdit { text: LocalGames.arguments; }
+                HorizontalLayout {
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.editing = false; } }
+                    Action { text: @tr("DRM-free" => "Save"); clicked => { LocalGames.save(title.text,executable.text,folder.text,working.text,arguments.text); LocalGames.editing = false; } }
+                }
+            }
+        }
+    }
+}

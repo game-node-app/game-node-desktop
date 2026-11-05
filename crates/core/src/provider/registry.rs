@@ -44,6 +44,7 @@ pub type ScanFn = fn(&ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError>;
 pub fn native_scanner(name: &str) -> Option<ScanFn> {
     match name {
         "steam" => Some(steam::scan),
+        "manual" => Some(|_| Ok(Vec::new())),
         _ => None,
     }
 }
@@ -123,8 +124,12 @@ impl Provider {
         self.manifest.matching.as_ref().map(|m| m.external_category)
     }
 
+    pub fn is_manual_executable(&self) -> bool {
+        self.id() == "manual"
+            && matches!(&self.manifest.launch, Some(super::manifest::UriAction::Executable { executable }) if executable == "manual")
+    }
     pub fn has_launch(&self) -> bool {
-        self.launch.is_some()
+        self.launch.is_some() || self.is_manual_executable()
     }
 
     pub fn has_install(&self) -> bool {
@@ -152,7 +157,8 @@ impl Provider {
 
     /// Whether the launch template can be filled from the record.
     pub fn can_launch(&self, record: &Record) -> bool {
-        self.launch.as_ref().is_some_and(|t| t.applies_to(record))
+        (self.is_manual_executable() && record.field("available") == Some("true"))
+            || self.launch.as_ref().is_some_and(|t| t.applies_to(record))
     }
 
     pub fn can_install(&self, record: &Record) -> bool {
@@ -242,7 +248,12 @@ fn template(
 ) -> Result<Option<Template>, String> {
     action
         .as_ref()
-        .map(|action| Template::parse(&action.uri).map_err(|error| format!("{what}: {error}")))
+        .and_then(|action| match action {
+            super::manifest::UriAction::Uri { uri } => {
+                Some(Template::parse(uri).map_err(|error| format!("{what}: {error}")))
+            }
+            _ => None,
+        })
         .transpose()
 }
 
@@ -269,6 +280,27 @@ fn validate(manifest: Manifest) -> Result<Provider, String> {
         && counter(&playtime.counter).is_none()
     {
         return Err(format!("unknown playtime counter `{}`", playtime.counter));
+    }
+    let executable = matches!(
+        manifest.launch,
+        Some(super::manifest::UriAction::Executable { .. })
+    );
+    if executable
+        && (manifest.id != "manual"
+            || manifest.source != "manual"
+            || manifest.scan.native != "manual"
+            || manifest.platforms != [Platform::Windows]
+            || manifest.playtime.is_some()
+            || manifest.install.is_some()
+            || !matches!(&manifest.launch, Some(super::manifest::UriAction::Executable { executable }) if executable == "manual"))
+    {
+        return Err("executable actions are restricted to the built-in manual provider".into());
+    }
+    if matches!(
+        manifest.install,
+        Some(super::manifest::UriAction::Executable { .. })
+    ) {
+        return Err("executable install actions are unsupported".into());
     }
     let launch = template(&manifest.launch, "launch")?;
     let install = template(&manifest.install, "install")?;

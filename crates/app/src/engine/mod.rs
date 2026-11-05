@@ -28,6 +28,7 @@ use gamenode_platform::covers::write_cover;
 use tokio::runtime::Handle;
 
 mod artwork;
+mod drm_free;
 mod playtime;
 
 /// Longest the app waits for the server to confirm a sign-out.
@@ -36,6 +37,9 @@ const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The adapters the engine drives.
 #[derive(Clone)]
 pub struct Ports {
+    pub backups: Option<Arc<dyn gamenode_core::drm_free::BackupEngine>>,
+    pub local_games: Option<Arc<dyn gamenode_core::drm_free::LocalGameStore>>,
+    pub installations: Option<Arc<dyn gamenode_core::drm_free::InstallationHost>>,
     pub processes: Arc<dyn gamenode_core::ports::Processes>,
     pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
     pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
@@ -89,6 +93,8 @@ impl StorageWorker {
 }
 
 struct State {
+    local_backup_busy: bool,
+    local: gamenode_core::drm_free::LocalView,
     playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
@@ -129,6 +135,8 @@ impl Engine {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
+                    local_backup_busy: false,
+                    local: Default::default(),
                     playtime: playtime::Playtime::new(ports.platform),
                     machine: AuthMachine::new(nonce),
                     settings,
@@ -167,6 +175,7 @@ impl Engine {
             library,
             state.launch.clone(),
         );
+        snapshot.local_games = state.local.clone();
         snapshot.playtime_error = state.playtime.error;
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
@@ -192,6 +201,7 @@ impl Engine {
     /// validates it. The account is read first so the cached library can open while the session
     /// is still being verified.
     pub fn start(&self) {
+        self.refresh_local_games();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
             if let Err(error) = engine.start_playtime() {
@@ -287,7 +297,32 @@ impl Engine {
         self.publish(&mut state);
         let (engine, opener) = (self.clone(), self.shared.ports.uri.clone());
         self.shared.runtime.spawn_blocking(move || {
-            let result = open_action(&*opener, &provider, &entry.record(), kind);
+            let result = if provider.is_manual_executable() {
+                if kind != LaunchKind::Play {
+                    Err(gamenode_core::library::LaunchError::Unsupported)
+                } else {
+                    engine
+                        .shared
+                        .ports
+                        .local_games
+                        .as_ref()
+                        .zip(engine.shared.ports.installations.as_ref())
+                        .ok_or(gamenode_core::library::LaunchError::Unsupported)
+                        .and_then(|(store, host)| {
+                            let registrations = store
+                                .registrations()
+                                .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
+                            let registration = registrations
+                                .iter()
+                                .find(|r| r.key() == entry.key && !r.removed)
+                                .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
+                            host.launch(registration)
+                                .map_err(|_| gamenode_core::library::LaunchError::Failed)
+                        })
+                }
+            } else {
+                open_action(&*opener, &provider, &entry.record(), kind)
+            };
             let mut state = engine.lock();
             if state.launch_seq == seq {
                 state.launch = result.err().map(|error| LaunchStatus {
@@ -408,9 +443,27 @@ impl Engine {
                     ports.platform,
                 );
                 self.shared.runtime.spawn_blocking(move || {
-                    let result = found
-                        .scan(platform, &*files, &*roots)
-                        .map_err(|error| error.to_string());
+                    let result = if found.id() == "manual" {
+                        engine
+                            .shared
+                            .ports
+                            .local_games
+                            .as_ref()
+                            .ok_or_else(|| "local store unavailable".to_string())
+                            .and_then(|store| {
+                                let mut registrations =
+                                    store.registrations().map_err(|e| e.to_string())?;
+                                for registration in &mut registrations {
+                                    registration.available =
+                                        std::path::Path::new(&registration.executable).is_file();
+                                }
+                                Ok(gamenode_core::drm_free::records(&registrations))
+                            })
+                    } else {
+                        found
+                            .scan(platform, &*files, &*roots)
+                            .map_err(|error| error.to_string())
+                    };
                     engine.library_input(LibInput::ProviderScanned {
                         op,
                         provider,

@@ -550,6 +550,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let engine = Engine::new(
         Ports {
+            backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(paths.data_dir())?)),
+            local_games: Some(Arc::new(store.local_game_store())),
+            installations: Some(Arc::new(
+                gamenode_platform::installations::WindowsInstallations,
+            )),
             processes: Arc::new(gamenode_platform::processes::HostProcesses::new()),
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),

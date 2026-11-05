@@ -45,6 +45,12 @@ pub struct GameSummary {
     pub cover_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchPage {
+    pub games: Vec<GameSummary>,
+    pub complete: Option<bool>,
+}
+
 /// One answer of the external-game lookup: this store id is this GameNode game.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalMatch {
@@ -94,6 +100,17 @@ pub trait GameApi: Send + Sync {
         credential: &SessionCredential,
         query: &str,
     ) -> Result<Vec<GameSummary>, ApiError>;
+
+    async fn search_page(
+        &self,
+        credential: &SessionCredential,
+        query: &str,
+    ) -> Result<SearchPage, ApiError> {
+        Ok(SearchPage {
+            games: self.search_games(credential, query).await?,
+            complete: None,
+        })
+    }
 
     /// Downloads a cover image. Sends no credential: covers are public images.
     ///

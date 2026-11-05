@@ -1,3 +1,5 @@
+import { LocalGames, LocalGameEditor } from "drm-free.slint";
+export { LocalGames }
 import "fonts/Roboto-Variable.ttf";
 import { SyncExplanation } from "playtime-ui.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -295,5 +297,7 @@ export component AppWindow inherits Window {
         background-supported: root.background-supported;
         dismissed(open-settings) => { if open-settings { root.settings-open = true; } root.sync-dismissed(); shell-focus.focus(); }
     }
+
+    if LocalGames.editing: LocalGameEditor {}
 
 }

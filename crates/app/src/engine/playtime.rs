@@ -114,6 +114,23 @@ impl Engine {
             state.playtime.display_sessions.clear();
             state.playtime.display_loaded = false;
         }
+        state.playtime.tracker.set_policies(
+            state
+                .local
+                .registrations
+                .iter()
+                .filter(|r| !r.removed)
+                .map(|r| {
+                    (
+                        r.key(),
+                        gamenode_core::drm_free::ProcessPolicy::Explicit {
+                            gameplay: r.gameplay.clone(),
+                            launchers: r.launchers.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        );
         let effects = state.playtime.tracker.update(
             TrackInput::Library {
                 account: account.clone(),
@@ -144,6 +161,13 @@ impl Engine {
         });
         for effect in effects {
             match effect {
+                TrackEffect::GameStopped {
+                    key,
+                    play_period,
+                    last_gameplay_exit,
+                } => {
+                    self.queue_local_backup(state, key, play_period, last_gameplay_exit);
+                }
                 TrackEffect::Watch(process) => {
                     let adapter = self.shared.ports.processes.clone();
                     let weak = Arc::downgrade(&self.shared);
@@ -228,6 +252,7 @@ impl Engine {
     }
     pub fn maintenance_at(&self, now: i64) {
         let mut state = self.lock();
+        self.drive_local_backups(&mut state, now);
         if !state.playtime.ready || state.playtime.stopped {
             return;
         }

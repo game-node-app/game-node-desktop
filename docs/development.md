@@ -57,10 +57,17 @@ cargo build --workspace --locked
 
 To create the unsigned Linux per-user tar package from a native Linux build, run
 `scripts/package-linux.sh`; it writes
-`dist/linux/gamenode-desktop.tar.gz`. Extract it and run `./install.sh` to
-register the XDG application and URI handler. Run the installed
-`~/.local/opt/gamenode-desktop/uninstall.sh` to remove the owned integration
-without touching application data.
+`dist/linux/gamenode-desktop-<build-version>-<target>.tar.gz`, with a SHA-256
+sidecar and a latest-build alias at `dist/linux/gamenode-desktop.tar.gz`.
+The package build version is shared by the UI, `VERSION` and
+`build-manifest.json`; it includes the workspace version, Git revision, dirty
+state and UTC build time. Python 3.11+ is needed by the packaging script.
+Extract it and run `./gamenode.sh` to
+register the per-user XDG application and URI handler before launching. Use
+`./install.sh` instead for a stable-path installation. The matching
+`uninstall.sh` removes owned integration without touching application data.
+See `packaging/linux/README.md` for experimental Arch + KDE support boundaries
+and `docs/linux-tar-launcher-plan.md` for issue #2 acceptance checks.
 
 Use temporary directories for tests; never use production credentials or local
 application data. Unit/mock tests do not prove real-provider OAuth, native

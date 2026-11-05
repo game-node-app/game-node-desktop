@@ -2,7 +2,11 @@
 
 Issue: [#2 — Linux tar.gz package with automatic integration (Arch + KDE)](https://github.com/game-node-app/game-node-desktop/issues/2)
 
-Status: planned; implementation and package acceptance are pending.
+Status: launcher, shared registration, packaging and documentation implemented;
+launcher startup by double-click and existing-session restoration were reported
+successful by the user. Full browser-login acceptance remains pending, as does
+the package-layout decision below. Basic isolated script checks do not replace
+the manual acceptance below.
 
 ## Goal and scope
 
@@ -22,8 +26,12 @@ distribution-independent library compatibility.
    extracted package in place. Respect XDG directories, escape desktop-entry
    paths correctly, and avoid unnecessary changes on subsequent launches.
 3. Require `xdg-utils` and report missing prerequisites or registration failures
-   before launching. Refuse conflicting entries or associations from another
-   installation without silently replacing them; explain how to resolve them.
+   before launching. Explain how to replace a conflicting association using
+   explicit `--force` consent, without bypassing desktop-file ownership checks.
+   Remember a replaced handler for restoration if still valid on uninstall.
+   Account for the Qt 6 binary location used by Arch's KDE integration.
+   Show integration errors with `kdialog` or `zenity` when available in a
+   graphical session, while always preserving terminal diagnostics.
 4. Adapt cleanup so it removes only the matching installation's integration,
    preserves application data, and does not undo subsequent user changes.
    Cleanup of an in-place package must not delete unrelated extracted files.
@@ -31,6 +39,35 @@ distribution-independent library compatibility.
    helper. Update `packaging/linux/README.md` with prerequisites, the
    extract-and-run workflow, experimental support boundaries, and instructions
    to rerun the launcher after moving the extracted directory.
+
+## Decision: keep the packaged binary under libexec
+
+Move the binary to `libexec/gamenode` during tar packaging, leaving the launcher
+as the user-facing entry point at the archive root. This is a Unix/Linux packaging
+convention, not a Rust requirement: Cargo output remains in `target/release`.
+
+Motivation: the binary and launcher currently sit side by side. Users can easily
+open the binary directly, bypassing protocol preparation and its error dialogs.
+Separating internal executables makes the recommended path clearer without
+blocking direct execution for development or diagnosis. The menu entry must
+continue to invoke the launcher, not the internal binary.
+
+Implementation is pending. Update packaging, launcher binary lookup, stable-path
+installation and cleanup together, then rebuild the archive and repeat startup
+and callback checks. Do not treat the successful test of the current flat layout
+as validation of the future `libexec` layout. A launcher rename is not required
+by this decision.
+
+## Decision: identify each distributed build
+
+Keep `Cargo.toml` as the single source for the base version (currently `0.1.0`).
+Linux packaging appends Git revision, dirty state and UTC build time, and injects
+that exact version into the application at build time. Include it in the archive
+name and `VERSION`, with full provenance and packaged-file hashes in
+`build-manifest.json`. Preserve the unversioned archive only as a compatibility
+alias. This distinguishes rapidly changing test packages without manually
+bumping the release version for every local build. It does not promise
+reproducible binaries or identify the complete source of a dirty build.
 
 ## Manual acceptance
 
@@ -49,6 +86,9 @@ the developer's real desktop configuration as the safety boundary.
 - [ ] Move the extracted directory, rerun the launcher, and verify the updated
       association and callback.
 - [ ] Check actionable errors for missing prerequisites and registration failure.
+- [ ] With `kdialog` installed, verify a conflicting association is explained in
+      a visible dialog when launching without a terminal; confirm that `--force`
+      replaces it only with explicit consent.
 - [ ] Verify that another installation's integration is not silently replaced.
 - [ ] Verify cleanup preserves user data and unrelated files or associations.
 

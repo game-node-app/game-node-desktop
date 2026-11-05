@@ -39,6 +39,14 @@ pub struct ProviderCount {
 impl LibraryMachine {
     /// How an entry maps to a GameNode game right now.
     pub fn match_status(&self, entry: &StoredEntry) -> MatchStatus {
+        if !self.chosen.contains_key(&entry.key)
+            && let Some(game_id) = self.local_inferences.get(&entry.key)
+        {
+            return MatchStatus::Matched {
+                game_id: *game_id,
+                source: super::matching::MatchSource::Automatic,
+            };
+        }
         let auto = self
             .provider(&entry.provider)
             .and_then(|provider| provider.external_category())

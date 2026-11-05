@@ -1,3 +1,5 @@
+import { LocalGames, LocalGameEditor, SaveProtection, ClaimConflict } from "drm-free.slint";
+export { LocalGames, DiscoveryRow, BackupRow } from "drm-free.slint";
 import "fonts/Roboto-Variable.ttf";
 import { SyncExplanation } from "playtime-ui.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -185,6 +187,7 @@ export component AppWindow inherits Window {
                         Panel {
                             VerticalLayout {
                                 padding: 20px; spacing: 12px;
+                                if LocalGames.supported: Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; } }
                                 Heading { text: @tr("Playtime & sync"); font-size: 16px; }
                                 HorizontalLayout {
                                     Text { text: @tr("Sync with GameNode"); color: Theme.color-text-default; vertical-alignment: center; }
@@ -296,4 +299,8 @@ export component AppWindow inherits Window {
         dismissed(open-settings) => { if open-settings { root.settings-open = true; } root.sync-dismissed(); shell-focus.focus(); }
     }
 
+    if LocalGames.editing: LocalGameEditor {}
+
+    if LocalGames.protection-open: SaveProtection { }
+    if LocalGames.claim-open: ClaimConflict { }
 }

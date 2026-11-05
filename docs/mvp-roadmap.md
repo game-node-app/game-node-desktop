@@ -83,7 +83,7 @@ docs/
 
 ### How the app runs
 
-- **One binary, one running instance.** Starting GameNode while it already runs hands over to the running instance:
+- **One application, one persistent running instance.** Starting GameNode while it already runs hands over to the running instance:
   it opens the window, or delivers a sign-in callback.
 - **Two modes in that process.** At login it starts in the background (`--background`): tracking and a tray icon, no
   window. Opening GameNode shows the window. Closing the window returns to the background; it does not quit.
@@ -101,11 +101,10 @@ redirects back to `app.gamenode://` with the session. GameNode registers that sc
 
 ### Security rules
 
-- **No web content.** The app renders no HTML and runs no downloaded code.
+- **No web content.** The app renders no HTML. Its fixed-purpose Ludusavi v0.31.0 helper ships with the Windows package, with pinned release digests and notices; it is never downloaded or updated at runtime.
 - **Launch is restricted.** A launch is either a URI whose scheme the provider's manifest declares, or an
   executable inside the game's scanned `installDir`, started with a fixed argument list. No shell strings.
-- **Writes into game folders are task-specific.** Only OptiScaler install and uninstall write there, and only the
-  files they record.
+- **Writes into game folders are task-specific.** OptiScaler install/uninstall writes only its recorded files. Explicit save restore can replace previewed file/registry targets only after confirmation, a fresh stopped check and verified recovery of current targets. Backup never edits live saves.
 - **Downloads come from fixed GitHub release sources over HTTPS** (OptiScaler; later umu and GE-Proton), and are
   checked against published checksums when the release has them.
 
@@ -161,7 +160,7 @@ Rules:
 
 - **A scanner returns plain records** `{ id, name?, install_dir, ...fields }`. The runtime fills the manifest's
   `{placeholders}` from those fields, so native and generic scanners are interchangeable.
-- **Generic scanners are added when a bundled store needs one.** Step 4 needs `registry_subkeys` (Ubisoft, GOG) and
+- **Generic scanners are added when a bundled store needs one.** Step 4b needs `registry_subkeys` (Ubisoft, GOG) and
   `files` (a glob plus a JSON reader: Epic `.item` manifests). Others (`sqlite`, `vdf`) only when a store requires
   them.
 - **Native scanners are for formats a manifest cannot describe:** Steam's KeyValues files, Battle.net's protobuf
@@ -234,7 +233,7 @@ Change an assumption and the matching step changes; the order does not.
 ## Order
 
 ```
-1 Foundation ─► 2 Steam library ─► 3 Playtime + background ─┬─► 4 Epic, GOG, Ubisoft, manual ─┬─► 5 EA, Battle.net
+1 Foundation ─► 2 Steam library ─► 3 Playtime + background ─┬─► 4a DRM-free + local backup → 4b Epic, GOG, Ubisoft ─┬─► 5 EA, Battle.net
                                                             │                                └─► 7 OptiScaler
                                                             └─► 6 Reporting to GameNode (server)
                                                                               8 Windows release ◄── all
@@ -243,7 +242,7 @@ Change an assumption and the matching step changes; the order does not.
 ```
 
 The first tester build is the end of step 3. Step 6's server work can start at any time; each store added later
-reports through it. Steps 5 and 7 can run in parallel after step 4.
+reports through it. Steps 5 and 7 can run in parallel after step 4b.
 
 ## Step 1: Foundation
 
@@ -303,22 +302,36 @@ GameNode profile.
 **Done when:** after a reboot, GameNode is in the tray without being opened; a Steam game started from Steam itself
 is shown as running; and its playtime appears on GameNode (or is queued, if the spike chose measured sessions).
 
-## Step 4: Epic, GOG, Ubisoft and manual games
+## Step 4a: DRM-free games and local backups
 
-**User gets:** the common Windows stores in the same library, including Ubisoft, which the web can't import. Any
-DRM-free game can be added by hand.
+**User gets:** Add game from one Windows executable selection, immediately playable
+without choosing catalog metadata. Conservative background identity matching keeps
+manual corrections and explicit no-match choices authoritative.
+
+- Stable manual installation UUIDs, editable launch/tracking settings and Locate/Remove.
+- Opt-in watched folders produce a review queue; no discovery adds games automatically.
+- Explicit gameplay executable ownership, external starts and bounded launcher handoff.
+- Bundled pinned Ludusavi helper and baseline manifest, isolated per-install save profiles,
+  local after-play backup, ten full changed versions and explicit recoverable restore.
+- Local save protection is independent of GameNode sync. No cloud saves, store scanner
+  or store authentication is introduced by this step.
+
+**Done when:** ordinary and launcher-based DRM-free games add, match/correct, launch,
+track while hidden and back up after physical exit; isolated file/registry restore
+and failure recovery pass Windows acceptance.
+
+## Step 4b: Epic, GOG and Ubisoft
+
+**User gets:** the common Windows stores in the same library, including Ubisoft.
 
 - Generic scanners `registry_subkeys` and `files`, each with tests.
-- Epic: `files` over `ProgramData\Epic\EpicGamesLauncher\Data\Manifests\*.item`. Match by namespace (category 1001).
-  Launch through the `com.epicgames.launcher://` URI.
-- GOG: `registry_subkeys` over `GOG.com\Games`. Match by category 5. Launch through Galaxy, or the game's exe when
-  Galaxy is absent.
-- Ubisoft: the manifest above, matched by name with the user's pick.
-- Manual: a built-in provider. The user picks an exe and a GameNode game, and it runs directly.
-- Playtime: measured sessions for all of the above.
+- Epic: local launcher manifests, namespace matching (category 1001) and declared URI launch.
+- GOG: `GOG.com\\Games` registry data, category 5 matching and Galaxy/direct launch.
+- Ubisoft: registry discovery and user-correctable catalog matching.
+- Measured sessions reuse step 4a's process policies where appropriate.
 
-**Done when:** an Epic, a GOG, a Ubisoft and a manually added game each show as installed, launch, and record
-sessions.
+**Done when:** an Epic, a GOG and a Ubisoft game each appear, launch and record sessions.
+Steps 5 and 7 depend on this store integration portion; step 6 server work remains independent.
 
 ## Step 5: EA and Battle.net
 

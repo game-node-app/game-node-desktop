@@ -23,6 +23,7 @@ use url::Url;
 
 use super::{Engine, Ports};
 
+mod drm_free;
 mod library;
 mod playtime;
 use library::{FakeLibrary, FakeUri, SlowFiles};
@@ -57,6 +58,7 @@ struct FakeApi {
     covers_fetched: Mutex<Vec<String>>,
     artworks_fetched: Mutex<Vec<u64>>,
     artwork_result: Mutex<Option<Result<Option<Vec<u8>>, ApiError>>>,
+    search_result: Mutex<Option<Result<gamenode_core::game_api::SearchPage, ApiError>>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     created: Mutex<Vec<u64>>,
     updated: Mutex<Vec<u64>>,
@@ -151,7 +153,24 @@ impl GameApi for FakeApi {
         _query: &str,
     ) -> Result<Vec<GameSummary>, ApiError> {
         self.pause().await;
+        if let Some(result) = self.search_result.lock().unwrap().clone() {
+            return result.map(|p| p.games);
+        }
         Ok(vec![])
+    }
+    async fn search_page(
+        &self,
+        credential: &SessionCredential,
+        query: &str,
+    ) -> Result<gamenode_core::game_api::SearchPage, ApiError> {
+        self.pause().await;
+        if let Some(result) = self.search_result.lock().unwrap().clone() {
+            return result;
+        }
+        Ok(gamenode_core::game_api::SearchPage {
+            games: self.search_games(credential, query).await?,
+            complete: None,
+        })
     }
     async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError> {
         self.pause().await;
@@ -342,6 +361,9 @@ fn harness_over(
     );
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let ports = Ports {
+        backups: None,
+        local_games: None,
+        installations: None,
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -369,6 +391,7 @@ fn harness_over(
         format!("nonce{n}")
     });
     let (tx, rx) = watch::channel(Snapshot {
+        local_games: Default::default(),
         playtime_error: false,
         tracking: Default::default(),
         sync: Default::default(),

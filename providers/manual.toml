@@ -1,0 +1,6 @@
+id = "manual"
+name = "DRM-free"
+platforms = ["windows"]
+source = "manual"
+scan = { native = "manual" }
+launch = { executable = "manual" }

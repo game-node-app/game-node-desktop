@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod callback;
 pub mod credential;
+pub mod drm_free;
 pub mod game_api;
 pub mod geometry;
 pub mod library;

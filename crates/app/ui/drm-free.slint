@@ -1,0 +1,209 @@
+import { CheckBox, LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
+import { Action, Caption, Heading } from "controls.slint";
+import { Theme } from "theme.slint";
+export struct BackupRow { label: string, key: string }
+export struct DiscoveryRow { fingerprint: string, title: string, folder: string, executable: string, picked: bool, resolved: bool }
+export global LocalGames {
+    in property <[DiscoveryRow]> candidates;
+    in property <[DiscoveryRow]> watches;
+    callback watch-remove(string);
+    callback candidate-executable(string, string);
+    callback watch-folder(string);
+    callback discovery-rescan();
+    callback candidate-toggle(string);
+    callback candidates-add(bool);
+    callback ignores-reset();
+    in property <bool> supported;
+    in property <bool> claim-open;
+    in property <string> claim-title;
+    callback claim-resolve(bool);
+    callback claim-cancel();
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> selected-id;
+    in property <string> title;
+    in property <string> executable;
+    in property <string> folder;
+    in property <string> working-directory;
+    in property <string> arguments;
+    in property <string> gameplay;
+    in property <string> launchers;
+    in property <int> job-status;
+    in property <string> match-evidence;
+    in property <bool> overlapping-saves;
+    in-out property <bool> editing;
+    in property <int> save-status;
+    in property <bool> automatic;
+    in property <bool> game-automatic;
+    in property <string> destination;
+    in-out property <bool> protection-open;
+    in property <[BackupRow]> history;
+    in property <string> restore-targets;
+    in property <bool> has-restore;
+    callback history-load();
+    callback restore-preview(string);
+    callback restore-confirm();
+    callback backup-now();
+    callback backup-settings(bool, string);
+    callback game-backup-automatic(bool);
+    callback custom-saves(string);
+    callback saves-pick(bool);
+    callback profile-choose(string);
+    callback add();
+    callback locate();
+    callback remove();
+    callback save(string,string,string,string,string,string,string);
+}
+export component LocalGameEditor inherits Rectangle {
+    background: #0008;
+    TouchArea { clicked => { LocalGames.editing = false; } }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 640px);
+        height: min(parent.height - 24px, 540px);
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: title;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.editing = false; return accept; } return reject; }
+            ScrollView { VerticalLayout {
+                padding: 20px; spacing: 10px;
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "Game settings"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.editing = false; } }
+                }
+                Caption { text: @tr("DRM-free" => "Title"); }
+                title := LineEdit { text: LocalGames.title; }
+                Caption { text: @tr("DRM-free" => "Executable"); }
+                executable := LineEdit { text: LocalGames.executable; }
+                Caption { text: @tr("DRM-free" => "Game folder"); }
+                folder := LineEdit { text: LocalGames.folder; }
+                Caption { text: @tr("DRM-free" => "Working directory"); }
+                working := LineEdit { text: LocalGames.working-directory; }
+                Caption { text: @tr("DRM-free" => "Arguments"); }
+                arguments := LineEdit { text: LocalGames.arguments; }
+                Caption { text: @tr("DRM-free" => "Gameplay executables (one per line)"); }
+                gameplay := TextEdit { text: LocalGames.gameplay; height: 56px; }
+                Caption { text: @tr("DRM-free" => "Launcher executables (one per line)"); }
+                launchers := TextEdit { text: LocalGames.launchers; height: 56px; }
+                HorizontalLayout {
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.editing = false; } }
+                    Action { text: @tr("DRM-free" => "Save"); clicked => { LocalGames.save(title.text,executable.text,folder.text,working.text,arguments.text,gameplay.text,launchers.text); LocalGames.editing = false; } }
+                }
+            }
+            }
+        }
+    }
+}
+
+export component SaveProtection inherits Rectangle {
+    background: #0008;
+    TouchArea { clicked => { LocalGames.protection-open = false; } }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 640px);
+        height: min(parent.height - 24px, 540px);
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: destination;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.protection-open = false; return accept; } return reject; }
+            ScrollView { VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "Local save protection"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Close"); clicked => { LocalGames.protection-open = false; } }
+                }
+                Caption { text: @tr("DRM-free" => "Backups stay on this PC. A backup on the same drive cannot protect against drive loss."); wrap: word-wrap; }
+                automatic := CheckBox { text: @tr("DRM-free" => "Automatic backups"); checked: LocalGames.automatic; }
+                Caption { text: @tr("DRM-free" => "Backup destination"); }
+                destination := LineEdit { text: LocalGames.destination; }
+                Action { text: @tr("DRM-free" => "Save backup settings"); inert: LocalGames.busy; clicked => { LocalGames.backup-settings(automatic.checked, destination.text); } }
+                if LocalGames.selected-id != "": VerticalLayout {
+                    if LocalGames.overlapping-saves: Caption { text: @tr("DRM-free" => "Another installation shares these saves. Backup and restore operations run one at a time."); wrap: word-wrap; }
+                    CheckBox { text: @tr("DRM-free" => "Back up this game automatically"); checked: LocalGames.game-automatic; toggled => { LocalGames.game-backup-automatic(self.checked); } }
+                    Caption { text: LocalGames.save-status == 0 ? @tr("DRM-free" => "No save profile. Choose a save location below.") : LocalGames.save-status == 3 ? @tr("DRM-free" => "Supported; no saves found yet.") : @tr("DRM-free" => "Save profile configured"); wrap: word-wrap; }
+                    Caption { text: @tr("DRM-free" => "Custom save file or folder"); }
+                    HorizontalLayout {
+                        Action { text: @tr("DRM-free" => "Choose save file"); clicked => { LocalGames.saves-pick(false); } }
+                        Action { text: @tr("DRM-free" => "Choose save folder"); clicked => { LocalGames.saves-pick(true); } }
+                    }
+                    profile-title := LineEdit { placeholder-text: @tr("DRM-free" => "Exact save profile title"); }
+                    Action { text: @tr("DRM-free" => "Change save profile"); inert: LocalGames.busy; clicked => { LocalGames.profile-choose(profile-title.text); } }
+                    saves := LineEdit { }
+                    Action { text: @tr("DRM-free" => "Use this save location"); inert: LocalGames.busy || saves.text == ""; clicked => { LocalGames.custom-saves(saves.text); } }
+                    Caption { text: LocalGames.job-status == 1 ? @tr("DRM-free" => "Queued") : LocalGames.job-status == 2 ? @tr("DRM-free" => "Running") : LocalGames.job-status == 3 ? @tr("DRM-free" => "Unchanged") : LocalGames.job-status == 4 ? @tr("DRM-free" => "Backup completed") : LocalGames.job-status == 5 ? @tr("DRM-free" => "Partial failure") : LocalGames.job-status == 6 ? @tr("DRM-free" => "Backup failed") : LocalGames.job-status == 7 ? @tr("DRM-free" => "Cancelled") : ""; }
+                    Action { text: @tr("DRM-free" => "Backup now"); inert: LocalGames.busy || LocalGames.save-status == 0; clicked => { LocalGames.backup-now(); } }
+                    Action { text: @tr("DRM-free" => "Load backup history"); inert: LocalGames.busy; clicked => { LocalGames.history-load(); } }
+                    for version[index] in LocalGames.history: Action { text: version.label; inert: LocalGames.busy; clicked => { LocalGames.restore-preview(version.key); } }
+                    if LocalGames.has-restore: VerticalLayout {
+                        Caption { text: @tr("DRM-free" => "Restore replaces these targets after preserving a recovery backup:"); wrap: word-wrap; }
+                        Caption { text: LocalGames.restore-targets; wrap: word-wrap; }
+                        Action { text: @tr("DRM-free" => "Confirm restore"); inert: LocalGames.busy; clicked => { LocalGames.restore-confirm(); } }
+                    }
+
+                }
+                if LocalGames.error != "": Caption { text: LocalGames.error; wrap: word-wrap; }
+                Heading { text: @tr("DRM-free" => "Watched folders"); }
+                watch := LineEdit { placeholder-text: @tr("DRM-free" => "Folder to watch"); }
+                Action { text: @tr("DRM-free" => "Watch folder"); inert: LocalGames.busy || watch.text == ""; clicked => { LocalGames.watch-folder(watch.text); } }
+                Action { text: @tr("DRM-free" => "Rescan watched folders"); clicked => { LocalGames.discovery-rescan(); } }
+                for watched in LocalGames.watches: HorizontalLayout {
+                    Caption { text: watched.folder; wrap: word-wrap; }
+                    Action { text: @tr("DRM-free" => "Remove watch"); clicked => { LocalGames.watch-remove(watched.fingerprint); } }
+                }
+                for candidate in LocalGames.candidates: VerticalLayout {
+                    CheckBox { text: candidate.title; checked: candidate.picked; toggled => { LocalGames.candidate-toggle(candidate.fingerprint); } }
+                    Caption { text: candidate.folder; wrap: word-wrap; }
+                    Caption { text: candidate.resolved ? candidate.executable : @tr("DRM-free" => "Several launch targets; choose an executable below."); wrap: word-wrap; }
+                    candidate-target := LineEdit { text: candidate.executable; }
+                    Action { text: @tr("DRM-free" => "Use executable"); inert: LocalGames.busy; clicked => { LocalGames.candidate-executable(candidate.fingerprint, candidate-target.text); } }
+                }
+                HorizontalLayout {
+                    Action { text: @tr("DRM-free" => "Add selected"); inert: LocalGames.busy; clicked => { LocalGames.candidates-add(true); } }
+                    Action { text: @tr("DRM-free" => "Ignore selected"); inert: LocalGames.busy; clicked => { LocalGames.candidates-add(false); } }
+                }
+                Action { text: @tr("DRM-free" => "Reset ignored discoveries"); inert: LocalGames.busy; clicked => { LocalGames.ignores-reset(); } }
+                Action { text: @tr("DRM-free" => "Close"); clicked => { LocalGames.protection-open = false; } }
+            }
+            }
+        }
+    }
+}
+
+export component ClaimConflict inherits Rectangle {
+    background: #0008;
+    TouchArea { clicked => { LocalGames.claim-cancel(); } }
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 600px); height: 260px;
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: existing;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.claim-cancel(); return accept; } return reject; }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "This game is already tracked by a store"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.claim-cancel(); } }
+                }
+                Caption { text: LocalGames.claim-title; wrap: word-wrap; }
+                Caption { text: @tr("DRM-free" => "Use the existing entry, or transfer tracking to the DRM-free registration. Playtime will be counted once."); wrap: word-wrap; }
+                existing := Action { text: @tr("DRM-free" => "Use existing entry"); clicked => { LocalGames.claim-resolve(false); } }
+                Action { text: @tr("DRM-free" => "Transfer tracking"); clicked => { LocalGames.claim-resolve(true); } }
+            }
+        }
+    }
+}

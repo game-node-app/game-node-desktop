@@ -6,7 +6,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_NO_MORE_FILES, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
@@ -64,12 +66,17 @@ fn inspect(pid: u32) -> Option<(ProcessInfo, Arc<Handle>)> {
         return None;
     }
     let (created_at, _) = times(raw)?;
-    let exe_path = String::from_utf16(&path[..length as usize]).ok()?;
+    let path = String::from_utf16(&path[..length as usize]).ok()?;
+    let exe_path = crate::installations::canonical(&path)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
     Some((
         ProcessInfo {
             pid,
             created_at,
             exe_path,
+            parent: None,
         },
         handle,
     ))
@@ -137,10 +144,12 @@ impl Processes for HostProcesses {
             ..Default::default()
         };
         let mut seen = BTreeSet::new();
+        let mut parents = BTreeMap::new();
         let mut has = unsafe { Process32FirstW(snapshot.0, &mut item) } != 0;
         while has {
             let pid = item.th32ProcessID;
             seen.insert(pid);
+            parents.insert(pid, item.th32ParentProcessID);
             let alive = state
                 .cache
                 .get(&pid)
@@ -153,8 +162,27 @@ impl Processes for HostProcesses {
             }
             has = unsafe { Process32NextW(snapshot.0, &mut item) } != 0;
         }
+        // SAFETY: read immediately after the terminating Toolhelp call, before another OS call.
+        if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+            return Err(ProcessError::Failed);
+        }
         state.cache.retain(|pid, _| seen.contains(pid));
-        Ok(state.cache.values().map(|(p, _)| p.clone()).collect())
+        Ok(state
+            .cache
+            .values()
+            .map(|(p, _)| {
+                let mut process = p.clone();
+                process.parent = parents
+                    .get(&p.pid)
+                    .and_then(|pid| state.cache.get(pid))
+                    .filter(|(parent, _)| parent.created_at <= p.created_at)
+                    .map(|(parent, _)| gamenode_core::ports::ProcessIdentity {
+                        pid: parent.pid,
+                        created_at: parent.created_at,
+                    });
+                process
+            })
+            .collect())
     }
     fn watch(&self, process: &ProcessInfo, on_exit: Callback) -> Result<(), ProcessError> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -219,6 +247,9 @@ mod tests {
             .find(|p| p.pid == child.id())
             .unwrap();
         assert_eq!(std::path::Path::new(&process.exe_path), exe);
+        let parent = process.parent.as_ref().expect("observable fixture parent");
+        assert_eq!(parent.pid, std::process::id());
+        assert!(parent.created_at <= process.created_at);
         let (tx, rx) = std::sync::mpsc::channel();
         adapter
             .watch(

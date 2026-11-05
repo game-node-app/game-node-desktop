@@ -32,6 +32,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "playtime",
         sql: include_str!("../migrations/0003_playtime.sql"),
     },
+    Migration {
+        version: 4,
+        name: "drm_free_backups",
+        sql: include_str!("../migrations/0004_drm_free_backups.sql"),
+    },
 ];
 
 const BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -137,7 +142,8 @@ const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
 
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 12] = [
+pub const SETTING_KEYS: [&str; 13] = [
+    "backup_settings",
     crate::playtime_db::KEY_PLAYTIME_SOURCE,
     crate::playtime_db::KEY_SYNC_ENABLED,
     crate::playtime_db::KEY_SYNC_EXPLAINED,
@@ -170,6 +176,10 @@ impl SqliteSettingsStore {
     /// The library repository on the same database connection.
     pub fn library_store(&self) -> crate::library_db::SqliteLibraryStore {
         crate::library_db::SqliteLibraryStore::new(Arc::clone(&self.conn))
+    }
+
+    pub fn local_game_store(&self) -> crate::local_game_db::SqliteLocalGameStore {
+        crate::local_game_db::SqliteLocalGameStore::new(Arc::clone(&self.conn))
     }
 
     /// The playtime repository on the same serialized connection.
@@ -298,7 +308,8 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string())
             ]
         );
     }
@@ -369,13 +380,13 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
     }
 
-    const V4_OK: Migration = Migration {
-        version: 4,
+    const V5_OK: Migration = Migration {
+        version: 5,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V4_BAD: Migration = Migration {
-        version: 4,
+    const V5_BAD: Migration = Migration {
+        version: 5,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -392,7 +403,13 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let all = [MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK];
+        let all = [
+            MIGRATIONS[0],
+            MIGRATIONS[1],
+            MIGRATIONS[2],
+            MIGRATIONS[3],
+            V5_OK,
+        ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
             versions(&conn),
@@ -400,7 +417,8 @@ mod tests {
                 (1, "initial_settings".into()),
                 (2, "library".into()),
                 (3, "playtime".into()),
-                (4, "add_notes".into())
+                (4, "drm_free_backups".into()),
+                (5, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -434,10 +452,16 @@ mod tests {
 
         let err = open_with(
             &db_path(&dir),
-            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_BAD],
+            &[
+                MIGRATIONS[0],
+                MIGRATIONS[1],
+                MIGRATIONS[2],
+                MIGRATIONS[3],
+                V5_BAD,
+            ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 4 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 5 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -445,7 +469,8 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string())
             ]
         );
         let leaked: i64 = conn
@@ -463,15 +488,27 @@ mod tests {
     fn newer_schema_is_rejected_and_the_file_is_unchanged() {
         let dir = TempDir::new().unwrap();
         let path = db_path(&dir);
-        drop(open_with(&path, &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK]).unwrap());
+        drop(
+            open_with(
+                &path,
+                &[
+                    MIGRATIONS[0],
+                    MIGRATIONS[1],
+                    MIGRATIONS[2],
+                    MIGRATIONS[3],
+                    V5_OK,
+                ],
+            )
+            .unwrap(),
+        );
         let before = std::fs::read(&path).unwrap();
 
         let err = open(&path).unwrap_err(); // this build only knows version 3
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 4,
-                supported: 3
+                found: 5,
+                supported: 4
             }
         );
         assert_eq!(
@@ -505,7 +542,8 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string())
             ]
         );
         for table in [
@@ -534,7 +572,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 3,
+                found: 4,
                 supported: 1
             }
         );
@@ -559,7 +597,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 5,
-            ..V4_OK
+            ..V5_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -589,12 +627,19 @@ mod tests {
             sorted,
             [
                 "auto_matches",
+                "backup_destinations",
+                "backup_jobs",
                 "chosen_matches",
+                "discovery_candidates",
+                "discovery_watches",
                 "games",
                 "library_entries",
+                "local_inferences",
+                "manual_registrations",
                 "playtime_sessions",
                 "playtime_totals",
                 "provider_scans",
+                "save_profiles",
                 "schema_migrations",
                 "settings"
             ]

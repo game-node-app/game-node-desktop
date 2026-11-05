@@ -11,6 +11,7 @@ mkdir -p "$package"
 cp target/x86_64-pc-windows-msvc/debug/gamenode.exe "$package/"
 cp LICENSE packaging/windows/README.md packaging/windows/*.ps1 "$package/"
 cp -R licenses "$package/"
+python3 scripts/prepare-backup-assets.py "$package/backup-assets"
 echo "Package: $PWD/$package"
 if command -v powershell.exe >/dev/null && command -v wslpath >/dev/null; then
     echo "Install: powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(wslpath -w "$PWD/$package/install.ps1")"

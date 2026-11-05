@@ -118,8 +118,8 @@ library. Reference environment: Arch Linux, KDE Plasma 6.8.2, Wayland, Firefox
 159.0 and kernel `7.2.14-zen1-1-zen`. The exact package commit was not recorded.
 
 This confirms launcher startup and existing-session restoration, not a fresh
-Firefox sign-in, browser protocol prompt, or graphical error dialog. Those
-checks remain pending. The user had also performed manual cleanup of an earlier
+Firefox sign-in, browser protocol prompt, or graphical error dialog. A later
+fresh-login result is recorded below. The user had also performed manual cleanup of an earlier
 development association, so this is not proof of an untouched first installation.
 
 After this test, the user agreed to move the packaged binary into `libexec/` to
@@ -148,6 +148,28 @@ and upgrade from the managed flat layout. Cleanup preserved unrelated files in
 A missing internal binary produced an error instead of falling back to a stale
 root binary. Archive file hashes, permissions and checksum were verified.
 
-Double-click startup, session restoration and a fresh browser login with this
-new layout still need graphical acceptance. Extract portable upgrades into a
-fresh directory, since extracting tar archives does not remove obsolete files.
+The user subsequently confirmed graphical startup and fresh browser login with
+this layout as described below. Extract portable upgrades into a fresh directory,
+since extracting tar archives does not remove obsolete files.
+
+### Fresh browser login after uninstall
+
+The user reported the following successful manual test of the updated release
+package with the `libexec` layout:
+
+1. Sign out inside GameNode and close the application.
+2. Run the package's uninstaller to remove its protocol integration.
+3. Double-click the launcher in the file manager.
+4. Sign in through the browser, which requested permission to open GameNode
+   using the registered protocol.
+5. Complete the handoff and return to GameNode authenticated.
+
+Reference environment remains Arch Linux, KDE Plasma 6.8.2, Wayland, Firefox
+159.0 and kernel `7.2.14-zen1-1-zen`. The exact `VERSION` of the tested archive
+was not supplied, so no precise artifact identity is asserted here.
+
+This passes issue #2's primary end-to-end sign-in criterion and confirms automatic
+protocol preparation after uninstall, rather than only restoring an existing
+session. It is not a pristine OS/user installation or validation of other Linux
+environments. Graphical error dialogs and the remaining unchecked manual cases
+in the implementation plan still need acceptance.

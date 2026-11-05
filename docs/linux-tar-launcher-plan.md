@@ -2,12 +2,11 @@
 
 Issue: [#2 — Linux tar.gz package with automatic integration (Arch + KDE)](https://github.com/game-node-app/game-node-desktop/issues/2)
 
-Status: launcher, shared registration, packaging and documentation implemented;
-launcher startup by double-click and existing-session restoration were reported
-successful by the user with the original flat layout. The `libexec` layout is
-implemented; graphical acceptance of the rebuilt package and full browser login
-remain pending. Basic isolated script checks do not replace
-the manual acceptance below.
+Status: implementation complete; the user reported successful double-click
+startup and a fresh browser login after uninstalling the protocol integration
+with the updated `libexec` package. The primary sign-in acceptance passed on
+Arch + KDE/Wayland. Remaining manual checks are listed below; isolated script
+checks do not replace them.
 
 ## Goal and scope
 
@@ -57,10 +56,10 @@ Packaging, launcher binary lookup, stable-path installation and cleanup now use
 `libexec/gamenode`. The menu and protocol handler continue to invoke the root
 launcher. Stable-path upgrades retire the old managed root binary; portable users
 should extract into a fresh directory to avoid retaining files from older archives.
-The rebuilt archive and isolated launcher/callback checks passed. Repeat the
-graphical walkthrough: the successful user test of the original flat layout is
-not validation of the new `libexec` layout. A launcher rename is not required by
-this decision.
+The rebuilt archive and isolated launcher/callback checks passed. The user also
+reported successful graphical startup and a fresh browser sign-in with the new
+layout; see [verification results](linux-verification.md#fresh-browser-login-after-uninstall).
+A launcher rename is not required by this decision.
 
 ## Decision: identify each distributed build
 
@@ -79,10 +78,10 @@ Use a separate graphical test user or disposable VM. Do not rely on rollback of
 the developer's real desktop configuration as the safety boundary.
 
 - [ ] Extract the candidate tar package into a path containing spaces.
-- [ ] Run the launcher without administrative privileges or manual XDG commands.
+- [x] Run the launcher without administrative privileges or manual XDG commands.
 - [ ] Confirm that the application entry and protocol association reference the
       intended installation.
-- [ ] Sign in through Firefox, accept the browser's request to open GameNode,
+- [x] Sign in through Firefox, accept the browser's request to open GameNode,
       and confirm that the application returns with an authenticated session.
       Use a browser profile without prior approval to exercise the prompt;
       direct return is also valid when permission was already granted.
@@ -103,7 +102,10 @@ registered local-binary experience:
 - Arch Linux; KDE Plasma 6.8.2; Wayland.
 - Firefox 159.0; kernel `7.2.14-zen1-1-zen`.
 
-That earlier experience does not constitute acceptance of the future package.
+The earlier manually registered local-binary experience is separate from the
+subsequent package acceptance: the user signed out, quit GameNode, ran the
+uninstaller, double-clicked the launcher and completed browser sign-in with the
+protocol permission prompt. The exact tested build version was not supplied.
 
 ## Deferred
 

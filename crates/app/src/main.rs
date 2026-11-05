@@ -485,7 +485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         );
     }
-    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_version(env!("GAMENODE_BUILD_VERSION").into());
     // Bound each text layout while retaining every character of the bundled notices.
     let notices = concat!(
         include_str!("../../../LICENSE"),

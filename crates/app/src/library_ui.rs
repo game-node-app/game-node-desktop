@@ -276,6 +276,10 @@ pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
     let local = ui.global::<crate::LocalGames>();
     local.set_supported(cfg!(windows));
     let e = engine.clone();
+    local.on_claim_resolve(move |transfer| e.resolve_local_claim(transfer));
+    let e = engine.clone();
+    local.on_claim_cancel(move || e.cancel_local_claim());
+    let e = engine.clone();
     local.on_add(move || e.pick_local_executable(None));
     let e = engine.clone();
     local.on_locate(move || {
@@ -290,26 +294,98 @@ pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
         }
     });
     let e = engine.clone();
-    local.on_save(move |title, executable, folder, working, arguments| {
-        let snapshot = e.snapshot();
-        if let Some(id) = selected_local_id(&e) {
-            if let Some(mut value) = snapshot
-                .local_games
-                .registrations
-                .into_iter()
-                .find(|r| r.id == id)
+    local.on_save(
+        move |title, executable, folder, working, arguments, gameplay, launchers| {
+            let snapshot = e.snapshot();
+            if let Some(id) = selected_local_id(&e)
+                && let Some(mut value) = snapshot
+                    .local_games
+                    .registrations
+                    .into_iter()
+                    .find(|r| r.id == id)
+                && let Ok(arguments) = gamenode_core::drm_free::parse_arguments(&arguments)
             {
-                if let Ok(arguments) = gamenode_core::drm_free::parse_arguments(&arguments) {
-                    value.title = title.to_string();
-                    value.executable = executable.to_string();
-                    value.root = folder.to_string();
-                    value.working_directory = working.to_string();
-                    value.arguments = arguments;
-                    e.edit_local_game(value);
-                }
+                value.title = title.to_string();
+                value.executable = executable.to_string();
+                value.root = folder.to_string();
+                value.working_directory = working.to_string();
+                value.arguments = arguments;
+                value.gameplay = gameplay
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                value.launchers = launchers
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                e.edit_local_game(value);
             }
+        },
+    );
+    let e = engine.clone();
+    local.on_backup_now(move || {
+        if let Some(id) = selected_local_id(&e) {
+            e.backup_local_now(id);
         }
     });
+    let e = engine.clone();
+    local.on_backup_settings(move |automatic, destination| {
+        e.set_local_backup_settings(automatic, destination.to_string())
+    });
+    let e = engine.clone();
+    local.on_game_backup_automatic(move |automatic| {
+        if let Some(id) = selected_local_id(&e) {
+            e.set_local_profile_automatic(id, automatic);
+        }
+    });
+    let e = engine.clone();
+    local.on_custom_saves(move |location| {
+        if let Some(id) = selected_local_id(&e) {
+            e.configure_local_saves(id, location.to_string());
+        }
+    });
+    let e = engine.clone();
+    local.on_saves_pick(move |folder| {
+        if let Some(id) = selected_local_id(&e) {
+            e.pick_local_saves(id, folder);
+        }
+    });
+    let e = engine.clone();
+    local.on_profile_choose(move |title| {
+        if let Some(id) = selected_local_id(&e) {
+            e.choose_local_save_profile(id, title.to_string());
+        }
+    });
+    let e = engine.clone();
+    local.on_watch_folder(move |path| e.watch_local_folder(path.to_string()));
+    let e = engine.clone();
+    local.on_watch_remove(move |id| e.remove_local_watch(id.to_string()));
+    let e = engine.clone();
+    local.on_candidate_executable(move |fingerprint, executable| {
+        e.set_local_candidate_executable(fingerprint.to_string(), executable.to_string())
+    });
+    let e = engine.clone();
+    local.on_discovery_rescan(move || e.rescan_local_folders());
+    let e = engine.clone();
+    local.on_candidate_toggle(move |fingerprint| e.select_local_candidate(fingerprint.to_string()));
+    let e = engine.clone();
+    local.on_candidates_add(move |add| e.review_selected_local_candidates(add));
+    let e = engine.clone();
+    local.on_ignores_reset(move || e.reset_local_ignores());
+    let e = engine.clone();
+    local.on_history_load(move || {
+        if let Some(id) = selected_local_id(&e) {
+            e.load_local_history(id);
+        }
+    });
+    let e = engine.clone();
+    local.on_restore_preview(move |key| e.preview_local_restore(key.to_string()));
+    let e = engine.clone();
+    local.on_restore_confirm(move || e.confirm_local_restore());
     let state = ui.global::<LibraryState>();
     let send = |engine: &Engine, input: Option<LibInput>| {
         if let Some(input) = input {
@@ -424,6 +500,51 @@ thread_local! {
 pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
     let local = ui.global::<crate::LocalGames>();
     local.set_busy(snapshot.local_games.busy);
+    local.set_claim_open(snapshot.local_games.pending_claim.is_some());
+    local.set_claim_title(
+        snapshot
+            .local_games
+            .pending_claim
+            .as_ref()
+            .map(|claim| claim.store_title.clone())
+            .unwrap_or_default()
+            .into(),
+    );
+
+    local.set_watches(slint::ModelRc::new(slint::VecModel::from(
+        snapshot
+            .local_games
+            .watches
+            .iter()
+            .filter(|w| w.enabled)
+            .map(|w| crate::DiscoveryRow {
+                fingerprint: w.id.clone().into(),
+                folder: w.path.clone().into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+
+    local.set_candidates(slint::ModelRc::new(slint::VecModel::from(
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .filter(|c| !c.ignored)
+            .map(|c| crate::DiscoveryRow {
+                fingerprint: c.fingerprint.clone().into(),
+                title: c.title.clone().into(),
+                folder: c.root.clone().into(),
+                executable: c.selected_target.clone().unwrap_or_default().into(),
+                picked: snapshot
+                    .local_games
+                    .review_selected
+                    .contains(&c.fingerprint),
+                resolved: c.selected_target.is_some(),
+            })
+            .collect::<Vec<_>>(),
+    )));
+
     local.set_error(
         snapshot
             .local_games
@@ -440,6 +561,107 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
         }
     });
     local.set_selected_id(selected.unwrap_or_default().into());
+    local.set_match_evidence(
+        selected
+            .and_then(|id| {
+                snapshot
+                    .local_games
+                    .inferences
+                    .iter()
+                    .find(|i| i.installation == id)
+            })
+            .map(|i| {
+                i.evidence
+                    .iter()
+                    .map(|e| e.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            })
+            .unwrap_or_default()
+            .into(),
+    );
+
+    let job = selected.and_then(|id| {
+        snapshot
+            .local_games
+            .jobs
+            .iter()
+            .filter(|j| j.installation == id)
+            .max_by_key(|j| j.ready_at)
+    });
+    local.set_job_status(job.map_or(0, |j| match j.state {
+        gamenode_core::drm_free::JobState::Queued => 1,
+        gamenode_core::drm_free::JobState::Running => 2,
+        gamenode_core::drm_free::JobState::Unchanged => 3,
+        gamenode_core::drm_free::JobState::Successful => 4,
+        gamenode_core::drm_free::JobState::Partial => 5,
+        gamenode_core::drm_free::JobState::Failed => 6,
+        gamenode_core::drm_free::JobState::Cancelled => 7,
+    }));
+
+    local.set_history(slint::ModelRc::new(slint::VecModel::from(
+        snapshot
+            .local_games
+            .versions
+            .iter()
+            .map(|version| crate::BackupRow {
+                label: format!(
+                    "{} · {} bytes · {}",
+                    version.label, version.bytes, version.destination
+                )
+                .into(),
+                key: version.key().into(),
+            })
+            .collect::<Vec<_>>(),
+    )));
+    local.set_has_restore(snapshot.local_games.restore.is_some());
+    local.set_restore_targets(
+        snapshot
+            .local_games
+            .restore
+            .as_ref()
+            .map(|plan| plan.targets.join("\n"))
+            .unwrap_or_default()
+            .into(),
+    );
+    local.set_automatic(snapshot.local_games.settings.automatic);
+    local.set_destination(snapshot.local_games.settings.destination.clone().into());
+    let profile = selected.and_then(|id| {
+        snapshot
+            .local_games
+            .profiles
+            .iter()
+            .rfind(|p| p.installation == id)
+    });
+    local.set_game_automatic(profile.is_none_or(|p| p.automatic != Some(false)));
+    local.set_overlapping_saves(profile.is_some_and(|profile| {
+        snapshot
+            .local_games
+            .profiles
+            .iter()
+            .filter(|other| other.installation != profile.installation)
+            .any(|other| {
+                profile.files.iter().any(|file| {
+                    other
+                        .files
+                        .iter()
+                        .any(|other| file.eq_ignore_ascii_case(other))
+                }) || profile.registry.iter().any(|key| {
+                    other
+                        .registry
+                        .iter()
+                        .any(|other| key.eq_ignore_ascii_case(other))
+                })
+            })
+    }));
+
+    local.set_save_status(profile.map_or(0, |p| match p.support {
+        gamenode_core::drm_free::SaveSupport::Supported => 2,
+        gamenode_core::drm_free::SaveSupport::NoSaves => 3,
+        gamenode_core::drm_free::SaveSupport::NeedsSelection => 1,
+        gamenode_core::drm_free::SaveSupport::Unsupported => 0,
+    }));
+
     if let Some(registration) = selected.and_then(|id| {
         snapshot
             .local_games
@@ -447,6 +669,8 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .iter()
             .find(|r| r.id == id)
     }) {
+        local.set_gameplay(registration.gameplay.join("\n").into());
+        local.set_launchers(registration.launchers.join("\n").into());
         local.set_title(registration.title.clone().into());
         local.set_executable(registration.executable.clone().into());
         local.set_folder(registration.root.clone().into());
@@ -842,9 +1066,6 @@ fn load_cover(dir: &Path, file: &str) -> Option<Image> {
     Image::load_from_path(&dir.join(file)).ok()
 }
 
-#[cfg(test)]
-mod tests;
-
 fn selected_local_id(engine: &Engine) -> Option<String> {
     let view = engine.snapshot().library?;
     if let [key] = view.selected.as_slice() {
@@ -853,3 +1074,6 @@ fn selected_local_id(engine: &Engine) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -93,6 +93,9 @@ impl StorageWorker {
 }
 
 struct State {
+    pending_claim: Option<gamenode_core::drm_free::PendingClaim>,
+    local_selection: Option<String>,
+    local_generation: u64,
     local_backup_busy: bool,
     local: gamenode_core::drm_free::LocalView,
     playtime: playtime::Playtime,
@@ -107,6 +110,10 @@ struct State {
 }
 
 struct Shared {
+    local_catalog: Arc<tokio::sync::Semaphore>,
+    local_cancel: std::sync::atomic::AtomicBool,
+    local_discovering: std::sync::atomic::AtomicBool,
+    local_discovery_again: std::sync::atomic::AtomicBool,
     state: Mutex<State>,
     ports: Ports,
     runtime: Handle,
@@ -134,7 +141,14 @@ impl Engine {
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
+                local_catalog: Arc::new(tokio::sync::Semaphore::new(4)),
+                local_cancel: std::sync::atomic::AtomicBool::new(false),
+                local_discovering: std::sync::atomic::AtomicBool::new(false),
+                local_discovery_again: std::sync::atomic::AtomicBool::new(false),
                 state: Mutex::new(State {
+                    pending_claim: None,
+                    local_selection: None,
+                    local_generation: 0,
                     local_backup_busy: false,
                     local: Default::default(),
                     playtime: playtime::Playtime::new(ports.platform),
@@ -176,6 +190,7 @@ impl Engine {
             state.launch.clone(),
         );
         snapshot.local_games = state.local.clone();
+        snapshot.local_games.pending_claim = state.pending_claim.clone();
         snapshot.playtime_error = state.playtime.error;
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
@@ -201,7 +216,10 @@ impl Engine {
     /// validates it. The account is read first so the cached library can open while the session
     /// is still being verified.
     pub fn start(&self) {
+        self.recover_local_jobs();
         self.refresh_local_games();
+        self.start_local_discovery();
+        self.start_local_manifest_updates();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
             if let Err(error) = engine.start_playtime() {
@@ -251,7 +269,27 @@ impl Engine {
                     | LibInput::ClearMatch
                     | LibInput::LookupDone { .. }
             );
+        let previous_selection = state.library.view().map(|v| v.selected);
         self.run_library(&mut state, input);
+        if previous_selection != state.library.view().map(|v| v.selected) {
+            state.local.versions.clear();
+            state.local.restore = None;
+        }
+        if let Some(key) = state.local_selection.clone()
+            && state
+                .library
+                .installed_entries()
+                .any(|entry| entry.key == key)
+        {
+            state.local_selection = None;
+            self.run_library(
+                &mut state,
+                LibInput::Select {
+                    key,
+                    mode: gamenode_core::library::SelectMode::Replace,
+                },
+            );
+        }
         self.sync_tracker(&mut state);
         if read_trigger {
             self.read_counters(&mut state);
@@ -316,8 +354,13 @@ impl Engine {
                                 .iter()
                                 .find(|r| r.key() == entry.key && !r.removed)
                                 .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
-                            host.launch(registration)
-                                .map_err(|_| gamenode_core::library::LaunchError::Failed)
+                            gamenode_core::library::launch::launch_manual(
+                                &**host,
+                                &provider,
+                                &entry.record(),
+                                registration,
+                                kind,
+                            )
                         })
                 }
             } else {
@@ -372,7 +415,19 @@ impl Engine {
             }
             _ => {}
         }
+        let catalog_changed =
+            state.library.account() != account.as_ref() || state.library.access() != access;
+        if state.library.account() != account.as_ref() {
+            state.local_generation += 1;
+        }
         self.run_library(state, LibInput::AccountChanged(account));
+        if catalog_changed {
+            let engine = self.clone();
+            self.shared.runtime.spawn_blocking(move || {
+                engine.refresh_local_games();
+                engine.enrich_local_games();
+            });
+        }
         if state.library.access() != access {
             let input = LibInput::SetAccess {
                 access,

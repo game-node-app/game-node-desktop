@@ -368,9 +368,6 @@ pub fn match_entry<'a>(
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, entry)| entry)
 }
-#[cfg(test)]
-mod tests;
-
 fn match_policy<'a>(
     entries: &'a BTreeMap<String, Entry>,
     policies: &BTreeMap<String, crate::drm_free::ProcessPolicy>,
@@ -395,6 +392,7 @@ fn match_policy<'a>(
                 return None;
             }
             let explicit = match policies.get(&entry.key) {
+                Some(crate::drm_free::ProcessPolicy::Ignored) => return None,
                 Some(crate::drm_free::ProcessPolicy::Explicit { gameplay, .. }) => {
                     if !gameplay.iter().any(|p| compare(p) == executable) {
                         return None;
@@ -413,3 +411,6 @@ fn match_policy<'a>(
         })
         .map(|(_, _, e)| e)
 }
+
+#[cfg(test)]
+mod tests;

@@ -32,6 +32,7 @@ mod unsupported {
                 pid: 1,
                 created_at: std::time::UNIX_EPOCH,
                 exe_path: "/bin/test".into(),
+                parent: None,
             };
             assert_eq!(
                 HostProcesses.watch(&process, Box::new(|_| panic!("unavailable"))),

@@ -387,6 +387,8 @@ component DetailPane inherits Rectangle {
                     text-size: Theme.font-size-md;
                 }
                 if LocalGames.selected-id != "": VerticalLayout {
+                    if LocalGames.match-evidence != "": Caption { text: @tr("DRM-free" => "Inferred from local evidence: {}", LocalGames.match-evidence); wrap: word-wrap; }
+                    Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; } }
                     spacing: 6px;
                     Action { text: @tr("DRM-free" => "Game settings"); clicked => { LocalGames.editing = true; } }
                     Action { text: @tr("DRM-free" => "Locate executable"); inert: LocalGames.busy; clicked => { LocalGames.locate(); } }
@@ -544,6 +546,10 @@ export component LibraryScreen inherits Rectangle {
         width: 0px; height: 0px;
         Menu {
             MenuItem { title: @tr("Library" => "Play"); enabled: LibraryState.play-why == Why.available; activated => { LibraryState.play(); } }
+            MenuItem { title: @tr("DRM-free" => "Game settings"); enabled: LocalGames.selected-id != ""; activated => { LocalGames.editing = true; } }
+            MenuItem { title: @tr("DRM-free" => "Locate executable"); enabled: LocalGames.selected-id != "" && !LocalGames.busy; activated => { LocalGames.locate(); } }
+            MenuItem { title: @tr("DRM-free" => "Remove from library"); enabled: LocalGames.selected-id != "" && !LocalGames.busy; activated => { LocalGames.remove(); } }
+            MenuItem { title: @tr("DRM-free" => "Local save protection"); enabled: LocalGames.selected-id != ""; activated => { LocalGames.protection-open = true; } }
             MenuItem { title: @tr("Library" => "Install"); enabled: LibraryState.install-why == Why.available; activated => { LibraryState.install(); } }
             MenuItem { title: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); enabled: LibraryState.match-why == Why.available; activated => { LibraryState.open-match(); } }
             MenuItem { title: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); enabled: LibraryState.add-why == Why.available; activated => { LibraryState.open-add(); } }

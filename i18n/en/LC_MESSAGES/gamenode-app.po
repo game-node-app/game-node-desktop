@@ -775,3 +775,227 @@ msgstr "Imported from {}"
 msgctxt "Library"
 msgid "Internal counter"
 msgstr "Internal counter"
+
+msgctxt "DRM-free"
+msgid "Add game"
+msgstr "Add game"
+
+msgctxt "DRM-free"
+msgid "Arguments"
+msgstr "Arguments"
+
+msgctxt "DRM-free"
+msgid "Cancel"
+msgstr "Cancel"
+
+msgctxt "DRM-free"
+msgid "Executable"
+msgstr "Executable"
+
+msgctxt "DRM-free"
+msgid "Game folder"
+msgstr "Game folder"
+
+msgctxt "DRM-free"
+msgid "Game settings"
+msgstr "Game settings"
+
+msgctxt "DRM-free"
+msgid "Locate executable"
+msgstr "Locate executable"
+
+msgctxt "DRM-free"
+msgid "Remove from library"
+msgstr "Remove from library"
+
+msgctxt "DRM-free"
+msgid "Save"
+msgstr "Save"
+
+msgctxt "DRM-free"
+msgid "Title"
+msgstr "Title"
+
+msgctxt "DRM-free"
+msgid "Working directory"
+msgstr "Working directory"
+
+msgctxt "DRM-free"
+msgid "Local save protection"
+msgstr "Local save protection"
+
+msgctxt "DRM-free"
+msgid "Backups stay on this PC. A backup on the same drive cannot protect against drive loss."
+msgstr "Backups stay on this PC. A backup on the same drive cannot protect against drive loss."
+
+msgctxt "DRM-free"
+msgid "Automatic backups"
+msgstr "Automatic backups"
+
+msgctxt "DRM-free"
+msgid "Backup destination"
+msgstr "Backup destination"
+
+msgctxt "DRM-free"
+msgid "Save backup settings"
+msgstr "Save backup settings"
+
+msgctxt "DRM-free"
+msgid "Back up this game automatically"
+msgstr "Back up this game automatically"
+
+msgctxt "DRM-free"
+msgid "No save profile. Choose a save location below."
+msgstr "No save profile. Choose a save location below."
+
+msgctxt "DRM-free"
+msgid "Supported; no saves found yet."
+msgstr "Supported; no saves found yet."
+
+msgctxt "DRM-free"
+msgid "Save profile configured"
+msgstr "Save profile configured"
+
+msgctxt "DRM-free"
+msgid "Custom save file or folder"
+msgstr "Custom save file or folder"
+
+msgctxt "DRM-free"
+msgid "Use this save location"
+msgstr "Use this save location"
+
+msgctxt "DRM-free"
+msgid "Backup now"
+msgstr "Backup now"
+
+msgctxt "DRM-free"
+msgid "Close"
+msgstr "Close"
+
+msgctxt "DRM-free"
+msgid "Load backup history"
+msgstr "Load backup history"
+
+msgctxt "DRM-free"
+msgid "Restore replaces these targets after preserving a recovery backup:"
+msgstr "Restore replaces these targets after preserving a recovery backup:"
+
+msgctxt "DRM-free"
+msgid "Confirm restore"
+msgstr "Confirm restore"
+
+msgctxt "DRM-free"
+msgid "Watched folders"
+msgstr "Watched folders"
+
+msgctxt "DRM-free"
+msgid "Folder to watch"
+msgstr "Folder to watch"
+
+msgctxt "DRM-free"
+msgid "Watch folder"
+msgstr "Watch folder"
+
+msgctxt "DRM-free"
+msgid "Rescan watched folders"
+msgstr "Rescan watched folders"
+
+msgctxt "DRM-free"
+msgid "Remove watch"
+msgstr "Remove watch"
+
+msgctxt "DRM-free"
+msgid "Several launch targets; choose an executable below."
+msgstr "Several launch targets; choose an executable below."
+
+msgctxt "DRM-free"
+msgid "Use executable"
+msgstr "Use executable"
+
+msgctxt "DRM-free"
+msgid "Add selected"
+msgstr "Add selected"
+
+msgctxt "DRM-free"
+msgid "Ignore selected"
+msgstr "Ignore selected"
+
+msgctxt "DRM-free"
+msgid "Reset ignored discoveries"
+msgstr "Reset ignored discoveries"
+
+msgctxt "DRM-free"
+msgid "Choose save file"
+msgstr "Choose save file"
+
+msgctxt "DRM-free"
+msgid "Choose save folder"
+msgstr "Choose save folder"
+
+msgctxt "DRM-free"
+msgid "Exact save profile title"
+msgstr "Exact save profile title"
+
+msgctxt "DRM-free"
+msgid "Change save profile"
+msgstr "Change save profile"
+
+msgctxt "DRM-free"
+msgid "Gameplay executables (one per line)"
+msgstr "Gameplay executables (one per line)"
+
+msgctxt "DRM-free"
+msgid "Launcher executables (one per line)"
+msgstr "Launcher executables (one per line)"
+
+msgctxt "DRM-free"
+msgid "Queued"
+msgstr "Queued"
+
+msgctxt "DRM-free"
+msgid "Running"
+msgstr "Running"
+
+msgctxt "DRM-free"
+msgid "Unchanged"
+msgstr "Unchanged"
+
+msgctxt "DRM-free"
+msgid "Backup completed"
+msgstr "Backup completed"
+
+msgctxt "DRM-free"
+msgid "Partial failure"
+msgstr "Partial failure"
+
+msgctxt "DRM-free"
+msgid "Backup failed"
+msgstr "Backup failed"
+
+msgctxt "DRM-free"
+msgid "Cancelled"
+msgstr "Cancelled"
+
+msgctxt "DRM-free"
+msgid "Another installation shares these saves. Backup and restore operations run one at a time."
+msgstr "Another installation shares these saves. Backup and restore operations run one at a time."
+
+msgctxt "DRM-free"
+msgid "This game is already tracked by a store"
+msgstr "This game is already tracked by a store"
+
+msgctxt "DRM-free"
+msgid "Use the existing entry, or transfer tracking to the DRM-free registration. Playtime will be counted once."
+msgstr "Use the existing entry, or transfer tracking to the DRM-free registration. Playtime will be counted once."
+
+msgctxt "DRM-free"
+msgid "Use existing entry"
+msgstr "Use existing entry"
+
+msgctxt "DRM-free"
+msgid "Transfer tracking"
+msgstr "Transfer tracking"
+
+msgctxt "DRM-free"
+msgid "Inferred from local evidence: {}"
+msgstr "Inferred from local evidence: {}"

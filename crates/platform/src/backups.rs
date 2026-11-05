@@ -31,6 +31,9 @@ impl Ludusavi {
         })
     }
     pub fn namespace(request: &BackupRequest) -> Result<PathBuf, LocalError> {
+        if !Path::new(&request.destination).is_absolute() {
+            return Err(LocalError::InvalidTarget);
+        }
         for id in [&request.installation.id, &request.profile.id] {
             if id.is_empty()
                 || !id
@@ -45,7 +48,12 @@ impl Ludusavi {
             .join(&request.installation.id)
             .join(&request.profile.id))
     }
-    fn run(&self, args: &[String], cancelled: &AtomicBool) -> Result<Value, LocalError> {
+    fn run(
+        &self,
+        args: &[String],
+        cancelled: &AtomicBool,
+        stopped: Option<&Registration>,
+    ) -> Result<Value, LocalError> {
         if !self.helper.is_absolute() || !self.helper.is_file() {
             return Err(LocalError::Failed(
                 "bundled backup helper is unavailable".into(),
@@ -82,6 +90,7 @@ impl Ludusavi {
         let out = std::thread::spawn(move || reader(stdout, &out_flag));
         let err = std::thread::spawn(move || reader(stderr, &err_flag));
         let start = Instant::now();
+        let mut next_check = Instant::now();
         let outcome = loop {
             if cancelled.load(Ordering::Relaxed)
                 || overflow.load(Ordering::Relaxed)
@@ -94,6 +103,16 @@ impl Ludusavi {
                 } else {
                     LocalError::Failed("backup helper exceeded time or output limit".into())
                 });
+            }
+            if let Some(installation) = stopped
+                && Instant::now() >= next_check
+            {
+                next_check = Instant::now() + Duration::from_secs(1);
+                if let Err(error) = ensure_stopped(installation) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(error);
+                }
             }
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -115,7 +134,9 @@ impl Ludusavi {
             .map_err(failed)?;
         let status = outcome?;
         if args == ["--version"] {
-            if !status.success() || String::from_utf8_lossy(&output).trim() != "ludusavi 0.31.0" { return Err(failed("incompatible backup helper version")); }
+            if !status.success() || String::from_utf8_lossy(&output).trim() != "ludusavi 0.31.0" {
+                return Err(failed("incompatible backup helper version"));
+            }
             return Ok(serde_json::json!({}));
         }
         let value: Value = serde_json::from_slice(&output)
@@ -151,6 +172,23 @@ impl Ludusavi {
         Ok(path)
     }
 }
+fn ensure_stopped(installation: &Registration) -> Result<(), LocalError> {
+    use gamenode_core::ports::Processes;
+    let processes = crate::processes::HostProcesses::new()
+        .list()
+        .map_err(|_| failed("cannot confirm game is stopped"))?;
+    let normalized = |p: &str| gamenode_core::provider::path::normalize(p).to_lowercase();
+    if processes.iter().any(|p| {
+        installation
+            .gameplay
+            .iter()
+            .any(|exe| normalized(exe) == normalized(&p.exe_path))
+    }) {
+        return Err(failed("game is running"));
+    }
+    Ok(())
+}
+
 fn failed(error: impl std::fmt::Display) -> LocalError {
     LocalError::Failed(error.to_string())
 }
@@ -189,6 +227,12 @@ pub fn execution_definition(
                 .file_name()
                 .ok_or(LocalError::InvalidTarget)?
                 .to_string_lossy();
+            let path = path.replace("<root>/<game>", &glob_literal(&installation.root));
+            if path.contains("<root>") {
+                return Err(failed(
+                    "save rule requires an explicit installation context",
+                ));
+            }
             let path = path
                 .replace("<base>", &glob_literal(&installation.root))
                 .replace("<root>", &glob_literal(&installation.root))
@@ -261,6 +305,19 @@ impl BackupEngine for Ludusavi {
         request: &BackupRequest,
         cancelled: &AtomicBool,
     ) -> Result<BackupReport, LocalError> {
+        let _guard = self
+            .writer
+            .lock()
+            .map_err(|_| failed("backup writer lock failed"))?;
+        self.execute_serialized(request, cancelled)
+    }
+}
+impl Ludusavi {
+    fn execute_serialized(
+        &self,
+        request: &BackupRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<BackupReport, LocalError> {
         #[cfg(not(windows))]
         {
             let _ = (request, cancelled);
@@ -268,27 +325,116 @@ impl BackupEngine for Ludusavi {
         }
         #[allow(unreachable_code)]
         {
-            if self.checked.get().is_none() {
-                self.run(&["--version".into()],cancelled)?;
-                let _=self.checked.set(());
+            if request.profile.title.trim().is_empty() {
+                return Err(LocalError::InvalidTarget);
             }
-            let _guard = self
-                .writer
-                .lock()
-                .map_err(|_| failed("backup writer lock failed"))?;
+            if self.checked.get().is_none() {
+                self.run(&["--version".into()], cancelled, None)?;
+                let _ = self.checked.set(());
+            }
             if request.profile.title.trim().is_empty() {
                 return Err(LocalError::InvalidTarget);
             }
             let active = Self::namespace(request)?;
             reconcile(&active)?;
+            if matches!(request.operation, BackupOperation::Backup)
+                && let Some(job_id) = &request.job_id
+                && let Ok(marker) = std::fs::read(active.join(".gamenode-job.json"))
+                && let Ok(marker) = serde_json::from_slice::<Value>(&marker)
+                && marker["job"].as_str() == Some(job_id)
+            {
+                return Ok(BackupReport {
+                    state: serde_json::from_value(marker["state"].clone())
+                        .unwrap_or(JobState::Successful),
+                    json: marker["report"].to_string(),
+                });
+            }
             let config = self.config(request)?;
             let backup = matches!(request.operation, BackupOperation::Backup);
             if backup {
-                let preview_args=vec!["--config".into(),config.to_string_lossy().into_owned(),"--no-manifest-update".into(),"backup".into(),"--preview".into(),"--api".into(),"--no-cloud-sync".into(),"--path".into(),active.to_string_lossy().into_owned(),"--".into(),request.profile.title.clone()];
-                let preview=self.run(&preview_args,cancelled)?;
-                let files=preview.get("games").and_then(|g|g.get(&request.profile.title)).and_then(|g|g.get("files")).and_then(Value::as_object).map(|m|m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-                validate_destination(Path::new(&request.destination),&files.iter().map(PathBuf::from).chain([PathBuf::from(&request.installation.root)]).collect::<Vec<_>>())?;
-                if has_failure(&preview) { return Err(failed("save preview reported partial failure")); }
+                let preview_args = vec![
+                    "--config".into(),
+                    config.to_string_lossy().into_owned(),
+                    "--no-manifest-update".into(),
+                    "backup".into(),
+                    "--preview".into(),
+                    "--api".into(),
+                    "--no-cloud-sync".into(),
+                    "--path".into(),
+                    active.to_string_lossy().into_owned(),
+                    "--".into(),
+                    request.profile.title.clone(),
+                ];
+                let preview = self.run(&preview_args, cancelled, None)?;
+                let files = preview
+                    .get("games")
+                    .and_then(|g| g.get(&request.profile.title))
+                    .and_then(|g| g.get("files"))
+                    .and_then(Value::as_object)
+                    .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                validate_destination(
+                    Path::new(&request.destination),
+                    &files
+                        .iter()
+                        .map(PathBuf::from)
+                        .chain([PathBuf::from(&request.installation.root)])
+                        .collect::<Vec<_>>(),
+                )?;
+                if has_failure(&preview) {
+                    return Err(failed("save preview reported partial failure"));
+                }
+            }
+
+            if let BackupOperation::Restore { backup } = &request.operation {
+                ensure_stopped(&request.installation)?;
+                let preview_request = BackupRequest {
+                    operation: BackupOperation::RestorePreview {
+                        backup: backup.clone(),
+                    },
+                    ..request.clone()
+                };
+                let preview = self.execute_serialized(&preview_request, cancelled)?;
+                if preview.state == JobState::Partial {
+                    return Err(failed("restore preview failed"));
+                }
+                let preview: Value = serde_json::from_str(&preview.json).map_err(failed)?;
+                let game = preview
+                    .get("games")
+                    .and_then(|g| g.get(&request.profile.title))
+                    .ok_or_else(|| failed("restore preview omitted game"))?;
+                let mut definition = serde_json::json!({"files":{},"registry":{}});
+                for kind in ["files", "registry"] {
+                    if let Some(targets) = game.get(kind).and_then(Value::as_object) {
+                        for target in targets.keys() {
+                            let target = if kind == "files" {
+                                glob_literal(target)
+                            } else {
+                                target.clone()
+                            };
+                            definition[kind]
+                                .as_object_mut()
+                                .unwrap()
+                                .insert(target, serde_json::json!({}));
+                        }
+                    }
+                }
+                let mut recovery = request.clone();
+                recovery.operation = BackupOperation::Backup;
+                recovery.job_id = None;
+                recovery.profile.id = format!(
+                    "{}_recovery_{}",
+                    request.profile.id,
+                    crate::random::session_id()
+                );
+                recovery.profile.definition = definition.to_string();
+                let report = self.execute_serialized(&recovery, cancelled)?;
+                if !matches!(report.state, JobState::Successful | JobState::Unchanged) {
+                    return Err(failed("recovery backup failed; restore aborted"));
+                }
+                std::fs::create_dir_all(&active).map_err(failed)?;
+                std::fs::write(active.join(".gamenode-restore-recovery.json"), serde_json::to_vec(&serde_json::json!({"backup":backup,"recovery":Self::namespace(&recovery)?,"preview":preview})).map_err(failed)?).map_err(failed)?;
+                ensure_stopped(&request.installation)?;
             }
 
             let stage = active.with_extension("staging");
@@ -344,16 +490,44 @@ impl BackupEngine for Ludusavi {
                 args.extend(["--backup".into(), backup.clone()]);
             }
             args.extend(["--".into(), request.profile.title.clone()]);
-            let report = self.run(&args, cancelled)?;
+            let report = self.run(
+                &args,
+                cancelled,
+                if matches!(
+                    request.operation,
+                    BackupOperation::Backup | BackupOperation::Restore { .. }
+                ) {
+                    Some(&request.installation)
+                } else {
+                    None
+                },
+            )?;
             if !report.get("games").is_some_and(|g| g.is_object()) {
                 return Err(failed("backup helper report has no games"));
+            }
+            let games = report["games"]
+                .as_object()
+                .ok_or_else(|| failed("backup report omitted games"))?;
+            if games.keys().any(|title| title != &request.profile.title) {
+                return Err(failed("backup report contains an unexpected game"));
+            }
+            if matches!(
+                request.operation,
+                BackupOperation::Restore { .. } | BackupOperation::RestorePreview { .. }
+            ) && !games.contains_key(&request.profile.title)
+            {
+                return Err(failed("selected restore version is unavailable"));
             }
             let state = if has_failure(&report) {
                 JobState::Partial
             } else if report
-                .pointer("/overall/changedGames/same")
+                .pointer("/overall/totalGames")
                 .and_then(Value::as_u64)
-                == Some(1)
+                == Some(0)
+                || report
+                    .pointer("/overall/changedGames/same")
+                    .and_then(Value::as_u64)
+                    == Some(1)
             {
                 JobState::Unchanged
             } else {
@@ -365,6 +539,16 @@ impl BackupEngine for Ludusavi {
                     serde_json::to_vec(&report).map_err(failed)?,
                 )
                 .map_err(failed)?;
+                if let Some(job_id) = &request.job_id {
+                    std::fs::write(
+                        stage.join(".gamenode-job.json"),
+                        serde_json::to_vec(
+                            &serde_json::json!({"job":job_id,"report":report,"state":state}),
+                        )
+                        .map_err(failed)?,
+                    )
+                    .map_err(failed)?;
+                }
                 let previous = active.with_extension("previous");
                 std::fs::write(active.with_extension("journal"), b"verified promotion")
                     .map_err(failed)?;
@@ -381,6 +565,57 @@ impl BackupEngine for Ludusavi {
         }
     }
 }
+/// Resolve existing ancestors too, so a not-yet-created destination cannot hide a junction alias.
+pub fn resolved_destination(path: &Path) -> Result<PathBuf, LocalError> {
+    if !path.is_absolute() {
+        return Err(LocalError::InvalidTarget);
+    }
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut canonical) => {
+                for part in suffix.into_iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+            Err(_) => {
+                let name = ancestor.file_name().ok_or(LocalError::InvalidTarget)?;
+                if name == ".." {
+                    return Err(LocalError::InvalidTarget);
+                }
+                suffix.push(name.to_os_string());
+                ancestor = ancestor.parent().ok_or(LocalError::InvalidTarget)?;
+            }
+        }
+    }
+}
+pub fn validate_destination(destination: &Path, protected: &[PathBuf]) -> Result<(), LocalError> {
+    let destination = resolved_destination(destination)?;
+    let normalize = |p: &Path| {
+        let value = p.to_string_lossy().replace('\\', "/");
+        if cfg!(windows) {
+            value.to_lowercase()
+        } else {
+            value
+        }
+    };
+    let destination = normalize(&destination);
+    for source in protected {
+        let source = normalize(&resolved_destination(source)?);
+        if source == destination
+            || source.starts_with(&(destination.trim_end_matches('/').to_owned() + "/"))
+            || destination.starts_with(&(source.trim_end_matches('/').to_owned() + "/"))
+        {
+            return Err(failed(
+                "backup destination overlaps a protected save or game folder",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,23 +645,102 @@ mod tests {
     }
 }
 
-/// Resolve existing ancestors too, so a not-yet-created destination cannot hide a junction alias.
-pub fn resolved_destination(path:&Path)->Result<PathBuf,LocalError> {
-    if !path.is_absolute() { return Err(LocalError::InvalidTarget); }
-    let mut ancestor=path;let mut suffix=Vec::new();
-    loop {
-        match std::fs::canonicalize(ancestor) {
-            Ok(mut canonical)=> { for part in suffix.into_iter().rev() { canonical.push(part); } return Ok(canonical); },
-            Err(_) => { let name=ancestor.file_name().ok_or(LocalError::InvalidTarget)?; if name==".." { return Err(LocalError::InvalidTarget); } suffix.push(name.to_os_string());ancestor=ancestor.parent().ok_or(LocalError::InvalidTarget)?; }
-        }
+#[cfg(all(test, windows))]
+mod adapter_windows_tests {
+    use super::*;
+    #[test]
+    fn bundled_adapter_preserves_history_and_recovers_before_selected_restore() {
+        let helper = std::env::var_os("GAMENODE_BACKUP_TEST_HELPER")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap()
+                    .join("../../dist/windows/gamenode-desktop/backup-assets/ludusavi.exe")
+            });
+        let helper = std::fs::canonicalize(helper)
+            .expect("prepare bundled helper assets before Windows adapter tests");
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("game");
+        std::fs::create_dir(&root).unwrap();
+        let live = fixture.path().join("live.sav");
+        std::fs::write(&live, b"original").unwrap();
+        let mut rules = serde_json::Map::new();
+        rules.insert(glob_literal(&live.to_string_lossy()), serde_json::json!({}));
+        let installation = Registration {
+            id: "installation".into(),
+            title: "Fixture".into(),
+            executable: root.join("game.exe").to_string_lossy().into_owned(),
+            file_identity: "fixture".into(),
+            root: root.to_string_lossy().into_owned(),
+            working_directory: root.to_string_lossy().into_owned(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            available: true,
+        };
+        let profile = SaveProfile {
+            id: "profile".into(),
+            installation: installation.id.clone(),
+            revision: 1,
+            title: "Fixture".into(),
+            manifest_hash: "fixture".into(),
+            definition: serde_json::json!({"files":rules}).to_string(),
+            files: vec![live.to_string_lossy().into_owned()],
+            registry: vec![],
+            support: SaveSupport::Supported,
+            automatic: None,
+        };
+        let mut request = BackupRequest {
+            job_id: Some("job-fixture".into()),
+            installation,
+            profile,
+            destination: fixture
+                .path()
+                .join("archives")
+                .to_string_lossy()
+                .into_owned(),
+            operation: BackupOperation::Backup,
+        };
+        let adapter = Ludusavi {
+            helper,
+            private: fixture.path().join("private"),
+            writer: Mutex::new(()),
+            checked: std::sync::OnceLock::new(),
+        };
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            adapter.execute(&request, &cancelled).unwrap().state,
+            JobState::Successful
+        );
+        std::fs::write(&live, b"uncommitted change after a crash").unwrap();
+        assert_eq!(
+            adapter.execute(&request, &cancelled).unwrap().state,
+            JobState::Successful
+        );
+        request.operation = BackupOperation::History;
+        let report: Value =
+            serde_json::from_str(&adapter.execute(&request, &cancelled).unwrap().json).unwrap();
+        let id = report["games"]["Fixture"]["backups"][0]["name"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        std::fs::write(&live, b"current state to recover").unwrap();
+        request.operation = BackupOperation::Restore { backup: id };
+        assert_eq!(
+            adapter.execute(&request, &cancelled).unwrap().state,
+            JobState::Successful
+        );
+        assert_eq!(std::fs::read(&live).unwrap(), b"original");
+        let namespace = Ludusavi::namespace(&request).unwrap();
+        let recovery: Value = serde_json::from_slice(
+            &std::fs::read(namespace.join(".gamenode-restore-recovery.json")).unwrap(),
+        )
+        .unwrap();
+        let recovery = PathBuf::from(recovery["recovery"].as_str().unwrap());
+        assert!(recovery.join(".gamenode-verified.json").is_file());
     }
-}
-pub fn validate_destination(destination:&Path,protected:&[PathBuf])->Result<(),LocalError> {
-    let destination=resolved_destination(destination)?;
-    let normalize=|p:&Path| { let value=p.to_string_lossy().replace('\\',"/");if cfg!(windows) { value.to_lowercase() } else { value } };
-    let destination=normalize(&destination);
-    for source in protected {
-        let source=normalize(&resolved_destination(source)?);
-        if source==destination || source.starts_with(&(destination.trim_end_matches('/').to_owned()+"/")) || destination.starts_with(&(source.trim_end_matches('/').to_owned()+"/")) { return Err(failed("backup destination overlaps a protected save or game folder")); }
-    } Ok(())
 }

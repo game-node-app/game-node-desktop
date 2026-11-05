@@ -18,27 +18,62 @@ pub fn normalized(title: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+pub fn launcher(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.contains("launcher") || name.contains("bootstrap")
+}
 pub fn maintenance(name: &str) -> bool {
     let lower = name.to_lowercase();
+    let lower = lower.strip_suffix(".exe").unwrap_or(&lower);
     [
         "setup",
         "install",
         "unins",
         "update",
-        "crash",
         "redist",
         "vcredist",
         "dxsetup",
         "support",
         "unitycrashhandler",
+        "crashreport",
+        "crashhandler",
+        "crashpad",
+        "ue4prereq",
+        "ue5prereq",
     ]
     .iter()
     .any(|word| lower.starts_with(word))
+        || [
+            "editor",
+            "config",
+            "settings",
+            "benchmark",
+            "dedicatedserver",
+            "crashreporter",
+            "updater",
+        ]
+        .iter()
+        .any(|word| lower.ends_with(word))
 }
 pub fn meaningful(title: &str) -> bool {
-    let normalized = normalized(title);
+    let mut normalized = normalized(title);
+    if let Some(stem) = normalized.strip_suffix(".exe") {
+        normalized = stem.to_owned();
+    }
+    for suffix in [
+        "-win64-shipping",
+        "-win32-shipping",
+        "-shipping",
+        "_x64",
+        "_x86",
+    ] {
+        if let Some(stem) = normalized.strip_suffix(suffix) {
+            normalized = stem.to_owned();
+        }
+    }
     !normalized.is_empty()
         && !maintenance(&normalized)
+        && !launcher(&normalized)
         && ![
             "game",
             "launcher",
@@ -78,12 +113,14 @@ pub fn infer(evidence: &[Evidence]) -> Option<TitleIdentity> {
     let corroborated = usable
         .iter()
         .any(|e| e.kind != first.kind && self::normalized(&e.value) == normalized);
-    let conflict = usable
-        .iter()
-        .any(|e| e.strong && self::normalized(&e.value) != normalized);
+    let conflict = usable.iter().any(|e| {
+        (e.strong || matches!(e.kind, EvidenceKind::Product | EvidenceKind::Description))
+            && self::normalized(&e.value) != normalized
+    });
     Some(TitleIdentity {
         title: first.value.clone(),
-        strong: !conflict && (first.strong || corroborated),
+        strong: !conflict
+            && (first.strong || corroborated || first.kind == EvidenceKind::Executable),
         conflict,
     })
 }
@@ -187,6 +224,64 @@ impl ManifestIndex {
             .retain(|_, game| game.definition.get("alias").is_none());
         Ok(index)
     }
+    /// A folder hint alone never upgrades an unidentified executable.
+    pub fn corroborate(
+        &self,
+        evidence: &[Evidence],
+        folder: &str,
+        relative_executable: &str,
+    ) -> Vec<Evidence> {
+        let mut result = evidence.to_vec();
+        let executable = relative_executable.replace('\\', "/");
+        let executable_name = executable.rsplit('/').next().unwrap_or(&executable);
+        let stem = executable_name
+            .strip_suffix(".exe")
+            .unwrap_or(executable_name);
+        if maintenance(stem) || launcher(stem) {
+            return result;
+        }
+        let local = infer(evidence);
+        if local.as_ref().is_some_and(|identity| identity.conflict) {
+            return result;
+        }
+        let matches: Vec<_> = self
+            .games
+            .values()
+            .filter(|game| {
+                let identity_names = std::iter::once(&game.title).chain(game.aliases.iter());
+                let named_executable = meaningful(stem)
+                    && identity_names
+                        .clone()
+                        .any(|name| normalized(name) == normalized(stem));
+                let launch = game.launch_hints.iter().any(|hint| {
+                    let hint = hint.replace('\\', "/");
+                    let hint = hint.strip_prefix("<base>/").unwrap_or(&hint);
+                    !hint.contains(['*', '?', '<', '>']) && hint.eq_ignore_ascii_case(&executable)
+                });
+                let product = evidence.iter().any(|e| {
+                    matches!(e.kind, EvidenceKind::Product | EvidenceKind::Description)
+                        && meaningful(&e.value)
+                        && identity_names
+                            .clone()
+                            .any(|name| normalized(name) == normalized(&e.value))
+                });
+                let folder_hint = game
+                    .installs
+                    .iter()
+                    .any(|name| normalized(name) == normalized(folder));
+                launch || product || (folder_hint && named_executable)
+            })
+            .collect();
+        if let [game] = matches.as_slice() {
+            result.push(Evidence {
+                kind: EvidenceKind::Manifest,
+                value: game.title.clone(),
+                strong: true,
+            });
+        }
+        result
+    }
+
     pub fn exact(&self, title: &str) -> Vec<&ManifestIdentity> {
         let normalized = normalized(title);
         self.games
@@ -213,6 +308,27 @@ pub fn unique_exact(
         .collect();
     (ids.len() == 1).then(|| *ids.first().unwrap())
 }
+
+pub fn profile(
+    game: &ManifestIdentity,
+    installation: &super::Registration,
+    hash: &str,
+    id: String,
+) -> Result<super::SaveProfile, String> {
+    Ok(super::SaveProfile {
+        id,
+        installation: installation.id.clone(),
+        revision: 1,
+        title: game.title.clone(),
+        manifest_hash: hash.into(),
+        definition: serde_yaml::to_string(&game.definition).map_err(|e| e.to_string())?,
+        files: vec![],
+        registry: vec![],
+        support: super::SaveSupport::Supported,
+        automatic: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +365,36 @@ mod tests {
         assert_eq!(unique_exact(&i, &[g], false), None);
     }
     #[test]
+    fn generic_shipping_and_engine_names_do_not_establish_identity() {
+        for name in [
+            "Game-Win64-Shipping.exe",
+            "Launcher.exe",
+            "Unity.exe",
+            "UE4Game-Win64-Shipping.exe",
+            "setup.exe",
+        ] {
+            assert!(!meaningful(name), "{name}");
+        }
+        let executable = Evidence {
+            kind: EvidenceKind::Executable,
+            value: "Celeste".into(),
+            strong: false,
+        };
+        assert!(infer(&[executable]).unwrap().strong);
+        let product = Evidence {
+            kind: EvidenceKind::Product,
+            value: "Celeste".into(),
+            strong: false,
+        };
+        let conflicting = Evidence {
+            kind: EvidenceKind::Description,
+            value: "Another game".into(),
+            strong: false,
+        };
+        assert!(infer(&[product, conflicting]).unwrap().conflict);
+    }
+
+    #[test]
     fn aliases_are_bounded_and_unknown_fields_tolerated() {
         let index =
             ManifestIndex::parse(b"Game:\n  files: {}\n  future: true\nOld:\n  alias: Game\n")
@@ -256,8 +402,24 @@ mod tests {
         assert_eq!(index.exact("Old")[0].title, "Game");
         assert!(ManifestIndex::parse(b"A:\n  alias: B\nB:\n  alias: A\n").is_err());
     }
-}
-
-pub fn profile(game:&ManifestIdentity,installation:&super::Registration,hash:&str,id:String)->Result<super::SaveProfile,String> {
-    Ok(super::SaveProfile { id,installation:installation.id.clone(),revision:1,title:game.title.clone(),manifest_hash:hash.into(),definition:serde_yaml::to_string(&game.definition).map_err(|e|e.to_string())?,files:vec![],registry:vec![],support:super::SaveSupport::Supported,automatic:None })
+    #[test]
+    fn manifest_hints_and_aliases_do_not_turn_folder_only_evidence_into_identity() {
+        let index = ManifestIndex::parse(b"Celeste:\n  installDir: {Renamed: {}}\n  launch: {Celeste.exe: {}}\n  steam: {id: 504230}\n  futureField: true\nOther edition:\n  files: {}\nOld Name:\n  alias: Celeste\n").unwrap();
+        let game = index.exact("Old Name")[0];
+        assert_eq!(game.steam.as_deref(), Some("504230"));
+        assert!(game.installs.contains("Renamed"));
+        assert!(game.launch_hints.contains("Celeste.exe"));
+        assert!(index.exact("Other edition")[0].steam.is_none());
+        let evidence = [Evidence {
+            kind: EvidenceKind::Folder,
+            value: "Celeste".into(),
+            strong: false,
+        }];
+        assert!(!infer(&evidence).unwrap().strong);
+        let mut aliases = String::from("Target: {}\n");
+        for n in 0..1025 {
+            aliases.push_str(&format!("Alias{n}: {{alias: Target}}\n"));
+        }
+        assert!(ManifestIndex::parse(aliases.as_bytes()).is_err());
+    }
 }

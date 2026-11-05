@@ -21,7 +21,7 @@ if (Test-Path -LiteralPath $shortcutPath) {
     $shell = New-Object -ComObject WScript.Shell
     if ($shell.CreateShortcut($shortcutPath).TargetPath -eq (Join-Path $installDir 'gamenode.exe')) { Remove-Item -LiteralPath $shortcutPath }
 }
-foreach ($name in @('gamenode.exe', 'LICENSE', 'README.md', 'licenses', 'install.ps1', 'uninstall.ps1', 'previous-uri-handler.reg', '.gamenode-desktop-install.json')) {
+foreach ($name in @('gamenode.exe', 'LICENSE', 'README.md', 'licenses', 'backup-assets', 'install.ps1', 'uninstall.ps1', 'previous-uri-handler.reg', '.gamenode-desktop-install.json')) {
     $path = Join-Path $installDir $name
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }

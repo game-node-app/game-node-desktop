@@ -473,7 +473,7 @@ async fn a_cover_is_downloaded_without_any_credential() {
     });
 
     let bytes = client(&server)
-        .download_cover(&cover_url(&server))
+        .download_image(&cover_url(&server))
         .await
         .unwrap();
     assert_eq!(bytes, JPEG);
@@ -491,7 +491,7 @@ async fn a_cover_over_the_cap_is_refused_whether_or_not_the_length_is_announced(
         then.status(200).body(big);
     });
     assert_eq!(
-        client(&server).download_cover(&cover_url(&server)).await,
+        client(&server).download_image(&cover_url(&server)).await,
         Err(CoverError::TooLarge)
     );
 
@@ -505,7 +505,7 @@ async fn a_cover_over_the_cap_is_refused_whether_or_not_the_length_is_announced(
         then.status(200).body(exact);
     });
     let got = client(&server)
-        .download_cover(&cover_url(&server))
+        .download_image(&cover_url(&server))
         .await
         .unwrap();
     assert_eq!(got.len(), MAX_COVER_BYTES);
@@ -520,7 +520,7 @@ async fn a_cover_that_is_not_a_jpeg_or_not_a_200_is_a_failure() {
         then.status(200).body("<html>captive portal</html>");
     });
     assert_eq!(
-        client(&server).download_cover(&cover_url(&server)).await,
+        client(&server).download_image(&cover_url(&server)).await,
         Err(CoverError::NotAnImage)
     );
 
@@ -534,7 +534,7 @@ async fn a_cover_that_is_not_a_jpeg_or_not_a_200_is_a_failure() {
                 .body(JPEG);
         });
         assert_eq!(
-            client(&server).download_cover(&cover_url(&server)).await,
+            client(&server).download_image(&cover_url(&server)).await,
             Err(CoverError::Failed),
             "{status}"
         );
@@ -550,7 +550,7 @@ async fn a_cover_that_times_out_is_a_failure() {
         then.status(200).body(JPEG).delay(Duration::from_secs(4));
     });
     assert_eq!(
-        client(&server).download_cover(&cover_url(&server)).await,
+        client(&server).download_image(&cover_url(&server)).await,
         Err(CoverError::Failed)
     );
 }
@@ -868,5 +868,36 @@ async fn edit_errors_are_reported_and_missing_platforms_send_nothing() {
             Err(expected)
         );
         save.assert_async().await;
+    }
+}
+
+#[tokio::test]
+async fn search_retains_unknown_truncated_and_complete_page_evidence() {
+    for (count, metadata, complete) in [
+        (1, json!({}), None),
+        (1, json!({"hasNextPage":true}), Some(false)),
+        (1, json!({"hasNextPage":false}), Some(true)),
+        (1, json!({"total":1}), Some(true)),
+        (1, json!({"total":2}), Some(false)),
+        (20, json!({"hasNextPage":false,"total":20}), Some(false)),
+    ] {
+        let server = MockServer::start_async().await;
+        let mut data = metadata;
+        data["items"] = Value::Array(
+            (0..count)
+                .map(|id| search_item(id, "Celeste", None, None))
+                .collect(),
+        );
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/search/games");
+            then.status(200).json_body(json!({"data":data}));
+        });
+        let page = client(&server)
+            .search_page(&cred(), "Celeste")
+            .await
+            .unwrap();
+        assert_eq!(page.complete, complete);
+        assert_eq!(page.games.len(), count as usize);
+        mock.assert_async().await;
     }
 }

@@ -114,3 +114,66 @@ launch = { uri = "custom://run/{slug}" }
     );
     assert!(opener.opened.lock().unwrap().is_empty());
 }
+
+#[test]
+fn manual_launch_requires_approved_available_registration_and_never_installs() {
+    use crate::drm_free::{Evidence, InstallationHost, LocalError, Registration};
+    struct Host(Mutex<usize>);
+    impl InstallationHost for Host {
+        fn inspect(&self, _: &str) -> Result<Registration, LocalError> {
+            unreachable!()
+        }
+        fn evidence(&self, _: &Registration) -> Result<Vec<Evidence>, LocalError> {
+            unreachable!()
+        }
+        fn launch(&self, _: &Registration) -> Result<(), LocalError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+    let providers = registry::load(
+        &[(
+            "manual.toml",
+            include_str!("../../../../../providers/manual.toml"),
+        )],
+        Platform::Windows,
+    );
+    let manual = providers.get("manual").unwrap();
+    let mut registration = Registration {
+        id: "uuid".into(),
+        title: "Game".into(),
+        executable: "C:/game/game.exe".into(),
+        file_identity: "file".into(),
+        root: "C:/game".into(),
+        working_directory: "C:/game".into(),
+        arguments: vec!["&literal".into()],
+        gameplay: vec![],
+        launchers: vec![],
+        revision: 1,
+        removed: false,
+        rediscovery_allowed: false,
+        transferred_from: None,
+        available: true,
+    };
+    let record = crate::drm_free::records(&[registration.clone()]).remove(0);
+    let host = Host(Mutex::new(0));
+    assert_eq!(
+        launch_manual(&host, manual, &record, &registration, LaunchKind::Play),
+        Ok(())
+    );
+    assert_eq!(
+        launch_manual(&host, manual, &record, &registration, LaunchKind::Install),
+        Err(LaunchError::Unsupported)
+    );
+    assert_eq!(
+        launch_manual(&host, &steam(), &record, &registration, LaunchKind::Play),
+        Err(LaunchError::Unsupported)
+    );
+    registration.available = false;
+    assert_eq!(
+        launch_manual(&host, manual, &record, &registration, LaunchKind::Play),
+        Err(LaunchError::Incomplete)
+    );
+    assert_eq!(*host.0.lock().unwrap(), 1);
+    assert!(!manual.can_install(&record));
+}

@@ -134,3 +134,30 @@ registration preserves archives. Recovery snapshots are retained separately from
 ordinary history. Interrupted jobs remain durable and require reconciliation
 against actual archives before success or retry. Older binaries refuse this
 schema; uninstall keeps user data and archives under the existing keep-data policy.
+
+The private helper configuration lives under `private/backups/<installation>/<profile>`
+below the same desktop data directory. It has empty roots and secondary-manifest
+lists, and selects exactly one canonical profile title. The helper never uses a
+standalone Ludusavi configuration or cloud synchronization. The manifest cache is
+`manifest/manifest.yaml` with `metadata.json` for ETag/check time/hash; failed data
+updates retain the validated baseline/cache. Jobs freeze their profile definition.
+
+A profile retarget creates a new profile identity. Profiles load in insertion order,
+so the most recently selected profile is active while older definitions remain for
+history and restore. Old destinations remain in `backup_destinations` and job payloads.
+Before enabling a destination, canonical ancestor checks reject overlap with saves,
+registered installations or watched roots, including destinations not created yet.
+
+Helper mutations use a copied `.staging` namespace, never hard-linked mutable
+mapping files. Successful verified promotion writes a `.journal`, renames active to
+`.previous`, then staging to active. Startup execution reconciles interrupted renames.
+The active `.gamenode-job.json` marker binds a committed operation to its durable job
+id; replay returns that result rather than creating another snapshot. Interrupted
+Running jobs return to Queued and require a fresh stopped observation before execution.
+
+Restore preserves current affected files and registry data in a separate profile
+namespace suffixed `_recovery_<UUID>`. The original namespace records its path and
+preview in `.gamenode-restore-recovery.json`. Ordinary ten-version retention never
+prunes those recovery namespaces. Recovery failure aborts restore; interrupted or
+partial restores retain that record for manual recovery. See [DRM-free games](drm-free-games.md)
+for controls and the same-physical-drive limitation.

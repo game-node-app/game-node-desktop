@@ -276,3 +276,14 @@ fn manual_provider_is_windows_only_and_executable_actions_are_restricted() {
             .is_empty()
     );
 }
+
+#[test]
+fn every_documented_provider_manifest_loads() {
+    let doc = include_str!("../../../../../docs/providers.md");
+    for block in doc.split("```toml\n").skip(1) {
+        let example = block.split("```").next().unwrap();
+        let loaded = load(&[("example.toml", example)], Platform::Windows);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(loaded.providers.len(), 1);
+    }
+}

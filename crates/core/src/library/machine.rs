@@ -412,11 +412,22 @@ impl LibraryMachine {
         self.chosen.get(key)
     }
 
-    pub fn set_local_inference(&mut self, key: String, game_id: Option<u64>, game: Option<GameRecord>) {
-        if let Some(game_id) = game_id { self.local_inferences.insert(key,game_id); }
-        else { self.local_inferences.remove(&key); }
-        if let Some(game)=game { self.games.insert(game.game_id,game); }
-        self.view_cache=None;
+    pub fn set_local_inference(
+        &mut self,
+        key: String,
+        game_id: Option<u64>,
+        game: Option<GameRecord>,
+    ) -> Vec<Effect> {
+        if let Some(game_id) = game_id {
+            self.local_inferences.insert(key, game_id);
+        } else {
+            self.local_inferences.remove(&key);
+        }
+        if let Some(game) = game {
+            self.games.insert(game.game_id, game);
+        }
+        self.view_cache = None;
+        self.plan_covers(false)
     }
     pub fn game(&self, game_id: u64) -> Option<&GameRecord> {
         self.games.get(&game_id)

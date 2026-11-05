@@ -24,3 +24,10 @@ This inventory covers assets currently checked into the repository. Dependency
 notices and their offline About presentation must additionally be included by
 the application/packaging tasks; this inventory is not a dependency-license bill
 of materials.
+
+The Windows package includes Ludusavi v0.31.0 and a pinned primary manifest at
+revision `b58576fb97d128089fc3017033d8b9aff695465d`. Their MIT notices are retained in
+`Ludusavi-MIT.txt` and `Ludusavi-manifest-MIT.txt`, and shown in About. Release URLs
+and SHA-256 inputs are recorded in `packaging/windows/backup-inputs.json`;
+`backup-assets/build-inputs.json` records the digests actually packaged. The helper
+is distributed with the application and never downloaded at runtime.

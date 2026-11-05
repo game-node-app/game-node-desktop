@@ -181,3 +181,17 @@ UI Automation, installed the new package and reopened it. The installed binary's
 SHA-256 matched the package binary. The native GameNode window was found, and
 UI Automation found seven playtime text elements. No forced process termination
 was used. The remaining reboot/Startup apps/manual tray checklist is unchanged.
+
+### DRM-free tracking and handoff checklist \u2014 2026-11-05
+
+Verified in tests and pending physical Windows verification:
+
+- [ ] Add an ordinary DRM-free game executable via **Add game**; launch externally and verify detection within 5-second polling interval.
+- [ ] Add a launcher-based DRM-free game; start the launcher and verify:
+  - Launcher alone does not initiate gameplay tracking.
+  - Spawned child game executable inside root is detected, learned, and tracked.
+  - Exiting child executable stops gameplay tracking after 10-second handoff settling, even if launcher stays open.
+- [ ] Start learned executable directly from a shortcut without launcher; verify immediate tracking.
+- [ ] Test edit-tracking recovery: if an unmonitored executable runs, open **Game settings**, add it to gameplay targets, and verify tracking starts immediately without restarting GameNode or losing historical save archives.
+- [ ] Confirm elevated processes (run as Administrator) or processes outside the game root log known inspection limitations rather than guessing identity.
+

@@ -14,10 +14,10 @@ pub(super) struct Playtime {
     pub source: PlaytimeSource,
     pub available: bool,
     pub error: bool,
-    ready: bool,
+    pub(super) ready: bool,
     stopped: bool,
     generation: u64,
-    listing: bool,
+    pub(super) listing: bool,
     reading: bool,
     submitting: bool,
     resubmit: bool,
@@ -92,6 +92,11 @@ impl Engine {
         let entries = state
             .library
             .installed_entries()
+            .filter(|entry| {
+                !state.local.registrations.iter().any(|r| {
+                    !r.removed && r.transferred_from.as_deref() == Some(entry.key.as_str())
+                })
+            })
             .map(|e| {
                 let provider = state.library.provider(&e.provider);
                 Entry {
@@ -129,6 +134,18 @@ impl Engine {
                         },
                     )
                 })
+                .chain(
+                    state
+                        .local
+                        .registrations
+                        .iter()
+                        .filter(|r| !r.removed)
+                        .filter_map(|r| {
+                            r.transferred_from
+                                .clone()
+                                .map(|key| (key, gamenode_core::drm_free::ProcessPolicy::Ignored))
+                        }),
+                )
                 .collect(),
         );
         let effects = state.playtime.tracker.update(
@@ -281,10 +298,26 @@ impl Engine {
             let adapter = self.shared.ports.processes.clone();
             self.shared.runtime.spawn_blocking(move || {
                 let result = adapter.list();
+                let learned = result
+                    .as_ref()
+                    .map(|processes| engine.learn_local_gameplay(processes))
+                    .unwrap_or_default();
                 let mut state = engine.lock();
                 state.playtime.listing = false;
                 if generation != state.playtime.generation || state.playtime.stopped {
                     return;
+                }
+                if !learned.is_empty() {
+                    for registration in learned {
+                        if let Some(current) =
+                            state.local.registrations.iter_mut().find(|r| {
+                                r.id == registration.id && r.revision < registration.revision
+                            })
+                        {
+                            *current = registration;
+                        }
+                    }
+                    engine.sync_tracker(&mut state);
                 }
                 match result {
                     Ok(processes) => {
@@ -384,6 +417,9 @@ impl Engine {
         state.library.set_running(Default::default());
     }
     pub fn shutdown(&self) {
+        self.shared
+            .local_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         {
             let mut state = self.lock();
             self.stop_tracking(&mut state);

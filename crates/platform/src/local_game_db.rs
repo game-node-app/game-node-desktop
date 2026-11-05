@@ -35,6 +35,14 @@ impl LocalGameStore for SqliteLocalGameStore {
     fn save_registration(&self, v: &Registration) -> Result<(), StorageError> {
         crate::db::lock(&self.conn).execute("INSERT INTO manual_registrations(id,file_identity,removed,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET file_identity=excluded.file_identity,removed=excluded.removed,payload=excluded.payload", params![v.id,v.file_identity,v.removed,encode(v)?]).map(drop).map_err(failed)
     }
+    fn save_registration_if_revision(
+        &self,
+        value: &Registration,
+        revision: u64,
+    ) -> Result<bool, StorageError> {
+        let changed = crate::db::lock(&self.conn).execute("UPDATE manual_registrations SET payload=?2 WHERE id=?1 AND removed=0 AND json_extract(payload,'$.revision')=?3", params![value.id, encode(value)?, i64::try_from(revision).map_err(failed)?]).map_err(failed)?;
+        Ok(changed == 1)
+    }
     fn watches(&self) -> Result<Vec<WatchRoot>, StorageError> {
         self.list("SELECT payload FROM discovery_watches ORDER BY id")
     }
@@ -61,10 +69,10 @@ impl LocalGameStore for SqliteLocalGameStore {
             .collect()
     }
     fn save_inference(&self, v: &Inference) -> Result<(), StorageError> {
-        crate::db::lock(&self.conn).execute("INSERT INTO local_inferences(account_id,installation_id,payload) VALUES(?1,?2,?3) ON CONFLICT(account_id,installation_id) DO UPDATE SET payload=excluded.payload", params![v.account,v.installation,encode(v)?]).map(drop).map_err(failed)
+        crate::db::lock(&self.conn).execute("INSERT INTO local_inferences(account_id,installation_id,payload) SELECT ?1,?2,?3 WHERE EXISTS (SELECT 1 FROM manual_registrations WHERE id=?2 AND removed=0 AND json_extract(payload,'$.revision')=json_extract(?3,'$.revision')) ON CONFLICT(account_id,installation_id) DO UPDATE SET payload=excluded.payload", params![v.account,v.installation,encode(v)?]).map(drop).map_err(failed)
     }
     fn profiles(&self) -> Result<Vec<SaveProfile>, StorageError> {
-        self.list("SELECT payload FROM save_profiles ORDER BY id")
+        self.list("SELECT payload FROM save_profiles ORDER BY rowid")
     }
     fn save_profile(&self, v: &SaveProfile) -> Result<(), StorageError> {
         let mut conn = crate::db::lock(&self.conn);
@@ -153,6 +161,8 @@ mod tests {
             launchers: vec![],
             revision: 1,
             removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
             available: true,
         }
     }

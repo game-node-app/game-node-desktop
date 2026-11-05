@@ -16,6 +16,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|arg| arg == "compact") {
         ui.window().set_size(slint::LogicalSize::new(640., 420.));
     }
+    if args.iter().any(|arg| arg == "pt_BR") {
+        slint::select_bundled_translation("pt_BR")?;
+    }
+    if args.iter().any(|arg| arg == "protection") {
+        let local = ui.global::<gamenode_app::LocalGames>();
+        local.set_supported(true);
+        local.set_selected_id("fixture".into());
+        local.set_protection_open(true);
+        local.set_automatic(true);
+        local.set_game_automatic(true);
+        local.set_destination(
+            "C:\\Users\\Fixture\\AppData\\Local\\GameNode\\Desktop\\backups".into(),
+        );
+    }
     ui.set_version("0.1.0".into());
     ui.set_active_software(true);
     ui.set_fallback_renderer(false);
@@ -33,9 +47,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pixels = ui.window().take_snapshot().unwrap();
             let mut file = std::fs::File::create(&output).unwrap();
             write!(file, "P6\n{} {}\n255\n", pixels.width(), pixels.height()).unwrap();
-            for pixel in pixels.as_slice() {
-                file.write_all(&[pixel.r, pixel.g, pixel.b]).unwrap();
-            }
+            let rgb: Vec<u8> = pixels
+                .as_slice()
+                .iter()
+                .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
+                .collect();
+            file.write_all(&rgb).unwrap();
             slint::quit_event_loop().unwrap();
         },
     );

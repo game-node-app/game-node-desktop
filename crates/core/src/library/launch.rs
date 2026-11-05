@@ -64,5 +64,27 @@ pub fn open_action(
     })
 }
 
+/// Execute only the bundled manual declaration using the persisted approved registration.
+/// The host revalidates the executable and folder before starting it, on a worker.
+pub fn launch_manual(
+    host: &dyn crate::drm_free::InstallationHost,
+    provider: &Provider,
+    record: &Record,
+    registration: &crate::drm_free::Registration,
+    kind: LaunchKind,
+) -> Result<(), LaunchError> {
+    if !provider.is_manual_executable() || kind != LaunchKind::Play {
+        return Err(LaunchError::Unsupported);
+    }
+    if registration.removed || !registration.available || record.id != registration.id {
+        return Err(LaunchError::Incomplete);
+    }
+    host.launch(registration).map_err(|error| match error {
+        crate::drm_free::LocalError::InvalidTarget => LaunchError::Incomplete,
+        crate::drm_free::LocalError::Unsupported => LaunchError::Unsupported,
+        _ => LaunchError::Failed,
+    })
+}
+
 #[cfg(test)]
 mod tests;

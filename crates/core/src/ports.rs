@@ -123,10 +123,17 @@ pub trait RootResolver: Send + Sync {
 
 /// A process identity includes creation time because operating systems reuse pids.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub created_at: std::time::SystemTime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProcessInfo {
     pub pid: u32,
     pub created_at: std::time::SystemTime,
     pub exe_path: String,
+    pub parent: Option<ProcessIdentity>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

@@ -18,6 +18,10 @@ pub struct Registration {
     pub launchers: Vec<String>,
     pub revision: u64,
     pub removed: bool,
+    #[serde(default)]
+    pub rediscovery_allowed: bool,
+    #[serde(default)]
+    pub transferred_from: Option<String>,
     pub available: bool,
 }
 impl Registration {
@@ -75,6 +79,7 @@ pub struct WatchRoot {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessPolicy {
+    Ignored,
     Folder,
     Explicit {
         gameplay: Vec<String>,
@@ -153,19 +158,46 @@ pub enum LocalError {
 pub trait InstallationHost: Send + Sync {
     fn inspect(&self, executable: &str) -> Result<Registration, LocalError>;
     fn launch(&self, registration: &Registration) -> Result<(), LocalError>;
+    fn validate_registration(
+        &self,
+        registration: &Registration,
+    ) -> Result<Registration, LocalError> {
+        Ok(registration.clone())
+    }
     fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError>;
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryReport {
+    pub candidates: Vec<Candidate>,
+    pub incomplete: bool,
 }
 pub trait DiscoveryHost: Send + Sync {
     fn discover(
         &self,
         watch: &WatchRoot,
         cancelled: &std::sync::atomic::AtomicBool,
-    ) -> Result<Vec<Candidate>, LocalError>;
+    ) -> Result<DiscoveryReport, LocalError>;
 }
 /// Global Windows-user records; catalog inferences alone are account scoped.
 pub trait LocalGameStore: Send + Sync {
     fn registrations(&self) -> Result<Vec<Registration>, StorageError>;
     fn save_registration(&self, value: &Registration) -> Result<(), StorageError>;
+    fn save_registration_if_revision(
+        &self,
+        value: &Registration,
+        revision: u64,
+    ) -> Result<bool, StorageError> {
+        if self
+            .registrations()?
+            .iter()
+            .any(|r| r.id == value.id && r.revision == revision && !r.removed)
+        {
+            self.save_registration(value)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
     fn watches(&self) -> Result<Vec<WatchRoot>, StorageError>;
     fn save_watch(&self, value: &WatchRoot) -> Result<(), StorageError>;
     fn candidates(&self) -> Result<Vec<Candidate>, StorageError>;
@@ -189,6 +221,7 @@ pub enum BackupOperation {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackupRequest {
+    pub job_id: Option<String>,
     pub profile: SaveProfile,
     pub installation: Registration,
     pub destination: String,
@@ -238,6 +271,8 @@ mod tests {
             launchers: vec![],
             revision: 1,
             removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
             available: false,
         };
         registration.repair("new.exe".into(), "two".into());
@@ -256,6 +291,7 @@ mod tests {
             automatic: None,
         };
         let request = BackupRequest {
+            job_id: None,
             profile,
             installation: registration,
             destination: "local".into(),
@@ -297,8 +333,48 @@ pub fn records(registrations: &[Registration]) -> Vec<crate::provider::Record> {
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupVersion {
+    pub installation: String,
+    pub profile: String,
+    pub destination: String,
+    pub id: String,
+    pub label: String,
+    pub bytes: u64,
+}
+impl BackupVersion {
+    pub fn key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.profile.len(),
+            self.profile,
+            self.id.len(),
+            self.id,
+            self.destination
+        )
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestorePlan {
+    pub request: BackupRequest,
+    pub targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingClaim {
+    pub registration: Registration,
+    pub store_key: String,
+    pub store_title: String,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalView {
+    pub pending_claim: Option<PendingClaim>,
+    pub inferences: Vec<Inference>,
+    pub discovery_incomplete: Vec<String>,
+    pub watches: Vec<WatchRoot>,
+    pub review_selected: Vec<String>,
+    pub versions: Vec<BackupVersion>,
+    pub restore: Option<RestorePlan>,
     pub busy: bool,
     pub error: Option<String>,
     pub registrations: Vec<Registration>,
@@ -394,12 +470,20 @@ mod projection_tests {
     #[test]
     fn approved_registrations_keep_identity_when_unavailable_and_exclude_tombstones() {
         let registration = Registration {
-            id: "installation-uuid".into(), title: "Celeste".into(),
+            id: "installation-uuid".into(),
+            title: "Celeste".into(),
             executable: r"F:\Games\Celeste\Celeste.exe".into(),
-            file_identity: "volume:file".into(), root: r"F:\Games\Celeste".into(),
-            working_directory: r"F:\Games\Celeste".into(), arguments: vec![],
-            gameplay: vec![], launchers: vec![], revision: 1,
-            removed: false, available: true,
+            file_identity: "volume:file".into(),
+            root: r"F:\Games\Celeste".into(),
+            working_directory: r"F:\Games\Celeste".into(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            available: true,
         };
         let first = records(std::slice::from_ref(&registration));
         let mut missing = registration.clone();
@@ -413,7 +497,10 @@ mod projection_tests {
         let projected = records(&[missing, removed]);
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].id, first[0].id);
-        assert_eq!(crate::library::entry_key("manual", &projected[0].id), registration.key());
+        assert_eq!(
+            crate::library::entry_key("manual", &projected[0].id),
+            registration.key()
+        );
         assert_eq!(projected[0].field("available"), Some("false"));
         assert_eq!(projected[0].name.as_deref(), Some("Corrected title"));
         // Discovery candidates are a separate model and cannot be passed to records.

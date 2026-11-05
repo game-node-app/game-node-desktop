@@ -66,6 +66,7 @@ fn process() -> ProcessInfo {
         pid: 99,
         created_at: UNIX_EPOCH + Duration::from_secs(super::super::unix_now() as u64 - 30),
         exe_path: format!("{ROOT}/steamapps/common/Portal 2/game.exe"),
+        parent: None,
     }
 }
 #[tokio::test(flavor = "multi_thread")]

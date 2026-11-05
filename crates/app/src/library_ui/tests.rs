@@ -334,7 +334,7 @@ mod render {
     #[test]
     fn snapshots_are_copied_into_the_screens() {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        slint::platform::set_platform(Box::new(Headless(window))).unwrap();
+        slint::platform::set_platform(Box::new(Headless(window.clone()))).unwrap();
         let ui = AppWindow::new().unwrap();
         let state = ui.global::<LibraryState>();
         let dir = tempfile::tempdir().unwrap();
@@ -428,6 +428,7 @@ mod render {
             row: rows[0].clone(),
             install_dir: "C:\\Steam\\Portal 2".into(),
             release_year: Some(2011),
+            artwork: None,
             membership: Membership::InLibrary(Some(EntryStatus::Finished)),
         });
         let launch = LaunchStatus {
@@ -453,6 +454,49 @@ mod render {
         assert!(state.get_edit_existing());
         assert!(state.get_change_match());
         assert_eq!(state.get_launch_note(), LaunchNote::NoHandler);
+        // A valid portrait must never be substituted while artwork is pending or unavailable.
+        let cover =
+            Image::load_from_data(include_bytes!("../../ui/icons/gamenode.png"), None).unwrap();
+        renderer.covers.insert("7.jpg".into(), Some(cover));
+        Arc::make_mut(&mut v.detail.as_mut().unwrap().row).cover_file = Some("7.jpg".into());
+        renderer.render(&ui, &snapshot(Some(v.clone()), None));
+        assert!(!state.get_detail_has_cover());
+        assert_eq!(state.get_detail_cover().size().width, 0);
+
+        let capture = |name: &str| {
+            if let Ok(dir) = std::env::var("GAMENODE_ARTWORK_RENDER_DIR") {
+                use std::io::Write;
+                ui.set_signed_in(true);
+                ui.window().set_size(slint::LogicalSize::new(1200., 800.));
+                ui.show().unwrap();
+                ui.window().request_redraw();
+                let mut pixels = vec![slint::Rgb8Pixel::default(); 1200 * 800];
+                window.draw_if_needed(|renderer| {
+                    renderer.render(&mut pixels, 1200);
+                });
+                let mut file =
+                    std::fs::File::create(std::path::Path::new(&dir).join(name)).unwrap();
+                write!(file, "P6\n1200 800\n255\n").unwrap();
+                for pixel in pixels {
+                    file.write_all(&[pixel.r, pixel.g, pixel.b]).unwrap();
+                }
+            }
+        };
+        capture("artwork-pending.ppm");
+        v.detail.as_mut().unwrap().artwork = Some(Arc::from(
+            include_bytes!("../../ui/icons/gamenode.png").as_slice(),
+        ));
+        renderer.render(&ui, &snapshot(Some(v.clone()), None));
+        assert!(state.get_detail_has_cover());
+        assert!(state.get_detail_cover().size().width > 0);
+        capture("artwork-loaded.ppm");
+        v.detail.as_mut().unwrap().artwork = None;
+        renderer.render(&ui, &snapshot(Some(v.clone()), None));
+        assert!(
+            !state.get_detail_has_cover(),
+            "previous artwork must be cleared"
+        );
+
         let other = LaunchStatus {
             entry_key: "steam:2".into(),
             kind: LaunchKind::Play,

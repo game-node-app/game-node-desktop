@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-for tool in cargo clang-cl llvm-lib lld-link cmake ninja; do
+for tool in cargo clang-cl llvm-lib lld-link llvm-rc cmake ninja; do
     command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
 export XWIN_ARCH=x86_64

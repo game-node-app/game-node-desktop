@@ -5,7 +5,8 @@
 //! Results carry the operation id of the effect that produced them, so an answer that arrives
 //! after the account changed or a newer load started is ignored.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use crate::game_api::{ApiError, Collection, ExternalMatch, GameSummary, LibraryEntry};
 use crate::provider::{Provider, Record};
@@ -94,6 +95,11 @@ pub enum Effect {
     FetchCover {
         game_id: u64,
         url: CoverUrl,
+    },
+    /// Fetch the selected game's landscape artwork and report it with [`Input::ArtworkDone`].
+    FetchArtwork {
+        op: u64,
+        game_id: u64,
     },
     /// Read whether the game is in the user's library (`GameApi::library_entry`) and report with
     /// [`Input::EntryRead`]. Only sent with a verified session.
@@ -186,6 +192,12 @@ pub enum Input {
         game_id: u64,
         result: Result<String, ()>,
         now: i64,
+    },
+    /// The outcome of an [`Effect::FetchArtwork`].
+    ArtworkDone {
+        op: u64,
+        game_id: u64,
+        result: Result<Option<Vec<u8>>, ApiError>,
     },
     /// The answer to an [`Effect::Lookup`]. A failure of any kind changes nothing.
     LookupDone {
@@ -295,6 +307,13 @@ pub struct LibraryMachine {
     /// The match dialog, while it is open.
     pub(super) dialog: Option<MatchDialog>,
     pub(super) covers: CoverQueue,
+    /// Artwork is loaded on demand; the engine checks its disk cache before downloading.
+    pub(super) artwork_focus: Option<u64>,
+    pub(super) artwork_requests: BTreeMap<u64, u64>,
+    /// A small recent-image cache makes revisiting a game immediate.
+    pub(super) artwork_cache: VecDeque<(u64, Option<Arc<[u8]>>)>,
+    pub(super) artwork_attempted: bool,
+    pub(super) artwork: Option<Arc<[u8]>>,
     pub(super) view_cache: Option<LibraryView>,
 }
 
@@ -327,6 +346,11 @@ impl LibraryMachine {
             lookups: BTreeMap::new(),
             dialog: None,
             covers: CoverQueue::default(),
+            artwork_focus: None,
+            artwork_requests: BTreeMap::new(),
+            artwork_cache: VecDeque::new(),
+            artwork_attempted: false,
+            artwork: None,
             view_cache: None,
         }
     }
@@ -393,7 +417,67 @@ impl LibraryMachine {
     pub fn handle(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = self.dispatch(input);
         effects.extend(self.plan_membership());
+        effects.extend(self.plan_artwork());
         effects
+    }
+
+    fn plan_artwork(&mut self) -> Vec<Effect> {
+        let game_id = if self.access == Access::Verified && matches!(self.phase, Phase::Ready) {
+            self.selected_game()
+        } else {
+            None
+        };
+        if game_id != self.artwork_focus {
+            self.artwork_focus = game_id;
+            self.artwork_attempted = false;
+            self.artwork = None;
+            if let Some(index) = self
+                .artwork_cache
+                .iter()
+                .position(|(id, _)| Some(*id) == game_id)
+            {
+                let cached = self.artwork_cache.remove(index).unwrap();
+                self.artwork = cached.1.clone();
+                self.artwork_attempted = true;
+                self.artwork_cache.push_back(cached);
+            }
+        }
+        if !self.layout.detail_open || self.artwork_attempted {
+            return vec![];
+        }
+        let Some(game_id) = game_id else {
+            return vec![];
+        };
+        if self.artwork_requests.contains_key(&game_id) {
+            return vec![];
+        }
+        let op = self.next_op();
+        self.artwork_requests.insert(game_id, op);
+        vec![Effect::FetchArtwork { op, game_id }]
+    }
+
+    fn on_artwork_done(
+        &mut self,
+        op: u64,
+        game_id: u64,
+        result: Result<Option<Vec<u8>>, ApiError>,
+    ) {
+        if self.artwork_requests.get(&game_id) != Some(&op) {
+            return;
+        }
+        self.artwork_requests.remove(&game_id);
+        let successful = result.is_ok();
+        let image = result.ok().flatten().map(Arc::<[u8]>::from);
+        if successful {
+            self.artwork_cache.push_back((game_id, image.clone()));
+            if self.artwork_cache.len() > 8 {
+                self.artwork_cache.pop_front();
+            }
+        }
+        if self.artwork_focus == Some(game_id) {
+            self.artwork_attempted = true;
+            self.artwork = image;
+        }
     }
 
     fn dispatch(&mut self, input: Input) -> Vec<Effect> {
@@ -418,6 +502,14 @@ impl LibraryMachine {
                 result,
                 now,
             } => self.on_cover_done(game_id, result, now),
+            Input::ArtworkDone {
+                op,
+                game_id,
+                result,
+            } => {
+                self.on_artwork_done(op, game_id, result);
+                vec![]
+            }
             Input::LookupDone {
                 op,
                 category,
@@ -544,6 +636,11 @@ impl LibraryMachine {
         self.lookups.clear();
         self.dialog = None;
         self.covers.clear();
+        self.artwork_focus = None;
+        self.artwork_requests.clear();
+        self.artwork_cache.clear();
+        self.artwork_attempted = false;
+        self.artwork = None;
     }
 
     fn on_account_changed(&mut self, account: Option<LastAccount>) -> Vec<Effect> {

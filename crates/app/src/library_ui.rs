@@ -394,6 +394,8 @@ struct Renderer {
     covers_dir: PathBuf,
     /// Decoded covers by file name; `None` remembers a file that could not be read.
     covers: HashMap<String, Option<Image>>,
+    /// The last decoded selected-game artwork; it is only shown in the details pane.
+    artwork: Option<(u64, Option<Image>)>,
     items: Rc<VecModel<GameItem>>,
     providers: Rc<VecModel<ProviderItem>>,
     candidates: Rc<VecModel<OptionItem>>,
@@ -422,6 +424,7 @@ impl Renderer {
         Self {
             covers_dir,
             covers: HashMap::new(),
+            artwork: None,
             items: Rc::default(),
             providers: Rc::default(),
             candidates: Rc::default(),
@@ -451,6 +454,17 @@ impl Renderer {
             .entry(file.to_owned())
             .or_insert_with(|| load_cover(dir, file))
             .clone()
+    }
+
+    fn artwork(&mut self, game_id: u64, bytes: &[u8]) -> Option<Image> {
+        if let Some((cached_id, image)) = &self.artwork
+            && *cached_id == game_id
+        {
+            return image.clone();
+        }
+        let image = Image::load_from_data(bytes, None).ok();
+        self.artwork = Some((game_id, image.clone()));
+        image
     }
 
     fn render(&mut self, ui: &AppWindow, snapshot: &Snapshot) {
@@ -569,7 +583,12 @@ impl Renderer {
             return;
         };
         let row = &detail.row;
-        let cover = self.cover(row.cover_file.as_deref());
+        let artwork = detail.artwork.as_deref().and_then(|bytes| {
+            row.status
+                .game_id()
+                .and_then(|game_id| self.artwork(game_id, bytes))
+        });
+        let detail_image = artwork;
         let (standing, standing_status) = standing(detail.membership);
         state.set_detail_running(detail.running);
         state.set_detail_playtime_known(row.playtime.seconds.is_some());
@@ -602,8 +621,8 @@ impl Renderer {
         state.set_detail_source(source_kind(&row.status));
         state.set_detail_standing(standing);
         state.set_detail_standing_status(standing_status);
-        state.set_detail_has_cover(cover.is_some());
-        state.set_detail_cover(cover.unwrap_or_default());
+        state.set_detail_has_cover(detail_image.is_some());
+        state.set_detail_cover(detail_image.unwrap_or_default());
         state.set_launch_note(launch_note(
             snapshot.launch.as_ref(),
             Some(row.key.as_str()),

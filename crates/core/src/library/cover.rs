@@ -1,8 +1,8 @@
-//! Which cover URLs the application downloads.
+//! Which GameNode image URLs the application downloads.
 //!
-//! GameNode reports covers as protocol-relative IGDB image URLs. Only those are fetched: https,
-//! the IGDB image host, and the upload path with a size segment and a `.jpg` id. The size is
-//! rewritten to the large cover, so a thumbnail URL from the server still yields a usable image.
+//! GameNode reports covers and artworks as protocol-relative IGDB image URLs. Only those are
+//! fetched: https, the IGDB image host, and the upload path with a size segment and a `.jpg` id.
+//! The size is rewritten for the image's use in the library.
 
 use url::Url;
 
@@ -10,13 +10,25 @@ use url::Url;
 const HOST: &str = "images.igdb.com";
 /// The size every download asks for.
 const SIZE: &str = "t_cover_big";
+/// The size used for the wide image in the details pane.
+const ARTWORK_SIZE: &str = "t_1080p";
 
 /// A cover URL that passed the check. Only [`download_url`] makes one, so a download can never be
 /// started for a URL that was not checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverUrl(Url);
 
+/// A landscape artwork URL that passed the same IGDB host and path checks as a cover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtworkUrl(Url);
+
 impl CoverUrl {
+    pub fn as_url(&self) -> &Url {
+        &self.0
+    }
+}
+
+impl ArtworkUrl {
     pub fn as_url(&self) -> &Url {
         &self.0
     }
@@ -25,6 +37,15 @@ impl CoverUrl {
 /// The URL to download a game's cover from, or `None` when the reported URL is not an allowed
 /// IGDB image URL.
 pub fn download_url(reported: &str) -> Option<CoverUrl> {
+    image_url(reported, SIZE).map(CoverUrl)
+}
+
+/// The URL to download a game's artwork from, or `None` when it is not an allowed IGDB image URL.
+pub fn artwork_download_url(reported: &str) -> Option<ArtworkUrl> {
+    image_url(reported, ARTWORK_SIZE).map(ArtworkUrl)
+}
+
+fn image_url(reported: &str, target_size: &str) -> Option<Url> {
     let reported = reported.trim();
     let absolute = match reported.strip_prefix("//") {
         Some(rest) => format!("https://{rest}"),
@@ -67,9 +88,10 @@ pub fn download_url(reported: &str) -> Option<CoverUrl> {
         return None;
     }
 
-    Url::parse(&format!("https://{HOST}/igdb/image/upload/{SIZE}/{id}.jpg"))
-        .ok()
-        .map(CoverUrl)
+    Url::parse(&format!(
+        "https://{HOST}/igdb/image/upload/{target_size}/{id}.jpg"
+    ))
+    .ok()
 }
 
 #[cfg(test)]

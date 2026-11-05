@@ -55,6 +55,8 @@ struct FakeApi {
     lookup_result: Mutex<Option<Result<Vec<ExternalMatch>, ApiError>>>,
     lookups: Mutex<Vec<(u32, Vec<String>)>>,
     covers_fetched: Mutex<Vec<String>>,
+    artworks_fetched: Mutex<Vec<u64>>,
+    artwork_result: Mutex<Option<Result<Option<Vec<u8>>, ApiError>>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     created: Mutex<Vec<u64>>,
     updated: Mutex<Vec<u64>>,
@@ -158,6 +160,18 @@ impl GameApi for FakeApi {
             .unwrap()
             .push(cover.as_url().to_string());
         Ok(b"jpeg".to_vec())
+    }
+    async fn fetch_artwork(
+        &self,
+        _credential: &SessionCredential,
+        game_id: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.artworks_fetched.lock().unwrap().push(game_id);
+        self.artwork_result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(None))
     }
     async fn list_collections(
         &self,
@@ -899,4 +913,49 @@ impl gamenode_core::ports::PlaytimeApi for FakeApi {
         tokio::time::sleep(delay).await;
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn artwork_survives_reload_and_is_separate_from_covers() {
+    let api = FakeApi::new();
+    let dir = tempfile::tempdir().unwrap();
+    let artwork_dir = dir.path().join("artworks");
+    let bytes = b"\xff\xd8\xfflandscape".to_vec();
+    *api.artwork_result.lock().unwrap() = Some(Ok(Some(bytes.clone())));
+    std::fs::write(dir.path().join("7.jpg"), b"portrait").unwrap();
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), &artwork_dir, 7).await,
+        Ok(Some(bytes.clone()))
+    );
+    // A fresh API adapter and no session: only the persisted file can provide this image.
+    let fresh_api = FakeApi::new();
+    assert_eq!(
+        super::artwork::load(fresh_api.as_ref(), None, &artwork_dir, 7).await,
+        Ok(Some(bytes))
+    );
+    assert!(fresh_api.artworks_fetched.lock().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(dir.path().join("7.jpg")).unwrap(),
+        b"portrait"
+    );
+    assert_eq!(*api.artworks_fetched.lock().unwrap(), [7]);
+}
+
+#[tokio::test]
+async fn corrupt_artwork_is_replaced_and_failures_can_be_retried() {
+    let api = FakeApi::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("7.jpg"), b"broken").unwrap();
+    *api.artwork_result.lock().unwrap() = Some(Err(ApiError::Failed));
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), dir.path(), 7).await,
+        Err(ApiError::Failed)
+    );
+    let bytes = b"\xff\xd8\xfflandscape".to_vec();
+    *api.artwork_result.lock().unwrap() = Some(Ok(Some(bytes.clone())));
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), dir.path(), 7).await,
+        Ok(Some(bytes.clone()))
+    );
+    assert_eq!(std::fs::read(dir.path().join("7.jpg")).unwrap(), bytes);
 }

@@ -38,6 +38,7 @@ $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'GameNode D
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $binary
+$shortcut.IconLocation = "$binary,0"
 $shortcut.WorkingDirectory = $installDir
 $shortcut.Description = 'GameNode Desktop'
 $shortcut.Save()

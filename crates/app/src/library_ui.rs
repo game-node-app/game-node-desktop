@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gamenode_core::Snapshot;
@@ -272,206 +273,295 @@ fn unix_now() -> i64 {
 }
 
 /// Connects every `LibraryState` callback to the engine.
-pub fn install(ui: &AppWindow, engine: &Engine, covers_dir: PathBuf) {
+pub fn install(ui: &AppWindow, commands: &crate::ui_commands::UiCommands, covers_dir: PathBuf) {
     let local = ui.global::<crate::LocalGames>();
     local.set_supported(cfg!(windows));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_claim_resolve(move |transfer| e.resolve_local_claim(transfer));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_claim_cancel(move || e.cancel_local_claim());
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_add(move || e.pick_local_executable(None));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_locate(move || {
-        if let Some(id) = selected_local_id(&e) {
-            e.pick_local_executable(Some(id));
-        }
+        e.submit(|engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.pick_local_executable(Some(id));
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_remove(move || {
-        if let Some(id) = selected_local_id(&e) {
-            e.remove_local_game(id);
-        }
+        e.submit(|engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.remove_local_game(id);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_save(
         move |title, executable, folder, working, arguments, gameplay, launchers| {
-            let snapshot = e.snapshot();
-            if let Some(id) = selected_local_id(&e)
-                && let Some(mut value) = snapshot
-                    .local_games
-                    .registrations
-                    .into_iter()
-                    .find(|r| r.id == id)
-                && let Ok(arguments) = gamenode_core::drm_free::parse_arguments(&arguments)
-            {
-                value.title = title.to_string();
-                value.executable = executable.to_string();
-                value.root = folder.to_string();
-                value.working_directory = working.to_string();
-                value.arguments = arguments;
-                value.gameplay = gameplay
-                    .lines()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                value.launchers = launchers
-                    .lines()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                e.edit_local_game(value);
-            }
+            let (title, executable, folder, working, arguments, gameplay, launchers) = (
+                title.to_string(),
+                executable.to_string(),
+                folder.to_string(),
+                working.to_string(),
+                arguments.to_string(),
+                gameplay.to_string(),
+                launchers.to_string(),
+            );
+            e.submit(move |engine| {
+                let snapshot = engine.snapshot();
+                if let Some(id) = selected_local_id(engine)
+                    && let Some(mut value) = snapshot
+                        .local_games
+                        .registrations
+                        .into_iter()
+                        .find(|r| r.id == id)
+                    && let Ok(arguments) = gamenode_core::drm_free::parse_arguments(&arguments)
+                {
+                    value.title = title;
+                    value.executable = executable;
+                    value.root = folder;
+                    value.working_directory = working;
+                    value.arguments = arguments;
+                    value.gameplay = gameplay
+                        .lines()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    value.launchers = launchers
+                        .lines()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    engine.edit_local_game(value);
+                }
+            });
         },
     );
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_backup_now(move || {
-        if let Some(id) = selected_local_id(&e) {
-            e.backup_local_now(id);
-        }
+        e.submit(|engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.backup_local_now(id);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_backup_settings(move |automatic, destination| {
         e.set_local_backup_settings(automatic, destination.to_string())
     });
-    let e = engine.clone();
+    let weak = ui.as_weak();
+    local.on_destination_pick(move || {
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            match gamenode_platform::installations::pick_save_location(true) {
+                Ok(Some(path)) => {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let settings_state = ui.global::<crate::SettingsState>();
+                            let local = ui.global::<crate::LocalGames>();
+                            settings_state.set_destination_edit(path.clone().into());
+                            settings_state.set_dirty(path != local.get_destination().as_str());
+                        }
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let settings_state = ui.global::<crate::SettingsState>();
+                            settings_state.invoke_trigger_toast(
+                                crate::ToastKind::Danger,
+                                error.to_string().into(),
+                            );
+                        }
+                    });
+                }
+            }
+        });
+    });
+    let e = commands.clone();
     local.on_game_backup_automatic(move |automatic| {
-        if let Some(id) = selected_local_id(&e) {
-            e.set_local_profile_automatic(id, automatic);
-        }
+        e.submit(move |engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.set_local_profile_automatic(id, automatic);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_custom_saves(move |location| {
-        if let Some(id) = selected_local_id(&e) {
-            e.configure_local_saves(id, location.to_string());
-        }
+        let location = location.to_string();
+        e.submit(move |engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.configure_local_saves(id, location);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_saves_pick(move |folder| {
-        if let Some(id) = selected_local_id(&e) {
-            e.pick_local_saves(id, folder);
-        }
+        e.submit(move |engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.pick_local_saves(id, folder);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_profile_choose(move |title| {
-        if let Some(id) = selected_local_id(&e) {
-            e.choose_local_save_profile(id, title.to_string());
-        }
+        let title = title.to_string();
+        e.submit(move |engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.choose_local_save_profile(id, title);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_watch_folder(move |path| e.watch_local_folder(path.to_string()));
-    let e = engine.clone();
+    let e = commands.clone();
+    local.on_watch_folder_pick(move || e.pick_local_watch_folder());
+    let e = commands.clone();
     local.on_watch_remove(move |id| e.remove_local_watch(id.to_string()));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_candidate_executable(move |fingerprint, executable| {
         e.set_local_candidate_executable(fingerprint.to_string(), executable.to_string())
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_discovery_rescan(move || e.rescan_local_folders());
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_candidate_toggle(move |fingerprint| e.select_local_candidate(fingerprint.to_string()));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_candidates_add(move |add| e.review_selected_local_candidates(add));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_ignores_reset(move || e.reset_local_ignores());
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_history_load(move || {
-        if let Some(id) = selected_local_id(&e) {
-            e.load_local_history(id);
-        }
+        e.submit(|engine| {
+            if let Some(id) = selected_local_id(engine) {
+                engine.load_local_history(id);
+            }
+        });
     });
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_restore_preview(move |key| e.preview_local_restore(key.to_string()));
-    let e = engine.clone();
+    let e = commands.clone();
     local.on_restore_confirm(move || e.confirm_local_restore());
     let state = ui.global::<LibraryState>();
-    let send = |engine: &Engine, input: Option<LibInput>| {
+    let send = |commands: &crate::ui_commands::UiCommands, input: Option<LibInput>| {
         if let Some(input) = input {
-            engine.library_input(input);
+            commands.submit(move |engine| engine.library_input(input));
         }
     };
 
-    // Selection and navigation.
-    let e = engine.clone();
-    state.on_select(move |key, ctrl, shift| e.library_input(select_input(&key, ctrl, shift)));
-    let e = engine.clone();
+    // Selection and navigation retain callback order on the engine worker.
+    let e = commands.clone();
+    state.on_select(move |key, ctrl, shift| {
+        let input = select_input(&key, ctrl, shift);
+        e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
     state.on_move(move |direction, extend| send(&e, move_input(direction, extend)));
-    let e = engine.clone();
-    state.on_open_details(move || e.library_input(LibInput::OpenDetails));
-    let e = engine.clone();
-    state.on_set_columns(move |columns| e.library_input(columns_input(columns)));
+    let e = commands.clone();
+    state.on_open_details(move || e.submit(|engine| engine.library_input(LibInput::OpenDetails)));
+    let e = commands.clone();
+    state.on_set_columns(move |columns| {
+        let input = columns_input(columns);
+        e.submit(move |engine| engine.library_input(input));
+    });
 
     // View, filter, search, sort and pane sizes.
-    let e = engine.clone();
-    state.on_set_view(move |view| e.library_input(view_input(view)));
-    let e = engine.clone();
-    state.on_set_filter(move |provider| e.library_input(filter_input(&provider)));
-    let e = engine.clone();
-    state.on_set_search(move |text| e.library_input(LibInput::SetSearch(text.to_string())));
-    let e = engine.clone();
-    state.on_set_sort(move |key, descending| e.library_input(sort_input(key, descending)));
-    let e = engine.clone();
+    let e = commands.clone();
+    state.on_set_view(move |view| {
+        let input = view_input(view);
+        e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
+    state.on_set_filter(move |provider| {
+        let input = filter_input(&provider);
+        e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
+    state.on_set_search(move |text| {
+        let input = LibInput::SetSearch(text.to_string());
+        e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
+    state.on_set_sort(move |key, descending| {
+        let input = sort_input(key, descending);
+        e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
     state.on_sidebar_width_changed(move |width| {
-        send(&e, width_input(width, LibInput::SetSidebarWidth));
+        send(&e, width_input(width, LibInput::SetSidebarWidth))
     });
-    let e = engine.clone();
+    let e = commands.clone();
     state.on_detail_width_changed(move |width| {
-        send(&e, width_input(width, LibInput::SetDetailWidth));
+        send(&e, width_input(width, LibInput::SetDetailWidth))
     });
-    let e = engine.clone();
-    state.on_set_detail_open(move |open| e.library_input(LibInput::SetDetailOpen(open)));
-    let e = engine.clone();
-    state.on_rescan(move || e.rescan());
+    let e = commands.clone();
+    state.on_set_detail_open(move |open| {
+        e.submit(move |engine| engine.library_input(LibInput::SetDetailOpen(open)))
+    });
+    let e = commands.clone();
+    state.on_rescan(move || e.submit(|engine| engine.rescan()));
 
-    // Actions on the selected game. Play and Install are only sent when the actions allow them.
-    let e = engine.clone();
-    state.on_play(move || launch_selected(&e, LaunchKind::Play));
-    let e = engine.clone();
-    state.on_install(move || launch_selected(&e, LaunchKind::Install));
-    let e = engine.clone();
-    state.on_dismiss_launch(move || e.dismiss_launch());
-    let e = engine.clone();
-    state.on_refresh_membership(move || e.library_input(LibInput::RefreshMembership));
-    let e = engine.clone();
-    state.on_open_match(move || e.library_input(LibInput::OpenMatch));
-    let e = engine.clone();
-    state.on_open_add(move || e.library_input(LibInput::OpenAdd));
+    // Resolve the selected game after earlier selection commands have completed.
+    let e = commands.clone();
+    state.on_play(move || e.submit(|engine| launch_selected(engine, LaunchKind::Play)));
+    let e = commands.clone();
+    state.on_install(move || e.submit(|engine| launch_selected(engine, LaunchKind::Install)));
+    let e = commands.clone();
+    state.on_dismiss_launch(move || e.submit(|engine| engine.dismiss_launch()));
+    let e = commands.clone();
+    state.on_refresh_membership(move || {
+        e.submit(|engine| engine.library_input(LibInput::RefreshMembership))
+    });
+    let e = commands.clone();
+    state.on_open_match(move || e.submit(|engine| engine.library_input(LibInput::OpenMatch)));
+    let e = commands.clone();
+    state.on_open_add(move || e.submit(|engine| engine.library_input(LibInput::OpenAdd)));
 
     // The match dialog.
-    let e = engine.clone();
-    state.on_close_match(move || e.library_input(LibInput::CloseMatch));
-    let e = engine.clone();
+    let e = commands.clone();
+    state.on_close_match(move || e.submit(|engine| engine.library_input(LibInput::CloseMatch)));
+    let e = commands.clone();
     state.on_match_query_edited(move |text| {
-        e.library_input(LibInput::SetMatchQuery(text.to_string()))
+        let input = LibInput::SetMatchQuery(text.to_string());
+        e.submit(move |engine| engine.library_input(input));
     });
-    let e = engine.clone();
-    state.on_match_search(move || e.library_input(LibInput::SearchMatch));
-    let e = engine.clone();
+    let e = commands.clone();
+    state.on_match_search(move || e.submit(|engine| engine.library_input(LibInput::SearchMatch)));
+    let e = commands.clone();
     state.on_pick_match(move |id| send(&e, pick_input(&id, unix_now())));
-    let e = engine.clone();
-    state.on_mark_no_game(move || e.library_input(LibInput::MarkNoGame { now: unix_now() }));
-    let e = engine.clone();
-    state.on_clear_match(move || e.library_input(LibInput::ClearMatch));
+    let e = commands.clone();
+    state.on_mark_no_game(move || {
+        e.submit(|engine| engine.library_input(LibInput::MarkNoGame { now: unix_now() }))
+    });
+    let e = commands.clone();
+    state.on_clear_match(move || e.submit(|engine| engine.library_input(LibInput::ClearMatch)));
 
     // The Add to GameNode dialog.
-    let e = engine.clone();
-    state.on_close_add(move || e.library_input(LibInput::CloseAdd));
-    let e = engine.clone();
+    let e = commands.clone();
+    state.on_close_add(move || e.submit(|engine| engine.library_input(LibInput::CloseAdd)));
+    let e = commands.clone();
     state.on_add_set_status(move |status| {
-        send(&e, entry_status(status).map(LibInput::SetAddStatus));
+        send(&e, entry_status(status).map(LibInput::SetAddStatus))
     });
-    let e = engine.clone();
+    let e = commands.clone();
     state.on_add_toggle_collection(move |id| {
-        e.library_input(LibInput::ToggleAddCollection(id.to_string()));
+        let input = LibInput::ToggleAddCollection(id.to_string());
+        e.submit(move |engine| engine.library_input(input));
     });
-    let e = engine.clone();
-    state.on_add_retry_collections(move || e.library_input(LibInput::RetryCollections));
-    let e = engine.clone();
-    state.on_add_confirm(move || e.library_input(LibInput::ConfirmAdd));
+    let e = commands.clone();
+    state.on_add_retry_collections(move || {
+        e.submit(|engine| engine.library_input(LibInput::RetryCollections))
+    });
+    let e = commands.clone();
+    state.on_add_confirm(move || e.submit(|engine| engine.library_input(LibInput::ConfirmAdd)));
 
-    let renderer = Renderer::new(covers_dir);
+    let renderer = Renderer::new(covers_dir, ui);
     renderer.attach(ui);
     RENDERER.with(|slot| *slot.borrow_mut() = Some(renderer));
 }
@@ -496,10 +586,39 @@ thread_local! {
     static RENDERER: RefCell<Option<Renderer>> = const { RefCell::new(None) };
 }
 
+fn same_discovery_rows(
+    model: &slint::ModelRc<crate::DiscoveryRow>,
+    rows: &[crate::DiscoveryRow],
+) -> bool {
+    model.row_count() == rows.len()
+        && rows.iter().enumerate().all(|(i, row)| {
+            model.row_data(i).is_some_and(|old| {
+                old.fingerprint == row.fingerprint
+                    && old.title == row.title
+                    && old.folder == row.folder
+                    && old.executable == row.executable
+                    && old.picked == row.picked
+                    && old.resolved == row.resolved
+                    && old.targets.iter().eq(row.targets.iter())
+            })
+        })
+}
+
 /// Copies the snapshot's library into the screens. Does nothing before [`install`].
 pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
     let local = ui.global::<crate::LocalGames>();
     local.set_busy(snapshot.local_games.busy);
+    local.set_discovery_scanning(snapshot.local_games.discovery_scanning);
+    local.set_discovery_completed(snapshot.local_games.discovery_completed);
+    local.set_discovery_incomplete(!snapshot.local_games.discovery_incomplete.is_empty());
+    local.set_discovery_error(
+        snapshot
+            .local_games
+            .discovery_error
+            .clone()
+            .unwrap_or_default()
+            .into(),
+    );
     local.set_claim_open(snapshot.local_games.pending_claim.is_some());
     local.set_claim_title(
         snapshot
@@ -511,39 +630,48 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .into(),
     );
 
-    local.set_watches(slint::ModelRc::new(slint::VecModel::from(
-        snapshot
-            .local_games
-            .watches
-            .iter()
-            .filter(|w| w.enabled)
-            .map(|w| crate::DiscoveryRow {
-                fingerprint: w.id.clone().into(),
-                folder: w.path.clone().into(),
-                ..Default::default()
-            })
-            .collect::<Vec<_>>(),
-    )));
+    let watches = snapshot
+        .local_games
+        .watches
+        .iter()
+        .filter(|w| w.enabled)
+        .map(|w| crate::DiscoveryRow {
+            fingerprint: w.id.clone().into(),
+            folder: w.path.clone().into(),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    if !same_discovery_rows(&local.get_watches(), &watches) {
+        local.set_watches(slint::ModelRc::new(slint::VecModel::from(watches)));
+    }
 
-    local.set_candidates(slint::ModelRc::new(slint::VecModel::from(
-        snapshot
-            .local_games
-            .candidates
-            .iter()
-            .filter(|c| !c.ignored)
-            .map(|c| crate::DiscoveryRow {
-                fingerprint: c.fingerprint.clone().into(),
-                title: c.title.clone().into(),
-                folder: c.root.clone().into(),
-                executable: c.selected_target.clone().unwrap_or_default().into(),
-                picked: snapshot
-                    .local_games
-                    .review_selected
-                    .contains(&c.fingerprint),
-                resolved: c.selected_target.is_some(),
-            })
-            .collect::<Vec<_>>(),
-    )));
+    let candidates = snapshot
+        .local_games
+        .candidates
+        .iter()
+        .filter(|c| !c.ignored)
+        .map(|c| crate::DiscoveryRow {
+            fingerprint: c.fingerprint.clone().into(),
+            title: c.title.clone().into(),
+            folder: c.root.clone().into(),
+            executable: c.selected_target.clone().unwrap_or_default().into(),
+            targets: slint::ModelRc::new(slint::VecModel::from(
+                c.targets
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect::<Vec<slint::SharedString>>(),
+            )),
+            picked: snapshot
+                .local_games
+                .review_selected
+                .contains(&c.fingerprint),
+            resolved: c.selected_target.is_some(),
+        })
+        .collect::<Vec<_>>();
+    if !same_discovery_rows(&local.get_candidates(), &candidates) {
+        local.set_candidates(slint::ModelRc::new(slint::VecModel::from(candidates)));
+    }
 
     local.set_error(
         snapshot
@@ -687,9 +815,10 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
 }
 
 struct Renderer {
-    covers_dir: PathBuf,
     /// Decoded covers by file name; `None` remembers a file that could not be read.
     covers: HashMap<String, Option<Image>>,
+    cover_jobs: mpsc::Sender<String>,
+    cover_results: mpsc::Receiver<(String, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>)>,
     artwork: artwork::Artworks,
     items: Rc<VecModel<GameItem>>,
     providers: Rc<VecModel<ProviderItem>>,
@@ -699,6 +828,10 @@ struct Renderer {
     collections: Rc<VecModel<CollectionItem>>,
     summary: Rc<VecModel<SummaryItem>>,
     match_was_open: bool,
+    was_scanning: bool,
+    last_destination: Option<String>,
+    last_error: Option<String>,
+    last_snapshot: Option<Snapshot>,
 }
 
 /// Replaces the model's rows, touching only the rows that differ when the length is unchanged.
@@ -715,10 +848,31 @@ fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
 }
 
 impl Renderer {
-    fn new(covers_dir: PathBuf) -> Self {
+    fn new(covers_dir: PathBuf, ui: &AppWindow) -> Self {
+        let (cover_jobs, jobs) = mpsc::channel::<String>();
+        let (results, cover_results) = mpsc::channel();
+        let weak = ui.as_weak();
+        std::thread::Builder::new()
+            .name("gamenode-cover-loader".into())
+            .spawn(move || {
+                for file in jobs {
+                    let pixels = decode_cover(&covers_dir, &file);
+                    if results.send((file, pixels)).is_err() {
+                        break;
+                    }
+                    let weak = weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            refresh_cover_images(&ui);
+                        }
+                    });
+                }
+            })
+            .expect("could not start cover loader");
         Self {
-            covers_dir,
             covers: HashMap::new(),
+            cover_jobs,
+            cover_results,
             artwork: artwork::Artworks::default(),
             items: Rc::default(),
             providers: Rc::default(),
@@ -728,6 +882,10 @@ impl Renderer {
             collections: Rc::default(),
             summary: Rc::default(),
             match_was_open: false,
+            was_scanning: false,
+            last_destination: None,
+            last_error: None,
+            last_snapshot: None,
         }
     }
 
@@ -744,14 +902,48 @@ impl Renderer {
 
     fn cover(&mut self, file: Option<&str>) -> Option<Image> {
         let file = file?;
-        let dir = &self.covers_dir;
-        self.covers
-            .entry(file.to_owned())
-            .or_insert_with(|| load_cover(dir, file))
-            .clone()
+        if let Some(image) = self.covers.get(file) {
+            return image.clone();
+        }
+        if valid_cover_file(file) {
+            self.covers.insert(file.to_owned(), None);
+            let _ = self.cover_jobs.send(file.to_owned());
+        }
+        None
     }
 
     fn render(&mut self, ui: &AppWindow, snapshot: &Snapshot) {
+        self.last_snapshot = Some(snapshot.clone());
+        for (file, pixels) in self.cover_results.try_iter() {
+            self.covers.insert(file, pixels.map(Image::from_rgba8));
+        }
+        let is_scanning = snapshot.library.as_ref().is_some_and(|l| l.scanning);
+        if self.was_scanning && !is_scanning {
+            let settings = ui.global::<crate::SettingsState>();
+            settings.invoke_trigger_toast(crate::ToastKind::Success, "Library rescanned".into());
+        }
+        self.was_scanning = is_scanning;
+
+        let current_destination = snapshot.local_games.settings.destination.clone();
+        if let Some(last) = &self.last_destination {
+            if last != &current_destination && !current_destination.is_empty() {
+                let settings = ui.global::<crate::SettingsState>();
+                settings.invoke_trigger_toast(
+                    crate::ToastKind::Success,
+                    "Backup destination saved".into(),
+                );
+            }
+        }
+        self.last_destination = Some(current_destination);
+
+        if let Some(error) = &snapshot.local_games.error {
+            if self.last_error.as_ref() != Some(error) {
+                let settings = ui.global::<crate::SettingsState>();
+                settings.invoke_trigger_toast(crate::ToastKind::Danger, error.clone().into());
+            }
+        }
+        self.last_error = snapshot.local_games.error.clone();
+
         self.artwork.clear_focus();
         let state = ui.global::<LibraryState>();
         let Some(view) = &snapshot.library else {
@@ -814,6 +1006,10 @@ impl Renderer {
                     count: i32::try_from(provider.count).unwrap_or(i32::MAX),
                     selected: layout.sidebar
                         == SidebarSelection::Provider(provider.provider.clone()),
+                    failed: view
+                        .failed_providers
+                        .iter()
+                        .any(|f| f == &provider.name || f == provider.provider.as_str()),
                 })
                 .collect(),
         );
@@ -1058,12 +1254,50 @@ impl Renderer {
     }
 }
 
+fn refresh_cover_images(ui: &AppWindow) {
+    RENDERER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(renderer) = slot.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        for (file, pixels) in renderer.cover_results.try_iter() {
+            renderer.covers.insert(file, pixels.map(Image::from_rgba8));
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        if let Some(snapshot) = renderer.last_snapshot.clone() {
+            renderer.render(ui, &snapshot);
+        }
+    });
+}
+
+#[cfg(test)]
 fn load_cover(dir: &Path, file: &str) -> Option<Image> {
+    decode_cover(dir, file).map(Image::from_rgba8)
+}
+
+fn valid_cover_file(file: &str) -> bool {
     // File names come from the cover cache (`<game id>.jpg`); never follow anything else.
-    if file.contains(['/', '\\']) || file.starts_with('.') {
+    !file.contains(['/', '\\']) && !file.starts_with('.')
+}
+
+fn decode_cover(dir: &Path, file: &str) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    if !valid_cover_file(file) {
         return None;
     }
-    Image::load_from_path(&dir.join(file)).ok()
+    let image = image::ImageReader::open(dir.join(file))
+        .ok()?
+        .decode()
+        .ok()?;
+    let image = image.thumbnail(1280, 720).into_rgba8();
+    Some(slint::SharedPixelBuffer::clone_from_slice(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+    ))
 }
 
 fn selected_local_id(engine: &Engine) -> Option<String> {

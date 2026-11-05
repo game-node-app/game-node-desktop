@@ -194,12 +194,20 @@ impl FolderNotifications {
         let (tx, events) = std::sync::mpsc::sync_channel(64);
         let overflow = std::sync::Arc::new(AtomicBool::new(false));
         let flag = overflow.clone();
-        let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
-            if tx.try_send(()).is_err() {
-                flag.store(true, Ordering::Relaxed);
-            }
-        })
-        .map_err(|e| LocalError::Failed(e.to_string()))?;
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                // Reading executables during discovery can itself produce access events.
+                if event
+                    .as_ref()
+                    .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+                {
+                    return;
+                }
+                if tx.try_send(()).is_err() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+            })
+            .map_err(|e| LocalError::Failed(e.to_string()))?;
         watcher
             .watch(std::path::Path::new(path), notify::RecursiveMode::Recursive)
             .map_err(|e| LocalError::Failed(e.to_string()))?;

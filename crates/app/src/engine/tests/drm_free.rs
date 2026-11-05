@@ -186,6 +186,12 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
 
     // Verify chosen match overrides local inference
     let key = format!("manual:{}", inferences_u1[0].installation);
+    h.until("manual game is available in the library", |s| {
+        s.library
+            .as_ref()
+            .is_some_and(|lib| lib.rows.iter().any(|row| row.key == key))
+    })
+    .await;
     h.engine
         .library_input(gamenode_core::library::Input::Select {
             key: key.clone(),
@@ -343,6 +349,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     }
     h.signed_out().await;
     h.sign_in("token").await;
+    eventually(|| h.engine.lock().playtime.ready).await;
 
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().to_path_buf();
@@ -384,6 +391,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
             .is_some_and(|r| r.gameplay.is_empty() && !r.launchers.is_empty())
     })
     .await;
+    eventually(|| !h.engine.lock().playtime.listing).await;
 
     // 1. Process listing includes an outside-root executable and an uninstaller.
     // They must not be learned or tracked.
@@ -452,6 +460,11 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     );
     // After 10s settling delay has elapsed (e.g. now + 20):
     h.engine.maintenance_at(now + 20);
+    eventually(|| !h.engine.lock().playtime.listing).await;
+    // The asynchronous exit callback can race the first listing. A second periodic listing
+    // observes the persistent launcher after the settling window in either ordering.
+    h.engine.maintenance_at(now + 35);
+    eventually(|| !h.engine.lock().playtime.listing).await;
     h.until("gameplay stopped despite persistent launcher", |s| {
         !s.tracking.running.contains(&key)
     })
@@ -485,7 +498,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
         parent: None,
     };
     h.processes.start(game_proc2.clone());
-    h.engine.maintenance_at(now + 35);
+    h.engine.maintenance_at(now + 55);
     h.until("externally started learned game tracked", |s| {
         s.tracking.running.contains(&key)
     })
@@ -533,7 +546,14 @@ async fn drm_free_session_tracking_restart_recovery_and_no_http_submission() {
     .await;
 
     let key = store.registrations().unwrap()[0].key();
+    h.until("manual row available", |s| {
+        s.library
+            .as_ref()
+            .is_some_and(|v| v.rows.iter().any(|r| r.key == key))
+    })
+    .await;
     eventually(|| h.engine.lock().playtime.ready).await;
+    eventually(|| !h.engine.lock().playtime.listing).await;
     let now = super::super::unix_now() + 10;
     let game_proc = ProcessInfo {
         pid: 300,
@@ -674,6 +694,12 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
         ignored: false,
         incomplete: false,
     };
+    let mut registered = host.inspect(game_exe.to_str().unwrap()).unwrap();
+    registered.root = root.join("nested").to_string_lossy().into_owned();
+    assert!(crate::engine::drm_free::candidate_matches_registration(
+        &candidate,
+        &registered
+    ));
     store.save_candidate(&candidate).unwrap();
 
     // Reload local view in engine
@@ -705,10 +731,11 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
 
     h.engine.review_selected_local_candidates(false);
     h.until("candidate ignored", |s| {
-        s.local_games
-            .candidates
-            .iter()
-            .any(|c| c.fingerprint == "fp1" && c.ignored)
+        !s.local_games.busy
+            && s.local_games
+                .candidates
+                .iter()
+                .any(|c| c.fingerprint == "fp1" && c.ignored)
     })
     .await;
     assert!(store.candidates().unwrap()[0].ignored);
@@ -716,10 +743,11 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
     // 3. Reset ignores restores candidate to review
     h.engine.reset_local_ignores();
     h.until("candidate restored after reset ignores", |s| {
-        s.local_games
-            .candidates
-            .iter()
-            .any(|c| c.fingerprint == "fp1" && !c.ignored)
+        !s.local_games.busy
+            && s.local_games
+                .candidates
+                .iter()
+                .any(|c| c.fingerprint == "fp1" && !c.ignored)
     })
     .await;
     assert!(!store.candidates().unwrap()[0].ignored);
@@ -758,4 +786,80 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
     );
 
     h.engine.shutdown();
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_failure_remains_visible_after_refresh() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    store
+        .save_watch(&WatchRoot {
+            id: "watch".into(),
+            path: "/games".into(),
+            enabled: true,
+        })
+        .unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .local_games = Some(store);
+    h.engine.rescan_local_folders();
+    h.until("discovery failure", |s| {
+        s.local_games.discovery_completed && !s.local_games.discovery_scanning
+    })
+    .await;
+    assert_eq!(
+        h.engine.snapshot().local_games.discovery_error.as_deref(),
+        Some("this operation is unavailable on this platform")
+    );
+    h.engine.refresh_local_games();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.engine.snapshot().local_games.discovery_error.is_some());
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires GAMENODE_DISCOVERY_ROOT and the packaged manifest next to the test executable"]
+async fn windows_watched_folder_produces_review_candidates() {
+    let root = std::env::var("GAMENODE_DISCOVERY_ROOT").unwrap();
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    store
+        .save_watch(&WatchRoot {
+            id: "watch".into(),
+            path: root,
+            enabled: true,
+        })
+        .unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .local_games = Some(store);
+    h.engine.rescan_local_folders();
+    assert!(h.engine.snapshot().local_games.discovery_scanning);
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let snapshot = h.engine.snapshot();
+            if snapshot.local_games.discovery_completed
+                && !snapshot.local_games.discovery_scanning
+                && !snapshot.local_games.candidates.is_empty()
+            {
+                assert!(snapshot.local_games.discovery_error.is_none());
+                break;
+            }
+            if let Some(error) = snapshot.local_games.discovery_error {
+                panic!("discovery failed: {error}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
 }

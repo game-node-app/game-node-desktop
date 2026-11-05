@@ -339,8 +339,22 @@ mod render {
         let ui = AppWindow::new().unwrap();
         let state = ui.global::<LibraryState>();
         let dir = tempfile::tempdir().unwrap();
-        let mut renderer = Renderer::new(dir.path().to_owned());
+        let mut renderer = Renderer::new(dir.path().to_owned(), &ui);
         renderer.attach(&ui);
+
+        // Disk-backed covers are unavailable on the calling thread and decoded by the worker.
+        std::fs::write(
+            dir.path().join("async.png"),
+            include_bytes!("../../ui/icons/gamenode.png"),
+        )
+        .unwrap();
+        assert!(renderer.cover(Some("async.png")).is_none());
+        let (file, decoded) = renderer
+            .cover_results
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(file, "async.png");
+        assert!(decoded.is_some());
 
         // No library: the screen is off and nothing is listed.
         renderer.render(&ui, &snapshot(None, None));
@@ -374,6 +388,18 @@ mod render {
         v.layout.detail_width = 400;
         v.layout.detail_open = false;
         v.scanning = true;
+        v.providers = vec![
+            ProviderCount {
+                provider: "steam".into(),
+                name: "Steam".into(),
+                count: 3,
+            },
+            ProviderCount {
+                provider: "gog".into(),
+                name: "GOG".into(),
+                count: 0,
+            },
+        ];
         v.failed_providers = vec!["Steam".into()];
         v.access = Access::Unverified;
         renderer.render(&ui, &snapshot(Some(v), None));
@@ -394,6 +420,14 @@ mod render {
         assert_eq!(state.get_view(), ViewKind::List);
         assert!(!state.get_all_selected());
         assert!(state.get_providers().row_data(0).unwrap().selected);
+        assert!(
+            state.get_providers().row_data(0).unwrap().failed,
+            "Steam should be marked failed"
+        );
+        assert!(
+            !state.get_providers().row_data(1).unwrap().failed,
+            "GOG should not be marked failed"
+        );
         assert!(state.get_descending());
         assert_eq!(state.get_sidebar_width(), 300);
         assert_eq!(state.get_detail_width(), 400);
@@ -682,4 +716,19 @@ mod render {
         assert!(!state.get_active());
         assert_eq!(state.get_items().row_count(), 0);
     }
+}
+
+#[test]
+fn discovery_rows_only_change_when_visible_data_changes() {
+    let row = crate::DiscoveryRow {
+        fingerprint: "game".into(),
+        title: "Game".into(),
+        targets: ModelRc::new(VecModel::from(vec!["game.exe".into()])),
+        ..Default::default()
+    };
+    let model = ModelRc::new(VecModel::from(vec![row.clone()]));
+    assert!(same_discovery_rows(&model, std::slice::from_ref(&row)));
+    let mut updated = row;
+    updated.picked = true;
+    assert!(!same_discovery_rows(&model, &[updated]));
 }

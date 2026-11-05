@@ -81,12 +81,59 @@ fn render(ui: &AppWindow, snapshot: Snapshot) {
     } else if matches!(snapshot.auth, AuthView::Pending { .. }) { "Complete sign-in in your browser." } else { "" }.into());
 }
 
+/// Keep at most one UI event-loop callback queued while retaining the newest engine snapshot.
+/// Engine publications can outpace a large library render; replaying every stale frame makes
+/// navigation appear to jump backwards and needlessly repeats model work.
+fn publish_snapshot(
+    pending: &Arc<std::sync::Mutex<(Option<Snapshot>, bool)>>,
+    weak: &slint::Weak<AppWindow>,
+    snapshot: Snapshot,
+) {
+    let should_schedule = {
+        let mut pending = pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.0 = Some(snapshot);
+        if pending.1 {
+            false
+        } else {
+            pending.1 = true;
+            true
+        }
+    };
+    if !should_schedule {
+        return;
+    }
+    let pending = pending.clone();
+    let pending_on_error = pending.clone();
+    let weak = weak.clone();
+    if slint::invoke_from_event_loop(move || {
+        let snapshot = {
+            let mut pending = pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pending.1 = false;
+            pending.0.take()
+        };
+        if let (Some(ui), Some(snapshot)) = (weak.upgrade(), snapshot) {
+            render(&ui, snapshot);
+        }
+    })
+    .is_err()
+    {
+        let mut pending = pending_on_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.1 = false;
+    }
+}
+
 fn show_window(
     ui: &AppWindow,
-    engine: &Engine,
+    commands: &gamenode_app::ui_commands::UiCommands,
     errors: &std::sync::Mutex<Option<slint::PlatformError>>,
 ) {
-    engine.window_shown();
+    commands.submit(|engine| engine.window_shown());
     if let Err(error) = ui.show() {
         *errors
             .lock()
@@ -580,57 +627,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings,
         library,
         Box::new(random::nonce),
-        move |snapshot| {
-            let weak = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    render(&ui, snapshot);
-                }
-            });
+        {
+            let pending = Arc::new(std::sync::Mutex::new((None, false)));
+            move |snapshot| {
+                publish_snapshot(&pending, &weak, snapshot);
+            }
         },
     );
-    gamenode_app::library_ui::install(&ui, &engine, paths.covers_dir());
-    let e = engine.clone();
+    let commands = gamenode_app::ui_commands::UiCommands::new(engine.clone());
+    gamenode_app::library_ui::install(&ui, &commands, paths.covers_dir());
+    let e = commands.clone();
     ui.on_sign_in(move |index| {
         if let Some(provider) = gamenode_core::Provider::ALL.get(index as usize) {
-            e.dispatch(Input::StartSignIn(*provider));
+            e.submit(move |engine| engine.dispatch(Input::StartSignIn(*provider)));
         }
     });
-    let e = engine.clone();
-    ui.on_cancel(move || e.dispatch(Input::CancelSignIn));
-    let e = engine.clone();
-    ui.on_retry(move || e.dispatch(Input::RetryRestore));
-    let e = engine.clone();
-    ui.on_sign_out(move || e.dispatch(Input::SignOut));
-    let e = engine.clone();
+    let e = commands.clone();
+    ui.on_cancel(move || e.submit(|engine| engine.dispatch(Input::CancelSignIn)));
+    let e = commands.clone();
+    ui.on_retry(move || e.submit(|engine| engine.dispatch(Input::RetryRestore)));
+    let e = commands.clone();
+    ui.on_sign_out(move || e.submit(|engine| engine.dispatch(Input::SignOut)));
+    let e = commands.clone();
     ui.on_renderer_changed(move |software| {
-        e.update_settings(|s| {
-            s.renderer = if software {
-                RendererPreference::Software
-            } else {
-                RendererPreference::Gpu
-            }
+        e.submit(move |engine| {
+            engine.update_settings(|s| {
+                s.renderer = if software {
+                    RendererPreference::Software
+                } else {
+                    RendererPreference::Gpu
+                }
+            })
         })
     });
-    let e = engine.clone();
-    ui.on_sync_changed(move |enabled| e.set_sync(enabled));
-    let e = engine.clone();
+    let e = commands.clone();
+    ui.on_sync_changed(move |enabled| e.submit(move |engine| engine.set_sync(enabled)));
+    let e = commands.clone();
     ui.on_source_changed(move |store| {
-        e.set_playtime_source(if store {
+        let source = if store {
             gamenode_core::playtime::PlaytimeSource::Store
         } else {
             gamenode_core::playtime::PlaytimeSource::Internal
-        })
+        };
+        e.submit(move |engine| engine.set_playtime_source(source))
     });
-    let e = engine.clone();
-    ui.on_sync_dismissed(move || e.dismiss_sync_explanation());
-    let e = engine.clone();
+    let e = commands.clone();
+    ui.on_sync_dismissed(move || e.submit(|engine| engine.dismiss_sync_explanation()));
+    let e = commands.clone();
     ui.on_quit(move || {
-        e.shutdown();
-        let _ = slint::quit_event_loop();
+        e.submit(|engine| {
+            engine.shutdown();
+            let _ = slint::invoke_from_event_loop(|| {
+                let _ = slint::quit_event_loop();
+            });
+        });
     });
     let weak = ui.as_weak();
     let e = engine.clone();
+    let ui_commands = commands.clone();
     let (placeholder_sender, placeholder_receiver) = tokio::sync::mpsc::channel(1);
     drop(placeholder_sender);
     let mut owner_messages = std::mem::replace(&mut owner.messages, placeholder_receiver);
@@ -641,28 +695,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 e.dispatch(Input::CallbackReceived(url));
             }
             // Another launch is the user coming back: pick up games installed meanwhile.
-            let engine = e.clone();
+            let commands = ui_commands.clone();
             let errors = ipc_errors.clone();
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {
-                    show_window(&ui, &engine, &errors);
+                    show_window(&ui, &commands, &errors);
                 }
             });
         }
     });
-    let e = engine.clone();
+    let e = commands.clone();
     let timer = slint::Timer::default();
     let weak = ui.as_weak();
     let ready = first_frame_rendered.clone();
     let current = current_geometry.clone();
     let last_saved = last_saved_geometry.clone();
+    let maintenance_pending = Arc::new(AtomicBool::new(false));
+    let maintenance_pending_timer = maintenance_pending.clone();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_secs(1),
         move || {
-            e.dispatch(Input::Tick);
-            e.maintenance();
+            e.submit_coalesced(&maintenance_pending_timer, |engine| {
+                engine.dispatch(Input::Tick);
+                engine.maintenance();
+            });
             if !ready.load(Ordering::Acquire) {
                 return;
             }
@@ -681,35 +739,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *last_saved != Some(geometry) {
                 *last_saved = Some(geometry);
-                e.update_settings(|settings| settings.window = Some(geometry));
+                e.submit(move |engine| {
+                    engine.update_settings(|settings| settings.window = Some(geometry))
+                });
             }
         },
     );
-    engine.start();
+    commands.submit(|engine| engine.start());
     if let ipc::Message::AuthCallback { url } = incoming {
-        engine.dispatch(Input::CallbackReceived(url));
+        commands.submit(move |engine| engine.dispatch(Input::CallbackReceived(url)));
     }
     #[cfg(windows)]
     let tray = {
         let tray = gamenode_app::Tray::new()?;
         let weak = ui.as_weak();
-        let e = engine.clone();
+        let e = commands.clone();
         let errors = show_errors.clone();
         tray.on_open(move || {
             if let Some(ui) = weak.upgrade() {
                 show_window(&ui, &e, &errors);
             }
         });
-        let e = engine.clone();
+        let e = commands.clone();
         tray.on_quit(move || {
-            e.shutdown();
-            let _ = slint::quit_event_loop();
+            e.submit(|engine| {
+                engine.shutdown();
+                let _ = slint::invoke_from_event_loop(|| {
+                    let _ = slint::quit_event_loop();
+                });
+            });
         });
         tray
     };
     #[cfg(windows)]
     {
-        let e = engine.clone();
+        let e = commands.clone();
         let current = current_geometry.clone();
         let weak = ui.as_weak();
         ui.window().on_close_requested(move || {
@@ -721,7 +785,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or_else(std::sync::PoisonError::into_inner),
                     can_position,
                 );
-                e.update_settings(|s| s.window = Some(geometry));
+                e.submit(move |engine| engine.update_settings(|s| s.window = Some(geometry)));
             }
             slint::CloseRequestResponse::HideWindow
         });
@@ -729,16 +793,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     let tray_timer = {
         let weak = tray.as_weak();
-        let e = engine.clone();
+        let e = commands.clone();
+        let tray_update_pending = Arc::new(AtomicBool::new(false));
+        let tray_update_pending_timer = tray_update_pending.clone();
         let timer = slint::Timer::default();
         timer.start(
             slint::TimerMode::Repeated,
             Duration::from_secs(1),
             move || {
-                if let Some(tray) = weak.upgrade() {
-                    let snapshot = e.snapshot();
-                    let title = &snapshot.tracking.title;
-                    tray.set_playing_title(title.as_str().into());
+                if weak.upgrade().is_some() {
+                    let weak = weak.clone();
+                    e.submit_coalesced(&tray_update_pending_timer, move |engine| {
+                        let title = engine.snapshot().tracking.title;
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(tray) = weak.upgrade() {
+                                tray.set_playing_title(title.into());
+                            }
+                        });
+                    });
                 }
             },
         );
@@ -746,7 +818,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let result = if cfg!(windows) {
         if !startup.background {
-            engine.window_shown();
+            commands.submit(|engine| engine.window_shown());
             ui.show().and_then(|_| slint::run_event_loop_until_quit())
         } else {
             slint::run_event_loop_until_quit()
@@ -759,6 +831,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .map_or(result, Err);
+    commands.flush();
     engine.shutdown();
     #[cfg(windows)]
     {

@@ -344,6 +344,50 @@ fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
     harness_over(api, creds, None)
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_auth_ticks_do_not_publish_rebuilt_snapshots() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let _ = h.snapshots.borrow_and_update().clone();
+
+    h.engine.dispatch(Input::Tick);
+
+    assert!(!h.snapshots.has_changed().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ui_commands_return_while_engine_work_is_blocked_and_preserve_order() {
+    let h = harness(FakeApi::new(), FakeCreds::with(None));
+    let commands = crate::ui_commands::UiCommands::new(h.engine.clone());
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    commands.submit(move |_| {
+        entered.send(()).unwrap();
+        gate.recv().unwrap();
+    });
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    // These calls must return even while an earlier command is blocked. A later action
+    // must observe the settings from the preceding command, just as Play must observe
+    // the selection made immediately before it.
+    commands.submit(|engine| {
+        engine.update_settings(|settings| settings.renderer = RendererPreference::Software);
+    });
+    let (observed, result) = std::sync::mpsc::channel();
+    commands.submit(move |engine| {
+        observed.send(engine.snapshot().settings.renderer).unwrap();
+    });
+    assert!(matches!(
+        result.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    release.send(()).unwrap();
+    assert_eq!(
+        result.recv_timeout(Duration::from_secs(5)).unwrap(),
+        RendererPreference::Software,
+    );
+    commands.flush();
+}
+
 /// Like [`harness`], but the GameNode auth and game requests go through `remote` when given.
 fn harness_over(
     api: Arc<FakeApi>,

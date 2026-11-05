@@ -101,9 +101,9 @@ component GameRow inherits Rectangle {
             Text { text: root.item.title; color: Theme.color-text-default; font-weight: 500; overflow: elide; }
             Caption { text: PlaytimeText.duration(root.item.playtime-known, root.item.playtime-hours, root.item.playtime-minutes, root.item.playtime-seconds); overflow: elide; }
         }
-        Text { width: 130px; text: root.item.provider; color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
+        Text { width: min(130px, max(70px, parent.width * 0.2)); text: root.item.provider; color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
         Rectangle {
-            width: 170px;
+            width: min(170px, max(90px, parent.width * 0.3));
             MatchDot { x: 0px; y: (parent.height - self.height) / 2; kind: root.item.kind; }
             Text { x: 16px; width: parent.width - 16px; height: parent.height; text: LibraryText.match-kind(root.item.kind); color: Theme.color-text-dimmed; vertical-alignment: center; overflow: elide; }
         }
@@ -195,9 +195,17 @@ component GameList inherits Rectangle {
     Rectangle {
         y: 0px; height: root.header-h;
         background: Theme.color-chrome;
-        Caption { x: 64px; height: parent.height; text: @tr("Library" => "Title"); vertical-alignment: center; }
-        Caption { x: parent.width - 300px - 16px; height: parent.height; text: @tr("Library" => "Store"); vertical-alignment: center; }
-        Caption { x: parent.width - 170px - 16px; height: parent.height; text: @tr("Library" => "Match"); vertical-alignment: center; }
+        Caption { x: 52px; width: max(0px, store-header.x - 64px); height: parent.height; text: @tr("Library" => "Title"); vertical-alignment: center; }
+        store-header := Caption {
+            x: parent.width - 12px - min(170px, max(90px, parent.width * 0.3)) - 12px - min(130px, max(70px, parent.width * 0.2));
+            width: min(130px, max(70px, parent.width * 0.2)); height: parent.height;
+            text: @tr("Library" => "Store"); vertical-alignment: center;
+        }
+        Caption {
+            x: parent.width - 12px - min(170px, max(90px, parent.width * 0.3));
+            width: min(170px, max(90px, parent.width * 0.3)); height: parent.height;
+            text: @tr("Library" => "Match"); vertical-alignment: center;
+        }
     }
     list := ListView {
         y: root.header-h; height: root.height - root.header-h;

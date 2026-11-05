@@ -9,10 +9,16 @@ import { LibraryState } from "library-state.slint";
 import { LibraryScreen, ResizeHandle, SidebarItem } from "library.slint";
 import { LibraryText } from "library-text.slint";
 import { AddDialog, MatchDialog } from "library-dialogs.slint";
+import { SettingsState, SettingsTopic, ToastKind } from "settings-state.slint";
+import { SettingsModal } from "settings.slint";
+import { SettingsStyle } from "settings-style.slint";
 
 // The sentences are exported so a test can read them in each language.
 export { PlaytimeText } from "playtime-text.slint";
 export { LibraryText }
+export { SettingsState, SettingsTopic, ToastKind } from "settings-state.slint";
+export { SettingsModal } from "settings.slint";
+export { SettingsStyle } from "settings-style.slint";
 // The library screens read and write these; library_ui.rs connects them to the engine.
 export { LibraryState, GameItem, ProviderItem, OptionItem, CollectionItem, TargetItem, SummaryItem, MatchKind, SourceKind, StatusKind, Standing, EmptyKind, AccessKind, ViewKind, SortKind, Why, LaunchNote, SearchError, CollectionsKind, Outcome, AddError } from "library-state.slint";
 
@@ -45,7 +51,8 @@ export component AppWindow inherits Window {
     in property <string> version;
     in property <string> licenses;
     in-out property <bool> software;
-    in-out property <bool> settings-open;
+    in-out property <bool> settings-open <=> SettingsState.open;
+    private property <int> settings-opener: 0;
     private property <bool> menu-open;
     // The side navigation's width while it is being dragged (-1 otherwise).
     private property <int> nav-live: -1;
@@ -56,6 +63,16 @@ export component AppWindow inherits Window {
     callback sign-out();
     callback renderer-changed(bool);
     callback quit();
+
+    changed settings-open => {
+        if !root.settings-open {
+            if root.settings-opener == 0 {
+                settings-btn.focus();
+            } else {
+                shell-focus.focus();
+            }
+        }
+    }
 
     pure function localized(message: string) -> string {
         return message == "Session storage: Windows Credential Manager" ? @tr("Session storage: Windows Credential Manager") : message == "Session storage: Secret Service" ? @tr("Session storage: Secret Service") : message == "Session storage: a file readable only by your user account" ? @tr("Session storage: a file readable only by your user account") : message == "Could not open your browser. Please try again." ? @tr("Could not open your browser. Please try again.") : message == "Could not start sign-in. Please try again." ? @tr("Could not start sign-in. Please try again.") : message == "Sign-in was rejected. Please try again." ? @tr("Sign-in was rejected. Please try again.") : message == "Sign-in expired. Please try again." ? @tr("Sign-in expired. Please try again.") : message == "Sign-in cancelled." ? @tr("Sign-in cancelled.") : message == "The session was rejected. Please sign in again." ? @tr("The session was rejected. Please sign in again.") : message == "Could not connect. Your stored session is preserved; retry when online." ? @tr("Could not connect. Your stored session is preserved; retry when online.") : message == "Your stored session expired. Please sign in again." ? @tr("Your stored session expired. Please sign in again.") : message == "Could not read your session from credential storage." ? @tr("Could not read your session from credential storage.") : message == "Could not save your session. Sign-in will not survive restart." ? @tr("Could not save your session. Sign-in will not survive restart.") : message == "Signed out locally. Server sign-out could not be confirmed." ? @tr("Signed out locally. Server sign-out could not be confirmed.") : message == "Could not remove the saved credential. Check credential storage before restarting." ? @tr("Could not remove the saved credential. Check credential storage before restarting.") : message == "Complete sign-in in your browser." ? @tr("Complete sign-in in your browser.") : message;
@@ -76,6 +93,13 @@ export component AppWindow inherits Window {
                 root.menu-open = false;
                 root.licenses-open = false;
                 return accept;
+            }
+            if (event.modifiers.control || event.modifiers.meta) && event.text == "," {
+                if !LibraryState.modal && !root.sync-explanation {
+                    root.settings-opener = 2;
+                    root.settings-open = true;
+                    return accept;
+                }
             }
             return reject;
         }
@@ -109,18 +133,18 @@ export component AppWindow inherits Window {
             }
         }
         Rule { x: 16px; y: parent.height - 100px; width: parent.width - 32px; }
-        Action { x: 16px; y: parent.height - 84px; width: parent.width - 32px; text: @tr("Settings"); selected: root.settings-open; leading: "settings"; inert: LibraryState.modal; clicked => { root.settings-open = true; } }
+        settings-btn := Action { x: 16px; y: parent.height - 84px; width: parent.width - 32px; text: @tr("Settings"); selected: root.settings-open; leading: "settings"; inert: LibraryState.modal; clicked => { root.settings-opener = 0; root.settings-open = true; } }
         Caption { x: 16px; y: parent.height - 32px; text: "GameNode · " + root.version; }
     }
     Rectangle { x: root.nav-w; y: 55px; width: 1px; height: root.height - 55px; background: Theme.color-border-subtle; }
     Rectangle {
         x: root.nav-w + 1px; y: 55px; width: root.width - root.nav-w - 1px; height: root.height - 55px;
-                if !root.settings-open && LibraryState.active: LibraryScreen {
+                if LibraryState.active: LibraryScreen {
                     x: 0px; y: 0px; width: parent.width; height: parent.height - 36px - (root.status != "" ? 100px : 0px);
                     can-retry: root.can-retry; busy: root.busy;
                     retry => { root.retry(); }
                 }
-                if !root.settings-open && !LibraryState.active: login-view := ScrollView {
+                if !LibraryState.active: login-view := ScrollView {
                     x: 0px; y: 0px; width: 100%; height: parent.height - 36px - (root.status != "" ? 100px : 0px);
                     VerticalLayout {
                     min-height: login-view.visible-height;
@@ -161,76 +185,6 @@ export component AppWindow inherits Window {
                     Rectangle { vertical-stretch: 1; }
                 }
                 }
-                if root.settings-open: ScrollView {
-                    x: 0px; y: 0px; width: 100%; height: parent.height - 36px - (root.status != "" ? 100px : 0px);
-                    VerticalLayout {
-                        padding: 32px; spacing: 20px;
-                        Heading { text: @tr("Settings / About"); }
-                        Caption { text: @tr("Make GameNode feel at home on your desktop."); wrap: word-wrap; }
-                        Panel {
-                            VerticalLayout {
-                                padding: 20px; spacing: 16px;
-                                Heading { text: @tr("Appearance & performance"); font-size: 16px; }
-                                HorizontalLayout {
-                                    spacing: 16px;
-                                    VerticalLayout {
-                                        spacing: 8px;
-                                        Text { text: @tr("Software rendering"); color: Theme.color-text-default; font-weight: 500; }
-                                        Caption { text: @tr("Use if you experience graphics issues. Takes effect after restarting GameNode."); wrap: word-wrap; }
-                                    }
-                                    Action { width: 100px; text: root.software ? @tr("On") : @tr("Off"); selected: root.software; outlined: true; clicked => { root.software = !root.software; root.renderer-changed(root.software); } }
-                                }
-                                Rule {}
-                                Caption { text: root.fallback-renderer ? @tr("Active renderer: Software (automatic fallback)") : root.active-software ? @tr("Active renderer: Software") : @tr("Active renderer: Skia"); wrap: word-wrap; }
-                            }
-                        }
-                        Panel {
-                            VerticalLayout {
-                                padding: 20px; spacing: 12px;
-                                if LocalGames.supported: Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; } }
-                                Heading { text: @tr("Playtime & sync"); font-size: 16px; }
-                                HorizontalLayout {
-                                    Text { text: @tr("Sync with GameNode"); color: Theme.color-text-default; vertical-alignment: center; }
-                                    Action { width: 100px; text: root.sync-enabled ? @tr("On") : @tr("Off"); selected: root.sync-enabled; outlined: true; clicked => { root.sync-changed(!root.sync-enabled); } }
-                                }
-                                if root.playtime-error: Caption { text: @tr("Could not sync playtime. Your local data is preserved."); wrap: word-wrap; }
-                                Text { text: @tr("Playtime source"); color: Theme.color-text-default; font-weight: 500; }
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    Action { text: @tr("Import from store"); selected: root.store-playtime; outlined: true; clicked => { root.source-changed(true); } }
-                                    Action { text: @tr("Internal counter"); selected: !root.store-playtime; outlined: true; clicked => { root.source-changed(false); } }
-                                }
-                                Caption { text: @tr("Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate."); wrap: word-wrap; }
-                            }
-                        }
-                        Panel {
-                            VerticalLayout {
-                                padding: 20px; spacing: 12px;
-                                Heading { text: @tr("Session & security"); font-size: 16px; }
-                                Text { text: root.localized(root.storage); color: Theme.color-text-default; wrap: word-wrap; }
-                                Caption { text: @tr("Your session stays on this device, protected by your operating system."); wrap: word-wrap; }
-                            }
-                        }
-                        Panel {
-                            VerticalLayout {
-                                padding: 20px; spacing: 16px;
-                                HorizontalLayout {
-                                    spacing: 20px;
-                                    Image { source: @image-url("icons/gamenode-logo.svg"); width: 72.8px; height: 28px; image-fit: contain; }
-                                    VerticalLayout {
-                                        Text { text: "GameNode Desktop"; color: Theme.color-text-default; font-weight: 600; }
-                                        Caption { text: @tr("Version {}", root.version) + " · GPL-3.0-only"; }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-                                Rule {}
-                                Caption { text: @tr("GameNode artwork: GPL-3.0-only · Roboto: SIL Open Font License 1.1 · Slint: GPLv3"); wrap: word-wrap; }
-                                Action { text: @tr("Show license notices"); outlined: true; clicked => { root.open-licenses(); } }
-                            }
-                        }
-                        Rectangle { min-height: 8px; }
-                    }
-                }
 
         if root.status != "": Rectangle {
             y: parent.height - 136px; height: 100px; width: parent.width;
@@ -260,33 +214,10 @@ export component AppWindow inherits Window {
             padding: 8px; spacing: 8px;
             Action { text: @tr("Library"); clicked => { root.settings-open = false; root.menu-open = false; } }
             if LibraryState.active: Action { text: @tr("Library" => "Rescan"); clicked => { LibraryState.rescan(); root.menu-open = false; } }
-            Action { text: @tr("Settings / About"); clicked => { root.settings-open = true; root.menu-open = false; } }
+            Action { text: @tr("Settings / About"); clicked => { root.settings-opener = 1; root.settings-open = true; root.menu-open = false; } }
             if root.signed-in || root.busy: Action { text: @tr("Sign out"); clicked => { root.sign-out(); root.menu-open = false; } }
             Rule {}
             Action { text: @tr("Quit"); clicked => { root.quit(); } }
-        }
-    }
-    if root.licenses-open: Rectangle {
-        x: 0px; y: 0px; width: root.width; height: root.height;
-        background: #161616E6;
-        Rectangle {
-            x: 32px; y: 32px; width: parent.width - 64px; height: parent.height - 64px;
-            background: Theme.color-secondary; border-radius: 8px; border-width: 1px; border-color: Theme.color-border-subtle;
-            VerticalLayout {
-                padding: 20px; spacing: 16px;
-                Heading { text: @tr("License notices"); }
-                ScrollView {
-                    vertical-stretch: 1;
-                    Text { text: root.licenses; color: Theme.color-text-default; wrap: word-wrap; }
-                }
-                HorizontalLayout {
-                    spacing: 12px;
-                    Action { text: @tr("Previous"); clicked => { root.license-page-changed(max(0, root.license-page - 1)); } }
-                    Caption { text: (root.license-page + 1) + " / " + root.license-page-count; vertical-alignment: center; horizontal-alignment: center; }
-                    Action { text: @tr("Next"); clicked => { root.license-page-changed(min(root.license-page-count - 1, root.license-page + 1)); } }
-                    Action { text: @tr("Back"); primary: true; clicked => { root.licenses-open = false; } }
-                }
-            }
         }
     }
     if LibraryState.match-open: MatchDialog { x: 0px; y: 0px; width: root.width; height: root.height; }
@@ -296,11 +227,46 @@ export component AppWindow inherits Window {
         x: 0px; y: 0px; width: root.width; height: root.height;
         shown: root.sync-explanation;
         background-supported: root.background-supported;
-        dismissed(open-settings) => { if open-settings { root.settings-open = true; } root.sync-dismissed(); shell-focus.focus(); }
+        dismissed(open-settings) => {
+            if open-settings {
+                SettingsState.topic = SettingsTopic.account;
+                root.settings-opener = 2;
+                root.settings-open = true;
+            }
+            root.sync-dismissed();
+            shell-focus.focus();
+        }
     }
 
     if LocalGames.editing: LocalGameEditor {}
 
     if LocalGames.protection-open: SaveProtection { }
     if LocalGames.claim-open: ClaimConflict { }
+
+    SettingsModal {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        signed-in: root.signed-in;
+        identity: root.identity;
+        storage: root.localized(root.storage);
+        sync-enabled: root.sync-enabled;
+        playtime-error: root.playtime-error;
+        store-playtime: root.store-playtime;
+        software <=> root.software;
+        active-software: root.active-software;
+        fallback-renderer: root.fallback-renderer;
+        version: root.version;
+        busy: root.busy;
+        can-retry: root.can-retry;
+        license-page <=> root.license-page;
+        license-page-count: root.license-page-count;
+        licenses: root.licenses;
+        sign-in(idx) => { root.sign-in(idx); }
+        cancel => { root.cancel(); }
+        retry => { root.retry(); }
+        sign-out => { root.sign-out(); }
+        sync-changed(v) => { root.sync-changed(v); }
+        source-changed(v) => { root.source-changed(v); }
+        renderer-changed(v) => { root.renderer-changed(v); }
+        license-page-changed(p) => { root.license-page-changed(p); }
+    }
 }

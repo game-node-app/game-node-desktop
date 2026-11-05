@@ -18,8 +18,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use gamenode_app::{
     AccessKind, AddError, AppWindow, BackupRow, CollectionItem, CollectionsKind, DiscoveryRow,
     EmptyKind, GameItem, LaunchNote, LibraryState, LocalGames, MatchKind, OptionItem, Outcome,
-    ProviderItem, SearchError, SortKind, SourceKind, Standing, StatusKind, SummaryItem, TargetItem,
-    ViewKind, Why,
+    ProviderItem, SearchError, SettingsState, SettingsTopic, SortKind, SourceKind, Standing,
+    StatusKind, SummaryItem, TargetItem, ToastKind, ViewKind, Why,
 };
 use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
 use serde_json::{Value, json};
@@ -324,6 +324,7 @@ fn setup_base_window(ui: &AppWindow) {
         title: String::new().into(),
         folder: "D:\\Games".into(),
         executable: String::new().into(),
+        targets: Default::default(),
         picked: false,
         resolved: true,
     }]))));
@@ -333,6 +334,7 @@ fn setup_base_window(ui: &AppWindow) {
             title: "Hades".into(),
             folder: "D:\\Games\\Hades".into(),
             executable: "D:\\Games\\Hades\\x64\\Hades.exe".into(),
+            targets: Default::default(),
             picked: true,
             resolved: true,
         },
@@ -341,6 +343,10 @@ fn setup_base_window(ui: &AppWindow) {
             title: "Hollow Knight".into(),
             folder: "D:\\Games\\Hollow Knight".into(),
             executable: "D:\\Games\\Hollow Knight\\hollow_knight.exe".into(),
+            targets: ModelRc::from(Rc::new(VecModel::from(vec![
+                "D:\\Games\\Hollow Knight\\hollow_knight.exe".into(),
+                "D:\\Games\\Hollow Knight\\hollow_knight_64.exe".into(),
+            ]))),
             picked: false,
             resolved: false,
         },
@@ -422,12 +428,14 @@ fn sync_library_view(ui: &AppWindow, data: &DemoData) {
             name: "Steam".into(),
             count: steam_count,
             selected: data.filter_provider == "steam",
+            failed: false,
         },
         ProviderItem {
             id: "manual".into(),
             name: "DRM-free".into(),
             count: manual_count,
             selected: data.filter_provider == "manual",
+            failed: false,
         },
     ]))));
     state.set_total(data.games.len() as i32);
@@ -993,6 +1001,12 @@ fn reset_overlays(ui: &AppWindow) {
     local.set_claim_open(false);
     local.set_has_restore(false);
     local.set_restore_targets("".into());
+
+    let settings = ui.global::<SettingsState>();
+    settings.set_open(false);
+    settings.set_dirty(false);
+    settings.set_alert_open(false);
+    settings.set_toast_open(false);
 }
 
 fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
@@ -1005,10 +1019,10 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
         data.games = fresh.games;
     }
 
-    ui.set_signed_in(preset != "signed-out");
+    ui.set_signed_in(preset != "signed-out" && preset != "settings-account-signed-out");
     let state = ui.global::<LibraryState>();
     let local = ui.global::<LocalGames>();
-    state.set_active(preset != "signed-out");
+    state.set_active(preset != "signed-out" && preset != "settings-account-signed-out");
     data.search_query.clear();
     state.set_search("".into());
     data.filter_provider.clear();
@@ -1041,9 +1055,116 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             data.detail_open = true;
             sync_library_view(ui, data);
         }
-        "settings" => {
+        "settings" | "settings-account" => {
             sync_library_view(ui, data);
-            ui.set_settings_open(true);
+            ui.set_signed_in(true);
+            ui.set_identity("cassi@example.com".into());
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Account);
+        }
+        "settings-account-signed-out" => {
+            sync_library_view(ui, data);
+            ui.set_signed_in(false);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Account);
+        }
+        "settings-stores" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Stores);
+            local.set_supported(true);
+        }
+        "settings-stores-failed" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Stores);
+            local.set_supported(true);
+            state.set_failed_stores("Steam".into());
+            let providers: Vec<ProviderItem> = vec![
+                ProviderItem {
+                    id: "steam".into(),
+                    name: "Steam".into(),
+                    count: 4,
+                    selected: false,
+                    failed: true,
+                },
+                ProviderItem {
+                    id: "manual".into(),
+                    name: "DRM-free".into(),
+                    count: 2,
+                    selected: false,
+                    failed: false,
+                },
+            ];
+            state.set_providers(ModelRc::new(VecModel::from(providers)));
+        }
+        "settings-backups" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Backups);
+            local.set_supported(true);
+            local.set_destination("D:\\Games\\Backups".into());
+            local.set_automatic(true);
+        }
+        "settings-backups-dirty" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Backups);
+            local.set_supported(true);
+            local.set_destination("D:\\Games\\Backups".into());
+            settings.set_destination_edit("E:\\External\\Backups".into());
+            settings.set_dirty(true);
+        }
+        "settings-backups-unsupported" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Backups);
+            local.set_supported(false);
+        }
+        "settings-advanced-restart" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Advanced);
+            ui.set_software(true);
+            ui.set_active_software(false);
+        }
+        "settings-about" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::About);
+            ui.set_version("0.1.0".into());
+        }
+        "settings-alert" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Backups);
+            settings.set_dirty(true);
+            settings.set_alert_open(true);
+        }
+        "settings-toast" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Backups);
+            settings.invoke_trigger_toast(ToastKind::Success, "Backup destination saved".into());
+        }
+        "settings-compact" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Account);
+            data.width = 640;
+            data.height = 420;
         }
         "protection" => {
             data.selected_key = "manual:celeste".into();
@@ -1686,11 +1807,12 @@ const STUDIO_HTML: &str = r#"<!DOCTYPE html>
   .stage {
     flex: 1;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
-    padding: 12px;
+    padding: 10px;
     overflow: auto;
     background: #0a0c0f;
+    min-width: 0;
   }
   .screen-wrap {
     position: relative;
@@ -1698,9 +1820,14 @@ const STUDIO_HTML: &str = r#"<!DOCTYPE html>
     box-shadow: 0 12px 36px rgba(0,0,0,0.6);
     background: #161616;
     line-height: 0;
+    max-width: 100%;
   }
   #screen {
     display: block;
+    max-width: 100%;
+    max-height: calc(100vh - 170px);
+    width: auto;
+    height: auto;
     cursor: crosshair;
     user-select: none;
     -webkit-user-drag: none;
@@ -2065,11 +2192,42 @@ fn apply_cli_flags(
             }
             "pt_BR" => apply_locale("pt_BR", data),
             "en" => apply_locale("en", data),
-            preset @ ("signed-out" | "library" | "grid" | "list" | "details" | "drm-detail"
-            | "drm-missing" | "settings" | "protection" | "restore"
-            | "restore-preview" | "discovery" | "editor" | "claim" | "claim-conflict"
-            | "match" | "match-dialog" | "add" | "add-dialog" | "add-summary"
-            | "sync-explanation" | "banner" | "empty" | "nothing-matches") => {
+            preset @ ("signed-out"
+            | "library"
+            | "grid"
+            | "list"
+            | "details"
+            | "drm-detail"
+            | "drm-missing"
+            | "settings"
+            | "settings-account"
+            | "settings-account-signed-out"
+            | "settings-stores"
+            | "settings-stores-failed"
+            | "settings-backups"
+            | "settings-backups-dirty"
+            | "settings-backups-unsupported"
+            | "settings-advanced-restart"
+            | "settings-about"
+            | "settings-alert"
+            | "settings-toast"
+            | "settings-compact"
+            | "protection"
+            | "restore"
+            | "restore-preview"
+            | "discovery"
+            | "editor"
+            | "claim"
+            | "claim-conflict"
+            | "match"
+            | "match-dialog"
+            | "add"
+            | "add-dialog"
+            | "add-summary"
+            | "sync-explanation"
+            | "banner"
+            | "empty"
+            | "nothing-matches") => {
                 apply_preset(ui, data, preset);
             }
             other => {

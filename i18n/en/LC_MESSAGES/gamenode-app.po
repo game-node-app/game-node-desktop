@@ -999,3 +999,207 @@ msgstr "Transfer tracking"
 msgctxt "DRM-free"
 msgid "Inferred from local evidence: {}"
 msgstr "Inferred from local evidence: {}"
+
+msgctxt "Settings"
+msgid "Signed in"
+msgstr "Signed in"
+
+msgctxt "Settings"
+msgid "No session"
+msgstr "No session"
+
+msgctxt "Settings"
+msgid "SETTINGS"
+msgstr "SETTINGS"
+
+msgctxt "Settings"
+msgid "Account"
+msgstr "Account"
+
+msgctxt "Settings"
+msgid "Stores"
+msgstr "Stores"
+
+msgctxt "Settings"
+msgid "Backups"
+msgstr "Backups"
+
+msgctxt "Settings"
+msgid "Advanced"
+msgstr "Advanced"
+
+msgctxt "Settings"
+msgid "About"
+msgstr "About"
+
+msgctxt "Settings"
+msgid "Your GameNode connection and what this PC syncs."
+msgstr "Your GameNode connection and what this PC syncs."
+
+msgctxt "Settings"
+msgid "Stores found on this PC and how playtime is read."
+msgstr "Stores found on this PC and how playtime is read."
+
+msgctxt "Settings"
+msgid "Local protection for your DRM-free game saves."
+msgstr "Local protection for your DRM-free game saves."
+
+msgctxt "Settings"
+msgid "Rendering and troubleshooting options."
+msgstr "Rendering and troubleshooting options."
+
+msgctxt "Settings"
+msgid "Version, license and third-party notices."
+msgstr "Version, license and third-party notices."
+
+msgctxt "Settings"
+msgid "Session and identity"
+msgstr "Session and identity"
+
+msgctxt "Settings"
+msgid "Your session stays on this device, protected by your operating system."
+msgstr "Your session stays on this device, protected by your operating system."
+
+msgctxt "Settings"
+msgid "Sign out"
+msgstr "Sign out"
+
+msgctxt "Settings"
+msgid "Sync"
+msgstr "Sync"
+
+msgctxt "Settings"
+msgid "Playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+msgstr "Playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library."
+
+msgctxt "Settings"
+msgid "Detected stores"
+msgstr "Detected stores"
+
+msgctxt "Settings"
+msgid "Game providers configured on this system."
+msgstr "Game providers configured on this system."
+
+msgctxt "Settings"
+msgid "Last scan failed"
+msgstr "Last scan failed"
+
+msgctxt "Settings"
+msgid "installed games"
+msgstr "installed games"
+
+msgctxt "Settings"
+msgid "No installed games found"
+msgstr "No installed games found"
+
+msgctxt "Settings"
+msgid "Failed"
+msgstr "Failed"
+
+msgctxt "Settings"
+msgid "Playtime source"
+msgstr "Playtime source"
+
+msgctxt "Settings"
+msgid "Store"
+msgstr "Store"
+
+msgctxt "Settings"
+msgid "Internal"
+msgstr "Internal"
+
+msgctxt "Settings"
+msgid "Watched folders and local discoveries."
+msgstr "Watched folders and local discoveries."
+
+msgctxt "Settings"
+msgid "Unavailable on this system"
+msgstr "Unavailable on this system"
+
+msgctxt "Settings"
+msgid "Automatic protection"
+msgstr "Automatic protection"
+
+msgctxt "Settings"
+msgid "Generates local backups automatically."
+msgstr "Generates local backups automatically."
+
+msgctxt "Settings"
+msgid "Local folder where DRM-free game backups are saved."
+msgstr "Local folder where DRM-free game backups are saved."
+
+msgctxt "Settings"
+msgid "Choose folder…"
+msgstr "Choose folder…"
+
+msgctxt "Settings"
+msgid "Discard"
+msgstr "Discard"
+
+msgctxt "Settings"
+msgid "Save changes"
+msgstr "Save changes"
+
+msgctxt "Settings"
+msgid "Unsaved changes"
+msgstr "Unsaved changes"
+
+msgctxt "Settings"
+msgid "Per-game controls are in each game's details."
+msgstr "Per-game controls are in each game's details."
+
+msgctxt "Settings"
+msgid "Requires restart"
+msgstr "Requires restart"
+
+msgctxt "Settings"
+msgid "Active renderer"
+msgstr "Active renderer"
+
+msgctxt "Settings"
+msgid "About GameNode Desktop"
+msgstr "About GameNode Desktop"
+
+msgctxt "Settings"
+msgid "Close"
+msgstr "Close"
+
+msgctxt "Settings"
+msgid "Close settings"
+msgstr "Close settings"
+
+msgctxt "Settings"
+msgid "Discard changes?"
+msgstr "Discard changes?"
+
+msgctxt "Settings"
+msgid "You have unsaved changes. Do you want to discard them?"
+msgstr "You have unsaved changes. Do you want to discard them?"
+
+msgctxt "Settings"
+msgid "Cancel"
+msgstr "Cancel"
+
+msgctxt "DRM-free"
+msgid "DRM-free games"
+msgstr "DRM-free games"
+
+msgctxt "Settings"
+msgid "Library rescanned"
+msgstr "Library rescanned"
+
+msgctxt "Settings"
+msgid "Backup destination saved"
+msgstr "Backup destination saved"
+
+msgctxt "DRM-free"
+msgid "Checking watched folders…"
+msgstr "Checking watched folders…"
+
+msgctxt "DRM-free"
+msgid "Some folders could not be checked completely."
+msgstr "Some folders could not be checked completely."
+
+msgctxt "DRM-free"
+msgid "No new games found. Only recognized games are listed for review."
+msgstr "No new games found. Only recognized games are listed for review."

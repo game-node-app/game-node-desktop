@@ -63,13 +63,16 @@ impl ManifestCache {
         now: i64,
         source: &str,
     ) -> Result<ManifestSnapshot, LocalError> {
-        let mut metadata: Metadata = std::fs::read(self.directory.join("metadata.json"))
+        let saved_metadata: Option<Metadata> = std::fs::read(self.directory.join("metadata.json"))
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        if now.saturating_sub(metadata.checked) < 86400 {
+            .and_then(|b| serde_json::from_slice(&b).ok());
+        if saved_metadata
+            .as_ref()
+            .is_some_and(|metadata| now.saturating_sub(metadata.checked) < 86400)
+        {
             return self.load();
         }
+        let mut metadata = saved_metadata.unwrap_or_default();
         let current = self.load()?;
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -224,7 +227,8 @@ mod tests {
 
         let response = b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n".to_vec();
         let (url, handle) = mock_http_server(response);
-        let snapshot = cache.update_from_source(100, &url).unwrap();
+        // The last check must be over a day old to exercise the HTTP 304 path.
+        let snapshot = cache.update_from_source(100_000, &url).unwrap();
         handle.join().unwrap();
         assert!(snapshot.index.games.contains_key("Game"));
     }

@@ -59,7 +59,14 @@ impl Ludusavi {
                 "bundled backup helper is unavailable".into(),
             ));
         }
-        let mut child = std::process::Command::new(&self.helper)
+        let mut command = std::process::Command::new(&self.helper);
+        // Background backups and version checks must not open a console over the game.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
+        let mut child = command
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())

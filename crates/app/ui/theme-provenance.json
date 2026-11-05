@@ -1840,5 +1840,971 @@
     "Foundation shell uses a 200 logical px navigation rail, client-area anchored chrome/footer and scrollable content. Layout offsets derive from these desktop regions; they are geometry, not additional Figma spacing tokens.",
     "Controls use semantic surface hover, accent selection and accent keyboard outlines; primary keyboard outline uses on-primary for visibility. Primary hover is the primary color brightened by 10 percent.",
     "Three authored SVG line icons replace unsupported Unicode symbols. The modal scrim is semantic background with 90 percent opacity. License notices are paginated into at most 2400 Unicode characters per text layout."
-  ]
+  ],
+  "settingsModal": {
+    "sectionId": "4987:10202",
+    "sectionName": "Menus · Premium v2 (Sam)",
+    "tokens": {
+      "bg-base": {
+        "sourceKind": "variable",
+        "sourceName": "color/bg/base",
+        "variableId": "VariableID:4703:2923",
+        "resolvedValue": "#0B0B0B"
+      },
+      "bg-sidebar": {
+        "sourceKind": "variable",
+        "sourceName": "color/bg/sidebar",
+        "variableId": "VariableID:4856:3051",
+        "resolvedValue": "#111111"
+      },
+      "bg-surface": {
+        "sourceKind": "variable",
+        "sourceName": "color/bg/surface",
+        "variableId": "VariableID:4703:2924",
+        "resolvedValue": "#1A1A1A"
+      },
+      "bg-raised": {
+        "sourceKind": "variable",
+        "sourceName": "color/bg/raised",
+        "variableId": "VariableID:4856:3052",
+        "resolvedValue": "#222222"
+      },
+      "border-subtle": {
+        "sourceKind": "variable",
+        "sourceName": "color/border/subtle",
+        "variableId": "VariableID:4856:3053",
+        "resolvedValue": "#2A2A2A"
+      },
+      "text-primary": {
+        "sourceKind": "variable",
+        "sourceName": "color/text/primary",
+        "variableId": "VariableID:4703:2925",
+        "resolvedValue": "#FFFFFF"
+      },
+      "text-secondary": {
+        "sourceKind": "variable",
+        "sourceName": "color/text/secondary",
+        "variableId": "VariableID:4703:2926",
+        "resolvedValue": "#ADADAD"
+      },
+      "text-muted": {
+        "sourceKind": "variable",
+        "sourceName": "color/text/muted",
+        "variableId": "VariableID:4856:3054",
+        "resolvedValue": "#7A7A7A"
+      },
+      "accent": {
+        "sourceKind": "variable",
+        "sourceName": "color/accent/primary",
+        "variableId": "VariableID:4703:2927",
+        "resolvedValue": "#F15025"
+      },
+      "accent-subtle": {
+        "sourceKind": "variable",
+        "sourceName": "color/accent/subtle",
+        "variableId": "VariableID:4856:3061",
+        "resolvedValue": "#F150251F"
+      },
+      "accent-hover": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "accent.brighter(10%)",
+        "reason": "Adaptação desktop para hover do botão primário"
+      },
+      "accent-pressed": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "#872C13",
+        "reason": "Adaptação desktop para estado pressionado usando Theme.color-tertiary"
+      },
+      "success": {
+        "sourceKind": "variable",
+        "sourceName": "color/status/success",
+        "variableId": "VariableID:4856:3057",
+        "resolvedValue": "#3DD68C"
+      },
+      "success-subtle": {
+        "sourceKind": "variable",
+        "sourceName": "color/status/success-subtle",
+        "variableId": "VariableID:4856:3058",
+        "resolvedValue": "#3DD68C1F"
+      },
+      "warning": {
+        "sourceKind": "variable",
+        "sourceName": "color/status/warning",
+        "variableId": "VariableID:4856:3059",
+        "resolvedValue": "#F5A524"
+      },
+      "warning-subtle": {
+        "sourceKind": "variable",
+        "sourceName": "color/status/warning-subtle",
+        "variableId": "VariableID:4856:3060",
+        "resolvedValue": "#F5A5241F"
+      },
+      "danger": {
+        "sourceKind": "variable",
+        "sourceName": "color/status/danger",
+        "variableId": "VariableID:4856:3055",
+        "resolvedValue": "#E5484D"
+      },
+      "danger-subtle": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "#E5484D1F",
+        "reason": "Adaptação desktop de Theme.color-danger-subtle para tile de alerta destrutivo"
+      },
+      "danger-hover": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "danger.brighter(10%)",
+        "reason": "Adaptação desktop para hover de botões destrutivos"
+      },
+      "overlay": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10445",
+        "resolvedValue": "#0000009E"
+      },
+      "scrollbar-thumb": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10711",
+        "resolvedValue": "#FFFFFF38"
+      },
+      "fade-start": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10712",
+        "resolvedValue": "#0B0B0B00"
+      },
+      "fade-end": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10712",
+        "resolvedValue": "#0B0B0B"
+      },
+      "toggle-track-on": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": "#1A1A1A"
+      },
+      "toggle-track-off": {
+        "sourceKind": "component",
+        "nodeId": "4501:3273",
+        "resolvedValue": "#2E2E2E"
+      },
+      "toggle-border": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": "#2E2E2E"
+      },
+      "toggle-knob-on": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": "#F15025"
+      },
+      "toggle-knob-off": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "#7A7A7A",
+        "reason": "Adaptação do #1D1D1D de 4501:3273 por falta de contraste contra o trilho (WCAG 1.4.11)"
+      },
+      "focus-ring": {
+        "sourceKind": "adaptation",
+        "resolvedValue": "#F15025",
+        "reason": "Adaptação desktop para anel de foco visível ausente no Figma"
+      },
+      "shadow-modal-color": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "0 32 80 rgba(0,0,0,.55)"
+      },
+      "shadow-modal-offset-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "0 32 80 rgba(0,0,0,.55)"
+      },
+      "shadow-modal-blur": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "0 32 80 rgba(0,0,0,.55)"
+      },
+      "shadow-alert-color": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": "0 24 64 rgba(0,0,0,.6)"
+      },
+      "shadow-alert-offset-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": "0 24 64 rgba(0,0,0,.6)"
+      },
+      "shadow-alert-blur": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": "0 24 64 rgba(0,0,0,.6)"
+      },
+      "shadow-toast-color": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": "0 12 32 rgba(0,0,0,.5)"
+      },
+      "shadow-toast-offset-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": "0 12 32 rgba(0,0,0,.5)"
+      },
+      "shadow-toast-blur": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": "0 12 32 rgba(0,0,0,.5)"
+      },
+      "type-title": {
+        "sourceKind": "style",
+        "styleName": "text/xl/medium",
+        "nodeId": "4987:10202",
+        "resolvedValue": "20px / 500"
+      },
+      "type-title-weight": {
+        "sourceKind": "style",
+        "styleName": "text/xl/medium",
+        "nodeId": "4987:10202",
+        "resolvedValue": "20px / 500"
+      },
+      "type-section": {
+        "sourceKind": "style",
+        "styleName": "text/md/medium",
+        "nodeId": "4987:10202",
+        "resolvedValue": "16px / 500"
+      },
+      "type-section-weight": {
+        "sourceKind": "style",
+        "styleName": "text/md/medium",
+        "nodeId": "4987:10202",
+        "resolvedValue": "16px / 500"
+      },
+      "type-label": {
+        "sourceKind": "style",
+        "styleName": "text/sm/semibold",
+        "nodeId": "4987:10202",
+        "resolvedValue": "14px / 600"
+      },
+      "type-label-weight": {
+        "sourceKind": "style",
+        "styleName": "text/sm/semibold",
+        "nodeId": "4987:10202",
+        "resolvedValue": "14px / 600"
+      },
+      "type-body": {
+        "sourceKind": "style",
+        "styleName": "text/sm/regular",
+        "nodeId": "4987:10202",
+        "resolvedValue": "14px / 400"
+      },
+      "type-body-weight": {
+        "sourceKind": "style",
+        "styleName": "text/sm/regular",
+        "nodeId": "4987:10202",
+        "resolvedValue": "14px / 400"
+      },
+      "type-caption": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "13px / 400 (lh 18)"
+      },
+      "type-caption-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "13px / 400 (lh 18)"
+      },
+      "space-caption-gap": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 5,
+        "unit": "logical-px",
+        "reason": "Adaptação do line-height 18px do Figma em gap de espaçamento no Slint"
+      },
+      "type-button": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "13px / 500"
+      },
+      "type-button-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "13px / 500"
+      },
+      "type-control": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": "13px / 400"
+      },
+      "type-control-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": "13px / 400"
+      },
+      "type-meta": {
+        "sourceKind": "style",
+        "styleName": "text/xs/regular",
+        "nodeId": "4987:10202",
+        "resolvedValue": "12px / 400"
+      },
+      "type-meta-weight": {
+        "sourceKind": "style",
+        "styleName": "text/xs/regular",
+        "nodeId": "4987:10202",
+        "resolvedValue": "12px / 400"
+      },
+      "type-pill": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "12px / 500"
+      },
+      "type-pill-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "12px / 500"
+      },
+      "type-kbd": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "11px / 500"
+      },
+      "type-kbd-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "11px / 500"
+      },
+      "type-group": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "11px / 600, letter-spacing 0.6px"
+      },
+      "type-group-weight": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "11px / 600, letter-spacing 0.6px"
+      },
+      "type-group-letter-spacing": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": "11px / 600, letter-spacing 0.6px"
+      },
+      "modal-max-width": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 960,
+        "unit": "logical-px"
+      },
+      "modal-max-height": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 720,
+        "unit": "logical-px"
+      },
+      "modal-margin": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 24,
+        "unit": "logical-px",
+        "reason": "Adaptação para caber em janela mínima de 640x420"
+      },
+      "modal-margin-compact": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 16,
+        "unit": "logical-px",
+        "reason": "Adaptação para caber em janela mínima de 640x420"
+      },
+      "sidebar-width": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10444",
+        "resolvedValue": 216,
+        "unit": "logical-px"
+      },
+      "sidebar-width-compact": {
+        "sourceKind": "adaptation",
+        "nodeId": "4988:10444",
+        "resolvedValue": 176,
+        "unit": "logical-px",
+        "reason": "Modo compacto é adaptação para largura do modal < 760"
+      },
+      "sidebar-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10444",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "sidebar-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10444",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "sidebar-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10444",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "user-avatar": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10449",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "user-block-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10449",
+        "resolvedValue": 4,
+        "unit": "logical-px"
+      },
+      "user-block-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10449",
+        "resolvedValue": 6,
+        "unit": "logical-px"
+      },
+      "user-block-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10449",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "nav-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "nav-group-padding-bottom": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 6,
+        "unit": "logical-px"
+      },
+      "nav-group-padding-left": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "nav-item-height": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "nav-item-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "nav-item-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "nav-item-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "icon-sm": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "icon-md": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "icon-lg": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 18,
+        "unit": "logical-px"
+      },
+      "footer-padding-top": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 6,
+        "unit": "logical-px"
+      },
+      "footer-padding-left": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "header-padding-top": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 18,
+        "unit": "logical-px"
+      },
+      "header-padding-left": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "header-padding-right": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "header-padding-bottom": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "header-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "title-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 4,
+        "unit": "logical-px"
+      },
+      "close-cluster-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "close-button": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "scroll-padding-top": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 28,
+        "unit": "logical-px"
+      },
+      "scroll-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "scroll-padding-x-compact": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 20,
+        "unit": "logical-px",
+        "reason": "Modo compacto reduz padding lateral"
+      },
+      "scroll-padding-bottom": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 40,
+        "unit": "logical-px"
+      },
+      "section-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 32,
+        "unit": "logical-px"
+      },
+      "section-header-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "row-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "row-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 20,
+        "unit": "logical-px"
+      },
+      "row-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "row-text-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 20,
+        "unit": "logical-px"
+      },
+      "table-row-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "table-header-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "table-col": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 76,
+        "unit": "logical-px"
+      },
+      "tile": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 36,
+        "unit": "logical-px"
+      },
+      "tile-lg": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 40,
+        "unit": "logical-px"
+      },
+      "scrollbar-width": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10711",
+        "resolvedValue": 4,
+        "unit": "logical-px"
+      },
+      "fade-height": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10712",
+        "resolvedValue": 72,
+        "unit": "logical-px"
+      },
+      "toggle-width": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": 33,
+        "unit": "logical-px"
+      },
+      "toggle-height": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "toggle-knob": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "toggle-inset": {
+        "sourceKind": "component",
+        "nodeId": "4501:3276",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "radio": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 18,
+        "unit": "logical-px"
+      },
+      "radio-on-border": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 5,
+        "unit": "logical-px"
+      },
+      "radio-off-border": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 1.5,
+        "unit": "logical-px"
+      },
+      "button-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 7,
+        "unit": "logical-px"
+      },
+      "button-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "button-icon-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 18,
+        "unit": "logical-px"
+      },
+      "input-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "input-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "select-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": 7,
+        "unit": "logical-px"
+      },
+      "select-padding-left": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "select-padding-right": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "select-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11732",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "segmented-padding": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11826",
+        "resolvedValue": 3,
+        "unit": "logical-px"
+      },
+      "segmented-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11826",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "segmented-item-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11826",
+        "resolvedValue": 5,
+        "unit": "logical-px"
+      },
+      "segmented-item-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:11826",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "pill-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 3,
+        "unit": "logical-px"
+      },
+      "pill-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "kbd-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "kbd-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 6,
+        "unit": "logical-px"
+      },
+      "infobox-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "infobox-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "infobox-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "actions-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "alert-width": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 440,
+        "unit": "logical-px"
+      },
+      "alert-padding-top": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "alert-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "alert-padding-bottom": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 20,
+        "unit": "logical-px"
+      },
+      "alert-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "alert-header-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:10446",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "alert-actions-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "alert-actions-padding-x": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:13705",
+        "resolvedValue": 24,
+        "unit": "logical-px"
+      },
+      "toast-padding-y": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "toast-padding-left": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": 14,
+        "unit": "logical-px"
+      },
+      "toast-padding-right": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "toast-gap": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4988:14320",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "focus-ring-width": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 2,
+        "unit": "logical-px",
+        "reason": "Adaptação desktop para anel de foco visível"
+      },
+      "focus-ring-offset": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 2,
+        "unit": "logical-px",
+        "reason": "Adaptação desktop para anel de foco visível"
+      },
+      "radius-scrollbar": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 2,
+        "unit": "logical-px"
+      },
+      "radius-kbd": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 4,
+        "unit": "logical-px"
+      },
+      "radius-nav": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 6,
+        "unit": "logical-px"
+      },
+      "radius-control": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 8,
+        "unit": "logical-px"
+      },
+      "radius-tile": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 10,
+        "unit": "logical-px"
+      },
+      "radius-card": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 12,
+        "unit": "logical-px"
+      },
+      "radius-modal": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 16,
+        "unit": "logical-px"
+      },
+      "radius-fade": {
+        "sourceKind": "adaptation",
+        "resolvedValue": 15,
+        "unit": "logical-px",
+        "reason": "Raio interno do fade para respeitar o canto do modal"
+      },
+      "radius-pill": {
+        "sourceKind": "node-measurement",
+        "nodeId": "4987:10202",
+        "resolvedValue": 999,
+        "unit": "logical-px"
+      }
+    },
+    "excludedTokens": [
+      {
+        "name": "color/premium/bg",
+        "value": "rgba(151,71,255,.12)->0",
+        "reason": "Tokens do roxo premium da versão web excluídos por não haver plano premium no desktop"
+      },
+      {
+        "name": "color/premium/border",
+        "value": "rgba(151,71,255,.45)",
+        "reason": "Tokens do roxo premium da versão web excluídos por não haver plano premium no desktop"
+      },
+      {
+        "name": "color/premium/text",
+        "value": "#E4D5FF",
+        "reason": "Tokens do roxo premium da versão web excluídos por não haver plano premium no desktop"
+      }
+    ]
+  }
 }

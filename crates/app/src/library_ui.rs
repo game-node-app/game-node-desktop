@@ -28,6 +28,8 @@ use crate::{
     SourceKind, Standing, StatusKind, SummaryItem, TargetItem, ViewKind, Why,
 };
 
+mod artwork;
+
 // ---------------------------------------------------------------------------------------------
 // Core -> screen mappings.
 
@@ -394,8 +396,7 @@ struct Renderer {
     covers_dir: PathBuf,
     /// Decoded covers by file name; `None` remembers a file that could not be read.
     covers: HashMap<String, Option<Image>>,
-    /// The last decoded selected-game artwork; it is only shown in the details pane.
-    artwork: Option<(u64, Option<Image>)>,
+    artwork: artwork::Artworks,
     items: Rc<VecModel<GameItem>>,
     providers: Rc<VecModel<ProviderItem>>,
     candidates: Rc<VecModel<OptionItem>>,
@@ -424,7 +425,7 @@ impl Renderer {
         Self {
             covers_dir,
             covers: HashMap::new(),
-            artwork: None,
+            artwork: artwork::Artworks::default(),
             items: Rc::default(),
             providers: Rc::default(),
             candidates: Rc::default(),
@@ -456,18 +457,8 @@ impl Renderer {
             .clone()
     }
 
-    fn artwork(&mut self, game_id: u64, bytes: &[u8]) -> Option<Image> {
-        if let Some((cached_id, image)) = &self.artwork
-            && *cached_id == game_id
-        {
-            return image.clone();
-        }
-        let image = Image::load_from_data(bytes, None).ok();
-        self.artwork = Some((game_id, image.clone()));
-        image
-    }
-
     fn render(&mut self, ui: &AppWindow, snapshot: &Snapshot) {
+        self.artwork.clear_focus();
         let state = ui.global::<LibraryState>();
         let Some(view) = &snapshot.library else {
             state.set_active(false);
@@ -481,7 +472,7 @@ impl Renderer {
         };
         state.set_active(true);
         self.render_list(&state, view);
-        self.render_selection(&state, view, snapshot);
+        self.render_selection(ui, &state, view, snapshot);
         self.render_match(&state, view);
         self.render_add(&state, view);
     }
@@ -556,6 +547,7 @@ impl Renderer {
 
     fn render_selection(
         &mut self,
+        ui: &AppWindow,
         state: &LibraryState<'_>,
         view: &LibraryView,
         snapshot: &Snapshot,
@@ -583,10 +575,10 @@ impl Renderer {
             return;
         };
         let row = &detail.row;
-        let artwork = detail.artwork.as_deref().and_then(|bytes| {
+        let artwork = detail.artwork.as_ref().and_then(|bytes| {
             row.status
                 .game_id()
-                .and_then(|game_id| self.artwork(game_id, bytes))
+                .and_then(|game_id| self.artwork.get(ui, game_id, bytes))
         });
         let detail_image = artwork;
         let (standing, standing_status) = standing(detail.membership);

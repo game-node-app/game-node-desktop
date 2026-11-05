@@ -422,3 +422,99 @@ fn the_same_account_again_does_nothing() {
     );
     assert!(machine.scan_running(), "the running scan was not disturbed");
 }
+
+fn artwork_machine() -> LibraryMachine {
+    let cache = LibraryCache {
+        entries: vec![
+            stored("steam", "1", "One", true),
+            stored("steam", "2", "Two", true),
+        ],
+        chosen_matches: vec![
+            ChosenMatch {
+                entry_key: "steam:1".into(),
+                game_id: Some(7),
+                chosen_at: 0,
+            },
+            ChosenMatch {
+                entry_key: "steam:2".into(),
+                game_id: Some(8),
+                chosen_at: 0,
+            },
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    machine.access = Access::Verified;
+    machine.layout.detail_open = true;
+    machine
+}
+
+fn select_artwork(machine: &mut LibraryMachine, key: &str) -> Vec<Effect> {
+    machine.handle(Input::Select {
+        key: key.into(),
+        mode: SelectMode::Replace,
+    })
+}
+
+fn artwork_op(effects: &[Effect]) -> u64 {
+    effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::FetchArtwork { op, .. } => Some(*op),
+            _ => None,
+        })
+        .expect("artwork request")
+}
+
+#[test]
+fn artwork_downloads_are_deduplicated_and_late_results_are_cached() {
+    let mut machine = artwork_machine();
+    let op = artwork_op(&select_artwork(&mut machine, "steam:1"));
+    select_artwork(&mut machine, "steam:2");
+    assert!(
+        !select_artwork(&mut machine, "steam:1")
+            .iter()
+            .any(|e| matches!(e, Effect::FetchArtwork { .. }))
+    );
+    select_artwork(&mut machine, "steam:2");
+    machine.handle(Input::ArtworkDone {
+        op,
+        game_id: 7,
+        result: Ok(Some(vec![1, 2, 3])),
+    });
+    assert!(
+        machine.artwork.is_none(),
+        "a late answer must not replace the selected image"
+    );
+    assert!(
+        !select_artwork(&mut machine, "steam:1")
+            .iter()
+            .any(|e| matches!(e, Effect::FetchArtwork { .. }))
+    );
+    assert_eq!(machine.artwork.as_deref(), Some([1, 2, 3].as_slice()));
+    machine.reset_data();
+    machine.on_artwork_done(op, 7, Ok(Some(vec![4])));
+    assert!(
+        machine.artwork_cache.is_empty(),
+        "answers from the previous account are ignored"
+    );
+}
+
+#[test]
+fn artwork_failures_are_retried_on_reselection_and_hidden_panes_do_not_fetch() {
+    let mut machine = artwork_machine();
+    machine.layout.detail_open = false;
+    assert!(
+        select_artwork(&mut machine, "steam:1")
+            .iter()
+            .all(|e| !matches!(e, Effect::FetchArtwork { .. }))
+    );
+    let op = artwork_op(&machine.handle(Input::SetDetailOpen(true)));
+    machine.handle(Input::ArtworkDone {
+        op,
+        game_id: 7,
+        result: Err(ApiError::Failed),
+    });
+    select_artwork(&mut machine, "steam:2");
+    artwork_op(&select_artwork(&mut machine, "steam:1"));
+}

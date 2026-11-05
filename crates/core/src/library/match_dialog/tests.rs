@@ -90,12 +90,17 @@ fn searches(effects: &[Effect]) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// The effects without the membership read of the newly matched game, which is not what these
+/// The effects without detail image loads and membership reads, which are not what these
 /// tests are about.
 fn without_reads(effects: Vec<Effect>) -> Vec<Effect> {
     effects
         .into_iter()
-        .filter(|effect| !matches!(effect, Effect::ReadEntry { .. }))
+        .filter(|effect| {
+            !matches!(
+                effect,
+                Effect::ReadEntry { .. } | Effect::FetchArtwork { .. }
+            )
+        })
         .collect()
 }
 

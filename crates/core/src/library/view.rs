@@ -23,6 +23,8 @@ pub struct DetailView {
     pub row: Arc<Row>,
     pub install_dir: String,
     pub release_year: Option<i32>,
+    /// The selected game's downloaded landscape artwork, when GameNode has one.
+    pub artwork: Option<Arc<[u8]>>,
     /// Whether the matched game is in the user's GameNode library (`NotChecked` without a match).
     pub membership: Membership,
 }
@@ -178,6 +180,9 @@ impl LibraryMachine {
             release_year: game_id
                 .and_then(|id| self.games.get(&id))
                 .and_then(|game| game.release_year),
+            artwork: game_id
+                .filter(|id| self.artwork_focus == Some(*id))
+                .and_then(|_| self.artwork.clone()),
             membership: game_id.map_or(Membership::NotChecked, |id| self.membership(id)),
         }
     }

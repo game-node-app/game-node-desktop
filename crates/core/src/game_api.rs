@@ -101,6 +101,16 @@ pub trait GameApi: Send + Sync {
     /// JPEG.
     async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError>;
 
+    /// Fetches the best available landscape artwork for a game. The lookup and image request use
+    /// GameNode's public game metadata; `Ok(None)` means the game has no usable artwork.
+    async fn fetch_artwork(
+        &self,
+        _credential: &SessionCredential,
+        _game_id: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        Ok(None)
+    }
+
     /// The user's collections (`GET /v1/collections/library/:userId`), private ones included.
     async fn list_collections(
         &self,

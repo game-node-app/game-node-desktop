@@ -27,6 +27,7 @@ use gamenode_core::{
 use gamenode_platform::covers::write_cover;
 use tokio::runtime::Handle;
 
+mod artwork;
 mod playtime;
 
 /// Longest the app waits for the server to confirm a sign-out.
@@ -501,6 +502,24 @@ impl Engine {
                         result: stored.ok_or(()),
                         now: unix_now(),
                     });
+                });
+            }
+            LibEffect::FetchArtwork { op, game_id } => {
+                let (engine, api, dir) = (
+                    self.clone(),
+                    ports.games.clone(),
+                    ports.covers_dir.join("artworks"),
+                );
+                self.shared.runtime.spawn(async move {
+                    let result =
+                        artwork::load(api.as_ref(), credential.as_ref(), &dir, game_id).await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::ArtworkDone {
+                        op,
+                        game_id,
+                        result,
+                    });
+                    engine.check_rejected(rejected);
                 });
             }
             LibEffect::ReadEntry { op, game_id } => {

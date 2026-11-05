@@ -38,6 +38,7 @@ fn embed_provider_manifests() {
 }
 
 fn main() {
+    embed_windows_icon();
     println!("cargo:rerun-if-env-changed=GAMENODE_BUILD_VERSION");
     let version = std::env::var("GAMENODE_BUILD_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").expect("package version"));
@@ -56,4 +57,17 @@ fn main() {
         "ui/app.slint"
     };
     slint_build::compile_with_config(entry, config).expect("Slint compilation failed");
+}
+
+fn embed_windows_icon() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=ui/icons/gamenode.ico");
+    let mut resources = winresource::WindowsResource::new();
+    resources.set_icon("ui/icons/gamenode.ico");
+    resources
+        .compile_for("gamenode")
+        .expect("failed to embed the Windows application icon");
 }

@@ -30,6 +30,7 @@ source_files = [
     "crates/app/ui/fonts/Roboto-Variable.ttf",
     "crates/app/ui/icons/arrow.svg",
     "crates/app/ui/icons/gamenode-logo.svg",
+    "crates/app/ui/icons/gamenode.ico",
     "crates/app/ui/icons/gamenode.png",
     "crates/app/ui/icons/library.svg",
     "crates/app/ui/icons/settings.svg",

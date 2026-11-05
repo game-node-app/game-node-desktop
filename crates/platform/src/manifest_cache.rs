@@ -58,7 +58,11 @@ impl ManifestCache {
         self.update_from_source(now, SOURCE)
     }
     /// Failed updates always leave the last usable bytes intact. Jobs retain their own Arc snapshot.
-    pub fn update_from_source(&self, now: i64, source: &str) -> Result<ManifestSnapshot, LocalError> {
+    pub fn update_from_source(
+        &self,
+        now: i64,
+        source: &str,
+    ) -> Result<ManifestSnapshot, LocalError> {
         let mut metadata: Metadata = std::fs::read(self.directory.join("metadata.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())

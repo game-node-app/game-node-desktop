@@ -67,10 +67,10 @@ Prerequisite: `add-playtime-background` must be completed and its specs synced/a
 
 ## 9. Native UI, translations and package integration
 
-- [ ] 9.1 Add library/empty-state Add game, edit/Locate/Remove, inferred-match provenance and discovery review overlays to the existing Slint view/engine command boundary. Verify keyboard focus, Escape/cancel, multi-select review, unavailable entries and offline quick add; callbacks return promptly while workers are deliberately stalled.
-- [ ] 9.2 Add detail-pane save status/profile correction, custom location picker, Backup now/history/restore preview and Settings backup controls/destination. Verify unsupported, no-saves, queued, running, unchanged, partial and failed states, plus profile correction without catalog changes.
-- [ ] 9.3 Add all new English and `pt_BR` strings through the existing translation pipeline. Verify catalog completeness and keyboard-accessible layouts in both locales, including long error/status strings.
-- [ ] 9.4 Extend Windows build/package/install scripts and license/About assets for the pinned helper/manifest and build digests. Verify a fresh offline package installs with working backup support, rejects bad release input checksums, uninstalls without deleting archives and leaves Linux packaging without a Windows executable dependency.
+- [x] 9.1 Add library/empty-state Add game, edit/Locate/Remove, inferred-match provenance and discovery review overlays to the existing Slint view/engine command boundary. Verify keyboard focus, Escape/cancel, multi-select review, unavailable entries and offline quick add; callbacks return promptly while workers are deliberately stalled.
+- [x] 9.2 Add detail-pane save status/profile correction, custom location picker, Backup now/history/restore preview and Settings backup controls/destination. Verify unsupported, no-saves, queued, running, unchanged, partial and failed states, plus profile correction without catalog changes.
+- [x] 9.3 Add all new English and `pt_BR` strings through the existing translation pipeline. Verify catalog completeness and keyboard-accessible layouts in both locales, including long error/status strings.
+- [x] 9.4 Extend Windows build/package/install scripts and license/About assets for the pinned helper/manifest and build digests. Verify a fresh offline package installs with working backup support, rejects bad release input checksums, uninstalls without deleting archives and leaves Linux packaging without a Windows executable dependency.
 - [x] 9.5 Update `docs/mvp-roadmap.md` to step 4a DRM-free/local backup and 4b Epic/GOG/Ubisoft, retaining later-step dependency meaning and documenting native-helper/restore-write rules. Verify no store scanner, authentication or cloud-save implementation is implied by 4a.
 
 ## 10. Cross-feature acceptance

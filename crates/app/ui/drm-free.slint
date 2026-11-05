@@ -56,20 +56,26 @@ export global LocalGames {
 }
 export component LocalGameEditor inherits Rectangle {
     background: #0008;
-    TouchArea { }
-    FocusScope {
-        forward-focus: title;
-        key-pressed(event) => { if event.text == Key.Escape { LocalGames.editing = false; return accept; } return reject; }
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: max(12px, (parent.height - self.height) / 2);
-            width: min(parent.width - 32px, 640px);
-            height: min(parent.height - 24px, 540px);
-            background: Theme.color-background;
-            border-radius: 8px;
+    TouchArea { clicked => { LocalGames.editing = false; } }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 640px);
+        height: min(parent.height - 24px, 540px);
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: title;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.editing = false; return accept; } return reject; }
             ScrollView { VerticalLayout {
                 padding: 20px; spacing: 10px;
-                Heading { text: @tr("DRM-free" => "Game settings"); }
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "Game settings"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.editing = false; } }
+                }
                 Caption { text: @tr("DRM-free" => "Title"); }
                 title := LineEdit { text: LocalGames.title; }
                 Caption { text: @tr("DRM-free" => "Executable"); }
@@ -97,19 +103,25 @@ export component LocalGameEditor inherits Rectangle {
 export component SaveProtection inherits Rectangle {
     background: #0008;
     TouchArea { clicked => { LocalGames.protection-open = false; } }
-    FocusScope {
-        forward-focus: destination;
-        key-pressed(event) => { if event.text == Key.Escape { LocalGames.protection-open = false; return accept; } return reject; }
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: max(12px, (parent.height - self.height) / 2);
-            width: min(parent.width - 32px, 640px);
-            height: min(parent.height - 24px, 540px);
-            background: Theme.color-background;
-            border-radius: 8px;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 640px);
+        height: min(parent.height - 24px, 540px);
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: destination;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.protection-open = false; return accept; } return reject; }
             ScrollView { VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Heading { text: @tr("DRM-free" => "Local save protection"); }
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "Local save protection"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Close"); clicked => { LocalGames.protection-open = false; } }
+                }
                 Caption { text: @tr("DRM-free" => "Backups stay on this PC. A backup on the same drive cannot protect against drive loss."); wrap: word-wrap; }
                 automatic := CheckBox { text: @tr("DRM-free" => "Automatic backups"); checked: LocalGames.automatic; }
                 Caption { text: @tr("DRM-free" => "Backup destination"); }
@@ -169,22 +181,28 @@ export component SaveProtection inherits Rectangle {
 
 export component ClaimConflict inherits Rectangle {
     background: #0008;
-    TouchArea { }
-    FocusScope {
-        forward-focus: existing;
-        key-pressed(event) => { if event.text == Key.Escape { LocalGames.claim-cancel(); return accept; } return reject; }
-        Rectangle {
-            x: (parent.width - self.width) / 2; y: max(12px, (parent.height - self.height) / 2);
-            width: min(parent.width - 32px, 600px); height: 260px;
-            background: Theme.color-background; border-radius: 8px;
+    TouchArea { clicked => { LocalGames.claim-cancel(); } }
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: max(12px, (parent.height - self.height) / 2);
+        width: min(parent.width - 32px, 600px); height: 260px;
+        background: Theme.color-secondary;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.color-border-subtle;
+        TouchArea { }
+        FocusScope {
+            forward-focus: existing;
+            key-pressed(event) => { if event.text == Key.Escape { LocalGames.claim-cancel(); return accept; } return reject; }
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Heading { text: @tr("DRM-free" => "This game is already tracked by a store"); }
+                HorizontalLayout {
+                    Heading { text: @tr("DRM-free" => "This game is already tracked by a store"); horizontal-stretch: 1; }
+                    Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.claim-cancel(); } }
+                }
                 Caption { text: LocalGames.claim-title; wrap: word-wrap; }
                 Caption { text: @tr("DRM-free" => "Use the existing entry, or transfer tracking to the DRM-free registration. Playtime will be counted once."); wrap: word-wrap; }
                 existing := Action { text: @tr("DRM-free" => "Use existing entry"); clicked => { LocalGames.claim-resolve(false); } }
                 Action { text: @tr("DRM-free" => "Transfer tracking"); clicked => { LocalGames.claim-resolve(true); } }
-                Action { text: @tr("DRM-free" => "Cancel"); clicked => { LocalGames.claim-cancel(); } }
             }
         }
     }

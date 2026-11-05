@@ -20,9 +20,30 @@ def verified(data, expected):
 
 def prepare(destination):
     contract = json.loads((ROOT / 'packaging/windows/backup-inputs.json').read_text())
+    build_inputs_path = destination / 'build-inputs.json'
+    if build_inputs_path.is_file():
+        try:
+            cached_meta = json.loads(build_inputs_path.read_text())
+            if cached_meta.get('contract') == contract:
+                all_valid = True
+                for name, expected_hash in cached_meta.get('assets', {}).items():
+                    asset_file = destination / name
+                    if not asset_file.is_file() or hashlib.sha256(asset_file.read_bytes()).hexdigest() != expected_hash:
+                        all_valid = False
+                        break
+                if all_valid and cached_meta.get('assets'):
+                    return
+        except Exception:
+            pass
     # Validate every input before publishing any output.
     inputs = {}
     for name, source in contract['inputs'].items():
+        existing_path = destination / name
+        if existing_path.is_file():
+            data = existing_path.read_bytes()
+            if hashlib.sha256(data).hexdigest() == source['sha256']:
+                inputs[name] = data
+                continue
         with urllib.request.urlopen(source['url'], timeout=60) as response:
             inputs[name] = verified(response.read(), source['sha256'])
     with zipfile.ZipFile(io.BytesIO(inputs.pop('helper_archive'))) as archive:

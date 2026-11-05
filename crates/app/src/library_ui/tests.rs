@@ -487,6 +487,12 @@ mod render {
             include_bytes!("../../ui/icons/gamenode.png").as_slice(),
         ));
         renderer.render(&ui, &snapshot(Some(v.clone()), None));
+        assert!(
+            !state.get_detail_has_cover(),
+            "selection renders before artwork decoding"
+        );
+        assert_eq!(state.get_detail_title(), "Portal 2");
+        renderer.artwork.wait(&ui);
         assert!(state.get_detail_has_cover());
         assert!(state.get_detail_cover().size().width > 0);
         capture("artwork-loaded.ppm");
@@ -496,6 +502,17 @@ mod render {
             !state.get_detail_has_cover(),
             "previous artwork must be cleared"
         );
+        // A late decode for a game we left must not reappear in the empty details pane.
+        let bytes = Arc::from(include_bytes!("../../ui/icons/gamenode.png").as_slice());
+        assert!(renderer.artwork.get(&ui, 99, &bytes).is_none());
+        renderer.render(&ui, &snapshot(Some(v.clone()), None));
+        renderer.artwork.wait(&ui);
+        assert!(!state.get_detail_has_cover());
+        // Both games remain decoded after switching, so returning needs no worker round-trip.
+        assert!(renderer.artwork.get(&ui, 99, &bytes).is_some());
+        assert!(renderer.artwork.get(&ui, 100, &bytes).is_none());
+        renderer.artwork.wait(&ui);
+        assert!(renderer.artwork.get(&ui, 99, &bytes).is_some());
 
         let other = LaunchStatus {
             entry_key: "steam:2".into(),

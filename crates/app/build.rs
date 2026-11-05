@@ -39,6 +39,14 @@ fn embed_provider_manifests() {
 
 fn main() {
     embed_windows_icon();
+    println!("cargo:rerun-if-env-changed=GAMENODE_BUILD_VERSION");
+    let version = std::env::var("GAMENODE_BUILD_VERSION")
+        .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").expect("package version"));
+    assert!(
+        !version.is_empty() && !version.contains(['\n', '\r']),
+        "build version must be a nonempty single line"
+    );
+    println!("cargo:rustc-env=GAMENODE_BUILD_VERSION={version}");
     embed_provider_manifests();
     let config = slint_build::CompilerConfiguration::new()
         .with_style("fluent-dark".into())

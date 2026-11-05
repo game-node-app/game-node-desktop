@@ -1,0 +1,188 @@
+name: 🐛 Bug Report
+description: Reporte um comportamento inesperado no GameNode Desktop.
+title: "[Bug]: "
+labels: ["type: bug", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por ajudar a melhorar o GameNode Desktop!
+        Este formulário é para o aplicativo desktop nativo, não para o site ou aplicativo mobile.
+        Para problemas visuais, imagens ou vídeos ajudam a mostrar o comportamento.
+        Não compartilhe senhas, cookies, tokens, URLs completas de retorno de login ou outros dados pessoais, inclusive em logs e gravações.
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrição do Bug
+      description: Descreva o que aconteceu e em qual tela ou recurso.
+      placeholder: "Ex: Ao alternar da grade para a lista, o painel de detalhes fica sobre os jogos."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Passos para Reproduzir
+      description: Informe também se o problema acontece sempre ou apenas às vezes.
+      placeholder: |
+        1. Abra o GameNode Desktop e entre na conta.
+        2. Selecione um jogo Steam na biblioteca.
+        3. Alterne da grade para a lista.
+        4. Observe o painel de detalhes sobre os jogos.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento Esperado
+      description: O que deveria acontecer?
+    validations:
+      required: true
+  - type: textarea
+    id: failure-type
+    attributes:
+      label: Tipo de Falha
+      description: Indique se é um problema visual, erro funcional, congelamento, encerramento inesperado ou panic. Se o processo terminou, inclua o código de saída, caso disponível.
+      placeholder: "Ex: Congelamento — a janela para de responder, mas o processo continua aberto."
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidências Visuais — Imagens ou Vídeos
+      description: |
+        Anexe capturas de tela ou gravações arrastando os arquivos para este campo.
+        Para bugs visuais, prefira mostrar a janela inteira e a interação que causa o problema.
+        Se envolver foco ou navegação por teclado, informe as teclas utilizadas.
+        Revise as imagens e os vídeos para ocultar dados pessoais e de autenticação.
+      placeholder: "Anexe aqui as evidências e explique o que devemos observar."
+  - type: input
+    id: version
+    attributes:
+      label: Versão da Aplicação / Commit
+      description: Consulte Configurações → Sobre. Se compilou o projeto, informe também o commit (git rev-parse --short HEAD).
+      placeholder: "Ex: 0.1.0, commit abc123"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Sistema Operacional
+      description: O MVP prioriza Windows; relatos de Linux também são bem-vindos. macOS não é suportado atualmente.
+      options:
+        - Windows
+        - Linux
+        - macOS (não suportado atualmente)
+        - Outro (especifique na versão do sistema)
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: Versão do Sistema Operacional
+      description: Informe a versão do sistema e, se possível, a build. No Linux, informe a versão da distribuição no campo abaixo.
+      placeholder: "Ex: Windows 11 24H2 (build 26100), macOS 15.0 ou Linux (veja distribuição abaixo)"
+    validations:
+      required: true
+  - type: input
+    id: distribution
+    attributes:
+      label: Distribuição Linux e Versão
+      description: Preencha se estiver usando Linux, inclusive via WSL/WSLg.
+      placeholder: "Ex: Ubuntu 26.04, Fedora 44 ou Arch Linux (rolling release, atualizado em AAAA-MM-DD)"
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Arquitetura de Execução
+      description: Informe a arquitetura do aplicativo executado. Se houver emulação ou tradução (como Rosetta 2), detalhe no ambiente.
+      options:
+        - Não sei
+        - x86_64 / AMD64 (Intel ou AMD de 64 bits)
+        - ARM64 / aarch64 (Apple Silicon, Snapdragon etc.)
+        - x86 / i686 (32 bits)
+        - Outra (especifique no ambiente)
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Ambiente
+      description: |
+        No Linux, inclua o ambiente desktop (GNOME, KDE etc.), a sessão (X11/Wayland) e se usa WSL/WSLg.
+        Informe também o modelo do processador/chip (ex.: Apple M3) e se executa em máquina virtual, emulação ou tradução (ex.: Rosetta 2). Nesses casos, detalhe o sistema e a arquitetura do host e do aplicativo.
+        Para problemas gráficos, inclua GPU/driver, resolução, escala da tela e uso de múltiplos monitores, se souber.
+      placeholder: |
+        Sistema: Fedora 44
+        Desktop/sessão: KDE Plasma, Wayland
+        GPU/driver: ...
+        Resolução/escala: 2560×1440, 150%
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Forma de Instalação / Execução
+      options:
+        - Pacote Windows (ZIP com install.ps1)
+        - Pacote Linux (tar.gz com install.sh)
+        - Compilação local — cargo run ou binário em target/debug
+        - Compilação local — binário em target/release
+        - Outra (especifique no ambiente)
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      description: Informe o renderer exibido em Configurações → Sobre, se conseguir acessar.
+      options:
+        - Não sei / não consigo acessar
+        - Skia
+        - Software
+  - type: textarea
+    id: diagnostic-context
+    attributes:
+      label: Contexto Adicional
+      description: |
+        Se for um problema gráfico, trocar entre Skia e software muda o comportamento? Não é necessário testar se não conseguir acessar as configurações.
+        Para login, matching ou biblioteca offline, informe se havia conexão com a internet e se a sessão estava autenticada, em verificação ou com erro.
+        Se instalou um pacote pronto, informe o link da release ou a origem do binário (sem credenciais ou links privados).
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regressão
+      description: Funcionava antes? Informe a última versão ou commit funcional, se souber.
+      placeholder: "Ex: Funcionava na versão ...; começou a falhar na versão ...; ou primeira vez utilizando."
+  - type: textarea
+    id: build-details
+    attributes:
+      label: Toolchain e Compilação Local (Opcional)
+      description: |
+        Apenas para quem compilou o projeto: cole a saída de rustc -Vv e o comando de compilação.
+        Informe o target de destino (especialmente em compilação cruzada), perfil debug/release, features e variáveis relevantes como RUSTFLAGS, se utilizados.
+        Revise a saída para remover caminhos ou informações sensíveis.
+      placeholder: |
+        rustc -Vv:
+        ...
+
+        Comando: cargo build --workspace --locked
+        Target: padrão do host
+        Features / RUSTFLAGS: sem alterações
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Backtrace
+      description: |
+        Se disponíveis, cole os logs relevantes. Logs não são obrigatórios para relatar um bug visual.
+        No Linux, execute RUST_BACKTRACE=full ./target/debug/gamenode para obter backtraces de panic quando disponíveis; ajuste o caminho se usar outro binário.
+        No PowerShell, defina $env:RUST_BACKTRACE = "full" antes de executar o binário pelo terminal.
+        Se houver panic, inclua a mensagem e o backtrace completos. Essa variável não garante diagnóstico de congelamentos ou falhas gráficas.
+        Remova cookies, tokens, URLs de retorno de login, caminhos sensíveis e dados pessoais antes de enviar.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Verificações
+      options:
+        - label: Já procurei por issues existentes e não encontrei uma duplicata.
+          required: true
+        - label: Revisei o relato e os anexos para não expor dados pessoais ou de autenticação.
+          required: true

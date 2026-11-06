@@ -1028,7 +1028,9 @@ impl Engine {
             if !path.is_dir() {
                 return Err(LocalError::InvalidTarget);
             }
-            let path = path.to_string_lossy().into_owned();
+            let path = gamenode_platform::host::strip_verbatim_prefix(
+                path.to_string_lossy().into_owned(),
+            );
             let existing = store
                 .watches()
                 .map_err(local_storage)?
@@ -1875,18 +1877,7 @@ impl Engine {
             return vec![];
         };
         let mut learned = Vec::new();
-        for mut registration in registrations
-            .into_iter()
-            .filter(|r| !r.removed && !r.launchers.is_empty())
-        {
-            let Ok(evidence) = host.evidence(&registration) else {
-                continue;
-            };
-            let Some(baseline) =
-                identity::infer(&evidence).filter(|identity| identity.strong && !identity.conflict)
-            else {
-                continue;
-            };
+        for mut registration in registrations.into_iter().filter(|r| !r.removed) {
             let normalize = |p: &str| gamenode_core::provider::path::normalize(p).to_lowercase();
             let sep = if gamenode_core::provider::path::is_windows_style(&registration.root) {
                 '\\'
@@ -1897,17 +1888,32 @@ impl Engine {
                 "{}{sep}",
                 normalize(&registration.root).trim_end_matches(['/', '\\'])
             );
+            // Most scans contain only already-known executables. Avoid reading PE
+            // resources until there is a new process beneath this installation.
+            let candidates: Vec<_> = processes
+                .iter()
+                .filter(|process| {
+                    normalize(&process.exe_path).starts_with(&root)
+                        && !registration
+                            .gameplay
+                            .iter()
+                            .chain(&registration.launchers)
+                            .any(|exe| normalize(exe) == normalize(&process.exe_path))
+                })
+                .collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            let Ok(evidence) = host.evidence(&registration) else {
+                continue;
+            };
+            let Some(baseline) =
+                identity::infer(&evidence).filter(|identity| identity.strong && !identity.conflict)
+            else {
+                continue;
+            };
             let revision = registration.revision;
-            for process in processes {
-                if !normalize(&process.exe_path).starts_with(&root)
-                    || registration
-                        .gameplay
-                        .iter()
-                        .chain(&registration.launchers)
-                        .any(|exe| normalize(exe) == normalize(&process.exe_path))
-                {
-                    continue;
-                }
+            for process in candidates {
                 let Ok(mut candidate) = host.inspect(&process.exe_path) else {
                     continue;
                 };

@@ -14,6 +14,28 @@ fn failed(error: impl std::fmt::Display) -> StorageError {
 fn encode(value: &impl Serialize) -> Result<String, StorageError> {
     serde_json::to_string(value).map_err(failed)
 }
+// Upgrade path spelling at the storage boundary without changing identity,
+// revisions, candidate fingerprints, or requiring the folder to be online.
+fn registration_paths(mut value: Registration) -> Registration {
+    for path in [&mut value.executable, &mut value.root, &mut value.working_directory]
+        .into_iter().chain(value.gameplay.iter_mut()).chain(value.launchers.iter_mut())
+    {
+        *path = crate::host::strip_verbatim_prefix(std::mem::take(path));
+    }
+    value
+}
+fn watch_paths(mut value: WatchRoot) -> WatchRoot {
+    value.path = crate::host::strip_verbatim_prefix(value.path);
+    value
+}
+fn candidate_paths(mut value: Candidate) -> Candidate {
+    for path in std::iter::once(&mut value.root)
+        .chain(value.targets.iter_mut()).chain(value.selected_target.iter_mut())
+    {
+        *path = crate::host::strip_verbatim_prefix(std::mem::take(path));
+    }
+    value
+}
 impl SqliteLocalGameStore {
     pub(crate) fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -30,9 +52,10 @@ impl SqliteLocalGameStore {
 }
 impl LocalGameStore for SqliteLocalGameStore {
     fn registrations(&self) -> Result<Vec<Registration>, StorageError> {
-        self.list("SELECT payload FROM manual_registrations ORDER BY id")
+        self.list("SELECT payload FROM manual_registrations ORDER BY id").map(|rows| rows.into_iter().map(registration_paths).collect())
     }
     fn save_registration(&self, v: &Registration) -> Result<(), StorageError> {
+        let v = &registration_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO manual_registrations(id,file_identity,removed,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET file_identity=excluded.file_identity,removed=excluded.removed,payload=excluded.payload", params![v.id,v.file_identity,v.removed,encode(v)?]).map(drop).map_err(failed)
     }
     fn save_registration_if_revision(
@@ -40,19 +63,22 @@ impl LocalGameStore for SqliteLocalGameStore {
         value: &Registration,
         revision: u64,
     ) -> Result<bool, StorageError> {
+        let value = &registration_paths(value.clone());
         let changed = crate::db::lock(&self.conn).execute("UPDATE manual_registrations SET payload=?2 WHERE id=?1 AND removed=0 AND json_extract(payload,'$.revision')=?3", params![value.id, encode(value)?, i64::try_from(revision).map_err(failed)?]).map_err(failed)?;
         Ok(changed == 1)
     }
     fn watches(&self) -> Result<Vec<WatchRoot>, StorageError> {
-        self.list("SELECT payload FROM discovery_watches ORDER BY id")
+        self.list("SELECT payload FROM discovery_watches ORDER BY id").map(|rows| rows.into_iter().map(watch_paths).collect())
     }
     fn save_watch(&self, v: &WatchRoot) -> Result<(), StorageError> {
+        let v = &watch_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO discovery_watches(id,payload) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![v.id,encode(v)?]).map(drop).map_err(failed)
     }
     fn candidates(&self) -> Result<Vec<Candidate>, StorageError> {
-        self.list("SELECT payload FROM discovery_candidates ORDER BY fingerprint")
+        self.list("SELECT payload FROM discovery_candidates ORDER BY fingerprint").map(|rows| rows.into_iter().map(candidate_paths).collect())
     }
     fn save_candidate(&self, v: &Candidate) -> Result<(), StorageError> {
+        let v = &candidate_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO discovery_candidates(fingerprint,payload) VALUES(?1,?2) ON CONFLICT(fingerprint) DO UPDATE SET payload=excluded.payload", params![v.fingerprint,encode(v)?]).map(drop).map_err(failed)
     }
     fn inferences(&self, account: &str) -> Result<Vec<Inference>, StorageError> {

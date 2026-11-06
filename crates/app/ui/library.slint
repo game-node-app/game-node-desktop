@@ -345,7 +345,7 @@ component Field inherits VerticalLayout {
     in property <string> value;
     spacing: 2px;
     if root.value != "": Caption { text: root.label; }
-    if root.value != "": Text { text: root.value; color: Theme.color-text-default; wrap: word-wrap; }
+    if root.value != "": Text { width: 100%; text: root.value; color: Theme.color-text-default; wrap: word-wrap; }
 }
 
 // An action with the reason beside it while it is disabled.

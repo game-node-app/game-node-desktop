@@ -794,3 +794,14 @@ fn profile_save_paths_returns_resolved_files_or_extracts_definition_patterns() {
     };
     assert!(profile_save_paths(&empty).is_empty());
 }
+
+#[test]
+fn cached_library_covers_have_bounded_pixel_memory() {
+    let directory = tempfile::tempdir().unwrap();
+    image::RgbaImage::new(1200, 1800)
+        .save(directory.path().join("1.png"))
+        .unwrap();
+    let pixels = super::decode_cover(directory.path(), "1.png").unwrap();
+    assert_eq!((pixels.width(), pixels.height()), (320, 480));
+    assert!(pixels.as_bytes().len() <= 320 * 480 * 4);
+}

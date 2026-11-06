@@ -475,9 +475,10 @@ export component GameToolsModal inherits Rectangle {
                                             wrap: word-wrap;
                                         }
 
-                                        HorizontalLayout {
+                                        FlexboxLayout {
                                             spacing: 8px;
                                             alignment: start;
+                                            flex-wrap: wrap;
 
                                             for proxy in ToolsState.proxy-options : SettingsButton {
                                                 text: proxy == "dxgi.dll" ? (proxy + " (" + @tr("Tools" => "Recommended") + ")") : proxy;

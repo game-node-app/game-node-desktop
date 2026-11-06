@@ -19,8 +19,7 @@ impl DiscoveryHost for WindowsDiscovery {
         #[cfg(windows)]
         {
             use std::collections::BTreeSet;
-            let root = std::fs::canonicalize(&watch.path)
-                .map_err(|e| LocalError::Failed(e.to_string()))?;
+            let root = crate::installations::canonical(&watch.path)?;
             let data = crate::paths::DataPaths::resolve().ok_or(LocalError::InvalidTarget)?;
             let manifest =
                 crate::manifest_cache::ManifestCache::bundled(data.data_dir())?.load()?;
@@ -52,7 +51,7 @@ impl DiscoveryHost for WindowsDiscovery {
                     if cancelled.load(Ordering::Relaxed) {
                         return Err(LocalError::Cancelled);
                     }
-                    let Ok(canonical) = std::fs::canonicalize(&directory) else {
+                    let Ok(canonical) = crate::installations::canonical(&directory.to_string_lossy()) else {
                         incomplete = true;
                         continue;
                     };

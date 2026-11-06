@@ -1670,7 +1670,7 @@ fn decode_cover(dir: &Path, file: &str) -> Option<slint::SharedPixelBuffer<slint
         .ok()?
         .decode()
         .ok()?;
-    let image = image.thumbnail(1280, 720).into_rgba8();
+    let image = image.thumbnail(320, 480).into_rgba8();
     Some(slint::SharedPixelBuffer::clone_from_slice(
         image.as_raw(),
         image.width(),

@@ -580,3 +580,40 @@ fn tracker_policy_conflicts_deepest_root_and_one_owner_no_duplicate_playtime() {
             .all(|e| !matches!(e, Effect::OpenSession(_)))
     );
 }
+
+#[test]
+fn windows_verbatim_registration_tracks_normal_process_path() {
+    for (root, exe) in [
+        (
+            r"\\?\F:\NonSteamLibrary\Stellar Blade (2025)",
+            r"F:\NonSteamLibrary\Stellar Blade (2025)\StellarBlade\SB\Binaries\Win64\SB-Win64-Shipping.exe",
+        ),
+        (
+            r"\\?\UNC\server\games\Stellar Blade",
+            r"\\server\games\Stellar Blade\game.exe",
+        ),
+    ] {
+        let mut tracker = Tracker::new(true);
+        let mut game = entry("manual:stellar", root);
+        game.source = "manual".into();
+        tracker.set_policies(BTreeMap::from([(
+            game.key.clone(),
+            crate::drm_free::ProcessPolicy::Explicit {
+                gameplay: vec![exe.into()],
+                launchers: vec![],
+            },
+        )]));
+        apply(
+            &mut tracker,
+            Input::Library {
+                account: Some("a".into()),
+                entries: vec![game],
+                at: 100,
+            },
+        );
+        let effects = listed(&mut tracker, 110, vec![process(1, 105, exe)]);
+        assert!(tracker.running().contains("manual:stellar"), "{root}");
+        assert!(effects.iter().any(|e| matches!(e, Effect::OpenSession(_))));
+        assert!(effects.iter().any(|e| matches!(e, Effect::Watch(_))));
+    }
+}

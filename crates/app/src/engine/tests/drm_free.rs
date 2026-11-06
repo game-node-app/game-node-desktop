@@ -348,6 +348,15 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn launcher_gameplay_learning_persistence_and_external_tracking() {
+    gameplay_learning(true).await;
+}
+
+#[tokio::test]
+async fn bootstrap_gameplay_learning_without_launcher_classification() {
+    gameplay_learning(false).await;
+}
+
+async fn gameplay_learning(classified_launcher: bool) {
     let api = FakeApi::new();
     let mut h = harness(api.clone(), FakeCreds::with(None));
     let database = gamenode_platform::db::SqliteSettingsStore::new(
@@ -398,14 +407,19 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     let mut reg = store.registrations().unwrap().remove(0);
     let key = reg.key();
     // Configure it as having a launcher role and no initial gameplay executable
-    reg.launchers = vec![launcher_canonical.to_string_lossy().into_owned()];
-    reg.gameplay.clear();
+    if classified_launcher {
+        reg.launchers = vec![launcher_canonical.to_string_lossy().into_owned()];
+        reg.gameplay.clear();
+    }
     h.engine.edit_local_game(reg);
     h.until("edit saved", |s| {
-        s.local_games
-            .registrations
-            .first()
-            .is_some_and(|r| r.gameplay.is_empty() && !r.launchers.is_empty())
+        s.local_games.registrations.first().is_some_and(|r| {
+            if classified_launcher {
+                r.gameplay.is_empty() && !r.launchers.is_empty()
+            } else {
+                !r.gameplay.is_empty() && r.launchers.is_empty()
+            }
+        })
     })
     .await;
     eventually(|| !h.engine.lock().playtime.listing).await;
@@ -433,7 +447,9 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     };
     h.processes.start(outside_proc.clone());
     h.processes.start(uninst_proc.clone());
-    h.processes.start(launcher_proc.clone());
+    if classified_launcher {
+        h.processes.start(launcher_proc.clone());
+    }
 
     h.engine.maintenance_at(start_time);
     eventually(|| !h.engine.lock().playtime.listing).await;
@@ -460,6 +476,7 @@ async fn launcher_gameplay_learning_persistence_and_external_tracking() {
     h.until("child game tracked", |s| s.tracking.running.contains(&key))
         .await;
 
+    eventually(|| !h.engine.lock().playtime.listing).await;
     // Verify registration was updated in store with learned gameplay executable
     let updated_reg = store.registrations().unwrap().remove(0);
     assert!(

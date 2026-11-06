@@ -40,7 +40,7 @@ impl HostFiles for StdHostFiles {
 }
 
 /// Windows returns `\\?\C:\...` from `canonicalize`; scanners and stored paths use `C:\...`.
-fn strip_verbatim_prefix(path: String) -> String {
+pub fn strip_verbatim_prefix(path: String) -> String {
     match path.strip_prefix("\\\\?\\") {
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_owned(),
         Some(rest) if rest.starts_with("UNC\\") => format!("\\\\{}", &rest[4..]),

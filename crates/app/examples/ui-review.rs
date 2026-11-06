@@ -109,7 +109,8 @@ impl DemoData {
                 matched: "Portal 2".into(),
                 provider_id: "steam".into(),
                 provider_name: "Steam".into(),
-                dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Portal 2".into(),
+                dir: r"C:\Users\Alice\GameNode\VeryLongGameFolderNameWithoutAnySpacesThatShouldWrapWhenTheDetailsPaneIsNarrow"
+                    .replace('\\', "\\\u{200B}"),
                 year: "2011".into(),
                 kind: MatchKind::Matched,
                 source: SourceKind::Chosen,
@@ -1148,8 +1149,13 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
                 let proxy = t.get_selected_proxy();
                 t.set_installed_version(ver.clone());
                 t.set_installed_proxy(proxy.clone());
-                t.set_installed_channel(if t.get_channel_index() == 1 { "Nightly".into() } else { "Stable".into() });
-                ui.global::<LibraryState>().set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
+                t.set_installed_channel(if t.get_channel_index() == 1 {
+                    "Nightly".into()
+                } else {
+                    "Stable".into()
+                });
+                ui.global::<LibraryState>()
+                    .set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
             }
         });
     }
@@ -1167,8 +1173,13 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
                 let proxy = t.get_selected_proxy();
                 t.set_installed_version(ver.clone());
                 t.set_installed_proxy(proxy.clone());
-                t.set_installed_channel(if t.get_channel_index() == 1 { "Nightly".into() } else { "Stable".into() });
-                ui.global::<LibraryState>().set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
+                t.set_installed_channel(if t.get_channel_index() == 1 {
+                    "Nightly".into()
+                } else {
+                    "Stable".into()
+                });
+                ui.global::<LibraryState>()
+                    .set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
             }
         });
     }

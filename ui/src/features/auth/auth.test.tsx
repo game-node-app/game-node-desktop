@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
+import { createAppQueryClient } from '../../AppProviders';
 import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { commands } from '../../api/commands';
@@ -13,9 +14,7 @@ describe('features/auth', () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
-    queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    queryClient = createAppQueryClient();
     resetUiStore();
     vi.restoreAllMocks();
   });

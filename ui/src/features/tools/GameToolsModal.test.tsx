@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
-import { appTheme } from '../../AppProviders';
+import { appTheme, createAppQueryClient } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -19,9 +19,7 @@ function renderWithProviders(
   initialSnapshot?: Snapshot,
   locale: 'en' | 'pt-BR' = 'en',
 ) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const queryClient = createAppQueryClient();
   const snap = initialSnapshot ?? createDefaultSnapshot();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snap);
 
@@ -156,7 +154,7 @@ describe('GameToolsModal', () => {
     const { rerender } = renderWithProviders(<GameToolsModal modal={baseModal} />);
     rerender(
       <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={new QueryClient()}>
+        <QueryClientProvider client={createAppQueryClient()}>
           <I18nProvider initialLocale="en">
             <GameToolsModal modal={{ ...baseModal, selectedProxy: 'winmm' }} />
           </I18nProvider>
@@ -207,7 +205,7 @@ describe('GameToolsModal', () => {
 
     rerender(
       <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <QueryClientProvider client={createAppQueryClient()}>
           <I18nProvider initialLocale="en">
             <GameToolsModal modal={confirmedModal} />
           </I18nProvider>
@@ -294,7 +292,7 @@ describe('GameToolsModal', () => {
 
     rerender(
       <MantineProvider theme={appTheme} defaultColorScheme="dark">
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <QueryClientProvider client={createAppQueryClient()}>
           <I18nProvider initialLocale="en">
             <GameToolsModal modal={failedModal} />
           </I18nProvider>

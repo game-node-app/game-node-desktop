@@ -66,25 +66,10 @@ During `Engine::rescan_local_folders` (`crates/app/src/engine/drm_free.rs`):
   - Expose `in property <[string]> candidate-targets` on `LocalGames`, populated in `library_ui::render` from the matching `Candidate.targets` (when `targets.len() > 1`) for the selected manual registration.
   - In `LocalGameEditor`, if `LocalGames.candidate-targets.length > 1`, display the detected executable paths beneath the `Executable` field as clickable chips/buttons so choosing one updates `executable.text` (and replaces the corresponding entry in `gameplay.text` when it matches the previous executable).
 
-### D3. Double-Click to Launch in Grid and List Views
+### D3. Double-Click and Enter to Launch in Grid and List Views
 
-- Add `callback activate(string)` to `LibraryState` (`crates/app/ui/library-state.slint`) and wire `GameGrid.activated(key)` and `GameList.activated(key)` in `ItemsView` (`crates/app/ui/library.slint`) to `LibraryState.activate(key); root.focus();`.
-- In `crates/app/src/library_ui.rs`, wire `state.on_activate`:
-  ```rust
-  state.on_activate(move |key| {
-      let key = key.to_string();
-      e.submit(move |engine| {
-          engine.library_input(select_input(&key, false, false));
-          if let Some(view) = engine.snapshot().library {
-              if view.actions.play.is_available() && view.selected.as_slice() == [key.as_str()] {
-                  engine.open_entry(key, LaunchKind::Play);
-              } else {
-                  engine.library_input(LibInput::OpenDetails);
-              }
-          }
-      });
-  });
-  ```
+- Add `callback activate(string)` to `LibraryState` (`crates/app/ui/library-state.slint`) and wire `GameGrid.activated(key)`, `GameList.activated(key)`, and plain `Key.Return` (`Enter`) in `ItemsView` (`crates/app/ui/library.slint`) to `LibraryState.activate(key)` (keeping `Ctrl+Return` for `LibraryState.open-details()`), while focusing `items` when `LibraryScreen` initializes.
+- In `crates/app/src/library_ui.rs`, wire `state.on_activate` to `activate_entry(engine, &key)`, which resolves `key` (or the focused/single-selected entry when `key` is empty), selects it with `SelectMode::Replace`, and calls `engine.open_entry(target, LaunchKind::Play)` when `view.actions.play.is_available()`, falling back to `engine.library_input(LibInput::OpenDetails)` when unavailable.
 - **Rationale**: Running selection and the availability check inside a single submitted closure on the engine worker avoids any race condition between selecting a different tile and checking `view.actions.play`, and gracefully falls back to opening the detail pane when `Play` is disabled (e.g., already running or missing executable).
 
 ### D4. Omitting `Install` for DRM-Free Games

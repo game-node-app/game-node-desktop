@@ -148,6 +148,12 @@ case "$cmd" in
         curl -fsS "http://127.0.0.1:${PORT}/api/action?click=${x},${y}&button=${btn}"
         echo
         ;;
+    dblclick)
+        x="${1:?x coordinate required}"
+        y="${2:?y coordinate required}"
+        curl -fsS "http://127.0.0.1:${PORT}/api/action?dblclick=${x},${y}"
+        echo
+        ;;
     move)
         x="${1:?x coordinate required}"
         y="${2:?y coordinate required}"

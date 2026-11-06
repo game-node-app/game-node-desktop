@@ -76,8 +76,11 @@ impl UiCommands {
     pub fn pick_local_executable(&self, repair: Option<String>) {
         self.submit(move |e| e.pick_local_executable(repair));
     }
-    pub fn remove_local_game(&self, id: String) {
-        self.submit(move |e| e.remove_local_game(id));
+    pub fn remove_local_game(&self, id: String, allow_rediscovery: bool) {
+        self.submit(move |e| e.remove_local_game(id, allow_rediscovery));
+    }
+    pub fn remove_entry(&self, key: String, allow_rediscovery: bool) {
+        self.submit(move |e| e.remove_entry(key, allow_rediscovery));
     }
     pub fn edit_local_game(&self, value: Registration) {
         self.submit(move |e| e.edit_local_game(value));
@@ -133,6 +136,12 @@ impl UiCommands {
     pub fn confirm_local_restore(&self) {
         self.submit(|e| e.confirm_local_restore());
     }
+    pub fn cancel_local_restore(&self) {
+        self.submit(|e| e.cancel_local_restore());
+    }
+    pub fn dismiss_local_discovered(&self) {
+        self.submit(|e| e.dismiss_local_discovered());
+    }
     pub fn rescan(&self) {
         self.submit(|e| e.rescan());
     }
@@ -141,5 +150,47 @@ impl UiCommands {
     }
     pub fn open_entry(&self, key: String, kind: LaunchKind) {
         self.submit(move |e| e.open_entry(key, kind));
+    }
+    pub fn open_tools_for_selected(&self) {
+        self.submit(|e| e.open_tools_for_selected());
+    }
+    pub fn open_tools(&self, entry_key: Option<String>) {
+        self.submit(move |e| e.open_tools(entry_key));
+    }
+    pub fn close_tools(&self) {
+        self.submit(|e| e.close_tools());
+    }
+    pub fn select_tool_channel(&self, channel: gamenode_core::tools::ToolChannel) {
+        self.submit(move |e| e.select_tool_channel(channel));
+    }
+    pub fn refresh_tool_versions(&self) {
+        self.submit(|e| e.refresh_tool_versions());
+    }
+    pub fn select_tool_version(&self, version: String) {
+        self.submit(move |e| e.select_tool_version(version));
+    }
+    pub fn select_tool_target_exe(&self, relative_exe: String) {
+        self.submit(move |e| e.select_tool_target_exe(relative_exe));
+    }
+    pub fn select_tool_proxy(&self, proxy: String) {
+        self.submit(move |e| e.select_tool_proxy(proxy));
+    }
+    pub fn set_tool_anticheat_confirmed(&self, confirmed: bool) {
+        self.submit(move |e| e.set_tool_anticheat_confirmed(confirmed));
+    }
+    pub fn set_tool_reset_config(&self, reset: bool) {
+        self.submit(move |e| e.set_tool_reset_config(reset));
+    }
+    pub fn install_or_update_tool(&self, is_update: bool) {
+        self.submit(move |e| e.install_or_update_tool(is_update));
+    }
+    pub fn uninstall_tool(&self) {
+        self.submit(|e| e.uninstall_tool());
+    }
+    pub fn open_tool_source(&self, url: String) {
+        self.submit(move |e| e.open_tool_source(url));
+    }
+    pub fn clear_tool_cache(&self) {
+        self.submit(|e| e.clear_tool_cache());
     }
 }

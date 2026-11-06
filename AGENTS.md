@@ -52,7 +52,7 @@ translations, keyboard navigation, or view-state logic.
      ```
    - **Available presets**:
      - Screens: `signed-out`, `library` (`grid`), `list`, `drm-detail`,
-       `drm-missing`, `settings`
+       `drm-missing`, `detail-long`, `settings`
      - Modals: `protection`, `restore`, `discovery`, `editor`, `claim`,
        `match`, `add`, `add-summary`, `sync-explanation`
      - States: `banner`, `empty`, `nothing-matches`
@@ -77,7 +77,7 @@ fonts, theme tokens, and `.po` translations using Slint's deterministic
 `MinimalSoftwareWindow` against in-memory fixture state. However, they **do not**
 replace native OS acceptance for:
 - Real OS window-manager chrome, DPI scaling, multi-monitor positioning, or
-  Windows system-tray (`crates/app/ui/windows.slint` / `tray.slint`) behavior.
+  Windows system-tray (`crates/app/ui/tray.slint`) behavior.
 - Skia GPU renderer initialization and automatic GPU-to-software fallback.
 - Real browser OAuth sign-in, single-instance IPC forwarding, and custom URI
   scheme (`gamenode://`) activation.

@@ -140,7 +140,7 @@ The live screen studio verifies `.slint` layouts, responsive sizing, focus
 scopes, keyboard navigation, localization (`en` and `pt_BR`), and UI callback
 wiring, but it **does not** exercise:
 - Native Winit/OS window decorations, DPI scale factors from a physical monitor,
-  or the Windows system tray (`ui/windows.slint` / `ui/tray.slint`).
+  or the Windows system tray (`ui/tray.slint`).
 - Skia GPU rendering or automatic GPU-to-software startup fallback.
 - Real OS adapters (`gamenode-platform`): Windows Credential Manager, Secret
   Service, native file dialogs, Windows process/parent tracking, directory-change

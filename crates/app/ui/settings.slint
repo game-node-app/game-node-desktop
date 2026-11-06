@@ -26,6 +26,7 @@ import {
 } from "settings-controls.slint";
 import { LibraryState, ProviderItem } from "library-state.slint";
 import { LocalGames } from "drm-free.slint";
+import { ToolsState, ToolCatalogRow } from "tools.slint";
 
 export component SettingsModal inherits Rectangle {
     in property <bool> signed-in;
@@ -161,6 +162,13 @@ export component SettingsModal inherits Rectangle {
                         }
 
                         SettingsNavItem {
+                            text: @tr("Settings" => "Tools");
+                            icon: @image-url("icons/settings/desktop.svg");
+                            selected: SettingsState.topic == SettingsTopic.tools;
+                            clicked => { SettingsState.select-topic(SettingsTopic.tools); }
+                        }
+
+                        SettingsNavItem {
                             text: @tr("Settings" => "Advanced");
                             icon: @image-url("icons/settings/desktop.svg");
                             selected: SettingsState.topic == SettingsTopic.advanced;
@@ -204,11 +212,13 @@ export component SettingsModal inherits Rectangle {
                     title: SettingsState.topic == SettingsTopic.account ? @tr("Settings" => "Account") :
                            SettingsState.topic == SettingsTopic.stores ? @tr("Settings" => "Stores") :
                            SettingsState.topic == SettingsTopic.backups ? @tr("Settings" => "Backups") :
+                           SettingsState.topic == SettingsTopic.tools ? @tr("Settings" => "Tools") :
                            SettingsState.topic == SettingsTopic.advanced ? @tr("Settings" => "Advanced") :
                            @tr("Settings" => "About");
                     description: SettingsState.topic == SettingsTopic.account ? @tr("Settings" => "Your GameNode connection and what this PC syncs.") :
                                  SettingsState.topic == SettingsTopic.stores ? @tr("Settings" => "Stores found on this PC and how playtime is read.") :
                                  SettingsState.topic == SettingsTopic.backups ? @tr("Settings" => "Local protection for your DRM-free game saves.") :
+                                 SettingsState.topic == SettingsTopic.tools ? @tr("Settings" => "Upscalers, frame generation tools, and local download cache.") :
                                  SettingsState.topic == SettingsTopic.advanced ? @tr("Settings" => "Rendering and troubleshooting options.") :
                                  @tr("Settings" => "Version, license and third-party notices.");
                     close => { SettingsState.request-close(); }
@@ -364,6 +374,7 @@ export component SettingsModal inherits Rectangle {
 
                                 HorizontalLayout {
                                     alignment: start;
+                                    spacing: 8px;
                                     SettingsButton {
                                         text: @tr("Library" => "Rescan");
                                         variant: "secondary";
@@ -372,6 +383,12 @@ export component SettingsModal inherits Rectangle {
                                         has-icon: true;
                                         icon: @image-url("icons/settings/restart.svg");
                                         clicked => { LibraryState.rescan(); }
+                                    }
+                                    SettingsButton {
+                                        text: @tr("DRM-free" => "Reset ignored discoveries");
+                                        variant: "ghost";
+                                        enabled: !LibraryState.scanning && !LocalGames.busy;
+                                        clicked => { LocalGames.ignores-reset(); }
                                     }
                                 }
                             }
@@ -449,51 +466,6 @@ export component SettingsModal inherits Rectangle {
                                                 }
                                             }
 
-                                            for candidate in LocalGames.candidates : VerticalLayout {
-                                                spacing: 8px;
-                                                SettingsCheckbox {
-                                                    text: candidate.title;
-                                                    checked: candidate.picked;
-                                                    toggled => { LocalGames.candidate-toggle(candidate.fingerprint); }
-                                                }
-                                                Text {
-                                                    text: candidate.folder;
-                                                    color: SettingsStyle.text-secondary;
-                                                    wrap: word-wrap;
-                                                }
-                                                Text {
-                                                    text: candidate.resolved ? candidate.executable : @tr("DRM-free" => "Several launch targets; choose an executable below.");
-                                                    color: SettingsStyle.text-secondary;
-                                                    wrap: word-wrap;
-                                                }
-                                                if candidate.targets.length > 1 : VerticalLayout {
-                                                    spacing: 8px;
-                                                    for target in candidate.targets : VerticalLayout {
-                                                        spacing: 4px;
-                                                        Text { text: target; color: SettingsStyle.text-secondary; wrap: word-wrap; }
-                                                        SettingsButton {
-                                                            text: @tr("DRM-free" => "Use executable");
-                                                            enabled: !LocalGames.busy;
-                                                            clicked => { LocalGames.candidate-executable(candidate.fingerprint, target); }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            if LocalGames.candidates.length > 0 : VerticalLayout {
-                                                spacing: 8px;
-                                                SettingsButton {
-                                                    text: @tr("DRM-free" => "Add selected");
-                                                    enabled: !LocalGames.busy;
-                                                    clicked => { LocalGames.candidates-add(true); }
-                                                }
-                                                SettingsButton {
-                                                    text: @tr("DRM-free" => "Ignore selected");
-                                                    enabled: !LocalGames.busy;
-                                                    clicked => { LocalGames.candidates-add(false); }
-                                                }
-                                            }
-
                                             if LocalGames.discovery-scanning : Text {
                                                 text: @tr("DRM-free" => "Checking watched folders…");
                                                 color: SettingsStyle.text-secondary;
@@ -509,8 +481,8 @@ export component SettingsModal inherits Rectangle {
                                                 color: SettingsStyle.text-secondary;
                                                 wrap: word-wrap;
                                             }
-                                            if !LocalGames.discovery-scanning && LocalGames.discovery-error == "" && LocalGames.discovery-completed && LocalGames.candidates.length == 0 : Text {
-                                                text: @tr("DRM-free" => "No new games found. Only recognized games are listed for review.");
+                                            if !LocalGames.discovery-scanning && LocalGames.discovery-error == "" && LocalGames.discovery-completed : Text {
+                                                text: @tr("DRM-free" => "Recognized games in watched folders are added to your library automatically.");
                                                 color: SettingsStyle.text-secondary;
                                                 wrap: word-wrap;
                                             }
@@ -629,6 +601,84 @@ export component SettingsModal inherits Rectangle {
 
                                 InfoBox {
                                     text: @tr("Settings" => "Per-game controls are in each game's details.");
+                                }
+                            }
+                        }
+
+                        // ==========================================
+                        // PAINEL: FERRAMENTAS (TOOLS)
+                        // ==========================================
+                        if SettingsState.topic == SettingsTopic.tools : VerticalLayout {
+                            alignment: start;
+                            spacing: SettingsStyle.section-gap;
+
+                            SettingsSection {
+                                title: @tr("Settings" => "Tool download cache");
+                                description: @tr("Settings" => "Archives downloaded from GitHub for offline install and reuse across games.");
+
+                                SettingsCard {
+                                    SettingsRow {
+                                        title: @tr("Settings" => "Cached archives");
+                                        description: ToolsState.cache-archive-count > 0 ? (ToolsState.cache-archive-count + " " + @tr("Settings" => "archives cached") + " (" + ToolsState.cache-size-text + ")") : @tr("Settings" => "No tool archives cached");
+                                        has-divider: false;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: end;
+
+                                            Pill {
+                                                text: ToolsState.cache-size-text;
+                                                variant: "neutral";
+                                                y: (parent.height - self.height) / 2;
+                                            }
+
+                                            SettingsButton {
+                                                text: @tr("Settings" => "Check for updates");
+                                                variant: "secondary";
+                                                busy: ToolsState.loading-versions;
+                                                clicked => { ToolsState.refresh-versions(); }
+                                            }
+
+                                            SettingsButton {
+                                                text: @tr("Settings" => "Clear cache");
+                                                variant: "ghost";
+                                                enabled: ToolsState.cache-archive-count > 0;
+                                                clicked => { ToolsState.clear-cache(); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            SettingsSection {
+                                title: @tr("Settings" => "Supported tools");
+                                description: @tr("Settings" => "Built-in tool catalog and official open-source licenses.");
+
+                                SettingsCard {
+                                    VerticalLayout {
+                                        for tool[idx] in ToolsState.catalog : SettingsRow {
+                                            title: tool.name;
+                                            description: tool.summary;
+                                            has-divider: idx < ToolsState.catalog.length - 1;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: end;
+
+                                                Pill {
+                                                    text: tool.license;
+                                                    variant: "neutral";
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+
+                                                SettingsButton {
+                                                    text: @tr("Tools" => "Source");
+                                                    variant: "ghost";
+                                                    clicked => { ToolsState.open-source(tool.source-url); }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -6,12 +6,9 @@ pub struct WindowsInstallations;
 pub(crate) fn canonical(path: &str) -> Result<std::path::PathBuf, LocalError> {
     std::fs::canonicalize(path)
         .map(|p| {
-            let text = p.to_string_lossy();
-            if let Some(unc) = text.strip_prefix("\\\\?\\UNC\\") {
-                std::path::PathBuf::from(format!("\\\\{unc}"))
-            } else {
-                std::path::PathBuf::from(text.strip_prefix("\\\\?\\").unwrap_or(&text))
-            }
+            std::path::PathBuf::from(crate::host::strip_verbatim_prefix(
+                p.to_string_lossy().into_owned(),
+            ))
         })
         .map_err(|_| LocalError::InvalidTarget)
 }

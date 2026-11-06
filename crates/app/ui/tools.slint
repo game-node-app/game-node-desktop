@@ -1,0 +1,560 @@
+import { SettingsStyle } from "settings-style.slint";
+import {
+    SettingsPanelHeader,
+    SettingsSection,
+    SettingsCard,
+    SettingsRow,
+    SettingsSegmented,
+    SettingsButton,
+    SettingsCheckbox,
+    Pill,
+    InfoBox,
+    SettingsScroll,
+} from "settings-controls.slint";
+
+export struct ToolVersionRow {
+    version: string,
+    label: string,
+    published-at: string,
+    cached: bool,
+}
+
+export struct ToolTargetRow {
+    relative-exe: string,
+    label: string,
+    architecture: string,
+    preferred: bool,
+}
+
+export struct ToolCatalogRow {
+    id: string,
+    name: string,
+    summary: string,
+    license: string,
+    source-url: string,
+    installed: bool,
+    installed-version: string,
+    installed-channel: string,
+    installed-proxy: string,
+}
+
+export global ToolsState {
+    in-out property <bool> supported: true;
+    in-out property <bool> open: false;
+    in-out property <bool> busy: false;
+    in-out property <string> entry-key: "";
+    in-out property <string> game-title: "";
+    in-out property <string> install-dir: "";
+    in-out property <bool> game-running: false;
+
+    // Active tool card state (OptiScaler + scalable list of tools)
+    in-out property <[ToolCatalogRow]> catalog: [
+        {
+            id: "optiscaler",
+            name: "OptiScaler",
+            summary: "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)",
+            license: "GPL-3.0",
+            source-url: "https://github.com/optiscaler/OptiScaler",
+            installed: false,
+            installed-version: "",
+            installed-channel: "stable",
+            installed-proxy: "dxgi.dll",
+        }
+    ];
+    in-out property <string> active-tool-id: "optiscaler";
+    in-out property <bool> installed: false;
+    in-out property <string> installed-version: "";
+    in-out property <string> installed-channel: "stable";
+    in-out property <string> installed-proxy: "dxgi.dll";
+
+    // Channel & Version picker
+    in-out property <int> channel-index: 0; // 0 = Stable, 1 = Nightly
+    in-out property <[ToolVersionRow]> versions;
+    in-out property <string> selected-version: "";
+    in-out property <bool> loading-versions: false;
+
+    // Target executable & Proxy DLL selector
+    in-out property <[ToolTargetRow]> targets;
+    in-out property <string> selected-target-exe: "";
+    in-out property <[string]> proxy-options: [
+        "dxgi.dll",
+        "winmm.dll",
+        "version.dll",
+        "d3d12.dll",
+        "dbghelp.dll",
+        "wininet.dll",
+        "winhttp.dll",
+    ];
+    in-out property <string> selected-proxy: "dxgi.dll";
+    in-out property <bool> reset-config: false;
+
+    // Anti-cheat warning state
+    in-out property <bool> anticheat-detected: false;
+    in-out property <string> anticheat-systems: "";
+    in-out property <string> anticheat-evidence: "";
+    in-out property <bool> anticheat-confirmed: false;
+
+    // Status / Error / Progress feedback
+    in-out property <string> status-message: "";
+    in-out property <string> error-message: "";
+
+    // Settings cache overview
+    in-out property <string> cache-size-text: "0 B";
+    in-out property <int> cache-archive-count: 0;
+
+    // Callbacks
+    callback open-for-selected();
+    callback close();
+    callback select-channel(int); // 0 = Stable, 1 = Nightly
+    callback refresh-versions();
+    callback select-version(string);
+    callback select-target-exe(string);
+    callback select-proxy(string);
+    callback toggle-anticheat-confirmed(bool);
+    callback toggle-reset-config(bool);
+    callback install-tool();
+    callback update-tool();
+    callback uninstall-tool();
+    callback open-source(string);
+    callback clear-cache();
+}
+
+export component GameToolsModal inherits Rectangle {
+    visible: ToolsState.open;
+    width: 100%;
+    height: 100%;
+    background: SettingsStyle.overlay;
+
+    property <bool> is-open: ToolsState.open;
+    changed is-open => {
+        if self.is-open {
+            scope.focus();
+        }
+    }
+
+    init => {
+        scope.focus();
+    }
+
+    TouchArea {
+        clicked => {
+            ToolsState.open = false;
+            ToolsState.close();
+        }
+    }
+
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: max(12px, (root.height - self.height) / 2);
+        width: min(720px, root.width - 32px);
+        height: min(680px, root.height - 24px);
+        background: SettingsStyle.bg-base;
+        border-radius: SettingsStyle.radius-modal;
+        border-width: 1px;
+        border-color: SettingsStyle.border-subtle;
+        drop-shadow-color: SettingsStyle.shadow-modal-color;
+        drop-shadow-offset-y: SettingsStyle.shadow-modal-offset-y;
+        drop-shadow-blur: SettingsStyle.shadow-modal-blur;
+        clip: true;
+
+        TouchArea { }
+
+        scope := FocusScope {
+            width: 100%;
+            height: 100%;
+            focus-on-click: false;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    ToolsState.open = false;
+                    ToolsState.close();
+                    return accept;
+                }
+                return reject;
+            }
+
+            VerticalLayout {
+                width: 100%;
+                height: 100%;
+
+                SettingsPanelHeader {
+                    title: @tr("Tools" => "Game tools");
+                    description: ToolsState.game-title != "" ? (ToolsState.install-dir != "" ? ToolsState.game-title + " (" + ToolsState.install-dir + ")" : ToolsState.game-title) : ToolsState.install-dir;
+                    close => {
+                        ToolsState.open = false;
+                        ToolsState.close();
+                    }
+                }
+
+                SettingsScroll {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: self.preferred-height;
+                        padding-top: SettingsStyle.scroll-padding-top;
+                        padding-bottom: SettingsStyle.scroll-padding-bottom;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: SettingsStyle.section-gap;
+                        alignment: start;
+
+                        if ToolsState.game-running : InfoBox {
+                            text: @tr("Tools" => "This game is currently running. Close the game before installing, updating, or uninstalling tools.");
+                            has-icon: true;
+                            icon: @image-url("icons/settings/alert.svg");
+                        }
+
+                        if ToolsState.anticheat-detected : VerticalLayout {
+                            spacing: 8px;
+                            InfoBox {
+                                text: @tr("Tools" => "Anti-cheat detected ({}). Installing proxy DLLs in online anti-cheat games may cause a ban.", ToolsState.anticheat-systems);
+                                has-icon: true;
+                                icon: @image-url("icons/settings/alert.svg");
+                            }
+                            SettingsCheckbox {
+                                text: @tr("Tools" => "I understand the anti-cheat risk and want to proceed anyway");
+                                checked: ToolsState.anticheat-confirmed;
+                                toggled(v) => {
+                                    ToolsState.anticheat-confirmed = v;
+                                    ToolsState.toggle-anticheat-confirmed(v);
+                                }
+                            }
+                        }
+
+                        if ToolsState.error-message != "" : InfoBox {
+                            text: ToolsState.error-message;
+                            has-icon: true;
+                            icon: @image-url("icons/settings/alert.svg");
+                        }
+
+                        if ToolsState.status-message != "" : InfoBox {
+                            text: ToolsState.status-message;
+                        }
+
+                        SettingsSection {
+                            title: "OptiScaler";
+                            description: @tr("Tools" => "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)");
+
+                            SettingsCard {
+                                VerticalLayout {
+                                    SettingsRow {
+                                        title: "OptiScaler";
+                                        description: @tr("Tools" => "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)");
+                                        has-divider: true;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: end;
+                                            y: (parent.height - self.height) / 2;
+
+                                            if ToolsState.installed : Pill {
+                                                text: @tr("Tools" => "Installed") + " · " + ToolsState.installed-version;
+                                                variant: "success";
+                                            }
+                                            if !ToolsState.installed : Pill {
+                                                text: @tr("Tools" => "Not installed");
+                                                variant: "neutral";
+                                            }
+
+                                            Pill {
+                                                text: "GPL-3.0";
+                                                variant: "neutral";
+                                            }
+
+                                            SettingsButton {
+                                                text: @tr("Tools" => "Source");
+                                                variant: "ghost";
+                                                clicked => { ToolsState.open-source("https://github.com/optiscaler/OptiScaler"); }
+                                            }
+                                        }
+                                    }
+
+                                    SettingsRow {
+                                        title: @tr("Tools" => "Release channel");
+                                        description: @tr("Tools" => "Stable releases or cutting-edge nightly builds.");
+                                        has-divider: true;
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            alignment: end;
+                                            y: (parent.height - self.height) / 2;
+
+                                            SettingsSegmented {
+                                                options: [@tr("Tools" => "Stable"), @tr("Tools" => "Nightly")];
+                                                selected-index: ToolsState.channel-index;
+                                                changed(idx) => {
+                                                    ToolsState.channel-index = idx;
+                                                    ToolsState.select-channel(idx);
+                                                }
+                                            }
+
+                                            SettingsButton {
+                                                text: @tr("Tools" => "Refresh versions");
+                                                variant: "secondary";
+                                                busy: ToolsState.loading-versions;
+                                                clicked => { ToolsState.refresh-versions(); }
+                                            }
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        padding-top: SettingsStyle.row-padding-y;
+                                        padding-bottom: SettingsStyle.row-padding-y;
+                                        padding-left: SettingsStyle.row-padding-x;
+                                        padding-right: SettingsStyle.row-padding-x;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: @tr("Tools" => "Available versions");
+                                            font-size: SettingsStyle.type-label;
+                                            font-weight: SettingsStyle.type-label-weight;
+                                            color: SettingsStyle.text-primary;
+                                        }
+
+                                        if ToolsState.versions.length == 0 : Text {
+                                            text: ToolsState.loading-versions ? @tr("Tools" => "Fetching available versions…") : @tr("Tools" => "No versions loaded. Click 'Refresh versions' to check GitHub releases.");
+                                            font-size: SettingsStyle.type-caption;
+                                            color: SettingsStyle.text-secondary;
+                                            wrap: word-wrap;
+                                        }
+
+                                        if ToolsState.versions.length > 0 : VerticalLayout {
+                                            spacing: 6px;
+                                            for v in ToolsState.versions : Rectangle {
+                                                property <bool> is-selected: v.version == ToolsState.selected-version;
+                                                border-radius: SettingsStyle.radius-nav;
+                                                border-width: 1px;
+                                                border-color: is-selected ? SettingsStyle.accent : SettingsStyle.border-subtle;
+                                                background: is-selected ? SettingsStyle.bg-raised : (v-touch.has-hover ? SettingsStyle.bg-surface : SettingsStyle.bg-base);
+
+                                                v-touch := TouchArea {
+                                                    clicked => {
+                                                        ToolsState.selected-version = v.version;
+                                                        ToolsState.select-version(v.version);
+                                                    }
+                                                }
+
+                                                HorizontalLayout {
+                                                    padding-top: 8px;
+                                                    padding-bottom: 8px;
+                                                    padding-left: 12px;
+                                                    padding-right: 12px;
+                                                    spacing: 8px;
+                                                    alignment: space-between;
+
+                                                    VerticalLayout {
+                                                        alignment: center;
+                                                        spacing: 2px;
+                                                        horizontal-stretch: 1;
+
+                                                        HorizontalLayout {
+                                                            spacing: 8px;
+                                                            alignment: start;
+
+                                                            Text {
+                                                                text: v.label != "" ? v.label : v.version;
+                                                                font-size: SettingsStyle.type-label;
+                                                                font-weight: is-selected ? SettingsStyle.type-label-weight : SettingsStyle.type-body-weight;
+                                                                color: is-selected ? SettingsStyle.accent : SettingsStyle.text-primary;
+                                                            }
+
+                                                            if v.cached : Pill {
+                                                                text: @tr("Tools" => "Cached");
+                                                                variant: "success";
+                                                            }
+                                                        }
+
+                                                        if v.published-at != "" : Text {
+                                                            text: v.published-at;
+                                                            font-size: SettingsStyle.type-meta;
+                                                            color: SettingsStyle.text-muted;
+                                                        }
+                                                    }
+
+                                                    SettingsButton {
+                                                        text: is-selected ? @tr("Tools" => "Selected") : @tr("Tools" => "Select");
+                                                        variant: is-selected ? "primary" : "ghost";
+                                                        clicked => {
+                                                            ToolsState.selected-version = v.version;
+                                                            ToolsState.select-version(v.version);
+                                                        }
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: 1px;
+                                        background: SettingsStyle.border-subtle;
+                                    }
+
+                                    VerticalLayout {
+                                        padding-top: SettingsStyle.row-padding-y;
+                                        padding-bottom: SettingsStyle.row-padding-y;
+                                        padding-left: SettingsStyle.row-padding-x;
+                                        padding-right: SettingsStyle.row-padding-x;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: @tr("Tools" => "Target executable");
+                                            font-size: SettingsStyle.type-label;
+                                            font-weight: SettingsStyle.type-label-weight;
+                                            color: SettingsStyle.text-primary;
+                                        }
+
+                                        Text {
+                                            text: ToolsState.selected-target-exe != "" ? ToolsState.selected-target-exe : @tr("Tools" => "No executable selected");
+                                            font-size: SettingsStyle.type-body;
+                                            font-weight: SettingsStyle.type-label-weight;
+                                            color: SettingsStyle.accent;
+                                        }
+
+                                        if ToolsState.targets.length > 1 : VerticalLayout {
+                                            spacing: 6px;
+                                            Text {
+                                                text: @tr("Tools" => "Detected candidate executables (select to override):");
+                                                font-size: SettingsStyle.type-caption;
+                                                color: SettingsStyle.text-secondary;
+                                            }
+
+                                            for target in ToolsState.targets : HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: start;
+
+                                                SettingsButton {
+                                                    text: target.label != "" ? target.label : target.relative-exe;
+                                                    variant: target.relative-exe == ToolsState.selected-target-exe ? "primary" : "secondary";
+                                                    clicked => {
+                                                        ToolsState.selected-target-exe = target.relative-exe;
+                                                        ToolsState.select-target-exe(target.relative-exe);
+                                                    }
+                                                }
+
+                                                if target.architecture != "" : Pill {
+                                                    text: target.architecture;
+                                                    variant: "neutral";
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+
+                                                if target.preferred : Pill {
+                                                    text: @tr("Tools" => "Recommended");
+                                                    variant: "accent";
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        height: 1px;
+                                        background: SettingsStyle.border-subtle;
+                                    }
+
+                                    VerticalLayout {
+                                        padding-top: SettingsStyle.row-padding-y;
+                                        padding-bottom: SettingsStyle.row-padding-y;
+                                        padding-left: SettingsStyle.row-padding-x;
+                                        padding-right: SettingsStyle.row-padding-x;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: @tr("Tools" => "Proxy DLL name");
+                                            font-size: SettingsStyle.type-label;
+                                            font-weight: SettingsStyle.type-label-weight;
+                                            color: SettingsStyle.text-primary;
+                                        }
+
+                                        Text {
+                                            text: @tr("Tools" => "The DLL filename loaded by the game. dxgi.dll works for most DirectX 11/12 games; choose an alternative if the game uses a custom dxgi.dll or crashes on launch.");
+                                            font-size: SettingsStyle.type-caption;
+                                            color: SettingsStyle.text-secondary;
+                                            wrap: word-wrap;
+                                        }
+
+                                        FlexboxLayout {
+                                            spacing: 8px;
+                                            alignment: start;
+                                            flex-wrap: wrap;
+
+                                            for proxy in ToolsState.proxy-options : SettingsButton {
+                                                text: proxy == "dxgi.dll" ? (proxy + " (" + @tr("Tools" => "Recommended") + ")") : proxy;
+                                                variant: proxy == ToolsState.selected-proxy ? "primary" : "secondary";
+                                                clicked => {
+                                                    ToolsState.selected-proxy = proxy;
+                                                    ToolsState.select-proxy(proxy);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if ToolsState.installed : Rectangle {
+                                        height: 1px;
+                                        background: SettingsStyle.border-subtle;
+                                    }
+
+                                    if ToolsState.installed : VerticalLayout {
+                                        padding-top: SettingsStyle.row-padding-y;
+                                        padding-bottom: SettingsStyle.row-padding-y;
+                                        padding-left: SettingsStyle.row-padding-x;
+                                        padding-right: SettingsStyle.row-padding-x;
+
+                                        SettingsCheckbox {
+                                            text: @tr("Tools" => "Reset OptiScaler.ini to defaults on update");
+                                            checked: ToolsState.reset-config;
+                                            toggled(v) => {
+                                                ToolsState.reset-config = v;
+                                                ToolsState.toggle-reset-config(v);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+
+                            SettingsButton {
+                                text: @tr("Tools" => "Close");
+                                variant: "secondary";
+                                clicked => {
+                                    ToolsState.open = false;
+                                    ToolsState.close();
+                                }
+                            }
+
+                            if !ToolsState.installed : SettingsButton {
+                                text: @tr("Tools" => "Install OptiScaler");
+                                variant: "primary";
+                                enabled: !ToolsState.busy && !ToolsState.game-running && (!ToolsState.anticheat-detected || ToolsState.anticheat-confirmed);
+                                busy: ToolsState.busy;
+                                clicked => { ToolsState.install-tool(); }
+                            }
+
+                            if ToolsState.installed : SettingsButton {
+                                text: @tr("Tools" => "Update / Apply");
+                                variant: "primary";
+                                enabled: !ToolsState.busy && !ToolsState.game-running;
+                                busy: ToolsState.busy;
+                                clicked => { ToolsState.update-tool(); }
+                            }
+
+                            if ToolsState.installed : SettingsButton {
+                                text: @tr("Tools" => "Uninstall");
+                                variant: "danger";
+                                enabled: !ToolsState.busy && !ToolsState.game-running;
+                                busy: ToolsState.busy;
+                                clicked => { ToolsState.uninstall-tool(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -12,7 +12,23 @@ pub fn is_windows_style(path: &str) -> bool {
 
 /// Normalizes separators and drops trailing ones (`C:/Steam/` becomes `C:\Steam`, `/a//b/` becomes
 /// `/a/b`). A root (`/` or `C:\`) keeps its separator.
+/// Windows verbatim drive and UNC paths compare like their ordinary forms.
 pub fn normalize(path: &str) -> String {
+    // canonicalize() can persist verbatim paths while Windows process queries
+    // return ordinary paths. Normalize both sides without touching the disk.
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        if let Some(unc) = rest.strip_prefix(r"UNC\") {
+            return normalize(&format!(r"\\{unc}"));
+        }
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+        {
+            return normalize(rest);
+        }
+    }
     if is_windows_style(path) {
         let unc = path.starts_with("\\\\") || path.starts_with("//");
         let body: Vec<&str> = path
@@ -105,6 +121,23 @@ mod tests {
         }
         for bad in ["", ".", "..", "a/b", "a\\b", "C:", "../x", "a\0b"] {
             assert!(!is_plain_name(bad), "{bad:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod verbatim_tests {
+    use super::normalize;
+
+    #[test]
+    fn verbatim_drive_and_unc_paths_match_ordinary_paths() {
+        for (extended, ordinary) in [
+            (r"\\?\F:\Games\Stellar Blade", r"F:\Games\Stellar Blade"),
+            (r"\\?\C:\", r"C:\"),
+            (r"\\?\UNC\server\games\", r"\\server\games"),
+        ] {
+            assert_eq!(normalize(extended), normalize(ordinary));
+            assert_eq!(normalize(&normalize(extended)), normalize(ordinary));
         }
     }
 }

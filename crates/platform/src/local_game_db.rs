@@ -14,6 +14,35 @@ fn failed(error: impl std::fmt::Display) -> StorageError {
 fn encode(value: &impl Serialize) -> Result<String, StorageError> {
     serde_json::to_string(value).map_err(failed)
 }
+// Upgrade path spelling at the storage boundary without changing identity,
+// revisions, candidate fingerprints, or requiring the folder to be online.
+fn registration_paths(mut value: Registration) -> Registration {
+    for path in [
+        &mut value.executable,
+        &mut value.root,
+        &mut value.working_directory,
+    ]
+    .into_iter()
+    .chain(value.gameplay.iter_mut())
+    .chain(value.launchers.iter_mut())
+    {
+        *path = crate::host::strip_verbatim_prefix(std::mem::take(path));
+    }
+    value
+}
+fn watch_paths(mut value: WatchRoot) -> WatchRoot {
+    value.path = crate::host::strip_verbatim_prefix(value.path);
+    value
+}
+fn candidate_paths(mut value: Candidate) -> Candidate {
+    for path in std::iter::once(&mut value.root)
+        .chain(value.targets.iter_mut())
+        .chain(value.selected_target.iter_mut())
+    {
+        *path = crate::host::strip_verbatim_prefix(std::mem::take(path));
+    }
+    value
+}
 impl SqliteLocalGameStore {
     pub(crate) fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -31,8 +60,10 @@ impl SqliteLocalGameStore {
 impl LocalGameStore for SqliteLocalGameStore {
     fn registrations(&self) -> Result<Vec<Registration>, StorageError> {
         self.list("SELECT payload FROM manual_registrations ORDER BY id")
+            .map(|rows| rows.into_iter().map(registration_paths).collect())
     }
     fn save_registration(&self, v: &Registration) -> Result<(), StorageError> {
+        let v = &registration_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO manual_registrations(id,file_identity,removed,payload) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET file_identity=excluded.file_identity,removed=excluded.removed,payload=excluded.payload", params![v.id,v.file_identity,v.removed,encode(v)?]).map(drop).map_err(failed)
     }
     fn save_registration_if_revision(
@@ -40,19 +71,24 @@ impl LocalGameStore for SqliteLocalGameStore {
         value: &Registration,
         revision: u64,
     ) -> Result<bool, StorageError> {
+        let value = &registration_paths(value.clone());
         let changed = crate::db::lock(&self.conn).execute("UPDATE manual_registrations SET payload=?2 WHERE id=?1 AND removed=0 AND json_extract(payload,'$.revision')=?3", params![value.id, encode(value)?, i64::try_from(revision).map_err(failed)?]).map_err(failed)?;
         Ok(changed == 1)
     }
     fn watches(&self) -> Result<Vec<WatchRoot>, StorageError> {
         self.list("SELECT payload FROM discovery_watches ORDER BY id")
+            .map(|rows| rows.into_iter().map(watch_paths).collect())
     }
     fn save_watch(&self, v: &WatchRoot) -> Result<(), StorageError> {
+        let v = &watch_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO discovery_watches(id,payload) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![v.id,encode(v)?]).map(drop).map_err(failed)
     }
     fn candidates(&self) -> Result<Vec<Candidate>, StorageError> {
         self.list("SELECT payload FROM discovery_candidates ORDER BY fingerprint")
+            .map(|rows| rows.into_iter().map(candidate_paths).collect())
     }
     fn save_candidate(&self, v: &Candidate) -> Result<(), StorageError> {
+        let v = &candidate_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO discovery_candidates(fingerprint,payload) VALUES(?1,?2) ON CONFLICT(fingerprint) DO UPDATE SET payload=excluded.payload", params![v.fingerprint,encode(v)?]).map(drop).map_err(failed)
     }
     fn inferences(&self, account: &str) -> Result<Vec<Inference>, StorageError> {
@@ -166,6 +202,90 @@ mod tests {
             available: true,
         }
     }
+    #[test]
+    fn legacy_verbatim_paths_are_cleaned_on_read_and_write() {
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        let mut game = registration();
+        game.root = r"\\?\F:\Games\Game".into();
+        game.executable = format!(r"{}\game.exe", game.root);
+        game.working_directory = game.root.clone();
+        game.gameplay = vec![game.executable.clone()];
+        game.launchers = vec![format!(r"{}\launcher.exe", game.root)];
+        let watch = WatchRoot {
+            id: "watch".into(),
+            path: r"\\?\UNC\nas\games".into(),
+            enabled: true,
+        };
+        let candidate = Candidate {
+            fingerprint: "stable-fingerprint".into(),
+            watch: watch.id.clone(),
+            root: game.root.clone(),
+            title: game.title.clone(),
+            targets: game.gameplay.clone(),
+            selected_target: Some(game.executable.clone()),
+            evidence: vec![],
+            ignored: true,
+            incomplete: false,
+        };
+        // Insert the old payloads directly, bypassing the corrected write path.
+        conn.execute(
+            "INSERT INTO manual_registrations VALUES(?1,?2,?3,?4)",
+            params![
+                game.id,
+                game.file_identity,
+                game.removed,
+                encode(&game).unwrap()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO discovery_watches VALUES(?1,?2)",
+            params![watch.id, encode(&watch).unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO discovery_candidates VALUES(?1,?2)",
+            params![candidate.fingerprint, encode(&candidate).unwrap()],
+        )
+        .unwrap();
+        let store = SqliteLocalGameStore::new(Arc::new(Mutex::new(conn)));
+        let clean = store.registrations().unwrap().remove(0);
+        assert_eq!(clean.root, r"F:\Games\Game");
+        assert_eq!(clean.executable, r"F:\Games\Game\game.exe");
+        assert_eq!(clean.working_directory, clean.root);
+        assert_eq!(clean.gameplay, vec![clean.executable.clone()]);
+        assert_eq!(clean.launchers, vec![r"F:\Games\Game\launcher.exe"]);
+        assert_eq!((clean.id, clean.revision), (game.id.clone(), game.revision));
+        assert_eq!(store.watches().unwrap()[0].path, r"\\nas\games");
+        let clean_candidate = store.candidates().unwrap().remove(0);
+        assert_eq!(clean_candidate.root, r"F:\Games\Game");
+        assert_eq!(clean_candidate.targets, vec![r"F:\Games\Game\game.exe"]);
+        assert_eq!(
+            clean_candidate.selected_target.as_deref(),
+            Some(r"F:\Games\Game\game.exe")
+        );
+        assert!(clean_candidate.ignored);
+        store.save_registration(&game).unwrap();
+        assert!(
+            store
+                .save_registration_if_revision(&game, game.revision)
+                .unwrap()
+        );
+        store.save_watch(&watch).unwrap();
+        store.save_candidate(&candidate).unwrap();
+        let conn = crate::db::lock(&store.conn);
+        for table in [
+            "manual_registrations",
+            "discovery_watches",
+            "discovery_candidates",
+        ] {
+            let payload: String = conn
+                .query_row(&format!("SELECT payload FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert!(!payload.contains('?'), "{payload}");
+        }
+    }
+
     #[test]
     fn upgrade_duplicate_repair_and_tombstone() {
         let mut conn = Connection::open_in_memory().unwrap();

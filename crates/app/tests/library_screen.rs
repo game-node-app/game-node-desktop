@@ -12,13 +12,15 @@ use std::time::Duration;
 use gamenode_app::{
     AccessKind, AddError, AppWindow, CollectionItem, CollectionsKind, EmptyKind, GameItem,
     LibraryState, MatchKind, OptionItem, ProviderItem, SettingsState, SettingsTopic, StatusKind,
-    SummaryItem, TargetItem, ViewKind, Why,
+    SummaryItem, TargetItem, ToolsState, ViewKind, Why,
 };
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{Key, Platform, PlatformError, WindowAdapter, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, ModelRc, PhysicalSize, SharedString, VecModel};
+use slint::{
+    ComponentHandle, LogicalPosition, Model, ModelRc, PhysicalSize, SharedString, VecModel,
+};
 
 const WIDTH: u32 = 1100;
 const HEIGHT: u32 = 700;
@@ -143,6 +145,8 @@ fn open(log: &Log) -> AppWindow {
     let n = note(log);
     state.on_select(move |k, ctrl, shift| n(format!("select {k} ctrl={ctrl} shift={shift}")));
     let n = note(log);
+    state.on_activate(move |k| n(format!("activate {k}")));
+    let n = note(log);
     state.on_move(move |d, extend| n(format!("move {d} extend={extend}")));
     record!(on_open_details, "open-details");
     record!(on_play, "play");
@@ -150,6 +154,7 @@ fn open(log: &Log) -> AppWindow {
     record!(on_rescan, "rescan");
     record!(on_open_match, "open-match");
     record!(on_open_add, "open-add");
+    record!(on_open_tools, "open-tools");
     record!(on_close_match, "close-match");
     record!(on_close_add, "close-add");
     record!(on_match_search, "match-search");
@@ -163,6 +168,18 @@ fn open(log: &Log) -> AppWindow {
     state.on_set_filter(move |id| n(format!("filter {id}")));
     let n = note(log);
     state.on_pick_match(move |id| n(format!("pick {id}")));
+
+    let tools = ui.global::<ToolsState>();
+    let tools_close_log = log.clone();
+    tools.on_close(move || tools_close_log.borrow_mut().push("close-tools".into()));
+
+    let local = ui.global::<gamenode_app::LocalGames>();
+    let n = note(log);
+    local.on_dismiss_discovered(move || n("dismiss-discovered".into()));
+    let n = note(log);
+    local.on_restore_cancel(move || n("restore-cancel".into()));
+    let n = note(log);
+    local.on_remove(move |allow| n(format!("local-remove allow={allow}")));
 
     let items = Rc::new(VecModel::from(vec![
         game("steam:1", "Portal 2", "Steam", MatchKind::Matched),
@@ -192,6 +209,7 @@ fn open(log: &Log) -> AppWindow {
     state.set_install_why(Why::NothingSelected);
     state.set_match_why(Why::NothingSelected);
     state.set_add_why(Why::NothingSelected);
+    state.set_tools_why(Why::NothingSelected);
     slint::platform::update_timers_and_animations();
     ui
 }
@@ -255,10 +273,11 @@ fn library_screens_react_to_keyboard_and_pointer() {
             "move 1 extend=true",
         ]
     );
+    state.set_focused_index(0);
     key(&ui, Key::Return);
-    assert_eq!(take(&log), ["open-details"]);
+    assert_eq!(take(&log), ["activate steam:1"]);
     chord(&ui, Key::Control, Key::Return.into());
-    assert_eq!(take(&log), ["play"]);
+    assert_eq!(take(&log), ["open-details"]);
     key(&ui, Key::F5);
     assert_eq!(take(&log), ["rescan"]);
 
@@ -344,6 +363,21 @@ fn library_screens_react_to_keyboard_and_pointer() {
     state.set_add_open(false);
     state.set_add_has_summary(false);
 
+    let tools = ui.global::<gamenode_app::ToolsState>();
+    tools.set_open(true);
+    slint::platform::update_timers_and_animations();
+    take(&log);
+    key(&ui, Key::Escape);
+    assert!(
+        !ui.global::<gamenode_app::ToolsState>().get_open(),
+        "Escape must close GameToolsModal"
+    );
+    assert_eq!(
+        take(&log),
+        ["close-tools"],
+        "Escape in GameToolsModal must record close-tools"
+    );
+
     // Banner and empty states.
     state.set_access(AccessKind::Unverified);
     state.set_scanning(true);
@@ -386,6 +420,9 @@ fn library_screens_react_to_keyboard_and_pointer() {
             key(&ui, Key::Tab);
         }
         key(&ui, Key::Return);
+        if ui.global::<gamenode_app::LocalGames>().get_remove_open() {
+            fired.insert("remove-open".to_owned());
+        }
         for line in take(&log) {
             fired.insert(line.split(' ').next().unwrap_or_default().to_owned());
         }
@@ -395,15 +432,152 @@ fn library_screens_react_to_keyboard_and_pointer() {
         "rescan",
         "play",
         "install",
+        "open-tools",
         "open-match",
         "open-add",
+        "remove-open",
         "filter",
-        "open-details",
+        "activate",
     ] {
         assert!(
             fired.contains(expected),
             "{expected} is not reachable by keyboard: {fired:?}"
         );
+    }
+
+    // DRM-free entries with Why::NoInstallRule omit Install from the detail pane focus order.
+    let mut drm_free_fired = std::collections::BTreeSet::new();
+    for stops in 1..=40 {
+        let ui = open(&log);
+        show_details(&ui);
+        ui.global::<LibraryState>()
+            .set_install_why(Why::NoInstallRule);
+        take(&log);
+        for _ in 0..stops {
+            key(&ui, Key::Tab);
+        }
+        key(&ui, Key::Return);
+        for line in take(&log) {
+            drm_free_fired.insert(line.split(' ').next().unwrap_or_default().to_owned());
+        }
+    }
+    assert!(
+        drm_free_fired.contains("play"),
+        "play must remain reachable for DRM-free entries: {drm_free_fired:?}"
+    );
+    assert!(
+        !drm_free_fired.contains("install"),
+        "install must be omitted when install-why is NoInstallRule: {drm_free_fired:?}"
+    );
+
+    // Double-clicking a tile or list row activates it (even when on_select updates items in-place);
+    // discovered notice dismissal and DRM-free modals work.
+    {
+        let ui = open(&log);
+        let state = ui.global::<LibraryState>();
+        let ui_weak = ui.as_weak();
+        let select_log = log.clone();
+        state.on_select(move |k, ctrl, shift| {
+            select_log
+                .borrow_mut()
+                .push(format!("select {k} ctrl={ctrl} shift={shift}"));
+            if let Some(ui) = ui_weak.upgrade() {
+                let s = ui.global::<LibraryState>();
+                let items = s.get_items();
+                let mut focused = -1;
+                for i in 0..items.row_count() {
+                    if let Some(mut item) = items.row_data(i) {
+                        let is_sel = item.key == k;
+                        if is_sel {
+                            focused = i as i32;
+                        }
+                        if item.selected != is_sel || item.focused != is_sel {
+                            item.selected = is_sel;
+                            item.focused = is_sel;
+                            items.set_row_data(i, item);
+                        }
+                    }
+                }
+                s.set_focused_index(focused);
+            }
+        });
+        take(&log);
+        click(&ui, 300., 200.);
+        click(&ui, 300., 200.);
+        let events = take(&log);
+        assert!(
+            events.iter().any(|e| e == "activate steam:1"),
+            "double-click did not activate grid tile: {events:?}"
+        );
+
+        state.set_view(ViewKind::List);
+        slint::platform::update_timers_and_animations();
+        take(&log);
+        click(&ui, 400., 210.);
+        click(&ui, 400., 210.);
+        let events = take(&log);
+        assert!(
+            events.iter().any(|e| e.starts_with("activate steam:")),
+            "double-click did not activate list row: {events:?}"
+        );
+        state.set_view(ViewKind::Grid);
+        slint::platform::update_timers_and_animations();
+
+        let local = ui.global::<gamenode_app::LocalGames>();
+        local.set_discovered_notice("Celeste".into());
+        slint::platform::update_timers_and_animations();
+        local.invoke_dismiss_discovered();
+        assert_eq!(take(&log), ["dismiss-discovered"]);
+
+        local.set_editing(true);
+        slint::platform::update_timers_and_animations();
+        key(&ui, Key::Escape);
+        assert!(!local.get_editing(), "Escape must close LocalGameEditor");
+
+        local.set_selected_id("celeste".into());
+        local.set_has_restore(true);
+        local.set_protection_open(true);
+        slint::platform::update_timers_and_animations();
+        take(&log);
+        key(&ui, Key::Escape);
+        assert_eq!(
+            take(&log),
+            ["restore-cancel"],
+            "Escape with active restore preview must cancel restore first"
+        );
+        assert!(local.get_protection_open());
+        local.set_has_restore(false);
+        slint::platform::update_timers_and_animations();
+        key(&ui, Key::Escape);
+        assert!(
+            !local.get_protection_open(),
+            "Escape must close SaveProtection"
+        );
+
+        local.set_remove_open(true);
+        slint::platform::update_timers_and_animations();
+        key(&ui, Key::Escape);
+        assert!(
+            !local.get_remove_open(),
+            "Escape must close RemoveLocalGame"
+        );
+
+        // Removing a selected Steam entry (where `selected-id` is empty and `detail-valid` is true)
+        // keeps `RemoveLocalGame` usable for both temporary and permanent removal.
+        local.set_selected_id("".into());
+        show_details(&ui);
+        local.set_remove_open(true);
+        slint::platform::update_timers_and_animations();
+        assert!(local.get_remove_open());
+        local.invoke_remove(true);
+        local.set_remove_open(false);
+        assert_eq!(take(&log), ["local-remove allow=true"]);
+
+        local.set_remove_open(true);
+        slint::platform::update_timers_and_animations();
+        local.invoke_remove(false);
+        local.set_remove_open(false);
+        assert_eq!(take(&log), ["local-remove allow=false"]);
     }
     // Moving focus between settings controls must not consume the first click.
     let ui = open(&log);
@@ -412,8 +586,9 @@ fn library_screens_react_to_keyboard_and_pointer() {
     for (y, topic) in [
         (188., SettingsTopic::Stores),
         (222., SettingsTopic::Backups),
-        (256., SettingsTopic::Advanced),
-        (290., SettingsTopic::About),
+        (256., SettingsTopic::Tools),
+        (290., SettingsTopic::Advanced),
+        (324., SettingsTopic::About),
         (154., SettingsTopic::Account),
         (188., SettingsTopic::Stores),
     ] {
@@ -542,6 +717,45 @@ fn library_screens_react_to_keyboard_and_pointer() {
     assert!(take(&log).is_empty(), "focus escaped the sync explanation");
     key(&ui, Key::Escape);
     assert_eq!(*dismissed.borrow(), 1);
+
+    // The end of a long detail pane must remain visible after scrolling to the bottom.
+    // Wrapped evidence and paths previously left the last field below the scroll range.
+    let ui = open(&log);
+    show_details(&ui);
+    let state = ui.global::<LibraryState>();
+    state.set_detail_open(true);
+    state.set_detail_dir(
+        "C:\\Games\\A long game folder name\\Another long folder name\\Game".into(),
+    );
+    let local = ui.global::<gamenode_app::LocalGames>();
+    local.set_selected_id("manual:long".into());
+    local.set_match_evidence("Product name: A long game title · Executable: a long game executable · Folder: a long game folder".into());
+    shots.take("detail-long-before-scroll");
+    ui.window().dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(1000., 600.),
+        delta_x: 0.,
+        delta_y: -5000.,
+    });
+    slint::platform::update_timers_and_animations();
+    shots.take("detail-long-bottom");
+    let mut buffer = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
+    window.request_redraw();
+    assert!(window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, WIDTH as usize);
+    }));
+    let bg = buffer[(HEIGHT as usize - 1) * WIDTH as usize + 780];
+    let differs = |pixel: &PremultipliedRgbaColor| {
+        (pixel.red, pixel.green, pixel.blue) != (bg.red, bg.green, bg.blue)
+    };
+    let row_has_text = |y: usize| (780..1080).any(|x| differs(&buffer[y * WIDTH as usize + x]));
+    assert!(
+        (HEIGHT as usize - 55..HEIGHT as usize - 16).any(row_has_text),
+        "last detail field is missing"
+    );
+    assert!(
+        !(HEIGHT as usize - 10..HEIGHT as usize).any(row_has_text),
+        "detail text is clipped at the bottom"
+    );
 }
 
 /// The detail pane for one selected, matched game, with every action available.
@@ -567,6 +781,8 @@ fn show_details(ui: &AppWindow) {
     state.set_install_why(Why::Available);
     state.set_match_why(Why::Available);
     state.set_add_why(Why::Available);
+    state.set_tools_why(Why::Available);
+    state.set_detail_tools("OptiScaler v0.7.9 · dxgi.dll".into());
     state.set_change_match(true);
     state.set_launch_note(gamenode_app::LaunchNote::NoHandler);
 }

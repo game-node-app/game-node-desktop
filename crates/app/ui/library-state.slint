@@ -1,4 +1,5 @@
 import { SettingsState } from "settings-state.slint";
+import { ToolsState } from "tools.slint";
 
 export enum MatchKind { matched, ambiguous, unmatched, no-game }
 export enum SourceKind { none, chosen, automatic }
@@ -119,6 +120,7 @@ export global LibraryState {
     in-out property <Why> install-why;
     in-out property <Why> match-why;
     in-out property <Why> add-why;
+    in-out property <Why> tools-why: Why.available;
     // Set when `add-why` is `already-in-library` and GameNode reported the status.
     in-out property <StatusKind> add-existing-status;
     in-out property <bool> change-match;
@@ -136,6 +138,7 @@ export global LibraryState {
     in-out property <string> detail-matched;
     in-out property <string> detail-provider;
     in-out property <string> detail-dir;
+    in-out property <string> detail-tools: "";
     in-out property <string> detail-year;
     in-out property <MatchKind> detail-kind;
     in-out property <SourceKind> detail-source;
@@ -183,14 +186,16 @@ export global LibraryState {
     in-out property <int> add-summary-failed;
 
     // True while a dialog is open: the screen behind it takes no focus.
-    out property <bool> modal: match-open || add-open || SettingsState.open;
+    out property <bool> modal: match-open || add-open || SettingsState.open || ToolsState.open;
 
     // --- commands ---
     callback select(string, bool, bool);          // key, ctrl, shift
+    callback activate(string);                    // key
     callback move(int, bool);                     // direction (0 up, 1 down, 2 left, 3 right, 4 home, 5 end), extend
     callback open-details();
     callback play();
     callback install();
+    callback open-tools();
     callback open-match();
     callback open-add();
     callback rescan();

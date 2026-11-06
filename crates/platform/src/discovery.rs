@@ -19,8 +19,7 @@ impl DiscoveryHost for WindowsDiscovery {
         #[cfg(windows)]
         {
             use std::collections::BTreeSet;
-            let root = std::fs::canonicalize(&watch.path)
-                .map_err(|e| LocalError::Failed(e.to_string()))?;
+            let root = crate::installations::canonical(&watch.path)?;
             let data = crate::paths::DataPaths::resolve().ok_or(LocalError::InvalidTarget)?;
             let manifest =
                 crate::manifest_cache::ManifestCache::bundled(data.data_dir())?.load()?;
@@ -52,7 +51,9 @@ impl DiscoveryHost for WindowsDiscovery {
                     if cancelled.load(Ordering::Relaxed) {
                         return Err(LocalError::Cancelled);
                     }
-                    let Ok(canonical) = std::fs::canonicalize(&directory) else {
+                    let Ok(canonical) =
+                        crate::installations::canonical(&directory.to_string_lossy())
+                    else {
                         incomplete = true;
                         continue;
                     };
@@ -156,15 +157,17 @@ impl DiscoveryHost for WindowsDiscovery {
                                 .as_bytes()
                         )
                     );
-                    let selected_target = if targets.len() == 1 {
-                        Some(targets[0].clone())
-                    } else {
-                        None
+                    let manifest_hints = match manifest.index.exact(&title).as_slice() {
+                        [game] => game.launch_hints.iter().cloned().collect::<Vec<_>>(),
+                        _ => Vec::new(),
                     };
+                    let root = install.to_string_lossy().into_owned();
+                    let selected_target =
+                        identity::preferred_target(&root, &targets, &manifest_hints);
                     results.push(Candidate {
                         fingerprint,
                         watch: watch.id.clone(),
-                        root: install.to_string_lossy().into_owned(),
+                        root,
                         title,
                         targets,
                         selected_target,

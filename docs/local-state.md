@@ -15,7 +15,7 @@ handles tokens separately from SQLite.
 The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
-`window.height`, `window.maximized`, `library.layout`, `account.last_id` and
+`window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
 `account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
 (the `SETTING_KEYS` list in `db.rs`). A fresh database
 defaults to GPU rendering, the default library layout and no games. No session
@@ -161,3 +161,21 @@ preview in `.gamenode-restore-recovery.json`. Ordinary ten-version retention nev
 prunes those recovery namespaces. Recovery failure aborts restore; interrupted or
 partial restores retain that record for manual recovery. See [DRM-free games](drm-free-games.md)
 for controls and the same-physical-drive limitation.
+
+## Game tools (migration `0005_game_tools.sql`)
+
+Migration `0005_game_tools.sql` adds Windows-user-owned game tool tables:
+
+- `tool_installations`: installed tool state per `(entry_key, tool_id)`, storing
+  `channel`, `version`, `target_exe`, `proxy_dll`, lifecycle `state`, and timestamps.
+- `tool_files`: deployed file and INI patch ledger per `(entry_key, tool_id, relative_path)`,
+  including `installed_sha256`, `backup_path`, `original_sha256`, `prior_owner_tool_id` for
+  layered companion/swapper ownership, `created_dirs_json`, and INI patch rollback metadata.
+- `tool_releases_cache`: cached release metadata per `(tool_id, channel, version)` fetched from
+  declared repositories.
+
+Downloaded archives are cached under `tools/cache/<tool_id>/<channel>/<version>/` (`DataPaths::tools_cache_dir`),
+and pre-tool file backups live under `private/tool-backups/<entry_key>/<tool_id>/` (`DataPaths::tool_backups_dir`).
+Tool installations belong to the OS user across GameNode account changes, and startup reconciles
+any transient `Installing`, `Updating`, or `Uninstalling` records using the backup ledger.
+

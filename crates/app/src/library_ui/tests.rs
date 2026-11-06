@@ -317,6 +317,7 @@ mod render {
             settings: Settings::default(),
             library,
             launch,
+            tools: Default::default(),
         }
     }
 
@@ -731,4 +732,76 @@ fn discovery_rows_only_change_when_visible_data_changes() {
     let mut updated = row;
     updated.picked = true;
     assert!(!same_discovery_rows(&model, &[updated]));
+}
+
+#[test]
+fn format_bytes_renders_human_readable_units() {
+    assert_eq!(format_bytes(0), "0 B");
+    assert_eq!(format_bytes(512), "512 B");
+    assert_eq!(format_bytes(1023), "1023 B");
+    assert_eq!(format_bytes(1024), "1.0 KB");
+    assert_eq!(format_bytes(48_120), "47.0 KB");
+    assert_eq!(format_bytes(1_048_576), "1.0 MB");
+    assert_eq!(format_bytes(1_572_864), "1.5 MB");
+    assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
+    assert_eq!(format_bytes(2_684_354_560), "2.50 GB");
+}
+
+#[test]
+fn profile_save_paths_returns_resolved_files_or_extracts_definition_patterns() {
+    use gamenode_core::drm_free::{SaveProfile, SaveSupport};
+
+    let resolved = SaveProfile {
+        id: "p1".into(),
+        installation: "inst1".into(),
+        revision: 1,
+        title: "Celeste".into(),
+        manifest_hash: "h".into(),
+        definition: "files:\n  <base>/Saves: {}\n".into(),
+        files: vec![
+            r"D:\Games\Celeste\Saves\0.celeste".into(),
+            r"D:\Games\Celeste\Saves\settings.celeste".into(),
+        ],
+        registry: vec![],
+        support: SaveSupport::Supported,
+        automatic: None,
+    };
+    assert_eq!(
+        profile_save_paths(&resolved),
+        vec![
+            r"D:\Games\Celeste\Saves\0.celeste".to_owned(),
+            r"D:\Games\Celeste\Saves\settings.celeste".to_owned(),
+        ]
+    );
+
+    let fallback_yaml = SaveProfile {
+        files: vec![],
+        support: SaveSupport::NoSaves,
+        definition:
+            "files:\n  <base>/Saves:\n    when:\n      - os: windows\n  <winAppData>/Celeste: {}\n"
+                .into(),
+        ..resolved.clone()
+    };
+    assert_eq!(
+        profile_save_paths(&fallback_yaml),
+        vec!["<base>/Saves".to_owned(), "<winAppData>/Celeste".to_owned()]
+    );
+
+    let empty = SaveProfile {
+        files: vec![],
+        definition: String::new(),
+        ..resolved
+    };
+    assert!(profile_save_paths(&empty).is_empty());
+}
+
+#[test]
+fn cached_library_covers_have_bounded_pixel_memory() {
+    let directory = tempfile::tempdir().unwrap();
+    image::RgbaImage::new(1200, 1800)
+        .save(directory.path().join("1.png"))
+        .unwrap();
+    let pixels = super::decode_cover(directory.path(), "1.png").unwrap();
+    assert_eq!((pixels.width(), pixels.height()), (320, 480));
+    assert!(pixels.as_bytes().len() <= 320 * 480 * 4);
 }

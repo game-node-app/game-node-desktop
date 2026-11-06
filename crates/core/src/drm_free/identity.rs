@@ -329,6 +329,89 @@ pub fn profile(
     })
 }
 
+pub fn preferred_target(
+    root: &str,
+    targets: &[String],
+    manifest_hints: &[String],
+) -> Option<String> {
+    if targets.is_empty() {
+        return None;
+    }
+    let normalized_root = root.replace('\\', "/").trim_end_matches('/').to_owned();
+    let score = |target: &String| {
+        let normalized_target = target.replace('\\', "/");
+        let relative = if !normalized_root.is_empty()
+            && normalized_target.len() > normalized_root.len()
+            && normalized_target
+                .get(..normalized_root.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&normalized_root))
+            && normalized_target.as_bytes().get(normalized_root.len()) == Some(&b'/')
+        {
+            normalized_target[normalized_root.len() + 1..].trim_start_matches('/')
+        } else {
+            normalized_target.trim_start_matches('/')
+        };
+        let filename = relative.rsplit('/').next().unwrap_or(relative);
+        let lower_rel = relative.to_lowercase();
+
+        let mut manifest_rank = 2u8;
+        for hint in manifest_hints {
+            let hint = hint.replace('\\', "/");
+            let hint = hint
+                .strip_prefix("<base>/")
+                .unwrap_or(&hint)
+                .trim_start_matches('/');
+            if hint.is_empty() || hint.contains(['*', '?', '<', '>']) {
+                continue;
+            }
+            if hint.eq_ignore_ascii_case(relative) {
+                manifest_rank = 0;
+                break;
+            }
+            if !hint.contains('/') && hint.eq_ignore_ascii_case(filename) {
+                manifest_rank = manifest_rank.min(1);
+            }
+        }
+
+        let role_rank = match (
+            maintenance(filename),
+            launcher(filename),
+            launcher(relative),
+        ) {
+            (false, false, false) => 0u8,
+            (false, false, true) => 1u8,
+            (false, true, _) => 2u8,
+            (true, _, _) => 3u8,
+        };
+
+        let is_64 = ["x64", "win64", "amd64", "_64", "-64", "64.exe"]
+            .iter()
+            .any(|m| lower_rel.contains(m));
+        let is_32 = ["x86", "win32", "_32", "-32", "32.exe"]
+            .iter()
+            .any(|m| lower_rel.contains(m));
+        let arch_rank = if is_64 {
+            0u8
+        } else if is_32 {
+            2u8
+        } else {
+            1u8
+        };
+
+        let depth = relative.bytes().filter(|&b| b == b'/').count();
+
+        (
+            manifest_rank,
+            role_rank,
+            arch_rank,
+            depth,
+            lower_rel,
+            target.clone(),
+        )
+    };
+    targets.iter().min_by_key(|t| score(t)).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +504,68 @@ mod tests {
             aliases.push_str(&format!("Alias{n}: {{alias: Target}}\n"));
         }
         assert!(ManifestIndex::parse(aliases.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn preferred_target_ranks_manifest_hints_gameplay_64bit_and_shallowest_depth() {
+        let root = r"C:\Games\Hollow Knight";
+        assert_eq!(preferred_target(root, &[], &[]), None);
+
+        let single = vec![r"C:\Games\Hollow Knight\hollow_knight.exe".to_owned()];
+        assert_eq!(
+            preferred_target(root, &single, &[]),
+            Some(r"C:\Games\Hollow Knight\hollow_knight.exe".to_owned())
+        );
+
+        // 64-bit over neutral and 32-bit
+        let multi_arch = vec![
+            r"C:\Games\Hollow Knight\hollow_knight_x86.exe".to_owned(),
+            r"C:\Games\Hollow Knight\hollow_knight.exe".to_owned(),
+            r"C:\Games\Hollow Knight\hollow_knight_x64.exe".to_owned(),
+        ];
+        assert_eq!(
+            preferred_target(root, &multi_arch, &[]),
+            Some(r"C:\Games\Hollow Knight\hollow_knight_x64.exe".to_owned())
+        );
+
+        let arch_folders = vec![
+            r"C:\Games\Celeste\x86\Celeste.exe".to_owned(),
+            r"C:\Games\Celeste\x64\Celeste.exe".to_owned(),
+        ];
+        assert_eq!(
+            preferred_target(r"C:\Games\Celeste", &arch_folders, &[]),
+            Some(r"C:\Games\Celeste\x64\Celeste.exe".to_owned())
+        );
+
+        // Gameplay binary over launcher
+        let launcher_vs_game = vec![
+            r"C:\Games\The Witcher 3\Launcher.exe".to_owned(),
+            r"C:\Games\The Witcher 3\bin\x64\witcher3.exe".to_owned(),
+        ];
+        assert_eq!(
+            preferred_target(r"C:\Games\The Witcher 3", &launcher_vs_game, &[]),
+            Some(r"C:\Games\The Witcher 3\bin\x64\witcher3.exe".to_owned())
+        );
+
+        // Shallowest path depth tie-breaker
+        let nested_vs_root = vec![
+            r"C:\Games\Spelunky\tools\Helper.exe".to_owned(),
+            r"C:\Games\Spelunky\Spelunky.exe".to_owned(),
+        ];
+        assert_eq!(
+            preferred_target(r"C:\Games\Spelunky", &nested_vs_root, &[]),
+            Some(r"C:\Games\Spelunky\Spelunky.exe".to_owned())
+        );
+
+        // Manifest launch hint overrides depth and name
+        let hinted = vec![
+            r"C:\Games\Custom\Game.exe".to_owned(),
+            r"C:\Games\Custom\bin\StartCustom.exe".to_owned(),
+        ];
+        let hints = vec!["<base>/bin/StartCustom.exe".to_owned()];
+        assert_eq!(
+            preferred_target(r"C:\Games\Custom", &hinted, &hints),
+            Some(r"C:\Games\Custom\bin\StartCustom.exe".to_owned())
+        );
     }
 }

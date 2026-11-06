@@ -30,6 +30,7 @@ use tokio::runtime::Handle;
 mod artwork;
 mod drm_free;
 mod playtime;
+mod tools;
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -40,6 +41,9 @@ pub struct Ports {
     pub backups: Option<Arc<dyn gamenode_core::drm_free::BackupEngine>>,
     pub local_games: Option<Arc<dyn gamenode_core::drm_free::LocalGameStore>>,
     pub installations: Option<Arc<dyn gamenode_core::drm_free::InstallationHost>>,
+    pub tools: Option<Arc<dyn gamenode_core::tools::ToolStore>>,
+    pub tool_catalog: Option<Arc<dyn gamenode_core::tools::ToolCatalogApi>>,
+    pub tool_installer: Option<Arc<dyn gamenode_core::tools::ToolInstallerHost>>,
     pub processes: Arc<dyn gamenode_core::ports::Processes>,
     pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
     pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
@@ -98,6 +102,10 @@ struct State {
     local_generation: u64,
     local_backup_busy: bool,
     local: gamenode_core::drm_free::LocalView,
+    tools: gamenode_core::tools::ToolsView,
+    tool_reset_config: bool,
+    tool_last_fetch: std::collections::HashMap<(gamenode_core::tools::ToolId, gamenode_core::tools::ToolChannel), Instant>,
+    tool_selected_target_exe: Option<String>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
@@ -151,6 +159,13 @@ impl Engine {
                     local_generation: 0,
                     local_backup_busy: false,
                     local: Default::default(),
+                    tools: gamenode_core::tools::ToolsView {
+                        catalog: tools::builtin_catalog_items(),
+                        ..Default::default()
+                    },
+                    tool_reset_config: false,
+                    tool_last_fetch: Default::default(),
+                    tool_selected_target_exe: None,
                     playtime: playtime::Playtime::new(ports.platform),
                     machine: AuthMachine::new(nonce),
                     settings,
@@ -205,6 +220,7 @@ impl Engine {
             available: state.playtime.available,
             running: state.playtime.tracker.running(),
         };
+        snapshot.tools = state.tools.clone();
         snapshot
     }
 
@@ -220,6 +236,7 @@ impl Engine {
         self.refresh_local_games();
         self.start_local_discovery();
         self.start_local_manifest_updates();
+        self.recover_and_load_tools();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
             if let Err(error) = engine.start_playtime() {
@@ -314,6 +331,17 @@ impl Engine {
     /// Scans every provider again. Requests made while a scan runs coalesce into one more scan.
     pub fn rescan(&self) {
         self.library_input(LibInput::ScanRequested);
+    }
+
+    pub fn remove_entry(&self, key: String, allow_rediscovery: bool) {
+        if let Some(id) = key.strip_prefix("manual:") {
+            self.remove_local_game(id.to_owned(), allow_rediscovery);
+        } else {
+            self.library_input(LibInput::RemoveEntry {
+                key,
+                allow_rediscovery,
+            });
+        }
     }
 
     fn run_library(&self, state: &mut State, input: LibInput) {
@@ -555,6 +583,9 @@ impl Engine {
             }),
             LibEffect::PersistLayout(layout) => {
                 self.persist(move |store| store.save_layout(&layout))
+            }
+            LibEffect::PersistExcluded(excluded) => {
+                self.persist(move |store| store.save_excluded(&excluded))
             }
             LibEffect::PersistChoice { account_id, choice } => {
                 self.persist(move |store| store.save_chosen_match(&account_id, &choice));

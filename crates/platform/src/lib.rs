@@ -20,6 +20,8 @@ pub mod paths;
 pub mod playtime_db;
 pub mod processes;
 pub mod random;
+pub mod tools;
+pub mod tools_db;
 pub mod uri;
 
 #[cfg(windows)]

@@ -1,32 +1,31 @@
-import { useEffect } from 'react';
+/// <reference types="vite/client" />
 import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from '@tanstack/react-query';
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { commands } from './commands';
+import { commands, isTauriRuntime } from './commands';
 import { getMockHost, mockEnabled } from './mock';
 import {
   createDefaultSnapshot,
-  type AuthInput,
+  type AppInfo,
   type AuthView,
-  type BootstrapState,
-  type LaunchKind,
-  type LibraryInput,
   type LibraryView,
   type LocalView,
   type PlaytimeSource,
-  type Registration,
   type Settings,
   type Snapshot,
-  type ToolChannel,
   type ToolsView,
 } from './types';
 
 export const SNAPSHOT_QUERY_KEY = ['snapshot'] as const;
-export const BOOTSTRAP_QUERY_KEY = ['bootstrap'] as const;
+export const APP_INFO_QUERY_KEY = ['app-info'] as const;
+export const LICENSE_NOTICES_QUERY_KEY = ['license-notices'] as const;
 export const ENGINE_SNAPSHOT_EVENT = 'engine:snapshot';
 
 /** Shared placeholder snapshot. Read-only: never mutate. */
@@ -50,10 +49,13 @@ export async function subscribeToEngineSnapshots(
 }
 
 /**
- * React hook that initializes the `engine:snapshot` listener for the active QueryClient.
+ * React hook that attaches the `engine:snapshot` listener for the active QueryClient.
+ * Returns true once the listener is registered (or the attempt failed), so callers can
+ * avoid fetching a snapshot that the event stream might overtake.
  */
-export function useEngineSnapshotSubscription(): void {
+export function useEngineSnapshotSubscription(): boolean {
   const queryClient = useQueryClient();
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -67,42 +69,93 @@ export function useEngineSnapshotSubscription(): void {
           fn();
         }
       })
-      .catch(() => {
-        // Ignore outside Tauri runtime (e.g. plain browser or unit test without event mock)
+      .catch((error) => {
+        // A plain browser without the event mock is expected to fail; only report
+        // failures inside the real Tauri runtime.
+        if (isTauriRuntime() && import.meta.env.DEV) {
+          console.error('[snapshot] failed to subscribe to engine:snapshot', error);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setReady(true);
+        }
       });
 
     return () => {
       active = false;
-      if (unlisten) {
-        unlisten();
-      }
+      unlisten?.();
     };
   }, [queryClient]);
+
+  return ready;
+}
+
+const SnapshotStreamContext = createContext(true);
+
+/** Attaches the engine bridge before any snapshot query runs. */
+export function SnapshotStreamProvider({ children }: { children: ReactNode }) {
+  const ready = useEngineSnapshotSubscription();
+  return createElement(
+    SnapshotStreamContext.Provider,
+    { value: ready },
+    children,
+  );
 }
 
 export function useSnapshot<TSelected = Snapshot>(
   select?: (snapshot: Snapshot) => TSelected,
 ) {
+  const queryClient = useQueryClient();
+  const streamReady = useContext(SnapshotStreamContext);
+
   const query = useQuery({
     queryKey: SNAPSHOT_QUERY_KEY,
-    queryFn: () => commands.getSnapshot(),
+    queryFn: async () => {
+      const before = queryClient.getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY);
+      const snapshot = await commands.getSnapshot();
+      // An engine:snapshot landing while this IPC call was in flight replaces the cache
+      // entry with a new object. That event is newer than this command reply.
+      const after = queryClient.getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY);
+      return after !== before ? (after ?? snapshot) : snapshot;
+    },
     staleTime: Infinity,
     gcTime: Infinity,
     placeholderData: DEFAULT_SNAPSHOT,
     select,
+    enabled: streamReady,
   });
+
+  useEffect(() => {
+    if (query.error && import.meta.env.DEV) {
+      console.error('[snapshot] get_snapshot failed', query.error);
+    }
+  }, [query.error]);
+
   return {
     ...query,
     data: (query.data ?? (select ? select(DEFAULT_SNAPSHOT) : DEFAULT_SNAPSHOT)) as TSelected,
   };
 }
 
-export function useBootstrapState() {
-  return useQuery<BootstrapState>({
-    queryKey: BOOTSTRAP_QUERY_KEY,
-    queryFn: () => commands.getBootstrapState(),
+export function useAppInfo() {
+  return useQuery<AppInfo>({
+    queryKey: APP_INFO_QUERY_KEY,
+    queryFn: () => commands.getAppInfo(),
     staleTime: Infinity,
     gcTime: Infinity,
+  });
+}
+
+/**
+ * Mount only from the notices viewer: this transfers ~4.8 MB over IPC.
+ * `gcTime` stays at the client default (5 min) so closing the modal frees it.
+ */
+export function useLicenseNotices() {
+  return useQuery<string>({
+    queryKey: LICENSE_NOTICES_QUERY_KEY,
+    queryFn: () => commands.getLicenseNotices(),
+    staleTime: Infinity,
   });
 }
 
@@ -149,53 +202,4 @@ export function useTools(): ToolsView {
 export function useSettings(): Settings {
   const { data } = useSnapshot(selectSettings);
   return data;
-}
-
-export function useDispatchAuthMutation() {
-  return useMutation({
-    mutationFn: (input: AuthInput) => commands.dispatchAuth(input),
-  });
-}
-
-export function useLibraryInputMutation() {
-  return useMutation({
-    mutationFn: (input: LibraryInput) => commands.libraryInput(input),
-  });
-}
-
-export function useActivateEntryMutation() {
-  return useMutation({
-    mutationFn: () => commands.activateEntry(),
-  });
-}
-
-export function useLaunchEntryMutation() {
-  return useMutation({
-    mutationFn: ({ entryKey, kind }: { entryKey: string; kind: LaunchKind }) =>
-      commands.openEntry(entryKey, kind),
-  });
-}
-
-export function useLaunchSelectedMutation() {
-  return useMutation({
-    mutationFn: (kind: LaunchKind) => commands.launchSelected(kind),
-  });
-}
-
-export function useRescanLibraryMutation() {
-  return useMutation({
-    mutationFn: () => commands.rescanLibrary(),
-  });
-}
-
-export function useEditLocalGameMutation() {
-  return useMutation({
-    mutationFn: (registration: Registration) => commands.editLocalGame(registration),
-  });
-}
-
-export function useSelectToolChannelMutation() {
-  return useMutation({
-    mutationFn: (channel: ToolChannel) => commands.selectToolChannel(channel),
-  });
 }

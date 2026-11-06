@@ -48,115 +48,37 @@ export function SignedOutView({
 
   return (
     <div
-      className={className}
       data-testid="signed-out-view"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100%',
-        width: '100%',
-        padding: '32px',
-        boxSizing: 'border-box',
-        backgroundColor: 'var(--color-background, #161616)',
-        color: 'var(--color-text-default, #D9D9D9)',
-      }}
+      className={`flex min-h-full w-full flex-col items-center justify-center bg-body p-xl text-text-default ${className ?? ''}`}
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '440px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '24px',
-        }}
-      >
+      <div className="flex w-full max-w-[440px] flex-col gap-[24px]">
         <NoticeBanner notice={notice} />
 
-        <div style={{ textAlign: 'center' }}>
-          <h1
-            style={{
-              fontSize: '24px',
-              fontWeight: 600,
-              margin: '0 0 8px 0',
-              color: 'var(--color-text-default, #D9D9D9)',
-            }}
-          >
+        <div className="text-center">
+          <h1 className="m-0 mb-compact text-[24px] font-semibold text-text-default">
             {t('Welcome to GameNode')}
           </h1>
-          <p
-            style={{
-              fontSize: '14px',
-              margin: 0,
-              color: 'var(--color-text-dimmed, #808080)',
-            }}
-          >
+          <p className="m-0 text-sm text-text-dimmed">
             {t('Your next session starts here.')}
           </p>
         </div>
 
-        <div
-          style={{
-            backgroundColor: 'var(--color-surface, #262525)',
-            border: '1px solid var(--color-border-subtle, #2A2A2A)',
-            borderRadius: 'var(--radius-lg, 16px)',
-            padding: '32px 24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '20px',
-            boxShadow: 'var(--shadow-modal, 0 32px 80px rgba(0,0,0,0.55))',
-          }}
-        >
-          <div style={{ textAlign: 'center' }}>
-            <h2
-              style={{
-                fontSize: '18px',
-                fontWeight: 500,
-                margin: '0 0 6px 0',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
-            >
+        <div className="flex flex-col gap-lg rounded-lg border border-border-subtle bg-surface px-control-inline py-xl shadow-modal">
+          <div className="text-center">
+            <h2 className="m-0 mb-[6px] text-lg font-medium text-text-default">
               {t('Make yourself at home.')}
             </h2>
-            <p
-              style={{
-                fontSize: '13px',
-                margin: 0,
-                color: 'var(--color-text-dimmed, #808080)',
-                lineHeight: 1.4,
-              }}
-            >
+            <p className="m-0 text-[13px] leading-[1.4] text-text-dimmed">
               {t('Sign in with your GameNode account in your browser.')}
             </p>
           </div>
 
           {!isBusy && !isRestoreFailed && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
-            >
+            <div className="flex flex-col gap-sm">
               <button
                 type="button"
                 onClick={() => handleStartSignIn('google')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '10px',
-                  height: '40px',
-                  backgroundColor: 'var(--color-primary, #F15025)',
-                  color: 'var(--color-on-primary, #EDEDED)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'opacity 0.2s',
-                }}
+                className="flex h-[40px] cursor-pointer items-center justify-center gap-xs rounded-md border-0 bg-brand text-sm font-medium text-on-primary transition-opacity hover:opacity-90"
               >
                 <span>{t('Continue with Google')}</span>
               </button>
@@ -164,21 +86,7 @@ export function SignedOutView({
               <button
                 type="button"
                 onClick={() => handleStartSignIn('discord')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '10px',
-                  height: '40px',
-                  backgroundColor: 'transparent',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'background-color 0.2s',
-                }}
+                className="flex h-[40px] cursor-pointer items-center justify-center gap-xs rounded-md border border-border-subtle bg-transparent text-sm font-medium text-text-default transition-colors hover:bg-raised"
               >
                 <span>{t('Continue with Discord')}</span>
               </button>
@@ -186,21 +94,7 @@ export function SignedOutView({
               <button
                 type="button"
                 onClick={() => handleStartSignIn('twitter')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '10px',
-                  height: '40px',
-                  backgroundColor: 'transparent',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'background-color 0.2s',
-                }}
+                className="flex h-[40px] cursor-pointer items-center justify-center gap-xs rounded-md border border-border-subtle bg-transparent text-sm font-medium text-text-default transition-colors hover:bg-raised"
               >
                 <span>{t('Continue with Twitter')}</span>
               </button>
@@ -208,56 +102,24 @@ export function SignedOutView({
           )}
 
           {isBusy && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '16px',
-                alignItems: 'center',
-                textAlign: 'center',
-              }}
-            >
+            <div className="flex flex-col items-center gap-md text-center">
               {isPending && (
-                <p
-                  style={{
-                    fontSize: '14px',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    margin: 0,
-                  }}
-                >
+                <p className="m-0 text-sm text-text-default">
                   {t('Complete sign-in in your browser.')}
                 </p>
               )}
               {auth === 'verifying' && (
-                <p
-                  style={{
-                    fontSize: '14px',
-                    color: 'var(--color-text-dimmed, #808080)',
-                    margin: 0,
-                  }}
-                >
+                <p className="m-0 text-sm text-text-dimmed">
                   {t('Verifying sign-in…')}
                 </p>
               )}
               {auth === 'starting' && (
-                <p
-                  style={{
-                    fontSize: '14px',
-                    color: 'var(--color-text-dimmed, #808080)',
-                    margin: 0,
-                  }}
-                >
+                <p className="m-0 text-sm text-text-dimmed">
                   {t('Starting sign-in…')}
                 </p>
               )}
               {auth === 'signingOut' && (
-                <p
-                  style={{
-                    fontSize: '14px',
-                    color: 'var(--color-text-dimmed, #808080)',
-                    margin: 0,
-                  }}
-                >
+                <p className="m-0 text-sm text-text-dimmed">
                   {t('Signing out…')}
                 </p>
               )}
@@ -265,17 +127,7 @@ export function SignedOutView({
               <button
                 type="button"
                 onClick={handleCancelSignIn}
-                style={{
-                  width: '100%',
-                  height: '40px',
-                  backgroundColor: 'transparent',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                }}
+                className="h-[40px] w-full cursor-pointer rounded-md border border-border-subtle bg-transparent text-sm font-medium text-text-default transition-colors hover:bg-raised"
               >
                 {t('Cancel sign-in')}
               </button>
@@ -283,27 +135,11 @@ export function SignedOutView({
           )}
 
           {isRestoreFailed && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
-            >
+            <div className="flex flex-col gap-sm">
               <button
                 type="button"
                 onClick={handleRetryRestore}
-                style={{
-                  width: '100%',
-                  height: '40px',
-                  backgroundColor: 'var(--color-primary, #F15025)',
-                  color: 'var(--color-on-primary, #EDEDED)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                }}
+                className="h-[40px] w-full cursor-pointer rounded-md border-0 bg-brand text-sm font-medium text-on-primary transition-opacity hover:opacity-90"
               >
                 {t('Retry connection')}
               </button>
@@ -311,39 +147,16 @@ export function SignedOutView({
               <button
                 type="button"
                 onClick={handleSignOut}
-                style={{
-                  width: '100%',
-                  height: '40px',
-                  backgroundColor: 'transparent',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  fontSize: '14px',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                }}
+                className="h-[40px] w-full cursor-pointer rounded-md border border-border-subtle bg-transparent text-sm font-medium text-text-default transition-colors hover:bg-raised"
               >
                 {t('Sign out')}
               </button>
             </div>
           )}
 
-          <div
-            style={{
-              height: '1px',
-              backgroundColor: 'var(--color-border-subtle, #2A2A2A)',
-              margin: '4px 0',
-            }}
-          />
+          <div className="my-[4px] h-px bg-border-subtle" />
 
-          <p
-            style={{
-              fontSize: '12px',
-              color: 'var(--color-text-dimmed, #808080)',
-              textAlign: 'center',
-              margin: 0,
-            }}
-          >
+          <p className="m-0 text-center text-xs text-text-dimmed">
             {t('Secure sign-in in your default browser.')}
           </p>
         </div>

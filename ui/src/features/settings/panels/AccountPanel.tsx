@@ -1,7 +1,21 @@
 import React from 'react';
+import { SegmentedControl, Switch } from '@mantine/core';
+import { IconAlertTriangle } from '@tabler/icons-react';
 import { commands, useAuth } from '../../../api';
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
+import {
+  settingsButtonDanger,
+  settingsCard,
+  settingsInfoBoxWarning,
+  settingsRow,
+  settingsRowDescription,
+  settingsRowInfo,
+  settingsRowTitle,
+  settingsSection,
+  settingsSectionDescription,
+  settingsSectionTitle,
+} from '../settingsClasses';
 
 export const AccountPanel: React.FC = () => {
   const { t } = useI18n();
@@ -40,29 +54,29 @@ export const AccountPanel: React.FC = () => {
   };
 
   return (
-    <div className="settings-section">
+    <div className={settingsSection}>
       {/* Session and Identity */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('settings.sessionAndIdentity') || 'Session and identity'}</h3>
-        <div className="settings-card">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('settings.sessionAndIdentity') || 'Session and identity'}</h3>
+        <div className={settingsCard}>
           {isSignedIn ? (
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <span className="settings-row-title">{identity}</span>
-                <span className="settings-row-description">{getStorageText()}</span>
+            <div className={settingsRow}>
+              <div className={settingsRowInfo}>
+                <span className={settingsRowTitle}>{identity}</span>
+                <span className={settingsRowDescription}>{getStorageText()}</span>
               </div>
               <button
                 type="button"
-                className="settings-button settings-button-danger"
+                className={settingsButtonDanger}
                 onClick={handleSignOut}
               >
                 {t('Sign out') || 'Sign out'}
               </button>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span className="settings-row-title">{t('settings.noSession') || 'No session'}</span>
-              <span className="settings-row-description">
+            <div className="flex flex-col gap-compact">
+              <span className={settingsRowTitle}>{t('settings.noSession') || 'No session'}</span>
+              <span className={settingsRowDescription}>
                 {t('Sign in with your GameNode account in your browser.')}
               </span>
             </div>
@@ -71,67 +85,57 @@ export const AccountPanel: React.FC = () => {
       </div>
 
       {/* Sync with GameNode */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Sync') || 'Sync'}</h3>
-        <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-title">{t('Sync with GameNode')}</span>
-              <span className="settings-row-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Sync') || 'Sync'}</h3>
+        <div className={settingsCard}>
+          <div className={settingsRow}>
+            <div className={settingsRowInfo}>
+              <span className={settingsRowTitle}>{t('Sync with GameNode')}</span>
+              <span className={settingsRowDescription}>
                 {t('Playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library.')}
               </span>
             </div>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={sync.enabled}
-                onChange={handleToggleSync}
-                aria-label={t('Sync with GameNode')}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
+            <Switch
+              aria-label={t('Sync with GameNode')}
+              checked={sync.enabled}
+              onChange={handleToggleSync}
+              color="brand"
+              size="md"
+            />
           </div>
         </div>
 
         {playtimeError && (
-          <div className="settings-info-box warning" role="alert">
-            <span>⚠</span>
+          <div className={settingsInfoBoxWarning} role="alert">
+            <IconAlertTriangle size={14} stroke={1.75} aria-hidden="true" />
             <span>{t('Could not sync playtime. Your local data is preserved.')}</span>
           </div>
         )}
       </div>
 
       {/* Playtime Source */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Playtime source')}</h3>
-        <span className="settings-section-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Playtime source')}</h3>
+        <span className={settingsSectionDescription}>
           {t('AppWindow::Applies to all games on this PC. Games without a supported store counter always use the internal counter. Store and internal histories stay separate.')}
         </span>
-        <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-title">{t('Playtime source')}</span>
+        <div className={settingsCard}>
+          <div className={settingsRow}>
+            <div className={settingsRowInfo}>
+              <span className={settingsRowTitle}>{t('Playtime source')}</span>
             </div>
-            <div className="settings-segmented" role="radiogroup" aria-label={t('Playtime source')}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={playtimeSource === 'store'}
-                className={`settings-segmented-option ${playtimeSource === 'store' ? 'selected' : ''}`}
-                onClick={() => handleSelectPlaytimeSource('store')}
-              >
-                {t('Store') || 'Store'}
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={playtimeSource === 'internal'}
-                className={`settings-segmented-option ${playtimeSource === 'internal' ? 'selected' : ''}`}
-                onClick={() => handleSelectPlaytimeSource('internal')}
-              >
-                {t('Internal') || 'Internal'}
-              </button>
-            </div>
+            <SegmentedControl
+              aria-label={t('Playtime source')}
+              value={playtimeSource}
+              onChange={(value) => handleSelectPlaytimeSource(value as 'store' | 'internal')}
+              data={[
+                { value: 'store', label: t('Store') || 'Store' },
+                { value: 'internal', label: t('Internal') || 'Internal' },
+              ]}
+              color="brand"
+              size="xs"
+              radius="sm"
+            />
           </div>
         </div>
       </div>

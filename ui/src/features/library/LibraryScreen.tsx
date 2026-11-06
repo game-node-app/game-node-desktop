@@ -69,61 +69,29 @@ export const LibraryScreen: React.FC = () => {
       data-testid="library-screen"
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100%',
-        height: '100%',
-        outline: 'none',
-        overflow: 'hidden',
-        position: 'relative',
-        backgroundColor: 'var(--color-background, #161616)',
-      }}
+      className="relative flex h-full w-full flex-col overflow-hidden bg-body outline-none"
     >
       <LibraryToolbar />
 
-      <div
-        style={{
-          display: 'flex',
-          flex: 1,
-          width: '100%',
-          height: 'calc(100% - 54px)',
-          overflow: 'hidden',
-          position: 'relative',
-        }}
-      >
+      <div className="relative flex h-[calc(100%-54px)] w-full flex-1 overflow-hidden">
         {/* Empty States */}
         {empty && (
           <div
             data-testid="library-empty-state"
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '32px',
-              textAlign: 'center',
-              gap: '12px',
-            }}
+            className="flex flex-1 flex-col items-center justify-center gap-sm p-xl text-center"
           >
             {typeof empty === 'object' && 'noGames' in empty && (
               <>
-                <h2
-                  style={{
-                    fontSize: 'var(--font-size-xl, 20px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                  }}
-                >
+                <h2 className="text-xl text-text-default">
                   {t('Library::No installed games found.')}
                 </h2>
-                <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                <div className="text-text-dimmed">
                   {formatI18n(
                     t('Library::Looked in: {}'),
                     empty.noGames.stores.join(', '),
                   )}
                 </div>
-                <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                <div className="text-text-dimmed">
                   {t('Library::Install a game, then choose Rescan.')}
                 </div>
               </>
@@ -131,29 +99,17 @@ export const LibraryScreen: React.FC = () => {
 
             {empty === 'nothingMatches' && (
               <>
-                <h2
-                  style={{
-                    fontSize: 'var(--font-size-xl, 20px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                  }}
-                >
+                <h2 className="text-xl text-text-default">
                   {t('Library::No games match.')}
                 </h2>
-                <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                <div className="text-text-dimmed">
                   {t('Library::Nothing in this view matches your search.')}
                 </div>
                 <button
                   type="button"
                   data-testid="library-empty-clear-search-btn"
                   onClick={() => commands.libraryInput({ setSearch: '' })}
-                  style={{
-                    padding: '8px 16px',
-                    backgroundColor: 'transparent',
-                    border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    cursor: 'pointer',
-                  }}
+                  className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
                 >
                   {t('Library::Clear search')}
                 </button>
@@ -164,14 +120,7 @@ export const LibraryScreen: React.FC = () => {
 
         {/* View Grid or List */}
         {!empty && (
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              height: '100%',
-              overflow: 'hidden',
-            }}
-          >
+          <div className="flex h-full flex-1 overflow-hidden">
             {viewMode === 'grid' ? <GameGrid /> : <GameList />}
           </div>
         )}

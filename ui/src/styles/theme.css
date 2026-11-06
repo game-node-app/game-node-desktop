@@ -1,3 +1,14 @@
+@import '@mantine/core/styles.css';
+
+/* Mantine ships unlayered base styles; wrapping Tailwind's preflight in a layer
+   keeps Mantine component defaults ahead of the reset while utilities (below,
+   unlayered and emitted last) still win when a class is applied explicitly. */
+@layer tailwind {
+  @tailwind base;
+}
+@tailwind components;
+@tailwind utilities;
+
 @font-face {
   font-family: 'Roboto';
   src: url('../assets/fonts/Roboto-Variable.ttf') format('truetype-variations');

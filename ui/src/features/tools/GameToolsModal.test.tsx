@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MantineProvider } from '@mantine/core';
+import { appTheme } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -24,9 +26,11 @@ function renderWithProviders(
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snap);
 
   return render(
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
-    </QueryClientProvider>,
+    <MantineProvider theme={appTheme} defaultColorScheme="dark">
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
+      </QueryClientProvider>
+    </MantineProvider>,
   );
 }
 
@@ -151,11 +155,13 @@ describe('GameToolsModal', () => {
   it('reflects proxy selections returned by the backend', () => {
     const { rerender } = renderWithProviders(<GameToolsModal modal={baseModal} />);
     rerender(
-      <QueryClientProvider client={new QueryClient()}>
-        <I18nProvider initialLocale="en">
-          <GameToolsModal modal={{ ...baseModal, selectedProxy: 'winmm' }} />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MantineProvider theme={appTheme} defaultColorScheme="dark">
+        <QueryClientProvider client={new QueryClient()}>
+          <I18nProvider initialLocale="en">
+            <GameToolsModal modal={{ ...baseModal, selectedProxy: 'winmm' }} />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MantineProvider>,
     );
     expect(screen.getByTestId('proxy-dll-select')).toHaveValue('winmm');
     expect(screen.getByRole('option', { name: 'winmm.dll', selected: true })).toBeInTheDocument();
@@ -200,11 +206,13 @@ describe('GameToolsModal', () => {
     };
 
     rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <I18nProvider initialLocale="en">
-          <GameToolsModal modal={confirmedModal} />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MantineProvider theme={appTheme} defaultColorScheme="dark">
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider initialLocale="en">
+            <GameToolsModal modal={confirmedModal} />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MantineProvider>,
     );
 
     const enabledInstallBtn = screen.getByTestId('tool-install-button');
@@ -269,7 +277,10 @@ describe('GameToolsModal', () => {
     );
     expect(screen.getByTestId('tool-install-button')).toBeDisabled();
     expect(screen.getByTestId('tool-install-button')).toHaveTextContent('Installing…');
-    expect(screen.getByTestId('tool-operation-progress').parentElement).toHaveStyle({ padding: '12px 24px 0' });
+    expect(screen.getByTestId('tool-operation-progress').parentElement).toHaveAttribute(
+      'aria-live',
+      'polite',
+    );
 
     // Failed operation state
     const failedModal: ToolModalView = {
@@ -282,11 +293,13 @@ describe('GameToolsModal', () => {
     };
 
     rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <I18nProvider initialLocale="en">
-          <GameToolsModal modal={failedModal} />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MantineProvider theme={appTheme} defaultColorScheme="dark">
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider initialLocale="en">
+            <GameToolsModal modal={failedModal} />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MantineProvider>,
     );
 
     expect(screen.getByTestId('tool-operation-error')).toHaveTextContent(

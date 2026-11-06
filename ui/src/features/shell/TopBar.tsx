@@ -1,3 +1,4 @@
+import { IconMenu2 } from '@tabler/icons-react';
 import type { AuthView } from '../../api/types';
 import { useAuth } from '../../api/useSnapshot';
 import { uiStore, useUiStore } from '../../store/uiStore';
@@ -30,95 +31,41 @@ export function TopBar({ auth: propAuth, className }: TopBarProps = {}) {
     <header
       role="banner"
       data-testid="top-bar"
-      className={className}
-      style={{
-        position: 'relative',
-        height: 'var(--size-topbar-height, 54px)',
-        backgroundColor: 'var(--color-chrome, #111111)',
-        borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 16px',
-        boxSizing: 'border-box',
-        userSelect: 'none',
-        zIndex: 100,
-      }}
+      data-tauri-drag-region
+      className={`relative z-[100] flex h-topbar items-center justify-between border-b border-border-subtle bg-chrome px-md select-none ${className ?? ''}`}
     >
       {/* Brand logo & DESKTOP badge */}
       <div
         data-testid="brand-logo"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-        }}
+        data-tauri-drag-region
+        className="flex items-center gap-compact"
       >
-        <span
-          style={{
-            fontSize: '18px',
-            fontWeight: 700,
-            color: 'var(--color-primary, #F15025)',
-            letterSpacing: '-0.3px',
-          }}
-        >
+        <span className="text-lg font-bold tracking-[-0.3px] text-brand">
           GameNode
         </span>
         <span
           data-testid="desktop-badge"
-          style={{
-            fontSize: '10px',
-            fontWeight: 700,
-            letterSpacing: '0.8px',
-            padding: '2px 6px',
-            borderRadius: 'var(--radius-xs, 2px)',
-            backgroundColor: 'var(--color-surface, #262525)',
-            color: 'var(--color-text-dimmed, #808080)',
-          }}
+          className="rounded-xs bg-surface px-[6px] py-[2px] text-[10px] font-bold tracking-[0.8px] text-text-dimmed"
         >
           DESKTOP
         </span>
       </div>
 
       {/* Right side controls: status / user display name / menu toggle */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-        }}
-      >
+      <div className="flex items-center gap-sm">
         {isSignedIn && (
           <div
             data-testid="user-profile"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-            }}
+            className="flex items-center gap-compact"
           >
             <span
               data-testid="online-dot"
               aria-hidden="true"
-              style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: 'var(--color-success, #3DD68C)',
-                display: 'inline-block',
-              }}
+              className="inline-block h-[8px] w-[8px] rounded-full bg-success"
             />
             <span
               data-testid="user-display-name"
-              style={{
-                fontSize: '13px',
-                fontWeight: 500,
-                color: 'var(--color-text-default, #D9D9D9)',
-                maxWidth: '160px',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
+              className="max-w-[160px] truncate text-[13px] font-medium text-text-default"
             >
               {displayName}
             </span>
@@ -131,24 +78,11 @@ export function TopBar({ auth: propAuth, className }: TopBarProps = {}) {
           aria-expanded={appMenuOpen}
           aria-haspopup="menu"
           onClick={handleToggleMenu}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '32px',
-            padding: '0 12px',
-            backgroundColor: appMenuOpen
-              ? 'var(--color-surface, #262525)'
-              : 'transparent',
-            color: 'var(--color-text-default, #D9D9D9)',
-            border: '1px solid var(--color-border-subtle, #2A2A2A)',
-            borderRadius: 'var(--radius-sm, 4px)',
-            fontSize: '13px',
-            cursor: 'pointer',
-            transition: 'background-color 0.15s',
-          }}
+          className={`flex h-[32px] cursor-pointer items-center justify-center rounded-sm border border-border-subtle px-sm text-text-default transition-colors hover:bg-surface ${
+            appMenuOpen ? 'bg-surface' : 'bg-transparent'
+          }`}
         >
-          ☰
+          <IconMenu2 size={16} stroke={1.75} aria-hidden="true" />
         </button>
       </div>
 

@@ -48,37 +48,13 @@ const GameListRow = memo(function GameListRow({
       onClick={(e) => onClick(e, row.key)}
       onContextMenu={(e) => onContextMenu(e, row.key)}
       onDoubleClick={(e) => onDoubleClick(e, row.key)}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: `${size}px`,
-        transform: `translateY(${start}px)`,
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        boxSizing: 'border-box',
-        borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
-        backgroundColor: isSelected ? 'var(--color-accent-subtle, #F150251F)' : 'transparent',
-        outline: isFocused ? '2px solid var(--color-text-default, #D9D9D9)' : 'none',
-        outlineOffset: '-2px',
-        cursor: 'pointer',
-        userSelect: 'none',
-        transition: 'background-color 120ms ease',
-      }}
+      className={`absolute left-0 top-0 flex w-full cursor-pointer select-none items-center border-b border-border-subtle px-md transition-colors ${
+        isSelected ? 'bg-accent-subtle' : 'bg-transparent'
+      } ${isFocused ? '-outline-offset-2 outline outline-2 outline-text-default' : 'outline-none'}`}
+      style={{ height: `${size}px`, transform: `translateY(${start}px)` }}
     >
       {/* Thumbnail */}
-      <div
-        style={{
-          width: '28px',
-          height: '38px',
-          borderRadius: 'var(--radius-xs, 2px)',
-          overflow: 'hidden',
-          flexShrink: 0,
-          marginRight: '8px',
-        }}
-      >
+      <div className="mr-2 h-[38px] w-[28px] shrink-0 overflow-hidden rounded-xs">
         <CoverImage
           coverFile={row.coverFile}
           title={row.title}
@@ -87,105 +63,35 @@ const GameListRow = memo(function GameListRow({
       </div>
 
       {/* Title + Running */}
-      <div
-        style={{
-          flex: '1 1 200px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          paddingRight: '12px',
-          overflow: 'hidden',
-        }}
-      >
-        <span
-          style={{
-            color: 'var(--color-text-default, #D9D9D9)',
-            fontWeight: 500,
-            fontSize: 'var(--font-size-sm, 14px)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
+      <div className="flex flex-[1_1_200px] items-center gap-1.5 overflow-hidden pr-3">
+        <span className="truncate text-sm font-medium text-text-default">
           {row.title}
         </span>
         {row.running && (
-          <span
-            style={{
-              backgroundColor: 'var(--color-success-subtle, #3DD68C1F)',
-              color: 'var(--color-success, #3DD68C)',
-              fontSize: '11px',
-              padding: '1px 6px',
-              borderRadius: 'var(--radius-xs, 2px)',
-              fontWeight: 600,
-              flexShrink: 0,
-            }}
-          >
+          <span className="shrink-0 rounded-xs bg-success-subtle px-1.5 py-px text-[11px] font-semibold text-success">
             {t('Library::Running')}
           </span>
         )}
       </div>
 
       {/* Store / Provider */}
-      <div
-        style={{
-          width: '130px',
-          paddingRight: '12px',
-          color: 'var(--color-text-dimmed, #808080)',
-          fontSize: 'var(--font-size-xs, 12px)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <div className="w-[130px] truncate pr-3 text-xs text-text-dimmed">
         {row.providerName}
       </div>
 
       {/* Match */}
-      <div
-        style={{
-          width: '170px',
-          paddingRight: '12px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          overflow: 'hidden',
-        }}
-      >
+      <div className="flex w-[170px] items-center gap-1.5 overflow-hidden pr-3">
         <span
-          style={{
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            backgroundColor: dotColor,
-            flexShrink: 0,
-          }}
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: dotColor }}
         />
-        <span
-          style={{
-            color: 'var(--color-text-dimmed, #808080)',
-            fontSize: 'var(--font-size-xs, 12px)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <span className="truncate text-xs text-text-dimmed">
           {matchText}
         </span>
       </div>
 
       {/* Playtime */}
-      <div
-        style={{
-          width: '110px',
-          textAlign: 'right',
-          color: 'var(--color-text-dimmed, #808080)',
-          fontSize: 'var(--font-size-xs, 12px)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <div className="w-[110px] truncate text-right text-xs text-text-dimmed">
         {playtimeStr}
       </div>
     </div>
@@ -235,59 +141,30 @@ export const GameList: React.FC<GameListProps> = ({ className, style }) => {
   return (
     <div
       data-testid="game-list-container"
-      className={className}
-      style={{
-        flex: 1,
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: 'var(--color-background, #161616)',
-        overflow: 'hidden',
-        ...style,
-      }}
+      className={`flex h-full w-full flex-1 flex-col overflow-hidden bg-body ${className ?? ''}`}
+      style={style}
     >
       {/* Sticky Header */}
       <div
         data-testid="game-list-header"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          height: '32px',
-          padding: '0 16px',
-          backgroundColor: 'var(--color-chrome, #111111)',
-          borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
-          fontSize: 'var(--font-size-xs, 12px)',
-          color: 'var(--color-text-dimmed, #808080)',
-          fontWeight: 600,
-          flexShrink: 0,
-          userSelect: 'none',
-        }}
+        className="flex h-8 shrink-0 select-none items-center border-b border-border-subtle bg-chrome px-md text-xs font-semibold text-text-dimmed"
       >
-        <div style={{ width: '36px' }} />
-        <div style={{ flex: '1 1 200px', paddingRight: '12px' }}>{t('Library::Title')}</div>
-        <div style={{ width: '130px', paddingRight: '12px' }}>{t('Library::Store')}</div>
-        <div style={{ width: '170px', paddingRight: '12px' }}>{t('Library::Match')}</div>
-        <div style={{ width: '110px', textAlign: 'right' }}>{t('Library::Playtime')}</div>
+        <div className="w-9" />
+        <div className="flex-[1_1_200px] pr-3">{t('Library::Title')}</div>
+        <div className="w-[130px] pr-3">{t('Library::Store')}</div>
+        <div className="w-[170px] pr-3">{t('Library::Match')}</div>
+        <div className="w-[110px] text-right">{t('Library::Playtime')}</div>
       </div>
 
       {/* Virtual Scroll Area */}
       <div
         ref={parentRef}
         data-testid="game-list-scroll-area"
-        style={{
-          flex: 1,
-          width: '100%',
-          overflowY: 'auto',
-          position: 'relative',
-        }}
+        className="relative w-full flex-1 overflow-y-auto"
       >
         <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
+          className="relative w-full"
+          style={{ height: `${virtualizer.getTotalSize()}px` }}
         >
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index];

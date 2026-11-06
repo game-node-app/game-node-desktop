@@ -178,7 +178,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.manage(engine.clone());
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
-        commands::get_bootstrap_state,
+        commands::get_app_info,
+        commands::get_license_notices,
         commands::dispatch_auth,
         commands::set_sync_enabled,
         commands::set_playtime_source,

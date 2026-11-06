@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react';
+import React from 'react';
+import { FloatingModal } from '../../components/FloatingModal';
 import { commands, useLibraryView, type EntryStatus } from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason, formatStatus } from '../library/formatters';
@@ -16,19 +17,6 @@ export const AddDialog: React.FC = () => {
   const { t } = useI18n();
 
   const dialog = library?.addDialog;
-
-  useEffect(() => {
-    if (!dialog) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        commands.libraryInput('closeAdd');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [dialog]);
 
   if (!dialog) return null;
 
@@ -67,77 +55,43 @@ export const AddDialog: React.FC = () => {
   };
 
   return (
-    <div
-      data-testid="add-dialog-overlay"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.75)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 2000,
-        padding: '16px',
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="add-dialog"
+      defaultSize={{ width: 620, height: 600 }}
+      minSize={{ width: 480, height: 360 }}
+      zIndex={2000}
+      closeOnClickOutside
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-dialog-title"
+      <FloatingModal.Overlay data-testid="add-dialog-overlay" backgroundOpacity={0.75} />
+      <FloatingModal.Content
         data-testid="add-dialog"
-        style={{
-          width: '620px',
-          maxWidth: '100%',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--color-secondary, #1A1A1A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          boxShadow: 'var(--shadow-modal, 0 32px 80px rgba(0, 0, 0, 0.55))',
-        }}
+        className="flex flex-col bg-secondary"
       >
         {/* Header */}
-        <div style={{ padding: '20px 20px 12px 20px' }}>
-          <h2
-            id="add-dialog-title"
+        <FloatingModal.Header className="px-lg pb-sm pt-lg">
+          <FloatingModal.Title
             data-testid="add-dialog-title"
-            style={{
-              fontSize: 'var(--font-size-lg, 18px)',
-              fontWeight: 600,
-              color: 'var(--color-text-default, #D9D9D9)',
-            }}
+            className="text-lg font-semibold text-text-default"
           >
             {dialog.editingExisting
               ? t('Library::Edit in GameNode')
               : t('Library::Add to GameNode')}
-          </h2>
-        </div>
+          </FloatingModal.Title>
+        </FloatingModal.Header>
 
         {/* Dialog Body */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '0 20px 20px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
+        <FloatingModal.Body className="gap-md px-lg pb-lg">
           {/* Summary Mode */}
           {dialog.summary ? (
             <div
               data-testid="add-dialog-summary"
-              style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+              className="flex flex-col gap-[14px]"
             >
               <div
                 data-testid="add-summary-headline"
-                style={{
-                  fontSize: 'var(--font-size-sm, 14px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                }}
+                className="text-sm text-text-default"
               >
                 {formatI18n(
                   t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
@@ -151,44 +105,18 @@ export const AddDialog: React.FC = () => {
               {/* Items List */}
               <div
                 data-testid="add-summary-items-list"
-                style={{
-                  maxHeight: '260px',
-                  overflowY: 'auto',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                  backgroundColor: 'var(--color-raised, #222222)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '10px',
-                }}
+                className="flex max-h-[260px] flex-col gap-[6px] overflow-y-auto rounded-sm bg-raised p-xs"
               >
                 {dialog.summary.items.map((item) => (
                   <div
                     key={item.entryKey}
                     data-testid={`add-summary-item-${item.entryKey}`}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      padding: '4px 0',
-                      borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
-                    }}
+                    className="flex flex-col border-b border-border-subtle py-1"
                   >
-                    <span
-                      style={{
-                        fontWeight: 500,
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        fontSize: 'var(--font-size-sm, 14px)',
-                      }}
-                    >
+                    <span className="text-sm font-medium text-text-default">
                       {item.title}
                     </span>
-                    <span
-                      style={{
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        color: 'var(--color-text-dimmed, #808080)',
-                        marginTop: '2px',
-                      }}
-                    >
+                    <span className="mt-0.5 text-xs text-text-dimmed">
                       {renderOutcomeText(item.outcome, dialog.status)}
                     </span>
                   </div>
@@ -202,11 +130,7 @@ export const AddDialog: React.FC = () => {
               {dialog.targets.length === 1 && (
                 <div
                   data-testid="add-single-target"
-                  style={{
-                    fontSize: 'var(--font-size-md, 16px)',
-                    fontWeight: 500,
-                    color: 'var(--color-text-default, #D9D9D9)',
-                  }}
+                  className="text-md font-medium text-text-default"
                 >
                   {dialog.targets[0].title}
                 </div>
@@ -215,38 +139,19 @@ export const AddDialog: React.FC = () => {
               {dialog.targets.length > 1 && (
                 <div
                   data-testid="add-multiple-targets"
-                  style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}
+                  className="flex flex-col gap-[6px]"
                 >
-                  <div
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-text-dimmed, #808080)',
-                    }}
-                  >
+                  <div className="text-xs text-text-dimmed">
                     {formatI18n(t('Library::{} games'), dialog.targets.length)}
                   </div>
-                  <div
-                    style={{
-                      maxHeight: '110px',
-                      overflowY: 'auto',
-                      backgroundColor: 'var(--color-raised, #222222)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      padding: '8px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px',
-                    }}
-                  >
+                  <div className="flex max-h-[110px] flex-col gap-1 overflow-y-auto rounded-sm bg-raised p-compact">
                     {dialog.targets.map((tgt) => (
                       <div
                         key={tgt.entryKey}
                         data-testid={`add-target-${tgt.entryKey}`}
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: tgt.matched
-                            ? 'var(--color-text-default, #D9D9D9)'
-                            : 'var(--color-text-dimmed, #808080)',
-                        }}
+                        className={`text-xs ${
+                          tgt.matched ? 'text-text-default' : 'text-text-dimmed'
+                        }`}
                       >
                         {tgt.matched
                           ? tgt.title
@@ -261,16 +166,11 @@ export const AddDialog: React.FC = () => {
               )}
 
               {/* Status Picker */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <span
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    color: 'var(--color-text-dimmed, #808080)',
-                  }}
-                >
+              <div className="flex flex-col gap-[6px]">
+                <span className="text-xs text-text-dimmed">
                   {t('Library::Status') !== 'Library::Status' ? t('Library::Status') : 'Status'}
                 </span>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                <div className="flex flex-wrap gap-[6px]">
                   {STATUS_LIST.map((st) => {
                     const isSelected = dialog.status === st;
                     return (
@@ -279,23 +179,11 @@ export const AddDialog: React.FC = () => {
                         type="button"
                         data-testid={`add-status-btn-${st}`}
                         onClick={() => handleStatusClick(st)}
-                        style={{
-                          padding: '6px 12px',
-                          backgroundColor: isSelected
-                            ? 'var(--color-primary, #F15025)'
-                            : 'var(--color-surface, #262525)',
-                          color: isSelected
-                            ? 'var(--color-on-primary, #EDEDED)'
-                            : 'var(--color-text-default, #D9D9D9)',
-                          border: `1px solid ${
-                            isSelected
-                              ? 'var(--color-primary, #F15025)'
-                              : 'var(--color-border-subtle, #2A2A2A)'
-                          }`,
-                          borderRadius: 'var(--radius-sm, 4px)',
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          cursor: 'pointer',
-                        }}
+                        className={`rounded-sm border px-sm py-[6px] text-xs ${
+                          isSelected
+                            ? 'border-brand bg-brand text-on-primary'
+                            : 'border-border-subtle bg-surface text-text-default hover:bg-raised'
+                        }`}
                       >
                         {formatStatus(st, t)}
                       </button>
@@ -307,11 +195,7 @@ export const AddDialog: React.FC = () => {
                 {dialog.appliedFrom && (
                   <div
                     data-testid="add-applied-from-notice"
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-warning, #F5A524)',
-                      marginTop: '4px',
-                    }}
+                    className="mt-1 text-xs text-warning"
                   >
                     {formatI18n(
                       t('Library::GameNode will use {}, the default status of {}.'),
@@ -323,23 +207,15 @@ export const AddDialog: React.FC = () => {
               </div>
 
               {/* Collections Checklist */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <span
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    color: 'var(--color-text-dimmed, #808080)',
-                  }}
-                >
+              <div className="flex flex-col gap-[6px]">
+                <span className="text-xs text-text-dimmed">
                   {t('Library::Collections (optional)')}
                 </span>
 
                 {dialog.collections === 'loading' && (
                   <div
                     data-testid="add-collections-loading"
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-text-dimmed, #808080)',
-                    }}
+                    className="text-xs text-text-dimmed"
                   >
                     {t('Library::Loading your collections…')}
                   </div>
@@ -349,34 +225,16 @@ export const AddDialog: React.FC = () => {
                   'failed' in dialog.collections && (
                     <div
                       data-testid="add-collections-failed"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '8px',
-                      }}
+                      className="flex items-center justify-between gap-compact"
                     >
-                      <span
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: 'var(--color-warning, #F5A524)',
-                        }}
-                      >
+                      <span className="text-xs text-warning">
                         {t('Library::Could not load your collections. Try again.')}
                       </span>
                       <button
                         type="button"
                         data-testid="add-collections-retry-btn"
                         onClick={handleRetryCollections}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          backgroundColor: 'transparent',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          borderRadius: 'var(--radius-xs, 2px)',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          cursor: 'pointer',
-                        }}
+                        className="rounded-xs border border-border-subtle px-compact py-1 text-xs text-text-default hover:bg-raised"
                       >
                         {t('Library::Retry') !== 'Library::Retry' ? t('Library::Retry') : 'Retry'}
                       </button>
@@ -389,42 +247,22 @@ export const AddDialog: React.FC = () => {
                       {dialog.collections.loaded.length === 0 ? (
                         <div
                           data-testid="add-collections-empty"
-                          style={{
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            color: 'var(--color-text-dimmed, #808080)',
-                          }}
+                          className="text-xs text-text-dimmed"
                         >
                           {t('Library::You have no collections.')}
                         </div>
                       ) : (
                         <div
                           data-testid="add-collections-list"
-                          style={{
-                            maxHeight: '160px',
-                            overflowY: 'auto',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '4px',
-                            backgroundColor: 'var(--color-raised, #222222)',
-                            borderRadius: 'var(--radius-sm, 4px)',
-                            padding: '6px',
-                          }}
+                          className="flex max-h-[160px] flex-col gap-1 overflow-y-auto rounded-sm bg-raised p-[6px]"
                         >
                           {dialog.collections.loaded.map((col) => (
                             <label
                               key={col.id}
                               data-testid={`add-collection-item-${col.id}`}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                padding: '6px 8px',
-                                borderRadius: 'var(--radius-xs, 2px)',
-                                cursor: 'pointer',
-                                backgroundColor: col.picked
-                                  ? 'var(--color-accent-subtle, #F150251F)'
-                                  : 'transparent',
-                              }}
+                              className={`flex cursor-pointer items-center gap-compact rounded-xs px-compact py-[6px] ${
+                                col.picked ? 'bg-accent-subtle' : 'bg-transparent'
+                              }`}
                             >
                               <input
                                 type="checkbox"
@@ -432,22 +270,12 @@ export const AddDialog: React.FC = () => {
                                 checked={col.picked}
                                 onChange={() => handleToggleCollection(col.id)}
                               />
-                              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <span
-                                  style={{
-                                    fontSize: 'var(--font-size-sm, 14px)',
-                                    color: 'var(--color-text-default, #D9D9D9)',
-                                  }}
-                                >
+                              <div className="flex flex-col">
+                                <span className="text-sm text-text-default">
                                   {col.name}
                                 </span>
                                 {col.defaultStatus && (
-                                  <span
-                                    style={{
-                                      fontSize: '11px',
-                                      color: 'var(--color-text-dimmed, #808080)',
-                                    }}
-                                  >
+                                  <span className="text-[11px] text-text-dimmed">
                                     {formatI18n(
                                       t('Library::Sets the status to {}'),
                                       formatStatus(col.defaultStatus, t),
@@ -467,18 +295,11 @@ export const AddDialog: React.FC = () => {
               {dialog.progress && (
                 <div
                   data-testid="add-progress-container"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px',
-                  }}
+                  className="flex flex-col gap-1"
                 >
                   <div
                     data-testid="add-progress-caption"
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-text-dimmed, #808080)',
-                    }}
+                    className="text-xs text-text-dimmed"
                   >
                     {formatI18n(
                       t('Library::Saving {} of {}…'),
@@ -486,24 +307,14 @@ export const AddDialog: React.FC = () => {
                       dialog.progress.total,
                     )}
                   </div>
-                  <div
-                    style={{
-                      width: '100%',
-                      height: '6px',
-                      backgroundColor: 'var(--color-surface, #262525)',
-                      borderRadius: 'var(--radius-full, 9999px)',
-                      overflow: 'hidden',
-                    }}
-                  >
+                  <div className="h-[6px] w-full overflow-hidden rounded-full bg-surface">
                     <div
                       data-testid="add-progress-bar-fill"
+                      className="h-full bg-brand transition-[width] duration-200 ease-out"
                       style={{
-                        height: '100%',
-                        backgroundColor: 'var(--color-primary, #F15025)',
                         width: `${Math.round(
                           ((dialog.progress.done + 1) / dialog.progress.total) * 100,
                         )}%`,
-                        transition: 'width 200ms ease',
                       }}
                     />
                   </div>
@@ -514,10 +325,7 @@ export const AddDialog: React.FC = () => {
               {dialog.error && (
                 <div
                   data-testid="add-error-notice"
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    color: 'var(--color-danger, #E5484D)',
-                  }}
+                  className="text-xs text-danger"
                 >
                   {dialog.error === 'unauthorized' &&
                     t('Library::GameNode rejected your session. Sign in again.')}
@@ -529,46 +337,24 @@ export const AddDialog: React.FC = () => {
               {dialog.blocked && (
                 <div
                   data-testid="add-blocked-notice"
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    color: 'var(--color-warning, #F5A524)',
-                  }}
+                  className="text-xs text-warning"
                 >
                   {formatReason(dialog.blocked, t)}
                 </div>
               )}
             </>
           )}
-        </div>
+        </FloatingModal.Body>
 
         {/* Footer Actions */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            padding: '12px 20px',
-            borderTop: '1px solid var(--color-border-subtle, #2A2A2A)',
-            backgroundColor: 'var(--color-chrome, #111111)',
-            gap: '8px',
-          }}
-        >
+        <FloatingModal.Footer className="bg-chrome px-lg py-sm">
           {dialog.summary ? (
             <button
               type="button"
               data-testid="add-dialog-close-btn"
               aria-label="Close"
               onClick={handleClose}
-              style={{
-                padding: '8px 16px',
-                fontSize: 'var(--font-size-xs, 12px)',
-                backgroundColor: 'var(--color-primary, #F15025)',
-                color: 'var(--color-on-primary, #EDEDED)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 4px)',
-                cursor: 'pointer',
-                fontWeight: 500,
-              }}
+              className="rounded-sm bg-brand px-md py-compact text-xs font-medium text-on-primary hover:bg-brand-4"
             >
               {t('Library::Close')}
             </button>
@@ -579,15 +365,7 @@ export const AddDialog: React.FC = () => {
                 data-testid="add-dialog-cancel-btn"
                 aria-label="Cancel"
                 onClick={handleClose}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  backgroundColor: 'transparent',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  cursor: 'pointer',
-                }}
+                className="rounded-sm border border-border-subtle px-md py-compact text-xs text-text-default hover:bg-raised"
               >
                 {t('Library::Cancel') !== 'Library::Cancel' ? t('Library::Cancel') : 'Cancel'}
               </button>
@@ -598,21 +376,7 @@ export const AddDialog: React.FC = () => {
                 aria-label="Confirm"
                 disabled={!dialog.canConfirm || dialog.progress != null}
                 onClick={handleConfirm}
-                style={{
-                  padding: '8px 16px',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  backgroundColor: 'var(--color-primary, #F15025)',
-                  color: 'var(--color-on-primary, #EDEDED)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  cursor:
-                    dialog.canConfirm && dialog.progress == null
-                      ? 'pointer'
-                      : 'default',
-                  opacity:
-                    dialog.canConfirm && dialog.progress == null ? 1 : 0.5,
-                  fontWeight: 500,
-                }}
+                className="rounded-sm bg-brand px-md py-compact text-xs font-medium text-on-primary hover:bg-brand-4 disabled:cursor-default disabled:opacity-50"
               >
                 {dialog.editingExisting
                   ? t('Library::Save') !== 'Library::Save'
@@ -622,8 +386,10 @@ export const AddDialog: React.FC = () => {
               </button>
             </>
           )}
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

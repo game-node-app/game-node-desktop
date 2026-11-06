@@ -1,5 +1,10 @@
 import React from 'react';
 import {
+  IconDownload,
+  IconPlayerPlay,
+  IconX,
+} from '@tabler/icons-react';
+import {
   commands,
   useLibraryView,
   useSnapshot,
@@ -18,6 +23,10 @@ import {
   formatDuration,
   formatMatchStatus,
 } from './formatters';
+
+const secondaryActionBase =
+  'w-full rounded-xs border border-border-subtle bg-transparent px-2.5 py-compact text-left text-sm text-text-default transition-colors';
+const reasonClass = 'mt-1 text-xs text-warning';
 
 export const DetailPane: React.FC = () => {
   const library = useLibraryView();
@@ -139,16 +148,12 @@ export const DetailPane: React.FC = () => {
     return null;
   };
 
+  const isPlayAvailable = actions?.play === 'available';
+  const isInstallAvailable = actions?.install === 'available';
+  const isRunning = detail?.running || detail?.row.running;
+
   return (
-    <div
-      data-testid="detail-pane"
-      style={{
-        display: 'flex',
-        height: '100%',
-        position: 'relative',
-        flexShrink: 0,
-      }}
-    >
+    <div data-testid="detail-pane" className="relative flex h-full shrink-0">
       {/* Resizable Handle on left edge */}
       <div
         data-testid="detail-resize-handle"
@@ -160,57 +165,19 @@ export const DetailPane: React.FC = () => {
         tabIndex={0}
         onPointerDown={handlePointerDown}
         onKeyDown={handleHandleKeyDown}
-        style={{
-          width: '8px',
-          height: '100%',
-          cursor: 'col-resize',
-          backgroundColor: 'transparent',
-          position: 'relative',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          userSelect: 'none',
-        }}
+        className="group relative flex h-full w-2 cursor-col-resize select-none items-center justify-center bg-transparent outline-none"
       >
-        <div
-          style={{
-            width: '1px',
-            height: '100%',
-            backgroundColor: 'var(--color-border-subtle, #2A2A2A)',
-          }}
-        />
+        <div className="h-full w-px bg-border-subtle transition-colors group-hover:bg-brand group-focus-visible:bg-brand" />
       </div>
 
       {/* Pane Content */}
       <div
-        style={{
-          width: `${clampedWidth}px`,
-          height: '100%',
-          backgroundColor: 'var(--color-secondary, #1A1A1A)',
-          borderLeft: '1px solid var(--color-border-subtle, #2A2A2A)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
+        className="flex h-full flex-col overflow-hidden border-l border-border-subtle bg-secondary"
+        style={{ width: `${clampedWidth}px` }}
       >
         {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '12px 16px',
-            borderBottom: '1px solid var(--color-border-subtle, #2A2A2A)',
-            flexShrink: 0,
-          }}
-        >
-          <span
-            style={{
-              fontSize: 'var(--font-size-lg, 18px)',
-              fontWeight: 600,
-              color: 'var(--color-text-default, #D9D9D9)',
-            }}
-          >
+        <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-md py-sm">
+          <span className="text-lg font-semibold text-text-default">
             {t('Library::Details')}
           </span>
           <button
@@ -218,77 +185,38 @@ export const DetailPane: React.FC = () => {
             data-testid="detail-close-btn"
             aria-label="Close"
             onClick={handleClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-              fontSize: '20px',
-              lineHeight: 1,
-              padding: '4px 8px',
-              borderRadius: 'var(--radius-sm, 4px)',
-            }}
+            className="rounded-sm p-1 text-text-default transition-colors hover:bg-surface"
           >
-            ×
+            <IconX size={18} stroke={1.75} aria-hidden />
           </button>
         </div>
 
         {/* Scrollable Body */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
+        <div className="flex flex-1 flex-col gap-md overflow-y-auto p-md">
           {/* Multiple selected state */}
           {!detail && selectedCount > 1 && (
             <div data-testid="detail-multiple-selected">
-              <h3
-                style={{
-                  fontSize: 'var(--font-size-md, 16px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  marginBottom: '12px',
-                }}
-              >
+              <h3 className="mb-sm text-md text-text-default">
                 {formatI18n(t('Library::{} games selected'), selectedCount)}
               </h3>
-              <div
-                style={{
-                  backgroundColor: 'var(--color-raised, #222222)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '12px',
-                }}
-              >
+              <div className="rounded-sm bg-raised p-sm">
                 <button
                   type="button"
                   data-testid="detail-add-multiple-btn"
                   disabled={actions?.addToGamenode !== 'available'}
                   onClick={() => commands.libraryInput('openAdd')}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    backgroundColor: 'var(--color-primary, #F15025)',
-                    color: 'var(--color-on-primary, #EDEDED)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    cursor: actions?.addToGamenode === 'available' ? 'pointer' : 'default',
-                    opacity: actions?.addToGamenode === 'available' ? 1 : 0.5,
-                  }}
+                  className={`w-full rounded-sm border-0 bg-brand px-sm py-compact text-on-primary transition-colors ${
+                    actions?.addToGamenode === 'available'
+                      ? 'cursor-pointer opacity-100 hover:bg-brand-6'
+                      : 'cursor-default opacity-50'
+                  }`}
                 >
                   {t('Library::Add to GameNode…')}
                 </button>
                 {actions?.addToGamenode !== 'available' && (
                   <div
                     data-testid="detail-add-multiple-reason"
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-warning, #F5A524)',
-                      marginTop: '6px',
-                    }}
+                    className={`${reasonClass} mt-1.5`}
                   >
                     {formatReason(actions?.addToGamenode.disabled, t)}
                   </div>
@@ -301,12 +229,7 @@ export const DetailPane: React.FC = () => {
           {!detail && selectedCount <= 1 && (
             <div
               data-testid="detail-empty-message"
-              style={{
-                color: 'var(--color-text-dimmed, #808080)',
-                fontSize: 'var(--font-size-sm, 14px)',
-                textAlign: 'center',
-                paddingTop: '32px',
-              }}
+              className="pt-xl text-center text-sm text-text-dimmed"
             >
               {t('Library::Select a game to see its details.')}
             </div>
@@ -318,14 +241,7 @@ export const DetailPane: React.FC = () => {
               {/* Artwork / Hero */}
               <div
                 data-testid="detail-artwork-container"
-                style={{
-                  width: '100%',
-                  height: '180px',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  overflow: 'hidden',
-                  backgroundColor: 'var(--color-surface, #262525)',
-                  flexShrink: 0,
-                }}
+                className="h-[180px] w-full shrink-0 overflow-hidden rounded-sm bg-surface"
               >
                 {detail.hasArtwork && getMatchedGameId(detail.row.status) != null ? (
                   <img
@@ -334,12 +250,7 @@ export const DetailPane: React.FC = () => {
                     alt={detail.row.title}
                     loading="lazy"
                     decoding="async"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      display: 'block',
-                    }}
+                    className="block h-full w-full object-cover"
                   />
                 ) : (
                   <CoverImage
@@ -355,34 +266,18 @@ export const DetailPane: React.FC = () => {
                 {(detail.running || detail.row.running) && (
                   <div
                     data-testid="detail-running-badge"
-                    style={{
-                      color: 'var(--color-success, #3DD68C)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      fontWeight: 600,
-                      marginBottom: '4px',
-                    }}
+                    className="mb-1 text-xs font-semibold text-success"
                   >
                     {t('Library::Running')}
                   </div>
                 )}
                 <h2
                   data-testid="detail-title"
-                  style={{
-                    fontSize: 'var(--font-size-lg, 18px)',
-                    fontWeight: 600,
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    lineHeight: 1.3,
-                  }}
+                  className="text-lg font-semibold leading-[1.3] text-text-default"
                 >
                   {detail.row.title}
                 </h2>
-                <div
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    color: 'var(--color-text-dimmed, #808080)',
-                    marginTop: '4px',
-                  }}
-                >
+                <div className="mt-1 text-xs text-text-dimmed">
                   {detail.releaseYear ? `${detail.releaseYear} · ` : ''}
                   {detail.row.providerName}
                 </div>
@@ -392,24 +287,11 @@ export const DetailPane: React.FC = () => {
               {launch && (
                 <div
                   data-testid="detail-launch-status"
-                  style={{
-                    backgroundColor:
-                      launch.state === 'opening'
-                        ? 'var(--color-accent-subtle, #F150251F)'
-                        : 'var(--color-danger-subtle, #E5484D1F)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    padding: '10px 12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px',
-                  }}
+                  className={`flex flex-col gap-compact rounded-sm px-sm py-xs ${
+                    launch.state === 'opening' ? 'bg-accent-subtle' : 'bg-danger-subtle'
+                  }`}
                 >
-                  <span
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                    }}
-                  >
+                  <span className="text-xs text-text-default">
                     {getLaunchMessage()}
                   </span>
                   {launch.state !== 'opening' && (
@@ -417,16 +299,7 @@ export const DetailPane: React.FC = () => {
                       type="button"
                       data-testid="detail-dismiss-launch-btn"
                       onClick={() => commands.dismissLaunch()}
-                      style={{
-                        alignSelf: 'flex-start',
-                        padding: '4px 8px',
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        backgroundColor: 'transparent',
-                        border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        borderRadius: 'var(--radius-xs, 2px)',
-                        cursor: 'pointer',
-                      }}
+                      className="self-start rounded-xs border border-border-subtle bg-transparent px-2 py-1 text-xs text-text-default transition-colors hover:bg-surface"
                     >
                       {t('Library::Dismiss')}
                     </button>
@@ -435,38 +308,25 @@ export const DetailPane: React.FC = () => {
               )}
 
               {/* Primary Actions (Play, Install) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div className="flex flex-col gap-compact">
                 {/* Play Button */}
                 <div>
                   <button
                     type="button"
                     data-testid="detail-play-btn"
-                    disabled={actions?.play !== 'available'}
+                    disabled={!isPlayAvailable}
                     onClick={() => commands.launchSelected('play')}
-                    style={{
-                      width: '100%',
-                      padding: '10px 16px',
-                      backgroundColor: 'var(--color-primary, #F15025)',
-                      color: 'var(--color-on-primary, #EDEDED)',
-                      border: 'none',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      fontSize: 'var(--font-size-sm, 14px)',
-                      fontWeight: 600,
-                      cursor: actions?.play === 'available' ? 'pointer' : 'default',
-                      opacity: actions?.play === 'available' ? 1 : 0.45,
-                    }}
+                    className={`flex w-full items-center justify-center gap-1.5 rounded-sm border-0 bg-brand px-md py-xs text-sm font-semibold text-on-primary transition-colors ${
+                      isPlayAvailable
+                        ? 'cursor-pointer opacity-100 hover:bg-brand-6'
+                        : 'cursor-default opacity-45'
+                    }`}
                   >
+                    <IconPlayerPlay size={16} stroke={1.75} aria-hidden />
                     {t('Library::Play')}
                   </button>
                   {actions?.play !== 'available' && (
-                    <div
-                      data-testid="detail-play-reason"
-                      style={{
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        color: 'var(--color-warning, #F5A524)',
-                        marginTop: '4px',
-                      }}
-                    >
+                    <div data-testid="detail-play-reason" className={`${reasonClass} mt-1`}>
                       {formatReason(actions?.play.disabled, t)}
                     </div>
                   )}
@@ -480,31 +340,21 @@ export const DetailPane: React.FC = () => {
                       <button
                         type="button"
                         data-testid="detail-install-btn"
-                        disabled={actions.install !== 'available'}
+                        disabled={!isInstallAvailable}
                         onClick={() => commands.launchSelected('install')}
-                        style={{
-                          width: '100%',
-                          padding: '10px 16px',
-                          backgroundColor: 'transparent',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          borderRadius: 'var(--radius-sm, 4px)',
-                          fontSize: 'var(--font-size-sm, 14px)',
-                          fontWeight: 500,
-                          cursor: actions.install === 'available' ? 'pointer' : 'default',
-                          opacity: actions.install === 'available' ? 1 : 0.45,
-                        }}
+                        className={`flex w-full items-center justify-center gap-1.5 rounded-sm border border-border-subtle bg-transparent px-md py-xs text-sm font-medium text-text-default transition-colors ${
+                          isInstallAvailable
+                            ? 'cursor-pointer opacity-100 hover:bg-surface'
+                            : 'cursor-default opacity-45'
+                        }`}
                       >
+                        <IconDownload size={16} stroke={1.75} aria-hidden />
                         {t('Library::Install')}
                       </button>
                       {actions.install !== 'available' && (
                         <div
                           data-testid="detail-install-reason"
-                          style={{
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            color: 'var(--color-warning, #F5A524)',
-                            marginTop: '4px',
-                          }}
+                          className={`${reasonClass} mt-1`}
                         >
                           {formatReason(actions.install.disabled, t)}
                         </div>
@@ -514,30 +364,17 @@ export const DetailPane: React.FC = () => {
               </div>
 
               {/* Playtime Row */}
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '8px 12px',
-                  backgroundColor: 'var(--color-raised, #222222)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                }}
-              >
-                <span style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+              <div className="flex items-center justify-between rounded-sm bg-raised px-sm py-compact text-xs">
+                <span className="text-text-dimmed">
                   {t('Library::Playtime')}
                 </span>
                 <span
                   data-testid="detail-playtime-val"
-                  style={{
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    fontWeight: 500,
-                  }}
+                  className="font-medium text-text-default"
                 >
                   {formatDuration(detail.row.playtime?.seconds, t)}
                 </span>
-                <span style={{ color: 'var(--color-text-dimmed, #808080)', fontSize: '11px' }}>
+                <span className="text-[11px] text-text-dimmed">
                   {detail.row.playtime?.source === 'store'
                     ? formatI18n(t('Library::Imported from {}'), detail.row.providerName)
                     : t('Library::Internal counter')}
@@ -545,35 +382,12 @@ export const DetailPane: React.FC = () => {
               </div>
 
               {/* GameNode Card */}
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    fontWeight: 600,
-                    color: 'var(--color-text-dimmed, #808080)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                  }}
-                >
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-[0.5px] text-text-dimmed">
                   {t('Library::GameNode')}
                 </span>
 
-                <div
-                  style={{
-                    backgroundColor: 'var(--color-raised, #222222)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    padding: '8px 12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px',
-                  }}
-                >
+                <div className="flex flex-col gap-compact rounded-sm bg-raised px-sm py-compact">
                   {/* Match / Change Match */}
                   <div>
                     <button
@@ -581,32 +395,18 @@ export const DetailPane: React.FC = () => {
                       data-testid="detail-match-btn"
                       disabled={actions?.matchGame !== 'available'}
                       onClick={() => commands.libraryInput('openMatch')}
-                      style={{
-                        width: '100%',
-                        padding: '8px 10px',
-                        backgroundColor: 'transparent',
-                        border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                        borderRadius: 'var(--radius-xs, 2px)',
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        textAlign: 'left',
-                        cursor: actions?.matchGame === 'available' ? 'pointer' : 'default',
-                        opacity: actions?.matchGame === 'available' ? 1 : 0.45,
-                        fontSize: 'var(--font-size-sm, 14px)',
-                      }}
+                      className={`${secondaryActionBase} ${
+                        actions?.matchGame === 'available'
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
                     >
                       {actions?.changeMatch
                         ? t('Library::Change match…')
                         : t('Library::Match…')}
                     </button>
                     {actions?.matchGame !== 'available' && (
-                      <div
-                        data-testid="detail-match-reason"
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: 'var(--color-warning, #F5A524)',
-                          marginTop: '4px',
-                        }}
-                      >
+                      <div data-testid="detail-match-reason" className={reasonClass}>
                         {formatReason(actions?.matchGame.disabled, t)}
                       </div>
                     )}
@@ -619,18 +419,11 @@ export const DetailPane: React.FC = () => {
                       data-testid="detail-add-btn"
                       disabled={actions?.addToGamenode !== 'available'}
                       onClick={() => commands.libraryInput('openAdd')}
-                      style={{
-                        width: '100%',
-                        padding: '8px 10px',
-                        backgroundColor: 'transparent',
-                        border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                        borderRadius: 'var(--radius-xs, 2px)',
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        textAlign: 'left',
-                        cursor: actions?.addToGamenode === 'available' ? 'pointer' : 'default',
-                        opacity: actions?.addToGamenode === 'available' ? 1 : 0.45,
-                        fontSize: 'var(--font-size-sm, 14px)',
-                      }}
+                      className={`${secondaryActionBase} ${
+                        actions?.addToGamenode === 'available'
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
                     >
                       {typeof detail.membership === 'object' &&
                       'inLibrary' in detail.membership
@@ -638,14 +431,7 @@ export const DetailPane: React.FC = () => {
                         : t('Library::Add to GameNode…')}
                     </button>
                     {actions?.addToGamenode !== 'available' && (
-                      <div
-                        data-testid="detail-add-reason"
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: 'var(--color-warning, #F5A524)',
-                          marginTop: '4px',
-                        }}
-                      >
+                      <div data-testid="detail-add-reason" className={reasonClass}>
                         {formatReason(actions?.addToGamenode.disabled, t)}
                       </div>
                     )}
@@ -658,16 +444,7 @@ export const DetailPane: React.FC = () => {
                         type="button"
                         data-testid="detail-refresh-membership-btn"
                         onClick={() => commands.libraryInput('refreshMembership')}
-                        style={{
-                          alignSelf: 'flex-start',
-                          padding: '4px 8px',
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          backgroundColor: 'transparent',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          borderRadius: 'var(--radius-xs, 2px)',
-                          cursor: 'pointer',
-                        }}
+                        className="self-start rounded-xs border border-border-subtle bg-transparent px-2 py-1 text-xs text-text-default transition-colors hover:bg-surface"
                       >
                         {t('Library::Check again')}
                       </button>
@@ -676,56 +453,24 @@ export const DetailPane: React.FC = () => {
               </div>
 
               {/* Manage Card */}
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    fontWeight: 600,
-                    color: 'var(--color-text-dimmed, #808080)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                  }}
-                >
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-[0.5px] text-text-dimmed">
                   {t('Library::Manage')}
                 </span>
 
-                <div
-                  style={{
-                    backgroundColor: 'var(--color-raised, #222222)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    padding: '8px 12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px',
-                  }}
-                >
+                <div className="flex flex-col gap-compact rounded-sm bg-raised px-sm py-compact">
                   {/* Game Tools */}
                   <div>
                     <button
                       type="button"
                       data-testid="detail-tools-btn"
-                      disabled={detail.running || detail.row.running}
+                      disabled={isRunning}
                       onClick={() => commands.openTools(detail.row.key)}
-                      style={{
-                        width: '100%',
-                        padding: '8px 10px',
-                        backgroundColor: 'transparent',
-                        border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                        borderRadius: 'var(--radius-xs, 2px)',
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        textAlign: 'left',
-                        cursor: !(detail.running || detail.row.running)
-                          ? 'pointer'
-                          : 'default',
-                        opacity: !(detail.running || detail.row.running) ? 1 : 0.45,
-                        fontSize: 'var(--font-size-sm, 14px)',
-                      }}
+                      className={`${secondaryActionBase} ${
+                        !isRunning
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
                     >
                       {t('Library::Game tools…')}
                     </button>
@@ -733,11 +478,7 @@ export const DetailPane: React.FC = () => {
                     {tools?.installedByEntry?.[detail.row.key]?.length ? (
                       <div
                         data-testid="detail-tools-summary"
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: 'var(--color-text-dimmed, #808080)',
-                          marginTop: '4px',
-                        }}
+                        className="mt-1 text-xs text-text-dimmed"
                       >
                         {tools.installedByEntry[detail.row.key]
                           .map((tItem) => tItem.name)
@@ -759,17 +500,7 @@ export const DetailPane: React.FC = () => {
                             localEditorEntryKey: detail.row.key,
                           }))
                         }
-                        style={{
-                          width: '100%',
-                          padding: '8px 10px',
-                          backgroundColor: 'transparent',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          borderRadius: 'var(--radius-xs, 2px)',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                          fontSize: 'var(--font-size-sm, 14px)',
-                        }}
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
                       >
                         {locale === 'pt-BR'
                           ? t('DRM-free::Game settings')
@@ -787,17 +518,7 @@ export const DetailPane: React.FC = () => {
                           }));
                           commands.loadLocalHistory(detail.row.key.replace('manual:', ''));
                         }}
-                        style={{
-                          width: '100%',
-                          padding: '8px 10px',
-                          backgroundColor: 'transparent',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          borderRadius: 'var(--radius-xs, 2px)',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                          fontSize: 'var(--font-size-sm, 14px)',
-                        }}
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
                       >
                         {locale === 'pt-BR'
                           ? t('DRM-free::Local save protection')
@@ -813,17 +534,7 @@ export const DetailPane: React.FC = () => {
                             detail.row.key.replace('manual:', ''),
                           )
                         }
-                        style={{
-                          width: '100%',
-                          padding: '8px 10px',
-                          backgroundColor: 'transparent',
-                          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                          borderRadius: 'var(--radius-xs, 2px)',
-                          color: 'var(--color-text-default, #D9D9D9)',
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                          fontSize: 'var(--font-size-sm, 14px)',
-                        }}
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
                       >
                         {t('DRM-free::Locate executable')}
                       </button>
@@ -833,28 +544,15 @@ export const DetailPane: React.FC = () => {
               </div>
 
               {/* Information Card */}
-              <div
-                style={{
-                  backgroundColor: 'var(--color-raised, #222222)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '12px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '10px',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                }}
-              >
+              <div className="flex flex-col gap-2.5 rounded-sm bg-raised p-sm text-xs">
                 {/* Detected title */}
                 <div>
-                  <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-text-dimmed">
                     {t('Library::Detected title')}
                   </div>
                   <div
                     data-testid="detail-detected-title"
-                    style={{
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      fontWeight: 500,
-                    }}
+                    className="font-medium text-text-default"
                   >
                     {detail.row.detectedName}
                   </div>
@@ -862,15 +560,12 @@ export const DetailPane: React.FC = () => {
 
                 {/* GameNode game */}
                 <div>
-                  <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-text-dimmed">
                     {t('Library::GameNode game')}
                   </div>
                   <div
                     data-testid="detail-gamenode-title"
-                    style={{
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      fontWeight: 500,
-                    }}
+                    className="font-medium text-text-default"
                   >
                     {detail.row.matchedName || '—'}
                   </div>
@@ -878,15 +573,12 @@ export const DetailPane: React.FC = () => {
 
                 {/* Install folder */}
                 <div>
-                  <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-text-dimmed">
                     {t('Library::Install folder')}
                   </div>
                   <div
                     data-testid="detail-install-dir"
-                    style={{
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      wordBreak: 'break-all',
-                    }}
+                    className="break-all text-text-default"
                   >
                     {detail.installDir}
                   </div>
@@ -894,12 +586,12 @@ export const DetailPane: React.FC = () => {
 
                 {/* Match */}
                 <div>
-                  <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-text-dimmed">
                     {t('Library::Match')}
                   </div>
                   <div
                     data-testid="detail-match-status"
-                    style={{ color: 'var(--color-text-default, #D9D9D9)' }}
+                    className="text-text-default"
                   >
                     {formatMatchStatus(detail.row.status, t)}
                   </div>
@@ -907,54 +599,36 @@ export const DetailPane: React.FC = () => {
 
                 {/* In your GameNode library */}
                 <div>
-                  <div style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-text-dimmed">
                     {t('Library::In your GameNode library')}
                   </div>
                   <div
                     data-testid="detail-membership-standing"
-                    style={{ color: 'var(--color-text-default, #D9D9D9)' }}
+                    className="text-text-default"
                   >
                     {formatMembershipStanding(detail.membership)}
                   </div>
                 </div>
               </div>
 
-              {/* Remove Action (for manual games) */}
-              {detail.row.key.startsWith('manual:') && (
-                <div
-                  style={{
-                    backgroundColor: 'var(--color-raised, #222222)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    padding: '8px 12px',
-                  }}
+              {/* Remove from library — available for manual and store entries */}
+              <div className="rounded-sm bg-raised px-sm py-compact">
+                <button
+                  type="button"
+                  data-testid="detail-remove-btn"
+                  onClick={() =>
+                    uiStore.setState((prev) => ({
+                      ...prev,
+                      removeModalEntryKey: detail.row.key,
+                    }))
+                  }
+                  className="w-full rounded-xs border border-danger bg-transparent px-2.5 py-compact text-left text-sm text-danger transition-colors hover:bg-danger-subtle"
                 >
-                  <button
-                    type="button"
-                    data-testid="detail-remove-btn"
-                    onClick={() =>
-                      uiStore.setState((prev) => ({
-                        ...prev,
-                        removeModalEntryKey: detail.row.key,
-                      }))
-                    }
-                    style={{
-                      width: '100%',
-                      padding: '8px 10px',
-                      backgroundColor: 'transparent',
-                      border: '1px solid var(--color-danger, #E5484D)',
-                      borderRadius: 'var(--radius-xs, 2px)',
-                      color: 'var(--color-danger, #E5484D)',
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                      fontSize: 'var(--font-size-sm, 14px)',
-                    }}
-                  >
-                    {locale === 'pt-BR'
-                      ? t('DRM-free::Remove from library')
-                      : 'Remove'}
-                  </button>
-                </div>
-              )}
+                  {locale === 'pt-BR'
+                    ? t('DRM-free::Remove from library')
+                    : 'Remove'}
+                </button>
+              </div>
             </>
           )}
         </div>

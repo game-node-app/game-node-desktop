@@ -103,7 +103,14 @@ impl LibraryMachine {
             query,
             search: Search::Idle,
         });
-        self.search_match()
+        let candidates = self
+            .entries
+            .get(key)
+            .map(|entry| self.match_status(entry).candidates().to_vec())
+            .unwrap_or_default();
+        let mut effects = self.search_match();
+        effects.extend(self.plan_option_covers(candidates));
+        effects
     }
 
     pub(super) fn close_match(&mut self) {
@@ -145,18 +152,28 @@ impl LibraryMachine {
         op: u64,
         result: Result<Vec<GameSummary>, ApiError>,
     ) -> Vec<Effect> {
-        let Some(dialog) = &mut self.dialog else {
-            return vec![];
-        };
-        if !matches!(dialog.search, Search::Running { op: running } if running == op) {
+        let running = self.dialog.as_ref().is_some_and(
+            |dialog| matches!(dialog.search, Search::Running { op: running } if running == op),
+        );
+        if !running {
             return vec![];
         }
-        dialog.search = match result {
-            Ok(games) => Search::Done(games),
+        let mut effects = Vec::new();
+        let search = match result {
+            Ok(games) => {
+                // Search results are shown with their own covers, which are downloaded for the
+                // dialog before the user picks one. They stay in memory until a pick stores them.
+                self.merge_games(games.iter());
+                effects = self.plan_option_covers(games.iter().map(|game| game.id));
+                Search::Done(games)
+            }
             Err(ApiError::Rejected) => Search::Failed(SearchFailure::Rejected),
             Err(ApiError::Failed) => Search::Failed(SearchFailure::Failed),
         };
-        vec![]
+        if let Some(dialog) = &mut self.dialog {
+            dialog.search = search;
+        }
+        effects
     }
 
     /// Matches the dialog's entry to a game from the candidates or the search results.

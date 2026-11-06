@@ -1,4 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
+import { IconLoader2, IconX } from '@tabler/icons-react';
+import { FloatingModal } from '../../components/FloatingModal';
 import { commands, useLocalGames } from '../../api';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -21,17 +23,6 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
     onClose?.();
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
-
   if (!isOpen) {
     return null;
   }
@@ -39,100 +30,45 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
   const activeCandidates = localGames.candidates.filter((c) => !c.ignored);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="discovery-modal-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="discovery"
+      defaultSize={{ width: 720, height: 560 }}
+      minSize={{ width: 520, height: 400 }}
+      zIndex={1000}
+      closeOnClickOutside
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '720px',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--settings-bg-base, #111111)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-modal)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
-      >
+      <FloatingModal.Overlay backgroundOpacity={0.62} />
+      <FloatingModal.Content className="flex flex-col bg-chrome">
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <FloatingModal.Header className="bg-chrome px-control-inline py-md">
           <div>
-            <h2 id="discovery-modal-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <FloatingModal.Title className="text-lg font-semibold text-text-default">
               {t('drmFree.watchedFolders')}
-            </h2>
-            <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+            </FloatingModal.Title>
+            <div className="text-xs text-text-dimmed">
               {activeCandidates.length === 1
                 ? '1 game discovered'
                 : `${activeCandidates.length} games discovered`}
             </div>
           </div>
-          <button
-            type="button"
+          <FloatingModal.CloseButton
             aria-label="Close"
-            onClick={handleClose}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
+            icon={<IconX size={18} stroke={1.5} />}
+            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+          />
+        </FloatingModal.Header>
 
         {/* Content */}
-        <div
-          style={{
-            padding: '24px',
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
+        <FloatingModal.Body className="gap-md p-control-inline">
           {/* Scanning banner */}
           {localGames.discoveryScanning && (
             <div
               data-testid="discovery-scanning-banner"
-              style={{
-                padding: '12px 16px',
-                backgroundColor: 'var(--color-accent-subtle, #F150251F)',
-                border: '1px solid var(--color-primary, #F15025)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-              }}
+              className="flex items-center gap-compact rounded-sm border border-brand bg-accent-subtle px-md py-sm text-text-default"
             >
-              <span>⏳</span>
+              <IconLoader2 size={16} stroke={1.5} className="animate-spin text-brand" aria-hidden="true" />
               <span>{t('drmFree.checkingWatchedFolders')}</span>
             </div>
           )}
@@ -141,13 +77,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
           {localGames.discoveryError && (
             <div
               data-testid="discovery-error-banner"
-              style={{
-                padding: '12px 16px',
-                backgroundColor: 'var(--color-danger-subtle, #E5484D1F)',
-                border: '1px solid var(--color-danger, #E5484D)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className="rounded-sm border border-danger bg-danger-subtle px-md py-sm text-text-default"
             >
               {localGames.discoveryError}
             </div>
@@ -157,13 +87,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
           {localGames.discoveryIncomplete.length > 0 && (
             <div
               data-testid="discovery-incomplete-banner"
-              style={{
-                padding: '12px 16px',
-                backgroundColor: 'var(--color-warning-subtle, #F5A5241F)',
-                border: '1px solid var(--color-warning, #F5A524)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className="rounded-sm border border-warning bg-warning-subtle px-md py-sm text-text-default"
             >
               Discovery incomplete in: {localGames.discoveryIncomplete.join(', ')}
             </div>
@@ -171,17 +95,11 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
 
           {/* Candidates list */}
           {activeCandidates.length === 0 ? (
-            <div
-              style={{
-                padding: '32px',
-                textAlign: 'center',
-                color: 'var(--color-text-dimmed, #808080)',
-              }}
-            >
+            <div className="rounded-sm py-xl text-center text-text-dimmed">
               No discovered games found in watched folders.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="flex flex-col gap-2.5">
               {activeCandidates.map((candidate) => {
                 const isSelected = localGames.reviewSelected.includes(candidate.fingerprint);
                 const currentExe = candidate.selectedTarget ?? candidate.targets[0] ?? '';
@@ -190,36 +108,22 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
                   <div
                     key={candidate.fingerprint}
                     data-testid={`candidate-row-${candidate.fingerprint}`}
-                    style={{
-                      padding: '14px 16px',
-                      backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '8px',
-                    }}
+                    className="flex flex-col gap-compact rounded-sm border border-border-subtle bg-secondary px-md py-3.5"
                   >
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                    <div className="flex items-start gap-sm">
                       <input
                         type="checkbox"
                         aria-label={`Select ${candidate.title}`}
                         data-testid={`candidate-checkbox-${candidate.fingerprint}`}
                         checked={isSelected}
                         onChange={() => commands.selectLocalCandidate(candidate.fingerprint)}
-                        style={{ marginTop: '4px', cursor: 'pointer' }}
+                        className="mt-1 h-4 w-4 cursor-pointer accent-brand"
                       />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 600, fontSize: 'var(--font-size-md, 16px)' }}>
+                      <div className="flex-1">
+                        <div className="text-md font-semibold text-text-default">
                           {candidate.title}
                         </div>
-                        <div
-                          style={{
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            color: 'var(--color-text-dimmed, #808080)',
-                            wordBreak: 'break-all',
-                          }}
-                        >
+                        <div className="break-all text-xs text-text-dimmed">
                           {candidate.root}
                         </div>
                       </div>
@@ -227,27 +131,12 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
 
                     {/* Target Executable selection */}
                     {candidate.targets.length > 0 && (
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          paddingLeft: '28px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            color: 'var(--color-text-dimmed, #808080)',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
+                      <div className="flex items-center gap-compact pl-7">
+                        <span className="whitespace-nowrap text-xs text-text-dimmed">
                           {t('drmFree.executable')}:
                         </span>
                         {candidate.targets.length === 1 ? (
-                          <span style={{ fontSize: 'var(--font-size-xs, 12px)' }}>
-                            {candidate.targets[0]}
-                          </span>
+                          <span className="text-xs text-text-default">{candidate.targets[0]}</span>
                         ) : (
                           <select
                             aria-label={`Target executable for ${candidate.title}`}
@@ -259,15 +148,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
                                 e.target.value,
                               )
                             }
-                            style={{
-                              flex: 1,
-                              backgroundColor: 'var(--settings-bg-raised, #222222)',
-                              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                              borderRadius: 'var(--radius-sm, 4px)',
-                              padding: '4px 8px',
-                              color: 'var(--color-text-default, #D9D9D9)',
-                              fontSize: 'var(--font-size-xs, 12px)',
-                            }}
+                            className="flex-1 cursor-pointer rounded-sm border border-border-subtle bg-raised px-compact py-1 text-xs text-text-default focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
                           >
                             {candidate.targets.map((tgt) => (
                               <option key={tgt} value={tgt}>
@@ -283,51 +164,27 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
               })}
             </div>
           )}
-        </div>
+        </FloatingModal.Body>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '8px',
-          }}
-        >
+        <FloatingModal.Footer className="justify-between px-control-inline py-md">
           <button
             type="button"
             data-testid="rescan-folders-button"
             aria-label={t('drmFree.rescanWatchedFolders')}
             onClick={() => commands.rescanLocalFolders()}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.rescanWatchedFolders')}
           </button>
 
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div className="flex gap-compact">
             <button
               type="button"
               data-testid="ignore-selected-button"
               onClick={() => commands.reviewSelectedLocalCandidates(false)}
               disabled={localGames.reviewSelected.length === 0}
-              style={{
-                padding: '8px 16px',
-                backgroundColor: 'var(--settings-bg-raised, #222222)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-                cursor: localGames.reviewSelected.length === 0 ? 'not-allowed' : 'pointer',
-                opacity: localGames.reviewSelected.length === 0 ? 0.5 : 1,
-              }}
+              className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t('drmFree.ignoreSelected')}
             </button>
@@ -336,16 +193,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
               data-testid="add-selected-button"
               onClick={() => commands.reviewSelectedLocalCandidates(true)}
               disabled={localGames.reviewSelected.length === 0}
-              style={{
-                padding: '8px 16px',
-                backgroundColor: 'var(--color-primary, #F15025)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-on-primary, #EDEDED)',
-                fontWeight: 600,
-                cursor: localGames.reviewSelected.length === 0 ? 'not-allowed' : 'pointer',
-                opacity: localGames.reviewSelected.length === 0 ? 0.5 : 1,
-              }}
+              className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t('drmFree.addSelected')}
             </button>
@@ -353,20 +201,15 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
               type="button"
               data-testid="discovery-close-button"
               onClick={handleClose}
-              style={{
-                padding: '8px 16px',
-                backgroundColor: 'var(--settings-bg-raised, #222222)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-                cursor: 'pointer',
-              }}
+              className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
             >
               {t('drmFree.close')}
             </button>
           </div>
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

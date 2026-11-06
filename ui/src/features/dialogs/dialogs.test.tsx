@@ -2,6 +2,8 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MantineProvider } from '@mantine/core';
+import { appTheme } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -25,9 +27,11 @@ function renderWithProviders(
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
 
   return render(
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
-    </QueryClientProvider>,
+    <MantineProvider theme={appTheme} defaultColorScheme="dark">
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
+      </QueryClientProvider>
+    </MantineProvider>,
   );
 }
 
@@ -166,6 +170,28 @@ describe('Dialogs Feature Tests', () => {
       // Escape key closes match
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(libraryInputSpy).toHaveBeenCalledWith('closeMatch');
+    });
+
+    it('renders covers from the asset protocol and never from a remote result URL', () => {
+      const snapshot = makeMatchSnapshot();
+      const dialog = snapshot.library!.matchDialog!;
+      dialog.results[0].coverUrl =
+        '//images.igdb.com/igdb/image/upload/t_thumb/co1.jpg';
+      dialog.results[0].coverFile = null;
+
+      renderWithProviders(<MatchDialog />, snapshot, 'en');
+
+      const candidateCover = screen
+        .getByTestId('candidate-101')
+        .querySelector('img');
+      expect(candidateCover).toHaveAttribute(
+        'src',
+        'gamenode-asset://localhost/cover/hades2.jpg',
+      );
+
+      // A result whose cover is still downloading shows its title, not a broken image.
+      expect(screen.getByTestId('result-102').querySelector('img')).toBeNull();
+      expect(screen.getByTestId('result-102')).toHaveTextContent('Hades');
     });
 
     it('renders localized MatchDialog in pt-BR', () => {

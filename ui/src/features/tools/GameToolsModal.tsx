@@ -1,4 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
+import { IconLoader2, IconX } from '@tabler/icons-react';
+import { FloatingModal } from '../../components/FloatingModal';
 import {
   commands,
   useTools,
@@ -40,17 +42,6 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
     onClose?.();
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
-
   if (!isOpen || !modal) {
     return null;
   }
@@ -80,53 +71,24 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
   const anticheatBlocked = anticheatDetected && !modal.anticheatConfirmed;
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="game-tools-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="game-tools"
+      defaultSize={{ width: 760, height: 560 }}
+      minSize={{ width: 560, height: 420 }}
+      zIndex={1000}
+      closeOnClickOutside
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '720px',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--settings-bg-base, #111111)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-modal)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
-      >
+      <FloatingModal.Overlay backgroundOpacity={0.62} color="#000000" />
+      <FloatingModal.Content className="flex flex-col bg-[#0B0B0B]">
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <FloatingModal.Header className="px-[24px] py-md">
           <div>
-            <h2 id="game-tools-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <FloatingModal.Title className="text-lg font-semibold text-text-default">
               {t('tools.gameTools')}
-            </h2>
-            <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+            </FloatingModal.Title>
+            <div className="text-xs text-text-dimmed">
               {modal.title} {modal.installDir ? `(${modal.installDir})` : ''}
             </div>
           </div>
@@ -134,44 +96,21 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             type="button"
             aria-label="Close"
             onClick={handleClose}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
+            className="rounded-sm px-sm py-[6px] text-text-dimmed hover:bg-raised"
           >
-            ✕
+            <IconX size={18} stroke={1.5} aria-hidden />
           </button>
-        </div>
+        </FloatingModal.Header>
 
         {/* Content */}
-        <div
-          style={{
-            padding: '24px',
-            overflowY: 'auto',
-            minHeight: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '20px',
-          }}
-        >
+        <FloatingModal.Body className="gap-lg p-[24px]">
           {/* Anti-cheat warning banner */}
           {anticheatDetected && (
             <div
               data-testid="anticheat-warning-banner"
-              style={{
-                padding: '16px',
-                backgroundColor: 'var(--color-warning-subtle, #F5A5241F)',
-                border: '1px solid var(--color-warning, #F5A524)',
-                borderRadius: 'var(--radius-md, 8px)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
+              className="flex flex-col gap-sm rounded-md border border-warning bg-warning-subtle p-md"
             >
-              <div style={{ fontWeight: 600, color: 'var(--color-warning, #F5A524)' }}>
+              <div className="font-semibold text-warning">
                 {(
                   t('tools.antiCheatDetectedInstallingProxyDllsIn') ||
                   'Anti-cheat detected ({}). Installing proxy DLLs in online anti-cheat games may cause a ban.'
@@ -179,9 +118,9 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               </div>
 
               {modal.inspection?.anticheat.evidence && modal.inspection.anticheat.evidence.length > 0 && (
-                <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-default, #D9D9D9)' }}>
-                  <div style={{ fontWeight: 500, marginBottom: '4px' }}>Detected evidence:</div>
-                  <ul style={{ paddingLeft: '20px', margin: 0 }}>
+                <div className="text-xs text-text-default">
+                  <div className="mb-1 font-medium">Detected evidence:</div>
+                  <ul className="m-0 list-disc pl-[20px]">
                     {modal.inspection.anticheat.evidence.map((ev, i) => (
                       <li key={i}>{ev}</li>
                     ))}
@@ -189,21 +128,13 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 </div>
               )}
 
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  cursor: 'pointer',
-                  fontSize: 'var(--font-size-sm, 14px)',
-                }}
-              >
+              <label className="flex cursor-pointer items-center gap-compact text-sm">
                 <input
                   type="checkbox"
                   data-testid="anticheat-confirm-checkbox"
                   checked={modal.anticheatConfirmed}
                   onChange={(e) => commands.setToolAnticheatConfirmed(e.target.checked)}
-                  style={{ cursor: 'pointer' }}
+                  className="cursor-pointer"
                 />
                 <span>
                   {t('tools.iUnderstandTheAntiCheatRiskAnd')}
@@ -215,44 +146,22 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
           {/* Catalog Tool Card for OptiScaler */}
           <div
             data-testid="tool-catalog-card"
-            style={{
-              padding: '16px',
-              backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-md, 8px)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '12px',
-            }}
+            className="flex flex-col gap-sm rounded-md border border-border-subtle bg-secondary p-md"
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div className="flex items-start justify-between">
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontWeight: 700, fontSize: 'var(--font-size-lg, 18px)' }}>
+                <div className="flex items-center gap-compact">
+                  <span className="text-lg font-bold">
                     {catalogItem.name}
                   </span>
                   <span
                     data-testid="tool-license-badge"
-                    style={{
-                      padding: '2px 8px',
-                      backgroundColor: 'var(--settings-bg-raised, #222222)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      fontWeight: 600,
-                      color: 'var(--color-primary, #F15025)',
-                    }}
+                    className="rounded-sm border border-border-subtle bg-raised px-compact py-[2px] text-xs font-semibold text-brand"
                   >
                     {catalogItem.license}
                   </span>
                 </div>
-                <div
-                  style={{
-                    fontSize: 'var(--font-size-sm, 14px)',
-                    color: 'var(--color-text-dimmed, #808080)',
-                    marginTop: '4px',
-                  }}
-                >
+                <div className="mt-1 text-sm text-text-dimmed">
                   {catalogItem.summary}
                 </div>
               </div>
@@ -262,16 +171,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                   type="button"
                   data-testid="tool-source-link"
                   onClick={() => commands.openToolSource(catalogItem.sourceUrl)}
-                  style={{
-                    padding: '6px 12px',
-                    backgroundColor: 'var(--settings-bg-raised, #222222)',
-                    border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap',
-                  }}
+                  className="whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-sm py-[6px] text-xs text-text-default hover:bg-paper-4"
                 >
                   Source repository
                 </button>
@@ -285,39 +185,19 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             )}
 
             {/* Channel selector & Refresh versions */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingTop: '8px',
-                borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              }}
-            >
-              <div style={{ display: 'flex', gap: '4px' }}>
+            <div className="flex items-center justify-between border-t border-border-subtle pt-compact">
+              <div className="flex gap-1">
                 {(['stable', 'nightly'] as ToolChannel[]).map((ch) => (
                   <button
                     key={ch}
                     type="button"
                     data-testid={`channel-button-${ch}`}
                     onClick={() => commands.selectToolChannel(ch)}
-                    style={{
-                      padding: '6px 14px',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      fontWeight: modal.selectedChannel === ch ? 600 : 400,
-                      backgroundColor:
-                        modal.selectedChannel === ch
-                          ? 'var(--color-primary, #F15025)'
-                          : 'var(--settings-bg-raised, #222222)',
-                      color:
-                        modal.selectedChannel === ch
-                          ? 'var(--color-on-primary, #EDEDED)'
-                          : 'var(--color-text-default, #D9D9D9)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      cursor: 'pointer',
-                      textTransform: 'capitalize',
-                    }}
+                    className={`rounded-sm border border-border-subtle px-[14px] py-[6px] text-xs capitalize ${
+                      modal.selectedChannel === ch
+                        ? 'bg-brand font-semibold text-on-primary'
+                        : 'bg-raised font-normal text-text-default hover:bg-paper-4'
+                    }`}
                   >
                     {ch}
                   </button>
@@ -328,15 +208,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 type="button"
                 data-testid="refresh-versions-button"
                 onClick={() => commands.refreshToolVersions()}
-                style={{
-                  padding: '6px 12px',
-                  backgroundColor: 'var(--settings-bg-raised, #222222)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  cursor: 'pointer',
-                }}
+                className="rounded-sm border border-border-subtle bg-raised px-sm py-[6px] text-xs text-text-default hover:bg-paper-4"
               >
                 {t('tools.refreshVersions')}
               </button>
@@ -346,37 +218,23 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             <div>
               <label
                 htmlFor="tool-version-select"
-                style={{
-                  display: 'block',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  fontWeight: 600,
-                  color: 'var(--color-text-dimmed, #808080)',
-                  marginBottom: '6px',
-                }}
+                className="mb-[6px] block text-xs font-semibold text-text-dimmed"
               >
                 {t('tools.availableVersions')}
               </label>
               {modal.availableVersions.length === 0 ? (
-                <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+                <div className="text-xs text-text-dimmed">
                   {t('tools.noVersionsLoadedClickRefreshVersionsTo')}
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div className="flex flex-col gap-[6px]">
                   <select
                     id="tool-version-select"
                     data-testid="tool-version-select"
                     aria-label={t('tools.availableVersions')}
                     value={modal.selectedVersion ?? ''}
                     onChange={(e) => commands.selectToolVersion(e.target.value)}
-                    style={{
-                      width: '100%',
-                      backgroundColor: 'var(--settings-bg-base, #111111)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      padding: '8px 12px',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      fontSize: 'var(--font-size-sm, 14px)',
-                    }}
+                    className="w-full rounded-sm border border-border-subtle bg-[#0B0B0B] px-sm py-compact text-sm text-text-default"
                   >
                     {modal.availableVersions.map((v) => (
                       <option key={v.version} value={v.version}>
@@ -394,13 +252,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               <div>
                 <label
                   htmlFor="target-exe-select"
-                  style={{
-                    display: 'block',
-                    fontSize: 'var(--font-size-xs, 12px)',
-                    fontWeight: 600,
-                    color: 'var(--color-text-dimmed, #808080)',
-                    marginBottom: '6px',
-                  }}
+                  className="mb-[6px] block text-xs font-semibold text-text-dimmed"
                 >
                   {t('tools.targetExecutable')}
                 </label>
@@ -410,16 +262,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                   aria-label={t('tools.targetExecutable')}
                   value={modal.inspection.selectedExe ?? modal.inspection.candidates[0]?.relativeExe ?? ''}
                   onChange={(e) => commands.selectToolTargetExe(e.target.value)}
-                  style={{
-                    width: '100%',
-                    backgroundColor: 'var(--settings-bg-base, #111111)',
-                    border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    padding: '8px 12px',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    fontSize: 'var(--font-size-sm, 14px)',
-                    marginBottom: '6px',
-                  }}
+                  className="mb-[6px] w-full rounded-sm border border-border-subtle bg-[#0B0B0B] px-sm py-compact text-sm text-text-default"
                 >
                   {modal.inspection.candidates.map((cand) => (
                     <option key={cand.relativeExe} value={cand.relativeExe}>
@@ -435,13 +278,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             <div>
               <label
                 htmlFor="proxy-dll-select"
-                style={{
-                  display: 'block',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  fontWeight: 600,
-                  color: 'var(--color-text-dimmed, #808080)',
-                  marginBottom: '6px',
-                }}
+                className="mb-[6px] block text-xs font-semibold text-text-dimmed"
               >
                 {t('tools.proxyDllName')}
               </label>
@@ -451,16 +288,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 aria-label={t('tools.proxyDllName')}
                 value={modal.selectedProxy}
                 onChange={(e) => commands.selectToolProxy(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--settings-bg-base, #111111)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '8px 12px',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  fontSize: 'var(--font-size-sm, 14px)',
-                  marginBottom: '6px',
-                }}
+                className="mb-[6px] w-full rounded-sm border border-border-subtle bg-[#0B0B0B] px-sm py-compact text-sm text-text-default"
               >
                 {PROXY_DLL_OPTIONS.map((dll) => (
                   <option key={dll} value={dll}>
@@ -471,21 +299,13 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             </div>
 
             {/* Reset configuration checkbox */}
-            <div style={{ paddingTop: '8px', borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)' }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  cursor: 'pointer',
-                  fontSize: 'var(--font-size-sm, 14px)',
-                }}
-              >
+            <div className="border-t border-border-subtle pt-compact">
+              <label className="flex cursor-pointer items-center gap-compact text-sm">
                 <input
                   type="checkbox"
                   data-testid="reset-config-checkbox"
                   onChange={(e) => commands.setToolResetConfig(e.target.checked)}
-                  style={{ cursor: 'pointer' }}
+                  className="cursor-pointer"
                 />
                 <span>
                   {t('tools.resetOptiscalerIniToDefaultsOnUpdate')}
@@ -493,20 +313,17 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               </label>
             </div>
           </div>
-        </div>
+        </FloatingModal.Body>
 
-        <div style={{ padding: modal.operation ? '12px 24px 0' : 0 }} aria-live="polite">
+        <div
+          className={modal.operation ? 'px-[24px] pt-sm' : 'p-0'}
+          aria-live="polite"
+        >
           {/* Operation Status / Error Banner */}
           {modal.operation && typeof modal.operation === 'object' && 'failed' in modal.operation && (
             <div
               data-testid="tool-operation-error"
-              style={{
-                padding: '12px 16px',
-                backgroundColor: 'var(--color-danger-subtle, #E5484D1F)',
-                border: '1px solid var(--color-danger, #E5484D)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className="rounded-sm border border-danger bg-danger-subtle px-md py-sm text-text-default"
             >
               {modal.operation.failed.message}
             </div>
@@ -518,18 +335,9 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 ('installing' in modal.operation || 'updating' in modal.operation))) && (
               <div
                 data-testid="tool-operation-progress"
-                style={{
-                  padding: '12px 16px',
-                  backgroundColor: 'var(--color-accent-subtle, #F150251F)',
-                  border: '1px solid var(--color-primary, #F15025)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
+                className="flex items-center gap-compact rounded-sm border border-brand bg-accent-subtle px-md py-sm text-text-default"
               >
-                <span>⏳</span>
+                <IconLoader2 size={16} stroke={1.5} className="animate-spin text-brand" aria-hidden />
                 <span>
                   {modal.operation === 'uninstalling'
                     ? t('tools.uninstalling')
@@ -551,26 +359,11 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
         </div>
 
         {/* Footer actions */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '8px',
-          }}
-        >
+        <FloatingModal.Footer className="px-[24px] py-md">
           <button
             type="button"
             onClick={handleClose}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-            }}
+            className="rounded-sm border border-border-subtle bg-raised px-md py-compact text-text-default hover:bg-paper-4"
           >
             {t('tools.close')}
           </button>
@@ -581,16 +374,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               data-testid="tool-uninstall-button"
               onClick={() => commands.uninstallTool()}
               disabled={isBusy}
-              style={{
-                padding: '8px 16px',
-                backgroundColor: 'var(--color-danger, #E5484D)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: '#FFFFFF',
-                fontWeight: 600,
-                cursor: isBusy ? 'not-allowed' : 'pointer',
-                opacity: isBusy ? 0.5 : 1,
-              }}
+              className="rounded-sm bg-danger px-md py-compact font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               {modal.operation === 'uninstalling' ? t('tools.uninstalling') : t('tools.uninstall')}
             </button>
@@ -602,16 +386,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               data-testid="tool-update-button"
               onClick={() => commands.installOrUpdateTool(true)}
               disabled={isBusy || anticheatBlocked}
-              style={{
-                padding: '8px 20px',
-                backgroundColor: 'var(--color-primary, #F15025)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-on-primary, #EDEDED)',
-                fontWeight: 600,
-                cursor: isBusy || anticheatBlocked ? 'not-allowed' : 'pointer',
-                opacity: isBusy || anticheatBlocked ? 0.5 : 1,
-              }}
+              className="rounded-sm bg-brand px-lg py-compact font-semibold text-on-primary hover:bg-brand-4 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {modal.operation && typeof modal.operation === 'object' && 'updating' in modal.operation ? t('tools.updating') : t('tools.updateApply')}
             </button>
@@ -621,22 +396,15 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               data-testid="tool-install-button"
               onClick={() => commands.installOrUpdateTool(false)}
               disabled={isBusy || anticheatBlocked}
-              style={{
-                padding: '8px 20px',
-                backgroundColor: 'var(--color-primary, #F15025)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-on-primary, #EDEDED)',
-                fontWeight: 600,
-                cursor: isBusy || anticheatBlocked ? 'not-allowed' : 'pointer',
-                opacity: isBusy || anticheatBlocked ? 0.5 : 1,
-              }}
+              className="rounded-sm bg-brand px-lg py-compact font-semibold text-on-primary hover:bg-brand-4 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {modal.operation && typeof modal.operation === 'object' && 'installing' in modal.operation ? t('tools.installing') : t('tools.installOptiscaler')}
             </button>
           )}
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

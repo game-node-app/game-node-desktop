@@ -5,7 +5,7 @@ import { App } from './App';
 import { resetUiStore } from './store/uiStore';
 import {
   createDefaultSnapshot,
-  type BootstrapState,
+  type AppInfo,
   type LibraryView,
   type Row,
   type Snapshot,
@@ -17,29 +17,31 @@ import {
 type Handler = (event: { payload: Snapshot }) => void;
 const listeners = new Set<Handler>();
 const invokeLog: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+const order: string[] = [];
 let current: Snapshot;
 let locale = 'en';
+let pendingSnapshot: Promise<Snapshot> | null = null;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     invokeLog.push({ cmd, args });
-    if (cmd === 'get_snapshot') return current;
-    if (cmd === 'get_bootstrap_state') {
-      const state: BootstrapState = {
-        snapshot: current,
+    order.push(`invoke:${cmd}`);
+    if (cmd === 'get_snapshot') return pendingSnapshot ?? current;
+    if (cmd === 'get_app_info') {
+      return {
         locale,
         version: '9.9.9',
-        licenseNotices: 'GPL-3.0-only notices',
         backgroundSupported: false,
-      };
-      return state;
+      } satisfies AppInfo;
     }
+    if (cmd === 'get_license_notices') return 'GPL-3.0-only notices';
     return undefined;
   }),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (_name: string, handler: Handler) => {
+    order.push('listen');
     listeners.add(handler);
     return () => listeners.delete(handler);
   }),
@@ -115,8 +117,13 @@ async function mountApp() {
       <App />
     </AppProviders>,
   );
-  // The bootstrap + snapshot queries resolve through the mocked IPC.
-  await waitFor(() => expect(invokeLog.some((c) => c.cmd === 'get_bootstrap_state')).toBe(true));
+  // App info and the first snapshot both resolve through the mocked IPC.
+  await waitFor(() => expect(invokeLog.some((c) => c.cmd === 'get_app_info')).toBe(true));
+  await waitFor(() => expect(invokeLog.some((c) => c.cmd === 'get_snapshot')).toBe(true));
+
+  // The engine bridge must be attached before the first snapshot is requested.
+  expect(order.indexOf('listen')).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf('listen')).toBeLessThan(order.indexOf('invoke:get_snapshot'));
 }
 
 const calls = (cmd: string) => invokeLog.filter((c) => c.cmd === cmd);
@@ -125,9 +132,11 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
   beforeEach(() => {
     resetUiStore();
     invokeLog.length = 0;
+    order.length = 0;
     listeners.clear();
     locale = 'en';
     current = createDefaultSnapshot();
+    pendingSnapshot = null;
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   });
 
@@ -195,7 +204,8 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
   it('opens Settings from the app menu and with Ctrl+,', async () => {
     await mountApp();
     fireEvent.click(screen.getByRole('button', { name: 'Application menu' }));
-    fireEvent.click(await screen.findByText('Settings'));
+    const menu = await screen.findByTestId('app-menu');
+    fireEvent.click(within(menu).getByText('Settings'));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -268,10 +278,35 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     errors.mockRestore();
   });
 
-  it('adopts the host locale (pt-BR) from get_bootstrap_state', async () => {
+  it('adopts the host locale (pt-BR) from get_app_info', async () => {
     locale = 'pt-BR';
     await mountApp();
     expect(await screen.findByText('Continuar com Google')).toBeInTheDocument();
     expect(document.documentElement.lang).toBe('pt-BR');
+  });
+
+  it('keeps a newer engine snapshot when the initial get_snapshot reply is stale', async () => {
+    let resolveInitial!: (snapshot: Snapshot) => void;
+    pendingSnapshot = new Promise<Snapshot>((resolve) => {
+      resolveInitial = resolve;
+    });
+
+    await mountApp();
+    await waitFor(() => expect(listeners.size).toBeGreaterThan(0));
+
+    const older = signedIn(current);
+    older.auth = { signedIn: { user: { id: 'older', username: 'Older Player' } } };
+    const newer = signedIn(current);
+    newer.auth = { signedIn: { user: { id: 'newer', username: 'Newer Player' } } };
+
+    await publish(newer);
+    expect(await screen.findByTestId('user-display-name')).toHaveTextContent('Newer Player');
+
+    await act(async () => {
+      resolveInitial(older);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('user-display-name')).toHaveTextContent('Newer Player');
   });
 });

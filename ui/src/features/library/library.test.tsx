@@ -818,6 +818,56 @@ describe('Library Feature Tests', () => {
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(uiStore.state.contextMenu.open).toBe(false);
     });
+
+    it('offers Remove for store entries without manual-only actions', () => {
+      const snapshot = createDefaultSnapshot();
+      const rows = createMockRows(2);
+      rows[0].key = 'steam:620';
+      snapshot.library = {
+        generation: 1,
+        layout: {
+          view: 'grid',
+          sort: { key: 'title', direction: 'ascending' },
+          filter: 'all',
+          sidebarWidth: 200,
+          detailWidth: 320,
+          detailOpen: false,
+        },
+        search: '',
+        access: 'verified',
+        total: 2,
+        providers: [],
+        rows,
+        scanning: false,
+        failedProviders: [],
+        selected: ['steam:620'],
+        focused: 'steam:620',
+        actions: {
+          selected: 1,
+          play: 'available',
+          install: 'available',
+          matchGame: 'available',
+          addToGamenode: 'available',
+          changeMatch: false,
+        },
+      };
+
+      renderWithProviders(<ContextMenu />, snapshot);
+
+      act(() => {
+        openContextMenu(200, 300, 'steam:620');
+      });
+
+      expect(screen.getByTestId('context-menu-remove')).toBeInTheDocument();
+      expect(screen.queryByTestId('context-menu-edit')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('context-menu-save-protection'),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('context-menu-remove'));
+      expect(uiStore.state.removeModalEntryKey).toBe('steam:620');
+      expect(uiStore.state.contextMenu.open).toBe(false);
+    });
   });
 
   describe('DetailPane and Localized Disabled Reasons', () => {
@@ -868,6 +918,9 @@ describe('Library Feature Tests', () => {
       expect(resizeHandle).toBeInTheDocument();
 
       // Pointer drag resize
+      fireEvent.click(screen.getByTestId('detail-remove-btn'));
+      expect(uiStore.state.removeModalEntryKey).toBe('game-0');
+
       fireEvent.pointerDown(resizeHandle, { clientX: 500 });
       fireEvent(
         window,

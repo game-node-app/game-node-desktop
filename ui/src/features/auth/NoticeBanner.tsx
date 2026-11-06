@@ -1,3 +1,4 @@
+import { IconX } from '@tabler/icons-react';
 import type { Notice } from '../../api/types';
 import { useI18n } from '../../i18n';
 
@@ -37,20 +38,7 @@ export function NoticeBanner({ notice, className, onDismiss }: NoticeBannerProps
       role="alert"
       data-testid="notice-banner"
       data-notice={notice}
-      className={className}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '12px',
-        padding: '12px 16px',
-        backgroundColor: 'var(--color-danger-subtle, rgba(229, 72, 77, 0.12))',
-        border: '1px solid var(--color-danger, #E5484D)',
-        borderRadius: 'var(--radius-md, 8px)',
-        color: 'var(--color-text-default, #D9D9D9)',
-        fontSize: 'var(--font-size-sm, 14px)',
-        lineHeight: 1.4,
-      }}
+      className={`flex items-center justify-between gap-sm rounded-md border border-danger bg-danger-subtle px-md py-sm text-sm leading-[1.4] text-text-default ${className ?? ''}`}
     >
       <span>{message}</span>
       {onDismiss && (
@@ -58,16 +46,9 @@ export function NoticeBanner({ notice, className, onDismiss }: NoticeBannerProps
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss notice"
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--color-text-dimmed, #808080)',
-            cursor: 'pointer',
-            padding: '2px 6px',
-            fontSize: '14px',
-          }}
+          className="cursor-pointer border-0 bg-transparent px-[6px] py-[2px] text-sm text-text-dimmed transition-colors hover:text-text-default"
         >
-          ✕
+          <IconX size={14} stroke={2} aria-hidden="true" />
         </button>
       )}
     </div>

@@ -566,11 +566,9 @@ export interface Snapshot {
   tools: ToolsView;
 }
 
-export interface BootstrapState {
-  snapshot: Snapshot;
+export interface AppInfo {
   locale: string;
   version: string;
-  licenseNotices: string;
   backgroundSupported: boolean;
 }
 

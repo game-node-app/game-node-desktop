@@ -20,6 +20,7 @@ pub mod provider;
 pub mod settings;
 pub mod snapshot;
 pub mod sync;
+pub mod tools;
 pub mod tracker;
 
 pub use auth::{AuthMachine, AuthState, Effect, Input, SessionError, SignInFailure, User};
@@ -28,3 +29,7 @@ pub use credential::{SessionCredential, StorageMethod};
 pub use notice::Notice;
 pub use settings::{RendererPreference, Settings, WindowGeometry};
 pub use snapshot::{AuthView, Snapshot};
+pub use tools::{
+    ArchiveFormat, InstallStrategy, ProxyDllName, ToolChannel, ToolDescriptor, ToolId,
+    ToolInstallState, ToolInstallation, ToolStore, ToolsView,
+};

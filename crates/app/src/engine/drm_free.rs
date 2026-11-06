@@ -52,6 +52,7 @@ impl Engine {
             view.versions = state.local.versions.clone();
             view.restore = state.local.restore.clone();
             view.review_selected = state.local.review_selected.clone();
+            view.recently_added = state.local.recently_added.clone();
             view.discovery_incomplete = state.local.discovery_incomplete.clone();
             view.discovery_scanning = state.local.discovery_scanning;
             view.discovery_completed = state.local.discovery_completed;
@@ -72,12 +73,26 @@ impl Engine {
                 .as_ref()
                 .zip(engine.shared.ports.installations.as_ref())
                 .ok_or(LocalError::Unsupported)?;
-            let registration = host.inspect(&path)?;
-            let existing = store
-                .registrations()
-                .map_err(local_storage)?
-                .into_iter()
-                .find(|r| !r.removed && r.file_identity == registration.file_identity);
+            let mut registration = host.inspect(&path)?;
+            let registrations = store.registrations().map_err(local_storage)?;
+            let existing = registrations
+                .iter()
+                .find(|r| !r.removed && r.file_identity == registration.file_identity)
+                .cloned();
+            if existing.is_none()
+                && let Some(old) = registrations.into_iter().find(|r| {
+                    r.removed
+                        && (r.file_identity == registration.file_identity
+                            || r.root.eq_ignore_ascii_case(&registration.root)
+                            || gamenode_core::provider::path::normalize(&r.executable)
+                                .eq_ignore_ascii_case(&gamenode_core::provider::path::normalize(
+                                    &registration.executable,
+                                )))
+                })
+            {
+                registration.id = old.id;
+                registration.revision = old.revision + 1;
+            }
             let key = existing.as_ref().unwrap_or(&registration).key();
             if existing.is_none() {
                 let claim = {
@@ -119,7 +134,7 @@ impl Engine {
             Ok(())
         });
     }
-    pub fn remove_local_game(&self, id: String) {
+    pub fn remove_local_game(&self, id: String, allow_rediscovery: bool) {
         self.local_work(move |engine| {
             let store = engine
                 .shared
@@ -127,17 +142,34 @@ impl Engine {
                 .local_games
                 .as_ref()
                 .ok_or(LocalError::Unsupported)?;
-            if let Some(mut registration) = store
-                .registrations()
-                .map_err(local_storage)?
-                .into_iter()
-                .find(|r| r.id == id)
-            {
+            let registrations = store.registrations().map_err(local_storage)?;
+            if let Some(mut registration) = registrations.iter().find(|r| r.id == id).cloned() {
                 registration.removed = true;
+                registration.rediscovery_allowed = allow_rediscovery;
                 registration.revision += 1;
                 store
                     .save_registration(&registration)
                     .map_err(local_storage)?;
+                for mut other in registrations.into_iter().filter(|r| {
+                    r.id != registration.id
+                        && r.removed
+                        && (r.file_identity == registration.file_identity
+                            || r.root.eq_ignore_ascii_case(&registration.root))
+                }) {
+                    if other.rediscovery_allowed != allow_rediscovery {
+                        other.rediscovery_allowed = allow_rediscovery;
+                        store.save_registration(&other).map_err(local_storage)?;
+                    }
+                }
+                let should_ignore = !allow_rediscovery;
+                for mut candidate in store.candidates().map_err(local_storage)? {
+                    if candidate_matches_registration(&candidate, &registration)
+                        && candidate.ignored != should_ignore
+                    {
+                        candidate.ignored = should_ignore;
+                        store.save_candidate(&candidate).map_err(local_storage)?;
+                    }
+                }
             }
             Ok(())
         });
@@ -223,6 +255,10 @@ impl Engine {
             {
                 let mut state = engine.lock();
                 let mut view = view;
+                view.inferences = state.local.inferences.clone();
+                view.versions = state.local.versions.clone();
+                view.restore = state.local.restore.clone();
+                view.recently_added = state.local.recently_added.clone();
                 view.discovery_incomplete = state.local.discovery_incomplete.clone();
                 view.discovery_scanning = state.local.discovery_scanning;
                 view.discovery_completed = state.local.discovery_completed;
@@ -262,7 +298,8 @@ impl Engine {
                         .any(|watch| watch.enabled && watch.id == candidate.watch)
                         && !registrations.iter().any(|r| {
                             candidate_matches_registration(candidate, r)
-                                && (!r.removed || !r.rediscovery_allowed)
+                                && r.removed
+                                && !r.rediscovery_allowed
                         })
                 })
                 .collect();
@@ -533,11 +570,23 @@ impl Engine {
             if let Err(error) = store.save_job(&job) {
                 tracing::warn!(%error,"could not save backup outcome");
             }
-            let view = engine.load_local_view();
+            let installation_id = job.installation.clone();
+            let mut view = engine.load_local_view();
             let mut state = engine.lock();
+            view.inferences = state.local.inferences.clone();
+            view.recently_added = state.local.recently_added.clone();
+            view.versions = state.local.versions.clone();
+            view.restore = state.local.restore.clone();
+            view.review_selected = state.local.review_selected.clone();
+            view.discovery_incomplete = state.local.discovery_incomplete.clone();
+            view.discovery_scanning = state.local.discovery_scanning;
+            view.discovery_completed = state.local.discovery_completed;
+            view.discovery_error = state.local.discovery_error.clone();
             state.local = view;
             state.local_backup_busy = false;
             engine.publish(&mut state);
+            drop(state);
+            engine.load_local_history(installation_id);
         });
     }
 }
@@ -998,6 +1047,102 @@ impl Engine {
             Ok(())
         });
     }
+    pub(super) fn auto_register_candidates(
+        &self,
+        candidates: Vec<gamenode_core::drm_free::Candidate>,
+    ) -> Result<Vec<String>, LocalError> {
+        let store = self
+            .shared
+            .ports
+            .local_games
+            .as_ref()
+            .ok_or(LocalError::Unsupported)?;
+        let prior = store.candidates().map_err(local_storage)?;
+        let mut registrations = store.registrations().map_err(local_storage)?;
+        let store_roots: Vec<String> = {
+            let state = self.lock();
+            state
+                .library
+                .all_entries()
+                .filter(|e| {
+                    e.installed && e.provider != "manual" && !e.install_dir.trim().is_empty()
+                })
+                .map(|e| gamenode_core::provider::path::normalize(&e.install_dir).to_lowercase())
+                .collect()
+        };
+        let mut added_titles = Vec::new();
+        for mut candidate in candidates {
+            if candidate.ignored
+                || prior
+                    .iter()
+                    .any(|old| old.fingerprint == candidate.fingerprint && old.ignored)
+                || registrations.iter().any(|r| {
+                    candidate_matches_registration(&candidate, r)
+                        && (!r.removed || !r.rediscovery_allowed)
+                })
+            {
+                continue;
+            }
+            let cand_root =
+                gamenode_core::provider::path::normalize(&candidate.root).to_lowercase();
+            let inside_store_install = store_roots.iter().any(|root| {
+                let sep = if gamenode_core::provider::path::is_windows_style(root) {
+                    '\\'
+                } else {
+                    '/'
+                };
+                let trimmed = root.trim_end_matches(['/', '\\']);
+                cand_root == trimmed || cand_root.starts_with(&format!("{trimmed}{sep}"))
+            });
+            if inside_store_install {
+                continue;
+            }
+            if candidate.selected_target.is_none() {
+                candidate.selected_target = gamenode_core::drm_free::identity::preferred_target(
+                    &candidate.root,
+                    &candidate.targets,
+                    &[],
+                );
+            }
+            store.save_candidate(&candidate).map_err(local_storage)?;
+            if let (Some(host), Some(target)) = (
+                self.shared.ports.installations.as_ref(),
+                candidate.selected_target.as_deref(),
+            ) {
+                let mut registration = host.inspect(target)?;
+                registration.root = candidate.root.clone();
+                registration.title = candidate.title.clone();
+                if let Some(pos) = registrations.iter().position(|r| {
+                    r.removed
+                        && r.rediscovery_allowed
+                        && (r.file_identity == registration.file_identity
+                            || candidate_matches_registration(&candidate, r))
+                }) {
+                    registration.id = registrations[pos].id.clone();
+                    registration.revision = registrations[pos].revision + 1;
+                    store
+                        .save_registration(&registration)
+                        .map_err(local_storage)?;
+                    registrations[pos] = registration;
+                    if !added_titles.contains(&candidate.title) {
+                        added_titles.push(candidate.title);
+                    }
+                } else if !registrations
+                    .iter()
+                    .any(|r| !r.removed && r.file_identity == registration.file_identity)
+                {
+                    store
+                        .save_registration(&registration)
+                        .map_err(local_storage)?;
+                    registrations.push(registration);
+                    if !added_titles.contains(&candidate.title) {
+                        added_titles.push(candidate.title);
+                    }
+                }
+            }
+        }
+        Ok(added_titles)
+    }
     pub fn rescan_local_folders(&self) {
         use std::sync::atomic::Ordering;
         if self.shared.local_discovering.swap(true, Ordering::AcqRel) {
@@ -1029,14 +1174,25 @@ impl Engine {
                     .store(false, Ordering::Release);
                 return;
             };
+            let mut added_titles = Vec::new();
             let result = (|| {
                 let mut watches = store.watches().map_err(local_storage)?;
                 watches.sort_by_key(|w| w.path.len());
+                let enabled_watches: Vec<_> = watches.into_iter().filter(|w| w.enabled).collect();
+                if engine.shared.ports.installations.is_some() {
+                    let pending: Vec<_> = store
+                        .candidates()
+                        .map_err(local_storage)?
+                        .into_iter()
+                        .filter(|c| !c.ignored && enabled_watches.iter().any(|w| w.id == c.watch))
+                        .collect();
+                    if !pending.is_empty() {
+                        added_titles.extend(engine.auto_register_candidates(pending)?);
+                    }
+                }
                 let mut scanned_roots = Vec::<String>::new();
                 let mut incomplete = Vec::new();
-                let prior = store.candidates().map_err(local_storage)?;
-                let registrations = store.registrations().map_err(local_storage)?;
-                for watch in watches.into_iter().filter(|w| w.enabled) {
+                for watch in enabled_watches {
                     let normalized =
                         gamenode_core::provider::path::normalize(&watch.path).to_lowercase();
                     if scanned_roots.iter().any(|root| {
@@ -1054,23 +1210,24 @@ impl Engine {
                         continue;
                     }
                     scanned_roots.push(normalized);
-                    let found = gamenode_platform::discovery::WindowsDiscovery
-                        .discover(&watch, &engine.shared.local_cancel)?;
+                    let found = match gamenode_platform::discovery::WindowsDiscovery
+                        .discover(&watch, &engine.shared.local_cancel)
+                    {
+                        Ok(found) => found,
+                        Err(LocalError::Unsupported)
+                            if engine.shared.ports.installations.is_some() =>
+                        {
+                            DiscoveryReport::default()
+                        }
+                        Err(error) => return Err(error),
+                    };
                     if found.incomplete {
                         incomplete.push(watch.path.clone());
                     }
-                    for candidate in found.candidates {
-                        if prior
-                            .iter()
-                            .any(|old| old.fingerprint == candidate.fingerprint && old.ignored)
-                            || registrations.iter().any(|r| {
-                                candidate_matches_registration(&candidate, r)
-                                    && (!r.removed || !r.rediscovery_allowed)
-                            })
-                        {
-                            continue;
+                    for title in engine.auto_register_candidates(found.candidates)? {
+                        if !added_titles.contains(&title) {
+                            added_titles.push(title);
                         }
-                        store.save_candidate(&candidate).map_err(local_storage)?;
                     }
                 }
                 engine.lock().local.discovery_incomplete = incomplete;
@@ -1078,10 +1235,19 @@ impl Engine {
             })();
             {
                 let mut state = engine.lock();
+                for title in &added_titles {
+                    if !state.local.recently_added.contains(title) {
+                        state.local.recently_added.push(title.clone());
+                    }
+                }
                 state.local.discovery_scanning = false;
                 state.local.discovery_completed = true;
                 state.local.discovery_error = result.err().map(|error| error.to_string());
                 engine.publish(&mut state);
+            }
+            if !added_titles.is_empty() {
+                engine.rescan();
+                engine.enrich_local_games();
             }
             engine.refresh_local_games();
             engine
@@ -1096,6 +1262,13 @@ impl Engine {
                 engine.rescan_local_folders();
             }
         });
+    }
+    pub fn dismiss_local_discovered(&self) {
+        let mut state = self.lock();
+        if !state.local.recently_added.is_empty() {
+            state.local.recently_added.clear();
+            self.publish(&mut state);
+        }
     }
     pub fn select_local_candidate(&self, fingerprint: String) {
         let mut state = self.lock();
@@ -1157,6 +1330,11 @@ impl Engine {
         });
     }
     pub fn reset_local_ignores(&self) {
+        self.library_input(LibInput::ResetExcluded);
+        self.rescan();
+        if self.shared.ports.local_games.is_none() {
+            return;
+        }
         self.local_work(move |engine| {
             let store = engine
                 .shared
@@ -1179,6 +1357,7 @@ impl Engine {
                 candidate.ignored = false;
                 store.save_candidate(&candidate).map_err(local_storage)?;
             }
+            engine.rescan_local_folders();
             Ok(())
         });
     }
@@ -1381,19 +1560,43 @@ impl Engine {
             engine.publish(&mut state);
         });
     }
+    pub fn cancel_local_restore(&self) {
+        let mut state = self.lock();
+        if state.local.restore.is_some() {
+            state.local.restore = None;
+            self.publish(&mut state);
+        }
+    }
     pub fn confirm_local_restore(&self) {
         let plan = self.lock().local.restore.take();
         let Some(mut plan) = plan else {
             return;
         };
+        let installation_id = plan.request.installation.id.clone();
         self.local_work(move |engine| {
-            let backup = engine.shared.ports.backups.as_ref().ok_or(LocalError::Unsupported)?;
-            let store = engine.shared.ports.local_games.as_ref().ok_or(LocalError::Unsupported)?;
-            plan.request.installation = store.registrations().map_err(local_storage)?.into_iter().find(|r| r.id == plan.request.installation.id && !r.removed).ok_or(LocalError::InvalidTarget)?;
+            let backup = engine
+                .shared
+                .ports
+                .backups
+                .as_ref()
+                .ok_or(LocalError::Unsupported)?;
+            let store = engine
+                .shared
+                .ports
+                .local_games
+                .as_ref()
+                .ok_or(LocalError::Unsupported)?;
+            plan.request.installation = store
+                .registrations()
+                .map_err(local_storage)?
+                .into_iter()
+                .find(|r| r.id == plan.request.installation.id && !r.removed)
+                .ok_or(LocalError::InvalidTarget)?;
             let report = backup.execute(&plan.request, &engine.shared.local_cancel)?;
             if report.state == gamenode_core::drm_free::JobState::Partial {
                 return Err(LocalError::Failed("restore partially completed; recovery snapshot retained in the backup namespace".into()));
             }
+            engine.load_local_history(installation_id);
             Ok(())
         });
     }

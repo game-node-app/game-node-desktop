@@ -91,6 +91,7 @@ pub struct LibraryCache {
     /// The chosen matches of the account that was asked for; empty when there is none.
     pub chosen_matches: Vec<ChosenMatch>,
     pub games: Vec<GameRecord>,
+    pub excluded: Vec<String>,
 }
 
 /// The last signed-in account, kept so the cached library can open before verification.
@@ -136,6 +137,11 @@ pub trait LibraryStore: Send + Sync {
 
     fn load_layout(&self) -> Result<LibraryLayout, StorageError>;
     fn save_layout(&self, layout: &LibraryLayout) -> Result<(), StorageError>;
+
+    fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
+        let _ = excluded;
+        Ok(())
+    }
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError>;
     fn save_last_account(&self, account: &LastAccount) -> Result<(), StorageError>;

@@ -1,4 +1,5 @@
 import { LocalGames } from "drm-free.slint";
+import { ToolsState } from "tools.slint";
 // The signed-in library: toolbar, game grid or list, and the detail pane. The sidebar entries
 // (`SidebarItem`) are placed by the shell in app.slint. Dialogs live in library-dialogs.slint.
 import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
@@ -231,7 +232,11 @@ component ItemsView inherits FocusScope {
         if event.text == Key.Home { LibraryState.move(4, event.modifiers.shift); return accept; }
         if event.text == Key.End { LibraryState.move(5, event.modifiers.shift); return accept; }
         if event.text == Key.Return {
-            if event.modifiers.control { LibraryState.play(); } else { LibraryState.open-details(); }
+            if event.modifiers.control {
+                LibraryState.open-details();
+            } else {
+                LibraryState.activate(LibraryState.focused-index >= 0 && LibraryState.focused-index < LibraryState.items.length ? LibraryState.items[LibraryState.focused-index].key : "");
+            }
             return accept;
         }
         if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
@@ -245,14 +250,14 @@ component ItemsView inherits FocusScope {
         width: parent.width; height: parent.height;
         pressed(key, ctrl, shift) => { LibraryState.select(key, ctrl, shift); root.focus(); }
         context(position) => { root.context(position); }
-        activated(key) => { LibraryState.select(key, false, false); LibraryState.open-details(); }
+        activated(key) => { LibraryState.activate(key); root.focus(); }
     }
     list-view := GameList {
         visible: LibraryState.view == ViewKind.list;
         width: parent.width; height: parent.height;
         pressed(key, ctrl, shift) => { LibraryState.select(key, ctrl, shift); root.focus(); }
         context(position) => { root.context(position); }
-        activated(key) => { LibraryState.select(key, false, false); LibraryState.open-details(); }
+        activated(key) => { LibraryState.activate(key); root.focus(); }
     }
 }
 
@@ -375,10 +380,12 @@ component DetailPane inherits Rectangle {
                 }
                 Field { label: @tr("Library" => "Playtime source"); value: PlaytimeText.source(LibraryState.detail-playtime-from-store, LibraryState.detail-provider); }
                 ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
-                ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
+                if LibraryState.install-why != Why.no-install-rule: ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
                 ActionWithReason { text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); why: LibraryState.match-why; clicked => { LibraryState.open-match(); } }
                 ActionWithReason { text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; status: LibraryState.add-existing-status; clicked => { LibraryState.open-add(); } }
                 if LibraryState.add-why == Why.membership-unavailable: Action { text: @tr("Library" => "Check again"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.refresh-membership(); } }
+                ActionWithReason { text: @tr("Library" => "Game tools…"); why: LibraryState.tools-why; clicked => { LibraryState.open-tools(); } }
+                if LibraryState.detail-tools != "": Field { label: @tr("Library" => "Tools"); value: LibraryState.detail-tools; }
                 if LibraryState.launch-note != LaunchNote.none: Rectangle {
                     background: LibraryState.launch-note == LaunchNote.opening-play || LibraryState.launch-note == LaunchNote.opening-install ? Theme.color-accent-subtle : Theme.color-danger-subtle;
                     border-radius: Theme.radius-sm;
@@ -396,12 +403,12 @@ component DetailPane inherits Rectangle {
                 }
                 if LocalGames.selected-id != "": VerticalLayout {
                     if LocalGames.match-evidence != "": Caption { text: @tr("DRM-free" => "Inferred from local evidence: {}", LocalGames.match-evidence); wrap: word-wrap; }
-                    Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; } }
+                    Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; LocalGames.history-load(); } }
                     spacing: 6px;
                     Action { text: @tr("DRM-free" => "Game settings"); clicked => { LocalGames.editing = true; } }
                     Action { text: @tr("DRM-free" => "Locate executable"); inert: LocalGames.busy; clicked => { LocalGames.locate(); } }
-                    Action { text: @tr("DRM-free" => "Remove from library"); inert: LocalGames.busy; clicked => { LocalGames.remove(); } }
                 }
+                Action { text: @tr("DRM-free" => "Remove from library"); inert: LocalGames.busy; clicked => { LocalGames.remove-open = true; } }
                 if LocalGames.error != "": Caption { text: LocalGames.error; wrap: word-wrap; }
                 Field { label: @tr("Library" => "Detected title"); value: LibraryState.detail-detected; }
                 Field { label: @tr("Library" => "GameNode game"); value: LibraryState.detail-matched; }
@@ -459,7 +466,7 @@ export component LibraryScreen inherits Rectangle {
 
     changed items-columns => { LibraryState.set-columns(root.items-columns); }
     private property <int> items-columns: items.columns;
-    init => { LibraryState.set-columns(root.items-columns); }
+    init => { LibraryState.set-columns(root.items-columns); items.focus(); }
     // When a dialog closes the keyboard returns to the games.
     private property <bool> modal: LibraryState.modal;
     changed modal => { if !root.modal { items.focus(); } }
@@ -475,7 +482,7 @@ export component LibraryScreen inherits Rectangle {
 
         VerticalLayout {
             // Notices: what is being done and what is limited.
-            if LibraryState.scanning || LibraryState.failed-stores != "" || LibraryState.access != AccessKind.verified: Rectangle {
+            if LibraryState.scanning || LibraryState.failed-stores != "" || LibraryState.access != AccessKind.verified || LocalGames.discovered-notice != "": Rectangle {
                 background: Theme.color-accent-subtle;
                 VerticalLayout {
                     padding-left: 16px; padding-right: 16px; padding-top: 6px; padding-bottom: 6px; spacing: 4px;
@@ -485,6 +492,22 @@ export component LibraryScreen inherits Rectangle {
                         spacing: 12px;
                         Text { horizontal-stretch: 1; text: root.busy ? @tr("Library" => "Checking your GameNode session…") : LibraryText.access(LibraryState.access); color: Theme.color-text-default; wrap: word-wrap; vertical-alignment: center; }
                         if root.can-retry: Action { text: @tr("Library" => "Retry connection"); outlined: true; inert: LibraryState.modal; clicked => { root.retry(); } }
+                    }
+                    if LocalGames.discovered-notice != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: @tr("DRM-free" => "Added from watched folders: {}", LocalGames.discovered-notice);
+                            color: Theme.color-text-default;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                        }
+                        Action {
+                            text: @tr("Library" => "Dismiss");
+                            outlined: true;
+                            inert: LibraryState.modal;
+                            clicked => { LocalGames.dismiss-discovered(); }
+                        }
                     }
                 }
             }
@@ -554,11 +577,12 @@ export component LibraryScreen inherits Rectangle {
         width: 0px; height: 0px;
         Menu {
             MenuItem { title: @tr("Library" => "Play"); enabled: LibraryState.play-why == Why.available; activated => { LibraryState.play(); } }
+            MenuItem { title: @tr("Library" => "Game tools…"); enabled: LibraryState.detail-valid && !LibraryState.detail-running; activated => { LibraryState.open-tools(); } }
             MenuItem { title: @tr("DRM-free" => "Game settings"); enabled: LocalGames.selected-id != ""; activated => { LocalGames.editing = true; } }
             MenuItem { title: @tr("DRM-free" => "Locate executable"); enabled: LocalGames.selected-id != "" && !LocalGames.busy; activated => { LocalGames.locate(); } }
-            MenuItem { title: @tr("DRM-free" => "Remove from library"); enabled: LocalGames.selected-id != "" && !LocalGames.busy; activated => { LocalGames.remove(); } }
-            MenuItem { title: @tr("DRM-free" => "Local save protection"); enabled: LocalGames.selected-id != ""; activated => { LocalGames.protection-open = true; } }
-            MenuItem { title: @tr("Library" => "Install"); enabled: LibraryState.install-why == Why.available; activated => { LibraryState.install(); } }
+            MenuItem { title: @tr("DRM-free" => "Remove from library"); enabled: LibraryState.detail-valid && !LocalGames.busy; activated => { LocalGames.remove-open = true; } }
+            MenuItem { title: @tr("DRM-free" => "Local save protection"); enabled: LocalGames.selected-id != ""; activated => { LocalGames.protection-open = true; LocalGames.history-load(); } }
+            if LibraryState.install-why != Why.no-install-rule: MenuItem { title: @tr("Library" => "Install"); enabled: LibraryState.install-why == Why.available; activated => { LibraryState.install(); } }
             MenuItem { title: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); enabled: LibraryState.match-why == Why.available; activated => { LibraryState.open-match(); } }
             MenuItem { title: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); enabled: LibraryState.add-why == Why.available; activated => { LibraryState.open-add(); } }
         }

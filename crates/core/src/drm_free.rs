@@ -370,6 +370,7 @@ pub struct PendingClaim {
 pub struct LocalView {
     pub pending_claim: Option<PendingClaim>,
     pub inferences: Vec<Inference>,
+    pub recently_added: Vec<String>,
     pub discovery_incomplete: Vec<String>,
     pub discovery_scanning: bool,
     pub discovery_completed: bool,

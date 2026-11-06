@@ -518,3 +518,116 @@ fn artwork_failures_are_retried_on_reselection_and_hidden_panes_do_not_fetch() {
     select_artwork(&mut machine, "steam:2");
     artwork_op(&select_artwork(&mut machine, "steam:1"));
 }
+
+#[test]
+fn temporary_removal_hides_entry_and_prunes_selection_until_next_scan() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored("steam", "1", "One", true),
+            stored("steam", "2", "Two", true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    machine.handle(Input::Select {
+        key: "steam:1".into(),
+        mode: SelectMode::Replace,
+    });
+    assert_eq!(machine.selected_keys(), ["steam:1"]);
+
+    let effects = machine.handle(Input::RemoveEntry {
+        key: "steam:1".into(),
+        allow_rediscovery: true,
+    });
+    assert!(effects.is_empty());
+    assert!(machine.selected_keys().is_empty());
+    let installed: Vec<_> = machine
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:2"]);
+    assert_eq!(machine.all_entries().count(), 2);
+
+    // Next scan brings it back.
+    finish_scan(
+        &mut machine,
+        vec![record("1", "One", "/1"), record("2", "Two", "/2")],
+        200,
+    );
+    let installed: Vec<_> = machine
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:1", "steam:2"]);
+}
+
+#[test]
+fn permanent_removal_persists_exclusion_across_scans_and_reset_restores() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored("steam", "1", "One", true),
+            stored("steam", "2", "Two", true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    machine.handle(Input::Select {
+        key: "steam:1".into(),
+        mode: SelectMode::Replace,
+    });
+
+    let effects = machine.handle(Input::RemoveEntry {
+        key: "steam:1".into(),
+        allow_rediscovery: false,
+    });
+    assert_eq!(
+        effects,
+        [Effect::PersistExcluded(vec!["steam:1".to_owned()])]
+    );
+    assert!(machine.selected_keys().is_empty());
+    let installed: Vec<_> = machine
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:2"]);
+
+    // Subsequent scan still suppresses it.
+    finish_scan(
+        &mut machine,
+        vec![record("1", "One", "/1"), record("2", "Two", "/2")],
+        200,
+    );
+    let installed: Vec<_> = machine
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:2"]);
+
+    // Loading a cache with excluded entries suppresses them too.
+    let (reloaded, _) = loaded(
+        false,
+        LibraryCache {
+            entries: vec![
+                stored("steam", "1", "One", true),
+                stored("steam", "2", "Two", true),
+            ],
+            excluded: vec!["steam:1".to_owned()],
+            ..LibraryCache::default()
+        },
+    );
+    let installed: Vec<_> = reloaded
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:2"]);
+
+    // Resetting exclusions restores the entry immediately and persists the empty list.
+    let effects = machine.handle(Input::ResetExcluded);
+    assert_eq!(effects, [Effect::PersistExcluded(vec![])]);
+    let installed: Vec<_> = machine
+        .installed_entries()
+        .map(|e| e.key.as_str())
+        .collect();
+    assert_eq!(installed, ["steam:1", "steam:2"]);
+    assert!(machine.handle(Input::ResetExcluded).is_empty());
+}

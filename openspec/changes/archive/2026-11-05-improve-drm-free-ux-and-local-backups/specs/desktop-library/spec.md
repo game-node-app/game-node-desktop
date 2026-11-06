@@ -33,18 +33,18 @@ Selecting one entry SHALL show a detail pane with its cover, detected and matche
 - **THEN** the detail pane shows Play and DRM-free actions without rendering an Install button or a "no install action" caption
 
 ### Requirement: Play and Install actions
-Play and Install SHALL use the provider's launch and install rules. Double-clicking an entry in grid or list view SHALL select it and trigger Play when available, or open its detail pane when Play is unavailable. Play SHALL show progress until handed to the OS, and a failure SHALL show a localized error. Install SHALL open the store client. A game is tracked the same way whether or not it was started from GameNode.
+Play and Install SHALL use the provider's launch and install rules. Double-clicking an entry or pressing Enter on a focused/selected entry in grid or list view SHALL select it and trigger Play when available, or open its detail pane when Play is unavailable. Play SHALL show progress until handed to the OS, and a failure SHALL show a localized error. Install SHALL open the store client. A game is tracked the same way whether or not it was started from GameNode.
 
 #### Scenario: Play from the detail pane
 - **WHEN** the user presses Play on a Steam game
 - **THEN** Steam is asked to run that game and GameNode stays open
 
-#### Scenario: Double-click a playable game in the library
-- **WHEN** the user double-clicks a playable game tile in grid view or row in list view
+#### Scenario: Double-click or press Enter on a playable game in the library
+- **WHEN** the user double-clicks a playable game tile in grid view or row in list view, or focuses it and presses Enter
 - **THEN** that game is selected and launched immediately
 
-#### Scenario: Double-click an unplayable game in the library
-- **WHEN** the user double-clicks a game whose Play action is unavailable (such as a running game or a DRM-free entry with a missing executable)
+#### Scenario: Double-click or press Enter on an unplayable game in the library
+- **WHEN** the user double-clicks or presses Enter on a game whose Play action is unavailable (such as a running game or a DRM-free entry with a missing executable)
 - **THEN** that game is selected and its detail pane opens showing why Play is unavailable
 
 #### Scenario: Close the window after Play

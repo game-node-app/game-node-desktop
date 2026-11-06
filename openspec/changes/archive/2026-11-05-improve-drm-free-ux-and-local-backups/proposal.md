@@ -12,8 +12,8 @@ Watched-folder DRM-free game discovery currently hides newly detected games insi
   - Show a dismissible banner in the main Library view announcing newly added DRM-free games from watched folders so discoveries and matches are immediately visible without opening Settings.
   - Keep watched-folder management (`Watch folder`, `Remove watch`, `Rescan watched folders`, and `Reset ignored discoveries`) in `Settings → Stores`, removing the hidden manual candidate checklist from Settings. Removing a DRM-free game from the library continues to suppress rediscovery until reset.
   - Expose alternative executables detected in a game's installation folder within `Game settings` (`LocalGameEditor`) so users can switch the launch target with one click if the auto-selected executable is not the desired one.
-- **Double-click to launch in the Library**:
-  - Change double-clicking a `GameTile` (grid view) or `GameRow` (list view) to select the entry and trigger `Play` immediately when launch is available, instead of only opening the detail pane. If `Play` is unavailable (for example, the game is already running or its executable is missing), select the entry and open the detail pane so the reason is visible.
+- **Double-click and Enter to launch in the Library**:
+  - Change double-clicking a `GameTile` (grid view) or `GameRow` (list view) — or pressing `Enter` on a focused/selected library item — to select the entry and trigger `Play` immediately when launch is available, instead of only opening the detail pane (`Ctrl+Enter` opens the detail pane without launching). If `Play` is unavailable (for example, the game is already running or its executable is missing), select the entry and open the detail pane so the reason is visible.
 - **Remove the `Install` action for DRM-free games**:
   - Hide the `Install` button and its `"This store has no install action."` caption in the detail pane, as well as the `Install` item in the context menu, whenever a DRM-free (`manual`) game is selected.
 - **Redesign the per-game Local Backups (`SaveProtection`) modal**:

@@ -599,6 +599,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Arc::new(gamenode_api::GameNodeClient::new(
         gamenode_api::server_url_from_env()?,
     )?);
+    let processes: Arc<dyn gamenode_core::ports::Processes> =
+        Arc::new(gamenode_platform::processes::HostProcesses::new());
     let engine = Engine::new(
         Ports {
             backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
@@ -608,7 +610,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             installations: Some(Arc::new(
                 gamenode_platform::installations::WindowsInstallations,
             )),
-            processes: Arc::new(gamenode_platform::processes::HostProcesses::new()),
+            tools: Some(Arc::new(store.tool_store())),
+            tool_catalog: Some(Arc::new(gamenode_platform::tools::catalog::GitHubToolCatalog::new(
+                paths.tools_cache_dir(),
+            )?)),
+            tool_installer: Some(Arc::new(
+                gamenode_platform::tools::PlatformToolInstaller::new(
+                    paths.tool_backups_dir(),
+                    processes.clone(),
+                ),
+            )),
+            processes,
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),
             settings: store,

@@ -184,6 +184,55 @@ fn outcome(outcome: &AddOutcome) -> (Outcome, StatusKind) {
     }
 }
 
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * 1024 * 1024;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < MB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else if bytes < GB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    }
+}
+
+pub fn profile_save_paths(profile: &gamenode_core::drm_free::SaveProfile) -> Vec<String> {
+    if !profile.files.is_empty() {
+        return profile.files.clone();
+    }
+    if profile.definition.trim().is_empty() {
+        return Vec::new();
+    }
+    let wrapped = format!(
+        "Profile:\n{}",
+        profile
+            .definition
+            .lines()
+            .filter(|line| line.trim() != "---")
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    gamenode_core::drm_free::identity::ManifestIndex::parse(wrapped.as_bytes())
+        .ok()
+        .and_then(|mut index| index.games.remove("Profile"))
+        .and_then(|game| {
+            game.definition
+                .get("files")
+                .and_then(|v| v.as_mapping())
+                .map(|files| {
+                    files
+                        .keys()
+                        .filter_map(|k| k.as_str().map(str::to_owned))
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Screen -> core commands.
 
@@ -291,10 +340,10 @@ pub fn install(ui: &AppWindow, commands: &crate::ui_commands::UiCommands, covers
         });
     });
     let e = commands.clone();
-    local.on_remove(move || {
-        e.submit(|engine| {
-            if let Some(id) = selected_local_id(engine) {
-                engine.remove_local_game(id);
+    local.on_remove(move |allow_rediscovery| {
+        e.submit(move |engine| {
+            if let Some(key) = selected_entry_key(engine) {
+                engine.remove_entry(key, allow_rediscovery);
             }
         });
     });
@@ -448,6 +497,10 @@ pub fn install(ui: &AppWindow, commands: &crate::ui_commands::UiCommands, covers
     local.on_restore_preview(move |key| e.preview_local_restore(key.to_string()));
     let e = commands.clone();
     local.on_restore_confirm(move || e.confirm_local_restore());
+    let e = commands.clone();
+    local.on_restore_cancel(move || e.cancel_local_restore());
+    let e = commands.clone();
+    local.on_dismiss_discovered(move || e.dismiss_local_discovered());
     let state = ui.global::<LibraryState>();
     let send = |commands: &crate::ui_commands::UiCommands, input: Option<LibInput>| {
         if let Some(input) = input {
@@ -460,6 +513,11 @@ pub fn install(ui: &AppWindow, commands: &crate::ui_commands::UiCommands, covers
     state.on_select(move |key, ctrl, shift| {
         let input = select_input(&key, ctrl, shift);
         e.submit(move |engine| engine.library_input(input));
+    });
+    let e = commands.clone();
+    state.on_activate(move |key| {
+        let key = key.to_string();
+        e.submit(move |engine| activate_entry(engine, &key));
     });
     let e = commands.clone();
     state.on_move(move |direction, extend| send(&e, move_input(direction, extend)));
@@ -561,9 +619,77 @@ pub fn install(ui: &AppWindow, commands: &crate::ui_commands::UiCommands, covers
     let e = commands.clone();
     state.on_add_confirm(move || e.submit(|engine| engine.library_input(LibInput::ConfirmAdd)));
 
+    let e = commands.clone();
+    state.on_open_tools(move || e.open_tools_for_selected());
+
+    let tools = ui.global::<crate::ToolsState>();
+    let e = commands.clone();
+    tools.on_open_for_selected(move || e.open_tools_for_selected());
+    let e = commands.clone();
+    tools.on_close(move || e.close_tools());
+    let e = commands.clone();
+    tools.on_select_channel(move |idx| {
+        let channel = if idx == 1 {
+            gamenode_core::tools::ToolChannel::Nightly
+        } else {
+            gamenode_core::tools::ToolChannel::Stable
+        };
+        e.select_tool_channel(channel);
+    });
+    let e = commands.clone();
+    tools.on_refresh_versions(move || e.refresh_tool_versions());
+    let e = commands.clone();
+    tools.on_select_version(move |ver| e.select_tool_version(ver.to_string()));
+    let e = commands.clone();
+    tools.on_select_target_exe(move |exe| e.select_tool_target_exe(exe.to_string()));
+    let e = commands.clone();
+    tools.on_select_proxy(move |proxy| e.select_tool_proxy(proxy.to_string()));
+    let e = commands.clone();
+    tools.on_toggle_anticheat_confirmed(move |confirmed| e.set_tool_anticheat_confirmed(confirmed));
+    let e = commands.clone();
+    tools.on_toggle_reset_config(move |reset| e.set_tool_reset_config(reset));
+    let e = commands.clone();
+    tools.on_install_tool(move || e.install_or_update_tool(false));
+    let e = commands.clone();
+    tools.on_update_tool(move || e.install_or_update_tool(true));
+    let e = commands.clone();
+    tools.on_uninstall_tool(move || e.uninstall_tool());
+    let e = commands.clone();
+    tools.on_open_source(move |url| e.open_tool_source(url.to_string()));
+    let e = commands.clone();
+    tools.on_clear_cache(move || e.clear_tool_cache());
+
     let renderer = Renderer::new(covers_dir, ui);
     renderer.attach(ui);
     RENDERER.with(|slot| *slot.borrow_mut() = Some(renderer));
+}
+
+pub(crate) fn activate_entry(engine: &Engine, key: &str) {
+    let target = if !key.is_empty() {
+        Some(key.to_owned())
+    } else {
+        engine.snapshot().library.and_then(|view| {
+            view.focused.or_else(|| {
+                if let [selected] = view.selected.as_slice() {
+                    Some(selected.clone())
+                } else {
+                    None
+                }
+            })
+        })
+    };
+    if let Some(target) = target {
+        engine.library_input(select_input(&target, false, false));
+        if let Some(view) = engine.snapshot().library {
+            if view.actions.play.is_available() && view.selected.as_slice() == [target.as_str()] {
+                engine.open_entry(target, LaunchKind::Play);
+            } else {
+                engine.library_input(LibInput::OpenDetails);
+            }
+        }
+    } else {
+        engine.library_input(LibInput::OpenDetails);
+    }
 }
 
 fn launch_selected(engine: &Engine, kind: LaunchKind) {
@@ -608,6 +734,7 @@ fn same_discovery_rows(
 pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
     let local = ui.global::<crate::LocalGames>();
     local.set_busy(snapshot.local_games.busy);
+    local.set_discovered_notice(snapshot.local_games.recently_added.join(", ").into());
     local.set_discovery_scanning(snapshot.local_games.discovery_scanning);
     local.set_discovery_completed(snapshot.local_games.discovery_completed);
     local.set_discovery_incomplete(!snapshot.local_games.discovery_incomplete.is_empty());
@@ -681,6 +808,10 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .unwrap_or_default()
             .into(),
     );
+    let single_selected = snapshot
+        .library
+        .as_ref()
+        .is_some_and(|v| v.selected.len() == 1);
     let selected = snapshot.library.as_ref().and_then(|v| {
         if v.selected.len() == 1 {
             v.selected[0].strip_prefix("manual:")
@@ -689,6 +820,9 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
         }
     });
     local.set_selected_id(selected.unwrap_or_default().into());
+    if !single_selected && local.get_remove_open() {
+        local.set_remove_open(false);
+    }
     local.set_match_evidence(
         selected
             .and_then(|id| {
@@ -733,12 +867,10 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .versions
             .iter()
             .map(|version| crate::BackupRow {
-                label: format!(
-                    "{} · {} bytes · {}",
-                    version.label, version.bytes, version.destination
-                )
-                .into(),
                 key: version.key().into(),
+                label: version.label.clone().into(),
+                size: format_bytes(version.bytes).into(),
+                destination: version.destination.clone().into(),
             })
             .collect::<Vec<_>>(),
     )));
@@ -761,6 +893,21 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
             .iter()
             .rfind(|p| p.installation == id)
     });
+    local.set_profile_title(profile.map(|p| p.title.as_str()).unwrap_or_default().into());
+    let save_paths = profile.map(profile_save_paths).unwrap_or_default();
+    local.set_save_paths(slint::ModelRc::new(slint::VecModel::from(
+        save_paths
+            .into_iter()
+            .map(slint::SharedString::from)
+            .collect::<Vec<_>>(),
+    )));
+    let save_registry = profile.map(|p| p.registry.clone()).unwrap_or_default();
+    local.set_save_registry(slint::ModelRc::new(slint::VecModel::from(
+        save_registry
+            .into_iter()
+            .map(slint::SharedString::from)
+            .collect::<Vec<_>>(),
+    )));
     local.set_game_automatic(profile.is_none_or(|p| p.automatic != Some(false)));
     local.set_overlapping_saves(profile.is_some_and(|profile| {
         snapshot
@@ -806,6 +953,32 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
         local.set_arguments(
             gamenode_core::drm_free::format_arguments(&registration.arguments).into(),
         );
+        let candidate_targets = snapshot
+            .local_games
+            .candidates
+            .iter()
+            .find(|c| {
+                c.root.eq_ignore_ascii_case(&registration.root)
+                    || c.targets.iter().any(|t| {
+                        gamenode_core::provider::path::normalize(t).eq_ignore_ascii_case(
+                            &gamenode_core::provider::path::normalize(&registration.executable),
+                        )
+                    })
+            })
+            .filter(|c| c.targets.len() > 1)
+            .map(|c| {
+                c.targets
+                    .iter()
+                    .cloned()
+                    .map(slint::SharedString::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        local.set_candidate_targets(slint::ModelRc::new(slint::VecModel::from(
+            candidate_targets,
+        )));
+    } else {
+        local.set_candidate_targets(Default::default());
     }
     RENDERER.with(|slot| {
         if let Some(renderer) = slot.borrow_mut().as_mut() {
@@ -832,6 +1005,7 @@ struct Renderer {
     last_destination: Option<String>,
     last_error: Option<String>,
     last_snapshot: Option<Snapshot>,
+    last_tool_entry: Option<String>,
 }
 
 /// Replaces the model's rows, touching only the rows that differ when the length is unchanged.
@@ -886,6 +1060,7 @@ impl Renderer {
             last_destination: None,
             last_error: None,
             last_snapshot: None,
+            last_tool_entry: None,
         }
     }
 
@@ -925,26 +1100,26 @@ impl Renderer {
         self.was_scanning = is_scanning;
 
         let current_destination = snapshot.local_games.settings.destination.clone();
-        if let Some(last) = &self.last_destination {
-            if last != &current_destination && !current_destination.is_empty() {
-                let settings = ui.global::<crate::SettingsState>();
-                settings.invoke_trigger_toast(
-                    crate::ToastKind::Success,
-                    "Backup destination saved".into(),
-                );
-            }
+        if let Some(last) = &self.last_destination
+            && last != &current_destination
+            && !current_destination.is_empty()
+        {
+            let settings = ui.global::<crate::SettingsState>();
+            settings
+                .invoke_trigger_toast(crate::ToastKind::Success, "Backup destination saved".into());
         }
         self.last_destination = Some(current_destination);
 
-        if let Some(error) = &snapshot.local_games.error {
-            if self.last_error.as_ref() != Some(error) {
-                let settings = ui.global::<crate::SettingsState>();
-                settings.invoke_trigger_toast(crate::ToastKind::Danger, error.clone().into());
-            }
+        if let Some(error) = &snapshot.local_games.error
+            && self.last_error.as_ref() != Some(error)
+        {
+            let settings = ui.global::<crate::SettingsState>();
+            settings.invoke_trigger_toast(crate::ToastKind::Danger, error.clone().into());
         }
         self.last_error = snapshot.local_games.error.clone();
 
         self.artwork.clear_focus();
+        self.render_tools(ui, snapshot);
         let state = ui.global::<LibraryState>();
         let Some(view) = &snapshot.library else {
             state.set_active(false);
@@ -1062,9 +1237,19 @@ impl Renderer {
         let Some(detail) = &view.detail else {
             state.set_detail_valid(false);
             state.set_launch_note(LaunchNote::None);
+            state.set_tools_why(Why::NothingSelected);
             return;
         };
         let row = &detail.row;
+        let tools_why = if detail.running {
+            Why::Running
+        } else if detail.install_dir.trim().is_empty() {
+            Why::MissingField
+        } else {
+            Why::Available
+        };
+        state.set_tools_why(tools_why);
+        state.set_detail_tools(snapshot.tools.summary_for_entry(&row.key).into());
         let artwork = detail.artwork.as_ref().and_then(|bytes| {
             row.status
                 .game_id()
@@ -1252,6 +1437,199 @@ impl Renderer {
                 .collect(),
         );
     }
+
+    fn render_tools(&mut self, ui: &AppWindow, snapshot: &Snapshot) {
+        let tools = ui.global::<crate::ToolsState>();
+        tools.set_supported(cfg!(windows));
+        tools.set_cache_size_text(format_bytes(snapshot.tools.total_cache_bytes).into());
+        tools.set_cache_archive_count(
+            i32::try_from(snapshot.tools.total_cache_archives).unwrap_or(i32::MAX),
+        );
+
+        let current_tool_entry = snapshot.tools.modal.as_ref().map(|m| m.entry_key.clone());
+        if self.last_tool_entry != current_tool_entry {
+            tools.set_reset_config(false);
+            self.last_tool_entry = current_tool_entry;
+        }
+
+        if let Some(modal) = &snapshot.tools.modal {
+            tools.set_open(true);
+            let busy = modal.operation.is_some()
+                && !matches!(
+                    modal.operation,
+                    Some(gamenode_core::tools::ToolOperationStatus::Failed { .. })
+                );
+            tools.set_busy(busy);
+            tools.set_entry_key(modal.entry_key.as_str().into());
+            tools.set_game_title(modal.title.as_str().into());
+            tools.set_install_dir(modal.install_dir.as_str().into());
+            tools.set_game_running(snapshot.tracking.running.contains(&modal.entry_key));
+            tools.set_active_tool_id(modal.active_tool_id.as_str().into());
+
+            let installed_tool = modal.tools.iter().find(|t| t.tool_id == modal.active_tool_id);
+            let is_installed = installed_tool
+                .is_some_and(|t| t.state == gamenode_core::tools::ToolInstallState::Installed);
+            tools.set_installed(is_installed);
+            tools.set_installed_version(
+                installed_tool
+                    .map(|t| t.version.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            tools.set_installed_channel(
+                installed_tool
+                    .map(|t| t.channel.as_str())
+                    .unwrap_or("stable")
+                    .into(),
+            );
+            tools.set_installed_proxy(
+                installed_tool
+                    .and_then(|t| t.proxy_dll.as_deref())
+                    .unwrap_or("dxgi.dll")
+                    .into(),
+            );
+
+            tools.set_channel_index(match modal.selected_channel {
+                gamenode_core::tools::ToolChannel::Stable => 0,
+                gamenode_core::tools::ToolChannel::Nightly => 1,
+            });
+
+            let versions: Vec<crate::ToolVersionRow> = modal
+                .available_versions
+                .iter()
+                .map(|r| crate::ToolVersionRow {
+                    version: r.version.as_str().into(),
+                    label: r.name.as_str().into(),
+                    published_at: r.published_at.as_str().into(),
+                    cached: r.cached_path.is_some(),
+                })
+                .collect();
+            tools.set_versions(slint::ModelRc::new(slint::VecModel::from(versions)));
+
+            tools.set_selected_version(modal.selected_version.clone().unwrap_or_default().into());
+            tools.set_loading_versions(
+                modal.available_versions.is_empty() && modal.operation.is_none(),
+            );
+
+            let targets: Vec<crate::ToolTargetRow> = modal
+                .inspection
+                .as_ref()
+                .map(|i| {
+                    i.candidates
+                        .iter()
+                        .map(|c| crate::ToolTargetRow {
+                            relative_exe: c.relative_exe.as_str().into(),
+                            label: c.label.as_str().into(),
+                            architecture: c.architecture.as_str().into(),
+                            preferred: c.preferred,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            tools.set_targets(slint::ModelRc::new(slint::VecModel::from(targets)));
+
+            let selected_target = modal
+                .inspection
+                .as_ref()
+                .and_then(|i| i.selected_exe.clone())
+                .unwrap_or_default();
+            tools.set_selected_target_exe(selected_target.into());
+
+            tools.set_selected_proxy(modal.selected_proxy.as_str().into());
+
+            let anticheat_detected = modal
+                .inspection
+                .as_ref()
+                .is_some_and(|i| i.anticheat.has_warning());
+            tools.set_anticheat_detected(anticheat_detected);
+            tools.set_anticheat_systems(
+                modal
+                    .inspection
+                    .as_ref()
+                    .map(|i| {
+                        i.anticheat
+                            .detected
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+                    .into(),
+            );
+            tools.set_anticheat_evidence(
+                modal
+                    .inspection
+                    .as_ref()
+                    .map(|i| i.anticheat.evidence.join("\n"))
+                    .unwrap_or_default()
+                    .into(),
+            );
+            tools.set_anticheat_confirmed(modal.anticheat_confirmed);
+
+            match &modal.operation {
+                Some(gamenode_core::tools::ToolOperationStatus::Installing { message, .. }) => {
+                    tools.set_status_message(message.as_str().into());
+                    tools.set_error_message("".into());
+                }
+                Some(gamenode_core::tools::ToolOperationStatus::Updating { message, .. }) => {
+                    tools.set_status_message(message.as_str().into());
+                    tools.set_error_message("".into());
+                }
+                Some(gamenode_core::tools::ToolOperationStatus::Uninstalling) => {
+                    tools.set_status_message("Uninstalling...".into());
+                    tools.set_error_message("".into());
+                }
+                Some(gamenode_core::tools::ToolOperationStatus::Failed { message }) => {
+                    tools.set_status_message("".into());
+                    tools.set_error_message(message.as_str().into());
+                }
+                None => {
+                    tools.set_status_message("".into());
+                    tools.set_error_message("".into());
+                }
+            }
+        } else {
+            tools.set_open(false);
+            tools.set_busy(false);
+            tools.set_status_message("".into());
+            tools.set_error_message("".into());
+        }
+
+        let catalog_rows: Vec<crate::ToolCatalogRow> = snapshot
+            .tools
+            .catalog
+            .iter()
+            .map(|item| {
+                let installed_for_active = snapshot.tools.modal.as_ref().and_then(|m| {
+                    m.tools.iter().find(|t| t.tool_id == item.id)
+                });
+                let installed = installed_for_active
+                    .is_some_and(|t| t.state == gamenode_core::tools::ToolInstallState::Installed);
+                crate::ToolCatalogRow {
+                    id: item.id.as_str().into(),
+                    name: item.name.as_str().into(),
+                    summary: item.summary.as_str().into(),
+                    license: item.license.as_str().into(),
+                    source_url: item.source_url.as_str().into(),
+                    installed,
+                    installed_version: installed_for_active
+                        .map(|t| t.version.as_str())
+                        .unwrap_or_default()
+                        .into(),
+                    installed_channel: installed_for_active
+                        .map(|t| t.channel.as_str())
+                        .unwrap_or("stable")
+                        .into(),
+                    installed_proxy: installed_for_active
+                        .and_then(|t| t.proxy_dll.as_deref())
+                        .unwrap_or("dxgi.dll")
+                        .into(),
+                }
+            })
+            .collect();
+        tools.set_catalog(slint::ModelRc::new(slint::VecModel::from(catalog_rows)));
+    }
 }
 
 fn refresh_cover_images(ui: &AppWindow) {
@@ -1300,13 +1678,19 @@ fn decode_cover(dir: &Path, file: &str) -> Option<slint::SharedPixelBuffer<slint
     ))
 }
 
-fn selected_local_id(engine: &Engine) -> Option<String> {
+fn selected_entry_key(engine: &Engine) -> Option<String> {
     let view = engine.snapshot().library?;
     if let [key] = view.selected.as_slice() {
-        key.strip_prefix("manual:").map(str::to_owned)
+        Some(key.clone())
     } else {
         None
     }
+}
+
+fn selected_local_id(engine: &Engine) -> Option<String> {
+    selected_entry_key(engine)?
+        .strip_prefix("manual:")
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

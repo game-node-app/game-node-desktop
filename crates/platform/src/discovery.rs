@@ -156,15 +156,17 @@ impl DiscoveryHost for WindowsDiscovery {
                                 .as_bytes()
                         )
                     );
-                    let selected_target = if targets.len() == 1 {
-                        Some(targets[0].clone())
-                    } else {
-                        None
+                    let manifest_hints = match manifest.index.exact(&title).as_slice() {
+                        [game] => game.launch_hints.iter().cloned().collect::<Vec<_>>(),
+                        _ => Vec::new(),
                     };
+                    let root = install.to_string_lossy().into_owned();
+                    let selected_target =
+                        identity::preferred_target(&root, &targets, &manifest_hints);
                     results.push(Candidate {
                         fingerprint,
                         watch: watch.id.clone(),
-                        root: install.to_string_lossy().into_owned(),
+                        root,
                         title,
                         targets,
                         selected_target,

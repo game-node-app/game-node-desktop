@@ -66,6 +66,7 @@ pub enum Effect {
         now: i64,
     },
     PersistLayout(LibraryLayout),
+    PersistExcluded(Vec<String>),
     /// Ask GameNode which games these store ids are (`GameApi::lookup_external`) and report with
     /// [`Input::LookupDone`]. Only sent with a verified session.
     Lookup {
@@ -257,6 +258,14 @@ pub enum Input {
         game_id: u64,
         result: Result<(), ApiError>,
     },
+    /// Remove an entry from the library (`allow_rediscovery = true` hides it until the next
+    /// scan; `false` excludes it across future scans and restarts).
+    RemoveEntry {
+        key: String,
+        allow_rediscovery: bool,
+    },
+    /// Clear all permanent entry exclusions so current and future scans show them again.
+    ResetExcluded,
 }
 
 #[derive(Debug)]
@@ -283,6 +292,7 @@ pub struct LibraryMachine {
     pub(super) access: Access,
     pub(super) op: u64,
     pub(super) entries: BTreeMap<String, StoredEntry>,
+    pub(super) excluded: BTreeSet<String>,
     pub(super) scans: BTreeMap<String, ProviderScanState>,
     pub(super) auto_matches: BTreeMap<(u32, String), AutoMatch>,
     pub(super) chosen: BTreeMap<String, ChosenMatch>,
@@ -330,6 +340,7 @@ impl LibraryMachine {
             access: Access::default(),
             op: 0,
             entries: BTreeMap::new(),
+            excluded: BTreeSet::new(),
             scans: BTreeMap::new(),
             auto_matches: BTreeMap::new(),
             chosen: BTreeMap::new(),
@@ -405,7 +416,13 @@ impl LibraryMachine {
 
     /// The entries a scan currently finds installed, in key order.
     pub fn installed_entries(&self) -> impl Iterator<Item = &StoredEntry> {
-        self.entries.values().filter(|entry| entry.installed)
+        self.entries
+            .values()
+            .filter(|entry| entry.installed && !self.excluded.contains(&entry.key))
+    }
+
+    pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
+        self.entries.values()
     }
 
     pub fn chosen_match(&self, key: &str) -> Option<&ChosenMatch> {
@@ -625,6 +642,41 @@ impl LibraryMachine {
                 game_id,
                 result,
             } => self.on_entry_created(op, game_id, result),
+            Input::RemoveEntry {
+                key,
+                allow_rediscovery,
+            } => {
+                if self.match_dialog_view().is_some_and(|d| d.entry_key == key) {
+                    self.dialog = None;
+                }
+                if allow_rediscovery {
+                    if let Some(entry) = self.entries.get_mut(&key) {
+                        entry.installed = false;
+                    }
+                    self.prune_selection();
+                    vec![]
+                } else {
+                    let changed = self.excluded.insert(key);
+                    self.prune_selection();
+                    if changed {
+                        vec![Effect::PersistExcluded(
+                            self.excluded.iter().cloned().collect(),
+                        )]
+                    } else {
+                        vec![]
+                    }
+                }
+            }
+            Input::ResetExcluded => {
+                if self.excluded.is_empty() {
+                    return vec![];
+                }
+                self.excluded.clear();
+                let mut effects = vec![Effect::PersistExcluded(Vec::new())];
+                effects.extend(self.plan_lookups(0));
+                effects.extend(self.plan_covers(false));
+                effects
+            }
         }
     }
 
@@ -641,6 +693,7 @@ impl LibraryMachine {
     fn reset_data(&mut self) {
         self.local_inferences.clear();
         self.entries.clear();
+        self.excluded.clear();
         self.scans.clear();
         self.auto_matches.clear();
         self.chosen.clear();
@@ -724,6 +777,7 @@ impl LibraryMachine {
             .into_iter()
             .map(|game| (game.game_id, game))
             .collect();
+        self.excluded = cache.excluded.into_iter().collect();
     }
 
     fn on_scan_requested(&mut self) -> Vec<Effect> {

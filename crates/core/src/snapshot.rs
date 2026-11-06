@@ -43,6 +43,8 @@ pub struct Snapshot {
     pub library: Option<LibraryView>,
     /// The latest Play or Install, while it is opening or after it failed.
     pub launch: Option<LaunchStatus>,
+    /// Scalable game tools management and modal view.
+    pub tools: crate::tools::ToolsView,
 }
 
 impl Snapshot {
@@ -77,6 +79,7 @@ impl Snapshot {
             settings,
             library,
             launch,
+            tools: Default::default(),
         }
     }
 }

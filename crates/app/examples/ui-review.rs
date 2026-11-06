@@ -19,7 +19,8 @@ use gamenode_app::{
     AccessKind, AddError, AppWindow, BackupRow, CollectionItem, CollectionsKind, DiscoveryRow,
     EmptyKind, GameItem, LaunchNote, LibraryState, LocalGames, MatchKind, OptionItem, Outcome,
     ProviderItem, SearchError, SettingsState, SettingsTopic, SortKind, SourceKind, Standing,
-    StatusKind, SummaryItem, TargetItem, ToastKind, ViewKind, Why,
+    StatusKind, SummaryItem, TargetItem, ToastKind, ToolCatalogRow, ToolTargetRow, ToolVersionRow,
+    ToolsState, ViewKind, Why,
 };
 use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
 use serde_json::{Value, json};
@@ -305,18 +306,32 @@ fn setup_base_window(ui: &AppWindow) {
     local.set_save_status(2);
     local.set_job_status(4);
     local.set_destination("C:\\Users\\cassi\\AppData\\Local\\GameNode\\Desktop\\backups".into());
+    local.set_profile_title("Celeste".into());
+    local.set_save_paths(ModelRc::from(Rc::new(VecModel::from(vec![
+        "D:\\Games\\Celeste\\Saves\\0.celeste".into(),
+        "D:\\Games\\Celeste\\Saves\\settings.celeste".into(),
+    ]))));
+    local.set_save_registry(ModelRc::from(Rc::new(VecModel::from(vec![
+        "HKEY_CURRENT_USER\\Software\\MattMakesGames\\Celeste".into(),
+    ]))));
     local.set_history(ModelRc::from(Rc::new(VecModel::from(vec![
         BackupRow {
-            label: "2026-11-05 11:30 · 48,120 bytes · Local backups".into(),
             key: "backup-v3".into(),
+            label: "2026-11-05 11:30".into(),
+            size: "47.0 KB".into(),
+            destination: "C:\\Users\\cassi\\AppData\\Local\\GameNode\\Desktop\\backups".into(),
         },
         BackupRow {
-            label: "2026-11-04 22:15 · 47,890 bytes · Local backups".into(),
             key: "backup-v2".into(),
+            label: "2026-11-04 22:15".into(),
+            size: "46.8 KB".into(),
+            destination: "C:\\Users\\cassi\\AppData\\Local\\GameNode\\Desktop\\backups".into(),
         },
         BackupRow {
-            label: "2026-11-03 19:04 · 44,200 bytes · Local backups".into(),
             key: "backup-v1".into(),
+            label: "2026-11-03 19:04".into(),
+            size: "43.2 KB".into(),
+            destination: "C:\\Users\\cassi\\AppData\\Local\\GameNode\\Desktop\\backups".into(),
         },
     ]))));
     local.set_watches(ModelRc::from(Rc::new(VecModel::from(vec![DiscoveryRow {
@@ -421,7 +436,16 @@ fn sync_library_view(ui: &AppWindow, data: &DemoData) {
         .filter(|g| g.provider_id == "manual")
         .count() as i32;
 
-    state.set_items(ModelRc::from(Rc::new(VecModel::from(items))));
+    let existing = state.get_items();
+    if existing.row_count() == items.len() {
+        for (i, item) in items.into_iter().enumerate() {
+            if existing.row_data(i).as_ref() != Some(&item) {
+                existing.set_row_data(i, item);
+            }
+        }
+    } else {
+        state.set_items(ModelRc::from(Rc::new(VecModel::from(items))));
+    }
     state.set_providers(ModelRc::from(Rc::new(VecModel::from(vec![
         ProviderItem {
             id: "steam".into(),
@@ -514,6 +538,14 @@ fn sync_library_view(ui: &AppWindow, data: &DemoData) {
             local.set_gameplay(selected.gameplay.clone().into());
             local.set_launchers(selected.launchers.clone().into());
             local.set_match_evidence(selected.evidence.clone().into());
+            if selected.key == "manual:celeste" {
+                local.set_candidate_targets(ModelRc::from(Rc::new(VecModel::from(vec![
+                    "D:\\Games\\Celeste\\Celeste.exe".into(),
+                    "D:\\Games\\Celeste\\Celeste-x86.exe".into(),
+                ]))));
+            } else {
+                local.set_candidate_targets(Default::default());
+            }
             if !selected.available {
                 local.set_error(
                     "Executable not found at the registered path. Use Locate executable to repair."
@@ -526,6 +558,7 @@ fn sync_library_view(ui: &AppWindow, data: &DemoData) {
             local.set_selected_id("".into());
             local.set_match_evidence("".into());
             local.set_error("".into());
+            local.set_candidate_targets(Default::default());
         }
     } else {
         state.set_selected_count(0);
@@ -535,6 +568,7 @@ fn sync_library_view(ui: &AppWindow, data: &DemoData) {
         state.set_match_why(Why::NothingSelected);
         state.set_add_why(Why::NothingSelected);
         local.set_selected_id("".into());
+        local.set_candidate_targets(Default::default());
     }
 }
 
@@ -551,6 +585,33 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
             d.selected_key = key.to_string();
             if let Some(ui) = weak.upgrade() {
                 sync_library_view(&ui, &d);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        state.on_activate(move |key| {
+            let mut d = data.borrow_mut();
+            if !key.is_empty() {
+                d.selected_key = key.to_string();
+            }
+            let target = d.selected_key.clone();
+            d.push_event(format!("activate {target}"));
+            let playable = d
+                .games
+                .iter()
+                .find(|g| g.key == target)
+                .is_some_and(|g| g.available && !g.running);
+            if !playable {
+                d.detail_open = true;
+            }
+            if let Some(ui) = weak.upgrade() {
+                sync_library_view(&ui, &d);
+                if playable {
+                    ui.global::<LibraryState>()
+                        .set_launch_note(LaunchNote::OpeningPlay);
+                }
             }
         });
     }
@@ -845,6 +906,28 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
     {
         let weak = ui.as_weak();
         let data = data.clone();
+        local.on_restore_cancel(move || {
+            data.borrow_mut().push_event("restore-cancel");
+            if let Some(ui) = weak.upgrade() {
+                let l = ui.global::<LocalGames>();
+                l.set_has_restore(false);
+                l.set_restore_targets("".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        local.on_dismiss_discovered(move || {
+            data.borrow_mut().push_event("dismiss-discovered");
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<LocalGames>().set_discovered_notice("".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
         local.on_claim_cancel(move || {
             data.borrow_mut().push_event("claim-cancel");
             if let Some(ui) = weak.upgrade() {
@@ -866,6 +949,27 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
     {
         let weak = ui.as_weak();
         let data = data.clone();
+        local.on_remove(move |allow_rediscovery| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!(
+                "local-remove allow_rediscovery={allow_rediscovery}"
+            ));
+            let selected_key = d.selected_key.clone();
+            d.games.retain(|g| g.key != selected_key);
+            if let Some(first) = d.games.first() {
+                d.selected_key = first.key.clone();
+            } else {
+                d.selected_key.clear();
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<LocalGames>().set_remove_open(false);
+                sync_library_view(&ui, &d);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
         ui.on_sync_dismissed(move || {
             data.borrow_mut().push_event("sync-dismissed");
             if let Some(ui) = weak.upgrade() {
@@ -873,6 +977,292 @@ fn wire_callbacks(ui: &AppWindow, data: &Rc<RefCell<DemoData>>) {
             }
         });
     }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        state.on_open_tools(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("open-tools");
+            if let Some(ui) = weak.upgrade() {
+                open_tools_for_selected(&ui, &d);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_open_for_selected(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("open-for-selected");
+            if let Some(ui) = weak.upgrade() {
+                open_tools_for_selected(&ui, &d);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_close(move || {
+            data.borrow_mut().push_event("close-tools");
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_open(false);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_select_channel(move |channel| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("select-channel {channel}"));
+            if let Some(ui) = weak.upgrade() {
+                let t = ui.global::<ToolsState>();
+                t.set_channel_index(channel);
+                let versions = if channel == 1 {
+                    vec![
+                        ToolVersionRow {
+                            version: "nightly-2024.10.25".into(),
+                            label: "nightly-2024.10.25".into(),
+                            published_at: "2024-10-25".into(),
+                            cached: false,
+                        },
+                        ToolVersionRow {
+                            version: "nightly-2024.10.24".into(),
+                            label: "nightly-2024.10.24".into(),
+                            published_at: "2024-10-24".into(),
+                            cached: false,
+                        },
+                    ]
+                } else {
+                    vec![
+                        ToolVersionRow {
+                            version: "v0.7.9".into(),
+                            label: "v0.7.9".into(),
+                            published_at: "2024-10-15".into(),
+                            cached: true,
+                        },
+                        ToolVersionRow {
+                            version: "v0.7.8".into(),
+                            label: "v0.7.8".into(),
+                            published_at: "2024-08-01".into(),
+                            cached: false,
+                        },
+                    ]
+                };
+                t.set_versions(ModelRc::from(Rc::new(VecModel::from(versions))));
+                if channel == 1 {
+                    t.set_selected_version("nightly-2024.10.25".into());
+                } else {
+                    t.set_selected_version("v0.7.9".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_refresh_versions(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("refresh-versions");
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>()
+                    .set_status_message("Versions refreshed".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_select_version(move |version| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("select-version {version}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_selected_version(version);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_select_target_exe(move |target| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("select-target-exe {target}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_selected_target_exe(target);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_select_proxy(move |proxy| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("select-proxy {proxy}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_selected_proxy(proxy);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_toggle_anticheat_confirmed(move |confirmed| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("toggle-anticheat-confirmed {confirmed}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_anticheat_confirmed(confirmed);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_toggle_reset_config(move |reset| {
+            let mut d = data.borrow_mut();
+            d.push_event(format!("toggle-reset-config {reset}"));
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<ToolsState>().set_reset_config(reset);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_install_tool(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("install-tool");
+            if let Some(ui) = weak.upgrade() {
+                let t = ui.global::<ToolsState>();
+                t.set_installed(true);
+                let ver = t.get_selected_version();
+                let proxy = t.get_selected_proxy();
+                t.set_installed_version(ver.clone());
+                t.set_installed_proxy(proxy.clone());
+                t.set_installed_channel(if t.get_channel_index() == 1 { "Nightly".into() } else { "Stable".into() });
+                ui.global::<LibraryState>().set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_update_tool(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("update-tool");
+            if let Some(ui) = weak.upgrade() {
+                let t = ui.global::<ToolsState>();
+                t.set_installed(true);
+                let ver = t.get_selected_version();
+                let proxy = t.get_selected_proxy();
+                t.set_installed_version(ver.clone());
+                t.set_installed_proxy(proxy.clone());
+                t.set_installed_channel(if t.get_channel_index() == 1 { "Nightly".into() } else { "Stable".into() });
+                ui.global::<LibraryState>().set_detail_tools(format!("OptiScaler {} \u{00b7} {}", ver, proxy).into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_uninstall_tool(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("uninstall-tool");
+            if let Some(ui) = weak.upgrade() {
+                let t = ui.global::<ToolsState>();
+                t.set_installed(false);
+                t.set_installed_version("".into());
+                ui.global::<LibraryState>().set_detail_tools("".into());
+            }
+        });
+    }
+    {
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_open_source(move |url| {
+            data.borrow_mut().push_event(format!("open-source {url}"));
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let data = data.clone();
+        let tools = ui.global::<ToolsState>();
+        tools.on_clear_cache(move || {
+            let mut d = data.borrow_mut();
+            d.push_event("clear-cache");
+            if let Some(ui) = weak.upgrade() {
+                let t = ui.global::<ToolsState>();
+                t.set_cache_archive_count(0);
+                t.set_cache_size_text("0 B".into());
+            }
+        });
+    }
+}
+
+fn open_tools_for_selected(ui: &AppWindow, data: &DemoData) {
+    let tools = ui.global::<ToolsState>();
+    let selected = data
+        .games
+        .iter()
+        .find(|g| g.key == data.selected_key)
+        .unwrap_or(&data.games[0]);
+    tools.set_entry_key(selected.key.clone().into());
+    tools.set_game_title(selected.title.clone().into());
+    tools.set_install_dir(selected.dir.clone().into());
+    tools.set_game_running(selected.running);
+    tools.set_busy(false);
+    tools.set_status_message("".into());
+    tools.set_error_message("".into());
+
+    let versions = vec![
+        ToolVersionRow {
+            version: "v0.7.9".into(),
+            label: "v0.7.9".into(),
+            published_at: "2024-10-15".into(),
+            cached: true,
+        },
+        ToolVersionRow {
+            version: "v0.7.8".into(),
+            label: "v0.7.8".into(),
+            published_at: "2024-08-01".into(),
+            cached: false,
+        },
+    ];
+    tools.set_versions(ModelRc::from(Rc::new(VecModel::from(versions))));
+    tools.set_channel_index(0);
+    tools.set_selected_version("v0.7.9".into());
+
+    let targets = vec![
+        ToolTargetRow {
+            relative_exe: "bin/x64/Cyberpunk2077.exe".into(),
+            label: "bin/x64/Cyberpunk2077.exe".into(),
+            architecture: "x86_64".into(),
+            preferred: true,
+        },
+        ToolTargetRow {
+            relative_exe: "Cyberpunk2077.exe".into(),
+            label: "Cyberpunk2077.exe".into(),
+            architecture: "x86_64".into(),
+            preferred: false,
+        },
+    ];
+    tools.set_targets(ModelRc::from(Rc::new(VecModel::from(targets))));
+    tools.set_selected_target_exe("bin/x64/Cyberpunk2077.exe".into());
+    tools.set_selected_proxy("dxgi.dll".into());
+    tools.set_reset_config(false);
+
+    tools.set_open(true);
 }
 
 fn open_match_dialog(ui: &AppWindow, data: &DemoData) {
@@ -980,6 +1370,7 @@ fn open_add_dialog(ui: &AppWindow, data: &DemoData, summary: bool) {
 }
 
 fn reset_overlays(ui: &AppWindow) {
+    ui.set_settings_opener(2);
     ui.set_settings_open(false);
     ui.set_sync_explanation(false);
     ui.set_busy(false);
@@ -994,19 +1385,33 @@ fn reset_overlays(ui: &AppWindow) {
     state.set_failed_stores("".into());
     state.set_access(AccessKind::Verified);
     state.set_launch_note(LaunchNote::None);
+    state.set_detail_tools("".into());
 
     let local = ui.global::<LocalGames>();
     local.set_editing(false);
     local.set_protection_open(false);
     local.set_claim_open(false);
+    local.set_remove_open(false);
     local.set_has_restore(false);
     local.set_restore_targets("".into());
+    local.set_discovered_notice("".into());
 
     let settings = ui.global::<SettingsState>();
     settings.set_open(false);
     settings.set_dirty(false);
     settings.set_alert_open(false);
     settings.set_toast_open(false);
+
+    let tools = ui.global::<ToolsState>();
+    tools.set_open(false);
+    tools.set_busy(false);
+    tools.set_game_running(false);
+    tools.set_error_message("".into());
+    tools.set_status_message("".into());
+    tools.set_anticheat_detected(false);
+    tools.set_anticheat_confirmed(false);
+    tools.set_installed(false);
+    tools.set_installed_version("".into());
 }
 
 fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
@@ -1182,9 +1587,10 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             local.set_protection_open(true);
         }
         "discovery" => {
-            data.selected_key = String::new();
+            data.selected_key = "manual:celeste".into();
+            data.detail_open = true;
             sync_library_view(ui, data);
-            local.set_protection_open(true);
+            local.set_discovered_notice("Celeste, Hollow Knight".into());
         }
         "editor" => {
             data.selected_key = "manual:celeste".into();
@@ -1196,6 +1602,11 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             sync_library_view(ui, data);
             local.set_claim_title("Celeste (Steam)".into());
             local.set_claim_open(true);
+        }
+        "remove" | "remove-game" => {
+            data.selected_key = "manual:celeste".into();
+            sync_library_view(ui, data);
+            local.set_remove_open(true);
         }
         "match" | "match-dialog" => {
             data.selected_key = "steam:546560".into();
@@ -1221,6 +1632,7 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             state.set_scanning(true);
             state.set_failed_stores("Steam".into());
             state.set_access(AccessKind::Unverified);
+            local.set_discovered_notice("Celeste, Hollow Knight".into());
             ui.set_can_retry(true);
         }
         "empty" => {
@@ -1232,10 +1644,85 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             state.set_search("zzzz-no-match".into());
             sync_library_view(ui, data);
         }
+        "tools" => {
+            data.selected_key = "steam:620".into();
+            data.detail_open = true;
+            sync_library_view(ui, data);
+            open_tools_for_selected(ui, data);
+            let tools = ui.global::<ToolsState>();
+            tools.set_installed(false);
+            tools.set_installed_version("".into());
+            tools.set_installed_channel("Stable".into());
+            tools.set_installed_proxy("dxgi.dll".into());
+            tools.set_anticheat_detected(false);
+            tools.set_anticheat_systems("".into());
+            tools.set_anticheat_evidence("".into());
+            tools.set_anticheat_confirmed(false);
+            tools.set_open(true);
+        }
+        "tools-anticheat" => {
+            data.selected_key = "steam:620".into();
+            data.detail_open = true;
+            sync_library_view(ui, data);
+            open_tools_for_selected(ui, data);
+            let tools = ui.global::<ToolsState>();
+            tools.set_installed(false);
+            tools.set_installed_version("".into());
+            tools.set_installed_channel("Stable".into());
+            tools.set_installed_proxy("dxgi.dll".into());
+            tools.set_anticheat_detected(true);
+            tools.set_anticheat_systems("EasyAntiCheat".into());
+            tools.set_anticheat_evidence(
+                "EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe, EasyAntiCheat_x64.dll".into(),
+            );
+            tools.set_anticheat_confirmed(false);
+            tools.set_open(true);
+        }
+        "tools-installed" => {
+            data.selected_key = "steam:620".into();
+            data.detail_open = true;
+            sync_library_view(ui, data);
+            open_tools_for_selected(ui, data);
+            let tools = ui.global::<ToolsState>();
+            tools.set_installed(true);
+            tools.set_installed_version("v0.7.9".into());
+            tools.set_installed_channel("Stable".into());
+            tools.set_installed_proxy("dxgi.dll".into());
+            tools.set_anticheat_detected(false);
+            tools.set_anticheat_systems("".into());
+            tools.set_anticheat_evidence("".into());
+            tools.set_anticheat_confirmed(false);
+            ui.global::<LibraryState>()
+                .set_detail_tools("OptiScaler v0.7.9 · dxgi.dll".into());
+            tools.set_open(true);
+        }
+        "settings-tools" => {
+            sync_library_view(ui, data);
+            let settings = ui.global::<SettingsState>();
+            ui.set_settings_open(true);
+            settings.set_open(true);
+            settings.set_topic(SettingsTopic::Tools);
+            let tools = ui.global::<ToolsState>();
+            tools.set_cache_size_text("68.4 MB".into());
+            tools.set_cache_archive_count(2);
+            let catalog = vec![ToolCatalogRow {
+                id: "optiscaler".into(),
+                name: "OptiScaler".into(),
+                summary: "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)".into(),
+                license: "GPL-3.0".into(),
+                source_url: "https://github.com/optiscaler/OptiScaler".into(),
+                installed: false,
+                installed_version: "".into(),
+                installed_channel: "stable".into(),
+                installed_proxy: "dxgi.dll".into(),
+            }];
+            tools.set_catalog(ModelRc::from(Rc::new(VecModel::from(catalog))));
+        }
         _ => {
             sync_library_view(ui, data);
         }
     }
+    slint::platform::update_timers_and_animations();
 }
 
 fn apply_locale(locale: &str, data: &mut DemoData) {
@@ -1386,6 +1873,13 @@ fn build_state_json(ui: &AppWindow, data: &DemoData) -> Value {
     if local.get_claim_open() {
         modals.push("ClaimConflict");
     }
+    if local.get_remove_open() {
+        modals.push("RemoveLocalGame");
+    }
+    let tools = ui.global::<ToolsState>();
+    if tools.get_open() {
+        modals.push("tools");
+    }
 
     let base_screen = if ui.get_settings_open() {
         "Settings / About"
@@ -1459,17 +1953,35 @@ fn build_state_json(ui: &AppWindow, data: &DemoData) -> Value {
             "protection_open": local.get_protection_open(),
             "claim_open": local.get_claim_open(),
             "claim_title": local.get_claim_title().as_str(),
+            "remove_open": local.get_remove_open(),
             "automatic": local.get_automatic(),
             "game_automatic": local.get_game_automatic(),
             "destination": local.get_destination().as_str(),
             "save_status": local.get_save_status(),
             "job_status": local.get_job_status(),
+            "profile_title": local.get_profile_title().as_str(),
+            "save_paths_count": local.get_save_paths().row_count(),
+            "discovered_notice": local.get_discovered_notice().as_str(),
+            "candidate_targets_count": local.get_candidate_targets().row_count(),
             "has_restore": local.get_has_restore(),
             "restore_targets": local.get_restore_targets().as_str(),
             "history_count": local.get_history().row_count(),
             "candidates_count": local.get_candidates().row_count(),
             "watches_count": local.get_watches().row_count(),
             "error": local.get_error().as_str(),
+        },
+        "tools": {
+            "open": tools.get_open(),
+            "installed": tools.get_installed(),
+            "installed_version": tools.get_installed_version().as_str(),
+            "installed_channel": tools.get_installed_channel().as_str(),
+            "installed_proxy": tools.get_installed_proxy().as_str(),
+            "selected_version": tools.get_selected_version().as_str(),
+            "selected_target_exe": tools.get_selected_target_exe().as_str(),
+            "selected_proxy": tools.get_selected_proxy().as_str(),
+            "anticheat_detected": tools.get_anticheat_detected(),
+            "cache_size_text": tools.get_cache_size_text().as_str(),
+            "cache_archive_count": tools.get_cache_archive_count(),
         },
         "events": data.events,
     })
@@ -1561,11 +2073,13 @@ fn apply_query_actions(
     params: &HashMap<String, String>,
     ui: &AppWindow,
     window: &MinimalSoftwareWindow,
-    data: &mut DemoData,
+    data: &Rc<RefCell<DemoData>>,
 ) {
     if let Some(locale) = params.get("locale") {
-        apply_locale(locale, data);
-        data.push_event(format!("locale={}", data.locale));
+        let mut d = data.borrow_mut();
+        apply_locale(locale, &mut d);
+        let loc = d.locale.clone();
+        d.push_event(format!("locale={loc}"));
     }
     if let Some(size) = params.get("resize")
         && let Some((w, h)) = size.split_once('x')
@@ -1573,24 +2087,29 @@ fn apply_query_actions(
     {
         let w = w.clamp(320, 3840);
         let h = h.clamp(240, 2160);
-        data.width = w;
-        data.height = h;
+        {
+            let mut d = data.borrow_mut();
+            d.width = w;
+            d.height = h;
+            d.push_event(format!("resize={w}x{h}"));
+        }
         window.set_size(PhysicalSize::new(w, h));
-        data.push_event(format!("resize={w}x{h}"));
     }
     if let Some(preset) = params.get("preset") {
-        apply_preset(ui, data, preset);
-        data.push_event(format!("preset={preset}"));
+        let mut d = data.borrow_mut();
+        apply_preset(ui, &mut d, preset);
+        d.push_event(format!("preset={preset}"));
     }
     if let Some(coords) = params.get("move")
         && let Some((x, y)) = coords.split_once(',')
         && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
     {
-        data.pointer_pos = (x, y);
+        data.borrow_mut().pointer_pos = (x, y);
         ui.window().dispatch_event(WindowEvent::PointerMoved {
             position: LogicalPosition::new(x, y),
         });
-        data.push_event(format!("move=({x:.0},{y:.0})"));
+        data.borrow_mut()
+            .push_event(format!("move=({x:.0},{y:.0})"));
     }
     if let Some(coords) = params.get("click")
         && let Some((x, y)) = coords.split_once(',')
@@ -1613,7 +2132,7 @@ fn apply_query_actions(
                 text: Key::Shift.into(),
             });
         }
-        data.pointer_pos = (x, y);
+        data.borrow_mut().pointer_pos = (x, y);
         let position = LogicalPosition::new(x, y);
         ui.window()
             .dispatch_event(WindowEvent::PointerMoved { position });
@@ -1621,6 +2140,7 @@ fn apply_query_actions(
             .dispatch_event(WindowEvent::PointerPressed { position, button });
         ui.window()
             .dispatch_event(WindowEvent::PointerReleased { position, button });
+        slint::platform::update_timers_and_animations();
         if shift {
             ui.window().dispatch_event(WindowEvent::KeyReleased {
                 text: Key::Shift.into(),
@@ -1631,7 +2151,27 @@ fn apply_query_actions(
                 text: Key::Control.into(),
             });
         }
-        data.push_event(format!("click=({x:.0},{y:.0})"));
+        data.borrow_mut()
+            .push_event(format!("click=({x:.0},{y:.0})"));
+    }
+    if let Some(coords) = params.get("dblclick")
+        && let Some((x, y)) = coords.split_once(',')
+        && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
+    {
+        data.borrow_mut().pointer_pos = (x, y);
+        let position = LogicalPosition::new(x, y);
+        let button = PointerEventButton::Left;
+        for _ in 0..2 {
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+            slint::platform::update_timers_and_animations();
+        }
+        data.borrow_mut()
+            .push_event(format!("dblclick=({x:.0},{y:.0})"));
     }
     if let Some(coords) = params.get("drag") {
         let parts: Vec<f32> = coords
@@ -1654,8 +2194,10 @@ fn apply_query_actions(
                 position: p2,
                 button: PointerEventButton::Left,
             });
-            data.pointer_pos = (x2, y2);
-            data.push_event(format!("drag=({x1:.0},{y1:.0})->({x2:.0},{y2:.0})"));
+            slint::platform::update_timers_and_animations();
+            let mut d = data.borrow_mut();
+            d.pointer_pos = (x2, y2);
+            d.push_event(format!("drag=({x1:.0},{y1:.0})->({x2:.0},{y2:.0})"));
         }
     }
     if let Some(scroll) = params.get("scroll") {
@@ -1670,7 +2212,9 @@ fn apply_query_actions(
                 delta_x: dx,
                 delta_y: dy,
             });
-            data.push_event(format!("scroll=({dx:.0},{dy:.0}) at ({x:.0},{y:.0})"));
+            slint::platform::update_timers_and_animations();
+            data.borrow_mut()
+                .push_event(format!("scroll=({dx:.0},{dy:.0}) at ({x:.0},{y:.0})"));
         }
     }
     if let Some(key_name) = params.get("key") {
@@ -1678,7 +2222,8 @@ fn apply_query_actions(
         let shift = params.get("shift").is_some_and(|v| v == "true" || v == "1");
         let alt = params.get("alt").is_some_and(|v| v == "true" || v == "1");
         dispatch_key(ui, key_name, ctrl, shift, alt);
-        data.push_event(format!("key={key_name}"));
+        slint::platform::update_timers_and_animations();
+        data.borrow_mut().push_event(format!("key={key_name}"));
     }
     if let Some(text) = params.get("text") {
         for ch in text.chars() {
@@ -1688,9 +2233,10 @@ fn apply_query_actions(
             ui.window()
                 .dispatch_event(WindowEvent::KeyReleased { text: s });
         }
-        data.push_event(format!("text={text:?}"));
+        slint::platform::update_timers_and_animations();
+        data.borrow_mut().push_event(format!("text={text:?}"));
     }
-    data.frame += 1;
+    data.borrow_mut().frame += 1;
 }
 
 fn respond(mut stream: TcpStream, status: &str, content_type: &str, body: &[u8]) {
@@ -1891,6 +2437,10 @@ const STUDIO_HTML: &str = r#"<!DOCTYPE html>
   <button onclick="act({preset:'drm-missing'})">DRM-Free Missing</button>
   <button onclick="act({preset:'settings'})">Settings</button>
   <span class="group-label">Modals:</span>
+  <button onclick="act({preset:'tools'})">Tools Modal</button>
+  <button onclick="act({preset:'tools-anticheat'})">Tools Anti-Cheat</button>
+  <button onclick="act({preset:'tools-installed'})">Tools Installed</button>
+  <button onclick="act({preset:'settings-tools'})">Settings Tools</button>
   <button onclick="act({preset:'protection'})">Save Protection</button>
   <button onclick="act({preset:'restore'})">Restore Preview</button>
   <button onclick="act({preset:'discovery'})">Watched / Discovery</button>
@@ -1965,6 +2515,11 @@ img.addEventListener('mousemove', (e) => {
 img.addEventListener('click', (e) => {
   const { x, y } = coordsFromEvent(e);
   act({ click: `${x},${y}`, ctrl: e.ctrlKey, shift: e.shiftKey });
+});
+
+img.addEventListener('dblclick', (e) => {
+  const { x, y } = coordsFromEvent(e);
+  act({ dblclick: `${x},${y}` });
 });
 
 img.addEventListener('contextmenu', (e) => {
@@ -2139,12 +2694,10 @@ fn run_server(
             }
             "/api/action" => {
                 let params = parse_query(query);
-                {
-                    let mut d = data.borrow_mut();
-                    apply_query_actions(&params, &ui, &window, &mut d);
-                    if let Some(sf) = &state_file {
-                        save_session_file(sf, &d);
-                    }
+                apply_query_actions(&params, &ui, &window, &data);
+                if let Some(sf) = &state_file {
+                    let d = data.borrow();
+                    save_session_file(sf, &d);
                 }
                 let (w, h) = {
                     let d = data.borrow();
@@ -2212,6 +2765,10 @@ fn apply_cli_flags(
             | "settings-alert"
             | "settings-toast"
             | "settings-compact"
+            | "settings-tools"
+            | "tools"
+            | "tools-anticheat"
+            | "tools-installed"
             | "protection"
             | "restore"
             | "restore-preview"
@@ -2219,6 +2776,8 @@ fn apply_cli_flags(
             | "editor"
             | "claim"
             | "claim-conflict"
+            | "remove"
+            | "remove-game"
             | "match"
             | "match-dialog"
             | "add"

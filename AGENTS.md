@@ -77,7 +77,7 @@ fonts, theme tokens, and `.po` translations using Slint's deterministic
 `MinimalSoftwareWindow` against in-memory fixture state. However, they **do not**
 replace native OS acceptance for:
 - Real OS window-manager chrome, DPI scaling, multi-monitor positioning, or
-  Windows system-tray (`crates/app/ui/windows.slint` / `tray.slint`) behavior.
+  Windows system-tray (`crates/app/ui/tray.slint`) behavior.
 - Skia GPU renderer initialization and automatic GPU-to-software fallback.
 - Real browser OAuth sign-in, single-instance IPC forwarding, and custom URI
   scheme (`gamenode://`) activation.

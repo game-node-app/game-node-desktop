@@ -121,12 +121,29 @@ async fn local_add_cancel_duplicates_repair_and_remove_are_durable_and_do_not_bl
     })
     .await;
     assert_eq!(store.registrations().unwrap()[0].id, registration.id);
-    h.engine.remove_local_game(registration.id);
+    h.engine.remove_local_game(registration.id.clone(), false);
     h.until("removal persisted", |s| {
         !s.local_games.busy && s.local_games.registrations[0].removed
     })
     .await;
     assert!(moved.is_file());
+    // Re-adding a previously removed executable reactivates the same registration without duplicate tombstones.
+    h.engine
+        .add_local_executable(Some(moved.to_string_lossy().into_owned()));
+    h.until("reactivation persisted", |s| {
+        !s.local_games.busy && !s.local_games.registrations[0].removed
+    })
+    .await;
+    let reactivated = store.registrations().unwrap();
+    assert_eq!(reactivated.len(), 1);
+    assert_eq!(reactivated[0].id, registration.id);
+    assert!(!reactivated[0].removed);
+    assert_eq!(reactivated[0].revision, 4);
+    h.engine.remove_local_game(registration.id, false);
+    h.until("second removal persisted", |s| {
+        !s.local_games.busy && s.local_games.registrations[0].removed
+    })
+    .await;
     h.engine.shutdown();
 }
 
@@ -672,8 +689,11 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
 
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().to_path_buf();
-    let game_exe = root.join("game.exe");
+    let launcher_exe = root.join("Launcher.exe");
+    let game_exe = root.join("game_x64.exe");
+    std::fs::write(&launcher_exe, b"launcher").unwrap();
     std::fs::write(&game_exe, b"game").unwrap();
+    let launcher_canonical = std::fs::canonicalize(&launcher_exe).unwrap();
     let game_canonical = std::fs::canonicalize(&game_exe).unwrap();
 
     let watch = WatchRoot {
@@ -688,8 +708,11 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
         watch: "w1".into(),
         root: root.to_string_lossy().into_owned(),
         title: "Discovered Game".into(),
-        targets: vec![game_canonical.to_string_lossy().into_owned()],
-        selected_target: Some(game_canonical.to_string_lossy().into_owned()),
+        targets: vec![
+            launcher_canonical.to_string_lossy().into_owned(),
+            game_canonical.to_string_lossy().into_owned(),
+        ],
+        selected_target: None,
         evidence: vec![],
         ignored: false,
         incomplete: false,
@@ -702,62 +725,104 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
     ));
     store.save_candidate(&candidate).unwrap();
 
-    // Reload local view in engine
-    h.engine.refresh_local_games();
-    h.until("candidate visible in review", |s| {
-        s.local_games.candidates.len() == 1
+    // 1. Rescanning watched folders auto-selects the preferred target and registers the game,
+    // recording its title in `recently_added`.
+    h.engine.rescan_local_folders();
+    h.until("candidate auto-registered into library", |s| {
+        s.local_games.discovery_completed
+            && !s.local_games.discovery_scanning
+            && s.local_games.registrations.iter().any(|r| !r.removed)
+            && s.local_games.recently_added == vec!["Discovered Game".to_string()]
+            && s.library.as_ref().is_some_and(|l| {
+                l.rows
+                    .iter()
+                    .any(|r| r.provider == "manual" && r.title == "Discovered Game")
+            })
     })
     .await;
-
-    // 1. Candidate has NO effect on library or tracker before approval
-    assert_eq!(store.registrations().unwrap().len(), 0);
-    assert!(
-        !h.engine
-            .snapshot()
-            .library
-            .unwrap()
-            .rows
-            .iter()
-            .any(|r| r.provider == "manual")
+    let active_reg = store
+        .registrations()
+        .unwrap()
+        .into_iter()
+        .find(|r| !r.removed)
+        .unwrap();
+    assert_eq!(active_reg.executable, game_canonical.to_string_lossy());
+    assert_eq!(
+        store.candidates().unwrap()[0].selected_target.as_deref(),
+        Some(game_canonical.to_string_lossy().as_ref())
     );
-    assert!(h.engine.snapshot().tracking.running.is_empty());
 
-    // 2. Select candidate and ignore it
-    h.engine.select_local_candidate("fp1".into());
-    h.until("candidate selected", |s| {
-        s.local_games.review_selected.contains(&"fp1".to_string())
+    // 2. Dismissing the discovery banner clears `recently_added`
+    h.engine.dismiss_local_discovered();
+    h.until("discovered banner dismissed", |s| {
+        s.local_games.recently_added.is_empty()
     })
     .await;
 
-    h.engine.review_selected_local_candidates(false);
-    h.until("candidate ignored", |s| {
+    // 3a. Removing with allow_rediscovery = true removes from library immediately but re-imports on next rescan with the same id
+    h.engine.remove_local_game(active_reg.id.clone(), true);
+    h.until("game removed with rediscovery allowed", |s| {
         !s.local_games.busy
             && s.local_games
-                .candidates
+                .registrations
                 .iter()
-                .any(|c| c.fingerprint == "fp1" && c.ignored)
-    })
-    .await;
-    assert!(store.candidates().unwrap()[0].ignored);
-
-    // 3. Reset ignores restores candidate to review
-    h.engine.reset_local_ignores();
-    h.until("candidate restored after reset ignores", |s| {
-        !s.local_games.busy
-            && s.local_games
-                .candidates
-                .iter()
-                .any(|c| c.fingerprint == "fp1" && !c.ignored)
+                .all(|r| r.removed && r.rediscovery_allowed)
+            && s.library
+                .as_ref()
+                .is_some_and(|l| !l.rows.iter().any(|r| r.provider == "manual"))
     })
     .await;
     assert!(!store.candidates().unwrap()[0].ignored);
 
-    // 4. Select and approve (add) candidate
-    h.engine.select_local_candidate("fp1".into());
-    h.engine.review_selected_local_candidates(true);
-    h.until("candidate approved into library", |s| {
-        s.local_games.candidates.is_empty()
-            && s.local_games.registrations.len() == 1
+    h.engine.rescan_local_folders();
+    h.until("game re-imported on rescan with same id", |s| {
+        s.local_games.discovery_completed
+            && !s.local_games.discovery_scanning
+            && s.local_games.registrations.iter().any(|r| !r.removed)
+            && s.local_games.recently_added == vec!["Discovered Game".to_string()]
+    })
+    .await;
+    assert_eq!(store.registrations().unwrap().len(), 1);
+    assert_eq!(store.registrations().unwrap()[0].id, active_reg.id);
+    h.engine.dismiss_local_discovered();
+    h.until("discovered banner dismissed again", |s| {
+        s.local_games.recently_added.is_empty()
+    })
+    .await;
+
+    // 3b. Removing with allow_rediscovery = false suppresses automatic re-addition on subsequent rescans
+    h.engine.remove_local_game(active_reg.id.clone(), false);
+    h.until("game removed from library", |s| {
+        !s.local_games.busy
+            && s.local_games
+                .registrations
+                .iter()
+                .all(|r| r.removed && !r.rediscovery_allowed)
+            && s.library
+                .as_ref()
+                .is_some_and(|l| !l.rows.iter().any(|r| r.provider == "manual"))
+    })
+    .await;
+    assert!(store.candidates().unwrap()[0].ignored);
+
+    h.engine.rescan_local_folders();
+    h.until("rescan completed while suppressed", |s| {
+        s.local_games.discovery_completed && !s.local_games.discovery_scanning
+    })
+    .await;
+    assert!(
+        store.registrations().unwrap().iter().all(|r| r.removed),
+        "removed game must not be re-added on rescan before reset"
+    );
+    assert!(h.engine.snapshot().local_games.recently_added.is_empty());
+
+    // 4. Resetting ignored discoveries re-enables rediscovery and auto-registers on rescan
+    h.engine.reset_local_ignores();
+    h.until("game re-added after reset_local_ignores", |s| {
+        !s.local_games.busy
+            && !s.local_games.discovery_scanning
+            && s.local_games.registrations.iter().any(|r| !r.removed)
+            && s.local_games.recently_added == vec!["Discovered Game".to_string()]
             && s.library.as_ref().is_some_and(|l| {
                 l.rows
                     .iter()
@@ -766,6 +831,7 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
     })
     .await;
     assert_eq!(store.registrations().unwrap().len(), 1);
+    assert!(!store.registrations().unwrap()[0].removed);
 
     // 5. Remove watch root disables watch while preserving registration in library and store
     h.engine.remove_local_watch("w1".into());
@@ -784,6 +850,38 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
             .iter()
             .any(|r| r.provider == "manual")
     );
+
+    // 6. Cancelling a restore preview clears `restore`
+    {
+        let mut state = h.engine.lock();
+        state.local.restore = Some(gamenode_core::drm_free::RestorePlan {
+            request: gamenode_core::drm_free::BackupRequest {
+                job_id: None,
+                profile: gamenode_core::drm_free::SaveProfile {
+                    id: "p1".into(),
+                    installation: active_reg.id.clone(),
+                    revision: 1,
+                    title: "Discovered Game".into(),
+                    manifest_hash: "h".into(),
+                    definition: String::new(),
+                    files: vec![],
+                    registry: vec![],
+                    support: gamenode_core::drm_free::SaveSupport::Supported,
+                    automatic: None,
+                },
+                installation: active_reg,
+                destination: "/tmp/backups".into(),
+                operation: gamenode_core::drm_free::BackupOperation::Restore {
+                    backup: "backup-1".into(),
+                },
+            },
+            targets: vec![r"C:\Saves\slot1.dat".into()],
+        });
+        h.engine.publish(&mut state);
+    }
+    assert!(h.engine.snapshot().local_games.restore.is_some());
+    h.engine.cancel_local_restore();
+    assert!(h.engine.snapshot().local_games.restore.is_none());
 
     h.engine.shutdown();
 }

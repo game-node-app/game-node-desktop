@@ -1203,3 +1203,311 @@ msgstr "Some folders could not be checked completely."
 msgctxt "DRM-free"
 msgid "No new games found. Only recognized games are listed for review."
 msgstr "No new games found. Only recognized games are listed for review."
+
+msgctxt "DRM-free"
+msgid "Added from watched folders: {}"
+msgstr "Added from watched folders: {}"
+
+msgctxt "DRM-free"
+msgid "Recognized games in watched folders are added to your library automatically."
+msgstr "Recognized games in watched folders are added to your library automatically."
+
+msgctxt "DRM-free"
+msgid "Per-game save backup and restore"
+msgstr "Per-game save backup and restore"
+
+msgctxt "DRM-free"
+msgid "Global automatic backups are turned off in Settings."
+msgstr "Global automatic backups are turned off in Settings."
+
+msgctxt "DRM-free"
+msgid "Protection status"
+msgstr "Protection status"
+
+msgctxt "DRM-free"
+msgid "No save profile configured"
+msgstr "No save profile configured"
+
+msgctxt "DRM-free"
+msgid "Supported · No saves found yet"
+msgstr "Supported · No saves found yet"
+
+msgctxt "DRM-free"
+msgid "Profile: {}"
+msgstr "Profile: {}"
+
+msgctxt "DRM-free"
+msgid "Choose a save folder or profile below to enable backups."
+msgstr "Choose a save folder or profile below to enable backups."
+
+msgctxt "DRM-free"
+msgid "Creates a local snapshot after each play session."
+msgstr "Creates a local snapshot after each play session."
+
+msgctxt "DRM-free"
+msgid "What is backed up"
+msgstr "What is backed up"
+
+msgctxt "DRM-free"
+msgid "Exact folders, files, and registry keys protected for this game."
+msgstr "Exact folders, files, and registry keys protected for this game."
+
+msgctxt "DRM-free"
+msgid "Save profile"
+msgstr "Save profile"
+
+msgctxt "DRM-free"
+msgid "Not configured"
+msgstr "Not configured"
+
+msgctxt "DRM-free"
+msgid "Save folders & files"
+msgstr "Save folders & files"
+
+msgctxt "DRM-free"
+msgid "No save files exist on disk yet. Play the game once or choose a custom save location below."
+msgstr "No save files exist on disk yet. Play the game once or choose a custom save location below."
+
+msgctxt "DRM-free"
+msgid "No save locations resolved yet."
+msgstr "No save locations resolved yet."
+
+msgctxt "DRM-free"
+msgid "Registry keys"
+msgstr "Registry keys"
+
+msgctxt "DRM-free"
+msgid "Default local backup folder"
+msgstr "Default local backup folder"
+
+msgctxt "DRM-free"
+msgid "Backup snapshots"
+msgstr "Backup snapshots"
+
+msgctxt "DRM-free"
+msgid "Restore a previous snapshot. A recovery backup is created before replacing files."
+msgstr "Restore a previous snapshot. A recovery backup is created before replacing files."
+
+msgctxt "DRM-free"
+msgid "No backups recorded yet"
+msgstr "No backups recorded yet"
+
+msgctxt "DRM-free"
+msgid "Create a backup above or play the game with automatic backups enabled."
+msgstr "Create a backup above or play the game with automatic backups enabled."
+
+msgctxt "DRM-free"
+msgid "Refresh"
+msgstr "Refresh"
+
+msgctxt "DRM-free"
+msgid "Restore…"
+msgstr "Restore…"
+
+msgctxt "DRM-free"
+msgid "Save location & profile override"
+msgstr "Save location & profile override"
+
+msgctxt "DRM-free"
+msgid "Override the save folder, file, or Ludusavi manifest profile if automatic detection does not match your setup."
+msgstr "Override the save folder, file, or Ludusavi manifest profile if automatic detection does not match your setup."
+
+msgctxt "DRM-free"
+msgid "Detected executables in this folder"
+msgstr "Detected executables in this folder"
+
+msgctxt "DRM-free"
+msgid "Restore preview"
+msgstr "Restore preview"
+
+msgctxt "DRM-free"
+msgid "Game files and local save backups will not be deleted from your computer."
+msgstr "Game files and local save backups will not be deleted from your computer."
+
+msgctxt "DRM-free"
+msgid "Choose whether this entry can be imported again on future scans or should be ignored."
+msgstr "Choose whether this entry can be imported again on future scans or should be ignored."
+
+msgctxt "DRM-free"
+msgid "Remove only"
+msgstr "Remove only"
+
+msgctxt "DRM-free"
+msgid "Remove and don't import again"
+msgstr "Remove and don't import again"
+
+msgctxt "Library"
+msgid "Game tools…"
+msgstr "Game tools…"
+
+msgctxt "Library"
+msgid "Tools"
+msgstr "Tools"
+
+msgctxt "Settings"
+msgid "Archives downloaded from GitHub for offline install and reuse across games."
+msgstr "Archives downloaded from GitHub for offline install and reuse across games."
+
+msgctxt "Settings"
+msgid "Built-in tool catalog and official open-source licenses."
+msgstr "Built-in tool catalog and official open-source licenses."
+
+msgctxt "Settings"
+msgid "Cached archives"
+msgstr "Cached archives"
+
+msgctxt "Settings"
+msgid "Check for updates"
+msgstr "Check for updates"
+
+msgctxt "Settings"
+msgid "Clear cache"
+msgstr "Clear cache"
+
+msgctxt "Settings"
+msgid "No tool archives cached"
+msgstr "No tool archives cached"
+
+msgctxt "Settings"
+msgid "Supported tools"
+msgstr "Supported tools"
+
+msgctxt "Settings"
+msgid "Tool cache cleared"
+msgstr "Tool cache cleared"
+
+msgctxt "Settings"
+msgid "Tool download cache"
+msgstr "Tool download cache"
+
+msgctxt "Settings"
+msgid "Tools"
+msgstr "Tools"
+
+msgctxt "Settings"
+msgid "Upscalers, frame generation tools, and local download cache."
+msgstr "Upscalers, frame generation tools, and local download cache."
+
+msgctxt "Settings"
+msgid "archives cached"
+msgstr "archives cached"
+
+msgctxt "Tools"
+msgid "Anti-cheat detected ({}). Installing proxy DLLs in online anti-cheat games may cause a ban."
+msgstr "Anti-cheat detected ({}). Installing proxy DLLs in online anti-cheat games may cause a ban."
+
+msgctxt "Tools"
+msgid "Available versions"
+msgstr "Available versions"
+
+msgctxt "Tools"
+msgid "Cached"
+msgstr "Cached"
+
+msgctxt "Tools"
+msgid "Close"
+msgstr "Close"
+
+msgctxt "Tools"
+msgid "Detected candidate executables (select to override):"
+msgstr "Detected candidate executables (select to override):"
+
+msgctxt "Tools"
+msgid "Fetching available versions…"
+msgstr "Fetching available versions…"
+
+msgctxt "Tools"
+msgid "Game tools"
+msgstr "Game tools"
+
+msgctxt "Tools"
+msgid "I understand the anti-cheat risk and want to proceed anyway"
+msgstr "I understand the anti-cheat risk and want to proceed anyway"
+
+msgctxt "Tools"
+msgid "Install OptiScaler"
+msgstr "Install OptiScaler"
+
+msgctxt "Tools"
+msgid "Installed"
+msgstr "Installed"
+
+msgctxt "Tools"
+msgid "Nightly"
+msgstr "Nightly"
+
+msgctxt "Tools"
+msgid "No executable selected"
+msgstr "No executable selected"
+
+msgctxt "Tools"
+msgid "No versions loaded. Click 'Refresh versions' to check GitHub releases."
+msgstr "No versions loaded. Click 'Refresh versions' to check GitHub releases."
+
+msgctxt "Tools"
+msgid "Not installed"
+msgstr "Not installed"
+
+msgctxt "Tools"
+msgid "Proxy DLL name"
+msgstr "Proxy DLL name"
+
+msgctxt "Tools"
+msgid "Recommended"
+msgstr "Recommended"
+
+msgctxt "Tools"
+msgid "Refresh versions"
+msgstr "Refresh versions"
+
+msgctxt "Tools"
+msgid "Release channel"
+msgstr "Release channel"
+
+msgctxt "Tools"
+msgid "Reset OptiScaler.ini to defaults on update"
+msgstr "Reset OptiScaler.ini to defaults on update"
+
+msgctxt "Tools"
+msgid "Select"
+msgstr "Select"
+
+msgctxt "Tools"
+msgid "Selected"
+msgstr "Selected"
+
+msgctxt "Tools"
+msgid "Source"
+msgstr "Source"
+
+msgctxt "Tools"
+msgid "Stable"
+msgstr "Stable"
+
+msgctxt "Tools"
+msgid "Stable releases or cutting-edge nightly builds."
+msgstr "Stable releases or cutting-edge nightly builds."
+
+msgctxt "Tools"
+msgid "Target executable"
+msgstr "Target executable"
+
+msgctxt "Tools"
+msgid "The DLL filename loaded by the game. dxgi.dll works for most DirectX 11/12 games; choose an alternative if the game uses a custom dxgi.dll or crashes on launch."
+msgstr "The DLL filename loaded by the game. dxgi.dll works for most DirectX 11/12 games; choose an alternative if the game uses a custom dxgi.dll or crashes on launch."
+
+msgctxt "Tools"
+msgid "This game is currently running. Close the game before installing, updating, or uninstalling tools."
+msgstr "This game is currently running. Close the game before installing, updating, or uninstalling tools."
+
+msgctxt "Tools"
+msgid "Uninstall"
+msgstr "Uninstall"
+
+msgctxt "Tools"
+msgid "Update / Apply"
+msgstr "Update / Apply"
+
+msgctxt "Tools"
+msgid "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)"
+msgstr "Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)"

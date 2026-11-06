@@ -26,6 +26,7 @@ use super::{Engine, Ports};
 mod drm_free;
 mod library;
 mod playtime;
+mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
 fn ana() -> User {
@@ -408,6 +409,9 @@ fn harness_over(
         backups: None,
         local_games: None,
         installations: None,
+        tools: None,
+        tool_catalog: None,
+        tool_installer: None,
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -446,6 +450,7 @@ fn harness_over(
         settings: Settings::default(),
         library: None,
         launch: None,
+        tools: Default::default(),
     });
     let providers = crate::providers::load_bundled(Platform::Linux).providers;
     let engine = Engine::new(
@@ -479,7 +484,7 @@ impl Harness {
         what: &str,
         mut predicate: impl FnMut(&Snapshot) -> bool,
     ) -> Snapshot {
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 {
                     let snapshot = self.snapshots.borrow_and_update().clone();

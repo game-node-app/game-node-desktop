@@ -196,8 +196,12 @@ impl LibraryMachine {
     /// Forgets selected entries that are no longer installed.
     pub(super) fn prune_selection(&mut self) {
         let entries = &self.entries;
-        self.selection
-            .retain(|key| entries.get(key).is_some_and(|entry| entry.installed));
+        let excluded = &self.excluded;
+        self.selection.retain(|key| {
+            entries
+                .get(key)
+                .is_some_and(|entry| entry.installed && !excluded.contains(key))
+        });
     }
 }
 

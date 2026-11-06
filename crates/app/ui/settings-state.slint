@@ -1,4 +1,4 @@
-export enum SettingsTopic { account, stores, backups, advanced, about }
+export enum SettingsTopic { account, stores, backups, tools, advanced, about }
 export enum ToastKind { success, warning, danger }
 
 export global SettingsState {
@@ -17,8 +17,10 @@ export global SettingsState {
     pure function localize-toast(text: string) -> string {
         return text == "Library rescanned" ? @tr("Settings" => "Library rescanned") :
                text == "Backup destination saved" ? @tr("Settings" => "Backup destination saved") :
+               text == "Tool cache cleared" ? @tr("Settings" => "Tool cache cleared") :
                text == "Biblioteca reescaneada" ? @tr("Settings" => "Library rescanned") :
                text == "Destino de backup salvo" ? @tr("Settings" => "Backup destination saved") :
+               text == "Cache de ferramentas limpo" ? @tr("Settings" => "Tool cache cleared") :
                text;
     }
 

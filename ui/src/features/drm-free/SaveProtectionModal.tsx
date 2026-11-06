@@ -45,8 +45,15 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
   const registration = localGames.registrations.find(
     (r) => r.id === id || r.id === effectiveKey || `manual:${r.id}` === effectiveKey,
   );
-  const profile = localGames.profiles.find((p) => p.installation === id);
-  const job = localGames.jobs.find((j) => j.installation === id);
+  // The engine treats the most recently saved profile as the active profile.
+  const profile = localGames.profiles.filter((p) => p.installation === id).at(-1);
+  const profileJobs = localGames.jobs.filter(
+    (j) => j.installation === id && j.profile === profile?.id,
+  );
+  const job =
+    profileJobs.find((j) => j.state === 'running') ??
+    profileJobs.find((j) => j.state === 'queued') ??
+    profileJobs.sort((a, b) => b.readyAt - a.readyAt)[0];
   const versions = localGames.versions.filter((v) => v.installation === id);
 
   const title = registration?.title ?? profile?.title ?? id;

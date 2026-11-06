@@ -4,13 +4,16 @@
 
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 use super::layout::{SidebarSelection, Sort, SortDirection, SortKey};
 use super::machine::LibraryMachine;
 use super::matching::{self, MatchStatus};
 use super::store::StoredEntry;
 
 /// One installed game as the view shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Row {
     pub playtime: crate::playtime::PlaytimeView,
     pub running: bool,
@@ -29,9 +32,11 @@ pub struct Row {
 }
 
 /// An installed-game count for a sidebar item.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderCount {
-    pub provider: String,
+    /// The provider id, such as `steam`; the sidebar sends it back as its filter.
+    pub id: String,
     pub name: String,
     pub count: usize,
 }
@@ -112,7 +117,7 @@ impl LibraryMachine {
         self.providers
             .iter()
             .map(|provider| ProviderCount {
-                provider: provider.id().to_owned(),
+                id: provider.id().to_owned(),
                 name: provider.name().to_owned(),
                 count: installed.get(provider.id()).copied().unwrap_or_default(),
             })
@@ -195,7 +200,7 @@ pub fn counts<'a>(
     providers
         .into_iter()
         .map(|(id, name)| ProviderCount {
-            provider: id.to_owned(),
+            id: id.to_owned(),
             name: name.to_owned(),
             count: rows.iter().filter(|row| row.provider == id).count(),
         })

@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 /// Strongly-typed identifier for a game tool (e.g. `"optiscaler"`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ToolId(pub String);
 
 impl ToolId {
@@ -57,6 +58,7 @@ impl From<String> for ToolId {
 
 /// Release channel for a tool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ToolChannel {
     Stable,
     Nightly,
@@ -94,6 +96,7 @@ impl FromStr for ToolChannel {
 
 /// Format of the tool release archive asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ArchiveFormat {
     SevenZip,
     Zip,
@@ -117,7 +120,10 @@ impl fmt::Display for ArchiveFormat {
 /// Ordered proxy DLL names supported by OptiScaler and standard DLL injectors.
 ///
 /// Order matches the OptiScaler wiki recommendation hierarchy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "camelCase")]
 pub enum ProxyDllName {
     #[default]
     Dxgi,
@@ -185,6 +191,7 @@ impl FromStr for ProxyDllName {
 
 /// A declarative mutation applied to an INI config file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IniPatch {
     pub config_file: String,
     pub section: String,
@@ -194,6 +201,7 @@ pub struct IniPatch {
 
 /// Target resolution mode for sibling library swappers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SwapperMode {
     /// Replaces matching target DLLs anywhere in the game's native installation directory.
     NativeInstallDir,
@@ -204,6 +212,7 @@ pub enum SwapperMode {
 
 /// Deployment mode for addons/plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AddonMode {
     /// Deploys as a plugin to an installed host tool (such as OptiScaler).
     HostPlugin {
@@ -213,13 +222,12 @@ pub enum AddonMode {
         ini_patches: Vec<IniPatch>,
     },
     /// Supports falling back to standalone proxy injection when no host tool is present.
-    StandaloneFallback {
-        injector: Box<InstallStrategy>,
-    },
+    StandaloneFallback { injector: Box<InstallStrategy> },
 }
 
 /// Installation strategy governing archive planning, companion files, and rollback.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum InstallStrategy {
     /// Injects a primary DLL via Windows DLL proxy hijacking next to the game executable.
     ProxyDllInjector {
@@ -236,13 +244,12 @@ pub enum InstallStrategy {
         target_dll_names: Vec<String>,
     },
     /// Addon or plugin overlay attached to a host injector or running standalone.
-    AddonOverlay {
-        mode: AddonMode,
-    },
+    AddonOverlay { mode: AddonMode },
 }
 
 /// Specification of a release channel for a tool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolChannelSpec {
     pub channel: ToolChannel,
     pub github_repo: String,
@@ -251,6 +258,7 @@ pub struct ToolChannelSpec {
 
 /// Declarative descriptor representing a supported tool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolDescriptor {
     pub id: ToolId,
     pub name: String,
@@ -311,7 +319,9 @@ impl ToolDescriptor {
                     ..
                 } => {
                     if plugin_dir.trim().is_empty() || extension.trim().is_empty() {
-                        return Err("AddonMode::HostPlugin requires plugin_dir and extension".to_string());
+                        return Err(
+                            "AddonMode::HostPlugin requires plugin_dir and extension".to_string()
+                        );
                     }
                 }
                 AddonMode::StandaloneFallback { injector } => {
@@ -450,7 +460,9 @@ pub fn builtin_tools() -> Vec<ToolDescriptor> {
 
 /// Finds a built-in tool descriptor by ID.
 pub fn find_tool(id: &str) -> Option<ToolDescriptor> {
-    builtin_tools().into_iter().find(|t| t.id.as_str().eq_ignore_ascii_case(id))
+    builtin_tools()
+        .into_iter()
+        .find(|t| t.id.as_str().eq_ignore_ascii_case(id))
 }
 
 #[cfg(test)]
@@ -463,8 +475,18 @@ mod tests {
         assert!(opti.validate().is_ok());
         assert_eq!(opti.id.as_str(), "optiscaler");
         assert_eq!(opti.channels.len(), 2);
-        assert_eq!(opti.channel_spec(ToolChannel::Stable).unwrap().archive_format, ArchiveFormat::SevenZip);
-        assert_eq!(opti.channel_spec(ToolChannel::Nightly).unwrap().archive_format, ArchiveFormat::SevenZip);
+        assert_eq!(
+            opti.channel_spec(ToolChannel::Stable)
+                .unwrap()
+                .archive_format,
+            ArchiveFormat::SevenZip
+        );
+        assert_eq!(
+            opti.channel_spec(ToolChannel::Nightly)
+                .unwrap()
+                .archive_format,
+            ArchiveFormat::SevenZip
+        );
         assert!(opti.requires_anticheat_check);
     }
 
@@ -486,9 +508,18 @@ mod tests {
         assert_eq!(ProxyDllName::ALL[5], ProxyDllName::Wininet);
         assert_eq!(ProxyDllName::ALL[6], ProxyDllName::Winhttp);
 
-        assert_eq!(ProxyDllName::parse_flexible("dxgi.dll"), Some(ProxyDllName::Dxgi));
-        assert_eq!(ProxyDllName::parse_flexible("DXGI"), Some(ProxyDllName::Dxgi));
-        assert_eq!(ProxyDllName::parse_flexible("winmm.dll"), Some(ProxyDllName::Winmm));
+        assert_eq!(
+            ProxyDllName::parse_flexible("dxgi.dll"),
+            Some(ProxyDllName::Dxgi)
+        );
+        assert_eq!(
+            ProxyDllName::parse_flexible("DXGI"),
+            Some(ProxyDllName::Dxgi)
+        );
+        assert_eq!(
+            ProxyDllName::parse_flexible("winmm.dll"),
+            Some(ProxyDllName::Winmm)
+        );
         assert_eq!(ProxyDllName::parse_flexible("unknown.dll"), None);
         assert_eq!(ProxyDllName::default(), ProxyDllName::Dxgi);
     }

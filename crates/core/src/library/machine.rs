@@ -27,9 +27,12 @@ use super::store::{
 };
 use super::view::LibraryView;
 
+use serde::{Deserialize, Serialize};
+
 /// What the application can reach right now. Matching, game search and Add to GameNode need
 /// `Verified`; everything local works in every state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Access {
     /// No verified session yet (still verifying, or GameNode could not be reached at startup).
     #[default]
@@ -40,7 +43,8 @@ pub enum Access {
 }
 
 /// The result of scanning one provider, as it is stored.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ScanOutcome {
     Scanned(Vec<Record>),
     /// The provider's roots could not be read. The message is for the log and the detail view.
@@ -144,7 +148,8 @@ pub enum Effect {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Input {
     /// The account whose library is shown changed: the last signed-in account when the app
     /// starts, a different one after a sign-in, or none after sign-out or a rejected session.

@@ -8,13 +8,16 @@
 
 use crate::game_api::{ApiError, GameSummary};
 
+use serde::{Deserialize, Serialize};
+
 use super::actions::Reason;
 use super::machine::{Effect, LibraryMachine};
 use super::matching::MatchStatus;
 use super::store::ChosenMatch;
 
 /// Why the dialog could not show search results.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SearchFailure {
     /// No verified session or no network: nothing was sent.
     Blocked(Reason),
@@ -41,7 +44,8 @@ pub(super) struct MatchDialog {
 }
 
 /// A game the user can pick.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchOption {
     pub game_id: u64,
     pub name: String,
@@ -53,7 +57,11 @@ pub struct MatchOption {
     pub current: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub type CandidateOption = MatchOption;
+pub type SearchResultItem = MatchOption;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchDialogView {
     pub entry_key: String,
     /// The title the provider detected.

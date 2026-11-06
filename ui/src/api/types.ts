@@ -1,0 +1,698 @@
+export type Provider = 'google' | 'discord' | 'twitter';
+
+export interface User {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+}
+
+export type AuthView =
+  | 'starting'
+  | 'signedOut'
+  | { pending: { provider: Provider; awaitingBrowser: boolean } }
+  | 'verifying'
+  | { signedIn: { user: User } }
+  | 'restoreFailed'
+  | 'signingOut';
+
+export type Notice =
+  | 'browserLaunchFailed'
+  | 'signInUnavailable'
+  | 'providerRejected'
+  | 'attemptExpired'
+  | 'signInCancelled'
+  | 'signInRejected'
+  | 'connectionProblem'
+  | 'sessionRejected'
+  | 'credentialUnreadable'
+  | 'persistFailed'
+  | 'signOutNotConfirmed'
+  | 'credentialDeleteFailed';
+
+export type StorageMethod =
+  | 'windowsCredentialManager'
+  | 'secretService'
+  | 'privateFile';
+
+export interface WindowGeometry {
+  width: number;
+  height: number;
+  x?: number | null;
+  y?: number | null;
+  maximized: boolean;
+}
+
+export interface Settings {
+  window?: WindowGeometry | null;
+}
+
+export type PlaytimeSource = 'internal' | 'store';
+
+export interface PlaytimeView {
+  seconds?: number | null;
+  source: PlaytimeSource;
+}
+
+export interface SyncPreferences {
+  enabled: boolean;
+  explained: boolean;
+}
+
+export interface TrackingView {
+  title: string;
+  available: boolean;
+  running: string[];
+}
+
+export type MatchSource = 'automatic' | 'chosen';
+
+export type MatchStatus =
+  | 'unmatched'
+  | 'ambiguous'
+  | 'noGame'
+  | { matched: { gameId: number; source: MatchSource } };
+
+export type EntryStatus =
+  | 'playing'
+  | 'finished'
+  | 'planned'
+  | 'dropped'
+  | 'ongoing';
+
+export type Membership =
+  | 'notChecked'
+  | 'checking'
+  | 'unavailable'
+  | 'notInLibrary'
+  | { inLibrary: EntryStatus | null };
+
+export interface Row {
+  playtime: PlaytimeView;
+  running: boolean;
+  key: string;
+  title: string;
+  detectedName: string;
+  matchedName?: string | null;
+  provider: string;
+  providerName: string;
+  status: MatchStatus;
+  coverFile?: string | null;
+}
+
+export interface DetailView {
+  running: boolean;
+  row: Row;
+  installDir: string;
+  releaseYear?: number | null;
+  hasArtwork: boolean;
+  membership: Membership;
+}
+
+export type EmptyState =
+  | { noGames: { stores: string[] } }
+  | 'nothingMatches';
+
+export type ViewMode = 'grid' | 'list';
+
+export type SortKey = 'title' | 'provider' | 'matchStatus';
+export type SortDirection = 'ascending' | 'descending';
+
+export interface Sort {
+  key: SortKey;
+  direction: SortDirection;
+}
+
+export type SidebarSelection = 'all' | { provider: string };
+
+export interface LibraryLayout {
+  view: ViewMode;
+  sort: Sort;
+  filter: SidebarSelection;
+  sidebarWidth: number;
+  detailWidth: number;
+  detailOpen: boolean;
+}
+
+export type Access = 'unverified' | 'offline' | 'verified';
+
+export interface ProviderCount {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export type Reason =
+  | 'running'
+  | 'nothingSelected'
+  | 'multipleSelected'
+  | 'noLaunchRule'
+  | 'noInstallRule'
+  | 'missingField'
+  | 'needsVerifiedSession'
+  | 'offline'
+  | 'notMatched'
+  | 'noMatchedGames'
+  | 'checkingMembership'
+  | 'membershipUnavailable'
+  | { alreadyInLibrary: EntryStatus | null };
+
+export type Availability = 'available' | { disabled: Reason };
+
+export interface Actions {
+  selected: number;
+  play: Availability;
+  install: Availability;
+  matchGame: Availability;
+  addToGamenode: Availability;
+  changeMatch: boolean;
+}
+
+export interface MatchOption {
+  gameId: number;
+  name: string;
+  releaseYear?: number | null;
+  coverUrl?: string | null;
+  coverFile?: string | null;
+  current: boolean;
+}
+
+export type SearchFailure =
+  | { blocked: Reason }
+  | 'rejected'
+  | 'failed';
+
+export interface MatchDialogView {
+  entryKey: string;
+  detectedName: string;
+  providerName: string;
+  query: string;
+  searching: boolean;
+  candidates: MatchOption[];
+  results: MatchOption[];
+  noResults: boolean;
+  error?: SearchFailure | null;
+  searchBlocked?: Reason | null;
+  current: MatchStatus;
+  canClear: boolean;
+}
+
+export interface AddTarget {
+  entryKey: string;
+  title: string;
+  matched: boolean;
+}
+
+export interface CollectionOption {
+  id: string;
+  name: string;
+  defaultStatus?: EntryStatus | null;
+  picked: boolean;
+}
+
+export type ApiError = 'unauthorized' | 'failed';
+
+export type CollectionsView =
+  | 'loading'
+  | { failed: ApiError }
+  | { loaded: CollectionOption[] };
+
+export interface AddProgress {
+  done: number;
+  total: number;
+}
+
+export type AddOutcome =
+  | 'added'
+  | 'alreadyPresent'
+  | 'skipped'
+  | 'failed';
+
+export interface AddItem {
+  entryKey: string;
+  title: string;
+  outcome: AddOutcome;
+}
+
+export interface AddSummary {
+  items: AddItem[];
+  added: number;
+  alreadyPresent: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface AddDialogView {
+  targets: AddTarget[];
+  editingExisting: boolean;
+  status: EntryStatus;
+  appliedStatus: EntryStatus;
+  appliedFrom?: string | null;
+  collections: CollectionsView;
+  progress?: AddProgress | null;
+  error?: ApiError | null;
+  canConfirm: boolean;
+  blocked?: Reason | null;
+  summary?: AddSummary | null;
+}
+
+export interface LibraryView {
+  generation: number;
+  layout: LibraryLayout;
+  search: string;
+  access: Access;
+  total: number;
+  providers: ProviderCount[];
+  rows: Row[];
+  scanning: boolean;
+  failedProviders: string[];
+  selected: string[];
+  focused?: string | null;
+  actions: Actions;
+  detail?: DetailView | null;
+  empty?: EmptyState | null;
+  matchDialog?: MatchDialogView | null;
+  addDialog?: AddDialogView | null;
+}
+
+export type LaunchKind = 'play' | 'install';
+
+export type LaunchError = 'missingHandler' | 'unsupported' | 'failed';
+
+export type LaunchState = 'opening' | { failed: LaunchError };
+
+export interface LaunchStatus {
+  entryKey: string;
+  kind: LaunchKind;
+  state: LaunchState;
+}
+
+export interface Registration {
+  id: string;
+  title: string;
+  executable: string;
+  fileIdentity: string;
+  root: string;
+  workingDirectory: string;
+  arguments: string[];
+  gameplay: string[];
+  launchers: string[];
+  revision: number;
+  removed: boolean;
+  rediscoveryAllowed?: boolean;
+  transferredFrom?: string | null;
+  available: boolean;
+}
+
+export type EvidenceKind =
+  | 'product'
+  | 'description'
+  | 'executable'
+  | 'folder'
+  | 'manifest'
+  | 'externalId';
+
+export interface Evidence {
+  kind: EvidenceKind;
+  value: string;
+  strong: boolean;
+}
+
+export interface Inference {
+  installation: string;
+  revision: number;
+  title: string;
+  evidence: Evidence[];
+  gameId?: number | null;
+  account: string;
+}
+
+export interface Candidate {
+  fingerprint: string;
+  watch: string;
+  root: string;
+  title: string;
+  targets: string[];
+  selectedTarget?: string | null;
+  evidence: Evidence[];
+  ignored: boolean;
+  incomplete: boolean;
+}
+
+export interface WatchRoot {
+  id: string;
+  path: string;
+  enabled: boolean;
+}
+
+export type SaveSupport =
+  | 'supported'
+  | 'needsSelection'
+  | 'unsupported'
+  | 'noSaves';
+
+export interface SaveProfile {
+  id: string;
+  installation: string;
+  revision: number;
+  title: string;
+  manifestHash: string;
+  definition: string;
+  files: string[];
+  registry: string[];
+  support: SaveSupport;
+  automatic?: boolean | null;
+}
+
+export type JobState =
+  | 'queued'
+  | 'running'
+  | 'unchanged'
+  | 'successful'
+  | 'partial'
+  | 'failed'
+  | 'cancelled';
+
+export interface BackupJob {
+  id: string;
+  installation: string;
+  profile: string;
+  revision: number;
+  playPeriod?: string | null;
+  destination: string;
+  state: JobState;
+  attempts: number;
+  readyAt: number;
+  backupId?: string | null;
+  error?: string | null;
+}
+
+export interface BackupSettings {
+  automatic: boolean;
+  destination: string;
+}
+
+export interface BackupVersion {
+  installation: string;
+  profile: string;
+  destination: string;
+  id: string;
+  label: string;
+  bytes: number;
+}
+
+export type BackupOperation =
+  | 'preview'
+  | 'backup'
+  | 'history'
+  | { restorePreview: { backup: string } }
+  | { restore: { backup: string } };
+
+export interface BackupRequest {
+  jobId?: string | null;
+  profile: SaveProfile;
+  installation: Registration;
+  destination: string;
+  operation: BackupOperation;
+}
+
+export interface RestorePlan {
+  request: BackupRequest;
+  targets: string[];
+}
+
+export interface PendingClaim {
+  registration: Registration;
+  storeKey: string;
+  storeTitle: string;
+}
+
+export interface LocalView {
+  pendingClaim?: PendingClaim | null;
+  inferences: Inference[];
+  recentlyAdded: string[];
+  discoveryIncomplete: string[];
+  discoveryScanning: boolean;
+  discoveryCompleted: boolean;
+  discoveryError?: string | null;
+  watches: WatchRoot[];
+  reviewSelected: string[];
+  versions: BackupVersion[];
+  restore?: RestorePlan | null;
+  busy: boolean;
+  error?: string | null;
+  registrations: Registration[];
+  candidates: Candidate[];
+  profiles: SaveProfile[];
+  jobs: BackupJob[];
+  settings: BackupSettings;
+}
+
+export type ToolChannel = 'stable' | 'nightly';
+export type ToolInstallState =
+  | 'installing'
+  | 'installed'
+  | 'updating'
+  | 'uninstalling';
+
+export type ProxyDllName =
+  | 'dxgi.dll'
+  | 'winmm.dll'
+  | 'version.dll'
+  | 'dbghelp.dll'
+  | 'd3d12.dll'
+  | 'wininet.dll'
+  | 'winhttp.dll'
+  | 'OptiScaler.asi';
+
+export interface GameToolView {
+  toolId: string;
+  name: string;
+  channel: ToolChannel;
+  version: string;
+  proxyDll?: string | null;
+  targetExe: string;
+  state: ToolInstallState;
+  summary: string;
+}
+
+export interface TargetCandidate {
+  relativeExe: string;
+  label: string;
+  architecture: string;
+  preferred: boolean;
+}
+
+export type AntiCheatSystem = 'easyAntiCheat' | 'battlEye' | 'knownBlocklist';
+
+export interface AntiCheatReport {
+  detected: boolean;
+  systems: AntiCheatSystem[];
+  evidence: string[];
+}
+
+export interface TargetInspection {
+  entryKey: string;
+  installDir: string;
+  candidates: TargetCandidate[];
+  selectedExe?: string | null;
+  anticheat: AntiCheatReport;
+}
+
+export interface ToolRelease {
+  toolId: string;
+  channel: ToolChannel;
+  version: string;
+  tagName: string;
+  name: string;
+  publishedAt: string;
+  downloadUrl: string;
+  assetName: string;
+  sizeBytes: number;
+  sha256?: string | null;
+  cachedPath?: string | null;
+}
+
+export type ToolOperationStatus =
+  | { installing: { progressPercent?: number | null; message: string } }
+  | { updating: { progressPercent?: number | null; message: string } }
+  | 'uninstalling'
+  | { failed: { message: string } };
+
+export interface ToolModalView {
+  entryKey: string;
+  title: string;
+  installDir: string;
+  inspection?: TargetInspection | null;
+  tools: GameToolView[];
+  activeToolId: string;
+  selectedChannel: ToolChannel;
+  availableVersions: ToolRelease[];
+  selectedVersion?: string | null;
+  selectedProxy: ProxyDllName;
+  anticheatConfirmed: boolean;
+  operation?: ToolOperationStatus | null;
+}
+
+export interface ToolCatalogItemView {
+  id: string;
+  name: string;
+  summary: string;
+  license: string;
+  sourceUrl: string;
+}
+
+export interface ToolsView {
+  installedByEntry: Record<string, GameToolView[]>;
+  modal?: ToolModalView | null;
+  totalCacheBytes: number;
+  totalCacheArchives: number;
+  catalog: ToolCatalogItemView[];
+}
+
+export interface Snapshot {
+  localGames: LocalView;
+  playtimeError: boolean;
+  tracking: TrackingView;
+  sync: SyncPreferences;
+  playtimeSource: PlaytimeSource;
+  auth: AuthView;
+  notice?: Notice | null;
+  storage: StorageMethod;
+  settings: Settings;
+  library?: LibraryView | null;
+  launch?: LaunchStatus | null;
+  tools: ToolsView;
+}
+
+export interface BootstrapState {
+  snapshot: Snapshot;
+  locale: string;
+  version: string;
+  licenseNotices: string;
+  backgroundSupported: boolean;
+}
+
+export type AuthInput =
+  | 'start'
+  | { startSignIn: Provider }
+  | 'cancelSignIn'
+  | { callbackReceived: string }
+  | 'retryRestore'
+  | 'signOut'
+  | 'tick'
+  | 'sessionRejected';
+
+export type SelectMode = 'replace' | 'toggle' | 'range';
+export type Direction = 'up' | 'down' | 'left' | 'right' | 'home' | 'end';
+
+export type LibraryInput =
+  | 'scanRequested'
+  | 'openMatch'
+  | 'closeMatch'
+  | { setMatchQuery: string }
+  | 'searchMatch'
+  | { pickMatch: { gameId: number; now: number } }
+  | { markNoGame: { now: number } }
+  | 'clearMatch'
+  | { select: { key: string; mode: SelectMode } }
+  | { move: { direction: Direction; extend: boolean } }
+  | { setColumns: number }
+  | { setView: ViewMode }
+  | { setFilter: SidebarSelection }
+  | { setSearch: string }
+  | { setSort: Sort }
+  | { setSidebarWidth: number }
+  | { setDetailWidth: number }
+  | { setDetailOpen: boolean }
+  | 'openDetails'
+  | 'refreshMembership'
+  | 'openAdd'
+  | 'closeAdd'
+  | { setAddStatus: EntryStatus }
+  | { toggleAddCollection: string }
+  | 'retryCollections'
+  | 'confirmAdd'
+  | { removeEntry: { key: string; allowRediscovery: boolean } }
+  | 'resetExcluded';
+
+export function getMatchedGameId(status: MatchStatus): number | null {
+  if (typeof status === 'object' && 'matched' in status) {
+    return status.matched.gameId;
+  }
+  return null;
+}
+
+/**
+ * Base of the `gamenode-asset://` custom protocol as the webview loads it. WebView2 on Windows
+ * serves custom schemes only as `http://<scheme>.localhost`, so the bare scheme never loads
+ * there; other platforms use it directly. Same rule as Tauri's own `convertFileSrc`.
+ */
+function assetProtocolBase(): string {
+  const onWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+  return onWindows ? 'http://gamenode-asset.localhost' : 'gamenode-asset://localhost';
+}
+
+export function coverAssetUrl(coverFile: string | null | undefined): string | null {
+  if (!coverFile) return null;
+  return `${assetProtocolBase()}/cover/${encodeURIComponent(coverFile)}`;
+}
+
+export function artworkAssetUrl(gameId: number | null | undefined, rev?: number | string): string | null {
+  if (gameId == null) return null;
+  const suffix = rev !== undefined ? `?rev=${encodeURIComponent(String(rev))}` : '';
+  return `${assetProtocolBase()}/artwork/${gameId}${suffix}`;
+}
+
+export function createDefaultSnapshot(): Snapshot {
+  return {
+    localGames: {
+      pendingClaim: null,
+      inferences: [],
+      recentlyAdded: [],
+      discoveryIncomplete: [],
+      discoveryScanning: false,
+      discoveryCompleted: false,
+      discoveryError: null,
+      watches: [],
+      reviewSelected: [],
+      versions: [],
+      restore: null,
+      busy: false,
+      error: null,
+      registrations: [],
+      candidates: [],
+      profiles: [],
+      jobs: [],
+      settings: {
+        automatic: true,
+        destination: '',
+      },
+    },
+    playtimeError: false,
+    tracking: {
+      title: '',
+      available: false,
+      running: [],
+    },
+    sync: {
+      enabled: true,
+      explained: true,
+    },
+    playtimeSource: 'internal',
+    auth: 'signedOut',
+    notice: null,
+    storage: 'secretService',
+    settings: {
+      window: null,
+    },
+    library: null,
+    launch: null,
+    tools: {
+      installedByEntry: {},
+      modal: null,
+      totalCacheBytes: 0,
+      totalCacheArchives: 0,
+      catalog: [],
+    },
+  };
+}

@@ -17,9 +17,9 @@ with Path("Cargo.toml").open("rb") as manifest_file:
     version = tomllib.load(manifest_file)["workspace"]["package"]["version"]
 archive = Path(f"dist/windows/gamenode-desktop-{version}-windows-x64.zip")
 alias = Path("dist/windows/gamenode-desktop.zip")
-source_files = sorted(str(path) for base in ("crates", "providers", "i18n", "packaging", "scripts")
+source_files = sorted(str(path) for base in ("crates", "providers", "packaging", "scripts", "ui")
                       for path in Path(base).rglob("*") if path.is_file()
-                      and "__pycache__" not in path.parts)
+                      and not any(part in path.parts for part in ("__pycache__", "node_modules", "dist", ".turbo")))
 
 binary = package / "gamenode.exe"
 revision = subprocess.run(

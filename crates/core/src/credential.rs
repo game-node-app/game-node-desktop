@@ -2,11 +2,14 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// The signed Better Auth session value, used as a bearer token.
 ///
 /// It is deliberately opaque: `Debug` and `Display` never reveal it, so logs and errors cannot
 /// leak it by accident. Call [`SessionCredential::expose`] only to send or store it.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SessionCredential(String);
 
 impl SessionCredential {
@@ -29,7 +32,8 @@ impl fmt::Debug for SessionCredential {
 }
 
 /// Where the session credential is kept. Settings shows this; it never carries the credential.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum StorageMethod {
     /// Windows Credential Manager.
     WindowsCredentialManager,

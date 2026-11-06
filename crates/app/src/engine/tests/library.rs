@@ -806,7 +806,7 @@ async fn activating_an_entry_launches_playable_games_and_opens_details_when_unav
     h.engine.library_input(LibInput::SetDetailOpen(false));
     assert!(!view(&h.engine.snapshot()).unwrap().layout.detail_open);
 
-    crate::library_ui::activate_entry(&h.engine, "steam:620");
+    crate::commands::activate_entry_by_key(&h.engine, "steam:620");
     h.until("played via double-click key", |s| s.launch.is_none())
         .await;
     assert_eq!(*h.uri.opened.lock().unwrap(), ["steam://rungameid/620"]);
@@ -819,7 +819,7 @@ async fn activating_an_entry_launches_playable_games_and_opens_details_when_unav
         direction: Direction::Home,
         extend: false,
     });
-    crate::library_ui::activate_entry(&h.engine, "");
+    crate::commands::activate_entry_by_key(&h.engine, "");
     h.until("played via keyboard focus", |s| s.launch.is_none())
         .await;
     assert_eq!(*h.uri.opened.lock().unwrap(), ["steam://rungameid/620"]);
@@ -827,6 +827,6 @@ async fn activating_an_entry_launches_playable_games_and_opens_details_when_unav
     // When Play is unavailable (e.g. an unknown key leaves nothing selected), activating falls back
     // to opening the detail pane.
     h.engine.library_input(LibInput::SetDetailOpen(false));
-    crate::library_ui::activate_entry(&h.engine, "steam:missing");
+    crate::commands::activate_entry_by_key(&h.engine, "steam:missing");
     assert!(view(&h.engine.snapshot()).unwrap().layout.detail_open);
 }

@@ -198,25 +198,90 @@ fn build_response(
     })
 }
 
+/// Cache policy of covers: a cover file is named after its game and replaced whole, and the
+/// `ETag` lets the WebView check a stale copy without downloading it again.
+const COVER_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+/// A strong validator for a file: its size and modification time.
+fn file_etag(metadata: &std::fs::Metadata) -> Option<String> {
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!(
+        "\"{:x}-{:x}\"",
+        metadata.len(),
+        modified.as_nanos()
+    ))
+}
+
+/// Whether an `If-None-Match` header value names `etag` (weak validators compare equal here
+/// because a `GET` may use weak comparison).
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    if_none_match.split(',').map(str::trim).any(|candidate| {
+        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+    })
+}
+
+fn with_etag(mut response: Response<Vec<u8>>, etag: Option<&str>) -> Response<Vec<u8>> {
+    if let Some(value) = etag.and_then(|etag| header::HeaderValue::from_str(etag).ok()) {
+        response.headers_mut().insert(header::ETAG, value);
+    }
+    response
+}
+
 /// Asynchronously handles a cover file request.
 pub async fn handle_cover(filename: &str, covers_dir: &Path) -> Response<Vec<u8>> {
+    handle_cover_conditional(filename, covers_dir, None).await
+}
+
+/// Handles a cover file request that may carry an `If-None-Match` header. A cover whose `ETag`
+/// matches is answered with `304 Not Modified` and an empty body, without reading the file.
+pub async fn handle_cover_conditional(
+    filename: &str,
+    covers_dir: &Path,
+    if_none_match: Option<&str>,
+) -> Response<Vec<u8>> {
     if !valid_cover_file(filename) {
         return build_response(StatusCode::BAD_REQUEST, None, None, Vec::new());
     }
 
     let path = covers_dir.join(filename);
-    let read_result = tokio::task::spawn_blocking(move || std::fs::read(path)).await;
+    let if_none_match = if_none_match.map(str::to_owned);
+    let filename = filename.to_owned();
+    let read_result = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let etag = file.metadata().ok().and_then(|m| file_etag(&m));
+        if let (Some(etag), Some(header)) = (&etag, &if_none_match)
+            && etag_matches(header, etag)
+        {
+            return Ok((etag.clone().into(), None));
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok::<_, std::io::Error>((etag, Some(bytes)))
+    })
+    .await;
 
     match read_result {
-        Ok(Ok(bytes)) => {
-            let mime = detect_image_mime(&bytes, filename);
-            build_response(
-                StatusCode::OK,
-                Some(mime),
-                Some("public, max-age=31536000, immutable"),
-                bytes,
+        Ok(Ok((etag, Some(bytes)))) => {
+            let mime = detect_image_mime(&bytes, &filename);
+            with_etag(
+                build_response(StatusCode::OK, Some(mime), Some(COVER_CACHE_CONTROL), bytes),
+                etag.as_deref(),
             )
         }
+        Ok(Ok((etag, None))) => with_etag(
+            build_response(
+                StatusCode::NOT_MODIFIED,
+                None,
+                Some(COVER_CACHE_CONTROL),
+                Vec::new(),
+            ),
+            etag.as_deref(),
+        ),
         _ => build_response(StatusCode::NOT_FOUND, None, None, Vec::new()),
     }
 }
@@ -231,12 +296,7 @@ pub fn handle_cover_sync(filename: &str, covers_dir: &Path) -> Response<Vec<u8>>
     match std::fs::read(path) {
         Ok(bytes) => {
             let mime = detect_image_mime(&bytes, filename);
-            build_response(
-                StatusCode::OK,
-                Some(mime),
-                Some("public, max-age=31536000, immutable"),
-                bytes,
-            )
+            build_response(StatusCode::OK, Some(mime), Some(COVER_CACHE_CONTROL), bytes)
         }
         Err(_) => build_response(StatusCode::NOT_FOUND, None, None, Vec::new()),
     }
@@ -346,8 +406,23 @@ pub async fn handle_asset_uri<F>(
 where
     F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
 {
+    handle_asset_uri_conditional(uri, covers_dir, artwork_lookup, None).await
+}
+
+/// Like [`handle_asset_uri`], with the request's `If-None-Match` header for covers.
+pub async fn handle_asset_uri_conditional<F>(
+    uri: &Uri,
+    covers_dir: &Path,
+    artwork_lookup: &F,
+    if_none_match: Option<&str>,
+) -> Response<Vec<u8>>
+where
+    F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
+{
     match parse_asset_uri(uri) {
-        Some(ParsedAsset::Cover { filename }) => handle_cover(&filename, covers_dir).await,
+        Some(ParsedAsset::Cover { filename }) => {
+            handle_cover_conditional(&filename, covers_dir, if_none_match).await
+        }
         Some(ParsedAsset::Artwork { game_id }) => {
             handle_artwork(game_id, covers_dir, artwork_lookup).await
         }
@@ -418,12 +493,17 @@ pub async fn handle_request<F>(
 where
     F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
 {
-    handle_asset_uri(request.uri(), covers_dir, artwork_lookup).await
+    let if_none_match = request
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok());
+    handle_asset_uri_conditional(request.uri(), covers_dir, artwork_lookup, if_none_match).await
 }
 
-/// Extracts artwork bytes for `game_id` from an `Engine` snapshot when detail is loaded.
+/// Reads the artwork bytes for `game_id` from the `Engine` when its detail is loaded, without
+/// building a snapshot.
 pub fn engine_artwork(engine: &crate::engine::Engine, game_id: u64) -> Option<Vec<u8>> {
-    extract_artwork_from_snapshot(&engine.snapshot(), game_id)
+    engine.artwork(game_id).map(|artwork| artwork.to_vec())
 }
 
 /// Extracts artwork bytes for `game_id` from a `Snapshot` when detail is loaded.
@@ -605,6 +685,58 @@ mod tests {
         );
         assert_eq!(res_sync.status(), StatusCode::OK);
         assert_eq!(res_sync.body(), &jpeg_bytes);
+    }
+
+    #[tokio::test]
+    async fn covers_carry_an_etag_and_a_matching_one_gets_an_empty_304() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("620.jpg"), [0xff, 0xd8, 0xff, 0x01]).unwrap();
+        let url = "gamenode-asset://localhost/cover/620.jpg";
+        let request = |if_none_match: Option<&str>| {
+            let mut builder = Request::builder().uri(url);
+            if let Some(value) = if_none_match {
+                builder = builder.header(header::IF_NONE_MATCH, value);
+            }
+            builder.body(Vec::new()).unwrap()
+        };
+
+        let first = handle_request(&request(None), dir.path(), &|_| None).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers().get(header::ETAG).unwrap().to_str().unwrap();
+        assert!(etag.starts_with('"') && etag.ends_with('"') && !etag.starts_with("W/"));
+
+        for header_value in [
+            etag.to_owned(),
+            format!("\"other\", {etag}"),
+            format!("W/{etag}"),
+            "*".into(),
+        ] {
+            let res = handle_request(&request(Some(&header_value)), dir.path(), &|_| None).await;
+            assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "{header_value}");
+            assert!(res.body().is_empty());
+            assert_eq!(res.headers().get(header::ETAG).unwrap(), etag);
+            assert_eq!(
+                res.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=31536000, immutable"
+            );
+        }
+
+        // A different validator, or a changed file, gets the image.
+        let res = handle_request(&request(Some("\"stale\"")), dir.path(), &|_| None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        std::fs::write(dir.path().join("620.jpg"), [0xff, 0xd8, 0xff, 0x01, 0x02]).unwrap();
+        let res = handle_request(&request(Some(etag)), dir.path(), &|_| None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_ne!(res.headers().get(header::ETAG).unwrap(), etag);
+
+        // A missing cover is still a 404 whatever the validator.
+        let missing = Request::builder()
+            .uri("gamenode-asset://localhost/cover/none.jpg")
+            .header(header::IF_NONE_MATCH, "*")
+            .body(Vec::new())
+            .unwrap();
+        let res = handle_request(&missing, dir.path(), &|_| None).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

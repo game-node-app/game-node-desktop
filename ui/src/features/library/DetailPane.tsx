@@ -40,14 +40,28 @@ export const DetailPane: React.FC = () => {
     const startX = typeof e.clientX === 'number' && !isNaN(e.clientX) ? e.clientX : 500;
     const startW = clampedWidth;
 
+    // Coalesce pointermove bursts into at most one store update per frame.
+    let frame = 0;
+    let pendingW = startW;
+
     const onPointerMove = (ev: MouseEvent | PointerEvent) => {
       const clientX = typeof ev.clientX === 'number' && !isNaN(ev.clientX) ? ev.clientX : startX;
       const delta = startX - clientX; // Dragging left expands pane
-      const nextW = Math.max(260, Math.min(520, Math.round(startW + delta)));
-      uiStore.setState((prev) => ({ ...prev, detailDragWidth: nextW }));
+      pendingW = Math.max(260, Math.min(520, Math.round(startW + delta)));
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (uiStore.state.detailDragWidth !== pendingW) {
+          uiStore.setState((prev) => ({ ...prev, detailDragWidth: pendingW }));
+        }
+      });
     };
 
     const onPointerUp = (ev: MouseEvent | PointerEvent) => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
       window.removeEventListener('pointermove', onPointerMove as EventListener);
       window.removeEventListener('pointerup', onPointerUp as EventListener);
       window.removeEventListener('mousemove', onPointerMove as EventListener);

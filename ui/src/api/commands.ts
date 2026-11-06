@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getMockHost, mockEnabled } from './mock';
 import type {
   AuthInput,
   BootstrapState,
@@ -24,6 +25,9 @@ export async function safeInvoke<T>(
   args?: Record<string, unknown>,
   fallback?: () => T,
 ): Promise<T> {
+  if (mockEnabled) {
+    return (await (await getMockHost()).invoke(cmd, args)) as T;
+  }
   if (!isTauriRuntime() && fallback) {
     return fallback();
   }

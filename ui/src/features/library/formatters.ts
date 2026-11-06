@@ -116,3 +116,13 @@ export function formatMatchStatus(
       return t('Library::Not matched');
   }
 }
+
+export function getMatchDotColor(status: MatchStatus): string {
+  if (typeof status === 'object' && 'matched' in status) {
+    return 'var(--color-success, #3DD68C)';
+  }
+  if (status === 'ambiguous') {
+    return 'var(--color-warning, #F5A524)';
+  }
+  return 'var(--color-text-dimmed, #808080)';
+}

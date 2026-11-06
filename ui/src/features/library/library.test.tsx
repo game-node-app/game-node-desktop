@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   commands,
@@ -14,6 +14,7 @@ import { Virtualizer } from '@tanstack/react-virtual';
 import { uiStore, resetUiStore, openContextMenu } from '../../store/uiStore';
 import {
   CoverImage,
+  resetLoadedCovers,
   LibraryToolbar,
   GameGrid,
   GameList,
@@ -73,6 +74,36 @@ describe('Library Feature Tests', () => {
   });
 
   describe('CoverImage', () => {
+    beforeEach(() => {
+      resetLoadedCovers();
+    });
+
+    it('retries after a failed cover when the cover file changes', () => {
+      const { rerender } = render(
+        <CoverImage coverFile="missing.jpg" title="Game" />,
+      );
+      fireEvent.error(screen.getByRole('img'));
+      expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument();
+
+      rerender(<CoverImage coverFile="arrived.jpg" title="Game" />);
+      expect(screen.queryByTestId('cover-placeholder')).not.toBeInTheDocument();
+      expect(screen.getByRole('img')).toHaveAttribute(
+        'src',
+        'gamenode-asset://localhost/cover/arrived.jpg',
+      );
+    });
+
+    it('fades in on first load and renders known covers immediately on remount', () => {
+      const first = render(<CoverImage coverFile="seen.jpg" title="Seen" />);
+      expect(screen.getByRole('img')).toHaveStyle({ opacity: '0' });
+      fireEvent.load(screen.getByRole('img'));
+      expect(screen.getByRole('img')).toHaveStyle({ opacity: '1' });
+      first.unmount();
+
+      render(<CoverImage coverFile="seen.jpg" title="Seen" />);
+      expect(screen.getByRole('img')).toHaveStyle({ opacity: '1' });
+    });
+
     it('renders img with gamenode-asset url and lazy loading when coverFile is present', () => {
       render(
         <CoverImage
@@ -211,7 +242,7 @@ describe('Library Feature Tests', () => {
       expect(screen.getByTestId('game-list-header')).toBeInTheDocument();
     });
 
-    it('updates column count and syncs setColumns on container resize via ResizeObserver', () => {
+    it('updates column count and syncs setColumns (debounced) on container resize via ResizeObserver', async () => {
       let resizeCallback!: (entries: ResizeObserverEntry[]) => void;
       class MockResizeObserver {
         constructor(cb: (entries: ResizeObserverEntry[]) => void) {
@@ -269,7 +300,16 @@ describe('Library Feature Tests', () => {
           ]);
         });
 
-        expect(libraryInputSpy).toHaveBeenCalledWith({ setColumns: 6 });
+        // rAF-throttled + debounced: not sent synchronously, sent once settled.
+        expect(libraryInputSpy).not.toHaveBeenCalledWith({ setColumns: 6 });
+        await waitFor(() =>
+          expect(libraryInputSpy).toHaveBeenCalledWith({ setColumns: 6 }),
+        );
+        expect(
+          libraryInputSpy.mock.calls.filter(
+            ([input]) => 'setColumns' in (input as object),
+          ),
+        ).toHaveLength(1);
       } finally {
         window.ResizeObserver = originalRO;
       }
@@ -326,6 +366,7 @@ describe('Library Feature Tests', () => {
         expect.anything(),
         'absolute',
       );
+
       scrollSpy.mockClear();
 
       // Focus game-20: in 4 columns, row index is Math.floor(20 / 4) = 5
@@ -353,6 +394,24 @@ describe('Library Feature Tests', () => {
         expect.anything(),
         'absolute',
       );
+
+      // A snapshot that only changes rows (same focus) must not re-scroll.
+      scrollSpy.mockClear();
+      queryClient.setQueryData(SNAPSHOT_QUERY_KEY, {
+        ...updatedSnapshot,
+        library: {
+          ...updatedSnapshot.library,
+          rows: [...updatedSnapshot.library.rows!],
+        },
+      });
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider initialLocale="en">
+            <GameGrid />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+      expect(scrollSpy).not.toHaveBeenCalled();
     });
 
     it('handles mouse click selection and double click in GameList', () => {
@@ -762,7 +821,7 @@ describe('Library Feature Tests', () => {
   });
 
   describe('DetailPane and Localized Disabled Reasons', () => {
-    it('handles resize drag, commits setDetailWidth, and closes pane', () => {
+    it('handles resize drag, commits setDetailWidth, and closes pane', async () => {
       const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
 
       const snapshot = createDefaultSnapshot();
@@ -814,7 +873,8 @@ describe('Library Feature Tests', () => {
         window,
         new MouseEvent('pointermove', { clientX: 450, bubbles: true }),
       );
-      expect(uiStore.state.detailDragWidth).toBe(370);
+      // Drag updates are coalesced to one per animation frame.
+      await waitFor(() => expect(uiStore.state.detailDragWidth).toBe(370));
 
       fireEvent(
         window,

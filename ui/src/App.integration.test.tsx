@@ -9,6 +9,8 @@ import {
   type LibraryView,
   type Row,
   type Snapshot,
+  type TargetInspection,
+  type ToolModalView,
 } from './api';
 
 // ---- A fake Tauri host: `invoke` and `engine:snapshot` events are the only seams mocked. ----
@@ -226,6 +228,44 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
 
     await publish(signedIn(current));
     await waitFor(() => expect(screen.queryByTestId('match-dialog-overlay')).not.toBeInTheDocument());
+  });
+
+  it('contains a crash in the game tools panel: the rest of the app stays up and Close asks the engine to close it', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await mountApp();
+    const next = signedIn(current);
+    const modal: ToolModalView = {
+      entryKey: 'steam:1',
+      title: 'Game 1',
+      installDir: '/games/game_1',
+      // Malformed on purpose: the backend always sends an anticheat report, but a bad payload
+      // must not blank the app.
+      inspection: {
+        entryKey: 'steam:1',
+        installDir: '/games/game_1',
+        candidates: [],
+        anticheat: null as unknown as TargetInspection['anticheat'],
+      },
+      tools: [],
+      activeToolId: 'optiscaler',
+      selectedChannel: 'stable',
+      availableVersions: [],
+      selectedVersion: null,
+      selectedProxy: 'dxgi',
+      anticheatConfirmed: false,
+      operation: null,
+    };
+    next.tools = { ...current.tools, modal };
+    await publish(next);
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByTestId('top-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('library-screen')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(calls('close_tools')).toHaveLength(1));
+    errors.mockRestore();
   });
 
   it('adopts the host locale (pt-BR) from get_bootstrap_state', async () => {

@@ -1,3 +1,5 @@
+import { mockEnabled } from './mock';
+
 export type Provider = 'google' | 'discord' | 'twitter';
 
 export interface User {
@@ -455,14 +457,13 @@ export type ToolInstallState =
   | 'uninstalling';
 
 export type ProxyDllName =
-  | 'dxgi.dll'
-  | 'winmm.dll'
-  | 'version.dll'
-  | 'dbghelp.dll'
-  | 'd3d12.dll'
-  | 'wininet.dll'
-  | 'winhttp.dll'
-  | 'OptiScaler.asi';
+  | 'dxgi'
+  | 'winmm'
+  | 'version'
+  | 'dbghelp'
+  | 'd3d12'
+  | 'wininet'
+  | 'winhttp';
 
 export interface GameToolView {
   toolId: string;
@@ -482,11 +483,12 @@ export interface TargetCandidate {
   preferred: boolean;
 }
 
-export type AntiCheatSystem = 'easyAntiCheat' | 'battlEye' | 'knownBlocklist';
+// Mirrors `AntiCheatSystem` in crates/core/src/tools/anticheat.rs (camelCase).
+export type AntiCheatSystem = 'easyAntiCheat' | 'battlEye' | 'blocklisted';
 
+// Mirrors `AntiCheatReport`: an empty `detected` list means nothing was found.
 export interface AntiCheatReport {
-  detected: boolean;
-  systems: AntiCheatSystem[];
+  detected: AntiCheatSystem[];
   evidence: string[];
 }
 
@@ -634,11 +636,13 @@ function assetProtocolBase(): string {
 
 export function coverAssetUrl(coverFile: string | null | undefined): string | null {
   if (!coverFile) return null;
+  if (mockEnabled && /^mock-\d+\.svg$/.test(coverFile)) return `/mock-covers/${coverFile}`;
   return `${assetProtocolBase()}/cover/${encodeURIComponent(coverFile)}`;
 }
 
 export function artworkAssetUrl(gameId: number | null | undefined, rev?: number | string): string | null {
   if (gameId == null) return null;
+  if (mockEnabled) return `/mock-covers/mock-${(gameId - 1) % 12}.svg`;
   const suffix = rev !== undefined ? `?rev=${encodeURIComponent(String(rev))}` : '';
   return `${assetProtocolBase()}/artwork/${gameId}${suffix}`;
 }

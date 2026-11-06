@@ -11,17 +11,19 @@ pub struct Registration {
     pub id: String,
     pub title: String,
     pub executable: String,
+    #[serde(alias = "file_identity")]
     pub file_identity: String,
     pub root: String,
+    #[serde(alias = "working_directory")]
     pub working_directory: String,
     pub arguments: Vec<String>,
     pub gameplay: Vec<String>,
     pub launchers: Vec<String>,
     pub revision: u64,
     pub removed: bool,
-    #[serde(default)]
+    #[serde(default, alias = "rediscovery_allowed")]
     pub rediscovery_allowed: bool,
-    #[serde(default)]
+    #[serde(default, alias = "transferred_from")]
     pub transferred_from: Option<String>,
     pub available: bool,
 }
@@ -39,11 +41,17 @@ impl Registration {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EvidenceKind {
+    #[serde(alias = "Product")]
     Product,
+    #[serde(alias = "Description")]
     Description,
+    #[serde(alias = "Executable")]
     Executable,
+    #[serde(alias = "Folder")]
     Folder,
+    #[serde(alias = "Manifest")]
     Manifest,
+    #[serde(alias = "ExternalId")]
     ExternalId,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +68,7 @@ pub struct Inference {
     pub revision: u64,
     pub title: String,
     pub evidence: Vec<Evidence>,
+    #[serde(alias = "game_id")]
     pub game_id: Option<u64>,
     pub account: String,
 }
@@ -71,6 +80,7 @@ pub struct Candidate {
     pub root: String,
     pub title: String,
     pub targets: Vec<String>,
+    #[serde(alias = "selected_target")]
     pub selected_target: Option<String>,
     pub evidence: Vec<Evidence>,
     pub ignored: bool,
@@ -96,9 +106,13 @@ pub enum ProcessPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SaveSupport {
+    #[serde(alias = "Supported")]
     Supported,
+    #[serde(alias = "NeedsSelection")]
     NeedsSelection,
+    #[serde(alias = "Unsupported")]
     Unsupported,
+    #[serde(alias = "NoSaves")]
     NoSaves,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +122,7 @@ pub struct SaveProfile {
     pub installation: String,
     pub revision: u64,
     pub title: String,
+    #[serde(alias = "manifest_hash")]
     pub manifest_hash: String,
     pub definition: String,
     pub files: Vec<String>,
@@ -118,12 +133,19 @@ pub struct SaveProfile {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum JobState {
+    #[serde(alias = "Queued")]
     Queued,
+    #[serde(alias = "Running")]
     Running,
+    #[serde(alias = "Unchanged")]
     Unchanged,
+    #[serde(alias = "Successful")]
     Successful,
+    #[serde(alias = "Partial")]
     Partial,
+    #[serde(alias = "Failed")]
     Failed,
+    #[serde(alias = "Cancelled")]
     Cancelled,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,11 +155,14 @@ pub struct BackupJob {
     pub installation: String,
     pub profile: String,
     pub revision: u64,
+    #[serde(alias = "play_period")]
     pub play_period: Option<String>,
     pub destination: String,
     pub state: JobState,
     pub attempts: u8,
+    #[serde(alias = "ready_at")]
     pub ready_at: i64,
+    #[serde(alias = "backup_id")]
     pub backup_id: Option<String>,
     pub error: Option<String>,
 }

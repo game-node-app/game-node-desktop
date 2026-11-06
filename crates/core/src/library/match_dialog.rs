@@ -191,7 +191,7 @@ impl LibraryMachine {
             }
         }
         effects.extend(self.choose(&dialog.key, Some(game_id), now));
-        effects.extend(self.plan_covers(false));
+        effects.extend(self.plan_covers(None));
         effects
     }
 

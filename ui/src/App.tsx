@@ -14,6 +14,7 @@ import {
   LocalGameEditor,
   RemoveLocalGameModal,
   SaveProtectionModal,
+  useLocalGameErrorToast,
 } from './features/drm-free';
 import { LibraryScreen } from './features/library';
 import {
@@ -22,7 +23,7 @@ import {
   useSettingsKeyboardShortcut,
 } from './features/settings';
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
-import { GameToolsModal } from './features/tools';
+import { GameToolsPanel } from './features/tools';
 
 /** Shown between sign-in completing and the engine opening the account's library. */
 const ConnectedPlaceholder: React.FC = () => {
@@ -57,6 +58,7 @@ export const App: React.FC = () => {
   // Bridge `engine:snapshot` events into the TanStack Query cache.
   useEngineSnapshotSubscription();
   useSettingsKeyboardShortcut();
+  useLocalGameErrorToast();
 
   // Adopt the OS locale the host reports once, so a manual switch is not overwritten later.
   const localeApplied = useRef(false);
@@ -117,7 +119,7 @@ export const App: React.FC = () => {
       <ClaimConflictModal />
       <RemoveLocalGameModal />
       <SaveProtectionModal />
-      <GameToolsModal />
+      <GameToolsPanel />
       <ToastContainer />
     </div>
   );

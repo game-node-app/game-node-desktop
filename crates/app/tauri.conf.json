@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GameNode",
+  "version": "0.1.0",
+  "identifier": "app.gamenode.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --dir ../../ui dev",
+    "devUrl": "http://localhost:4777",
+    "beforeBuildCommand": "pnpm --dir ../../ui build",
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' gamenode-asset: http://gamenode-asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost gamenode-asset: http://gamenode-asset.localhost"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/gamenode.png",
+      "icons/gamenode.ico"
+    ]
+  }
+}

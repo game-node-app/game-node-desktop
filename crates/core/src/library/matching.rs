@@ -4,10 +4,13 @@
 //! single automatic match from the server, else unmatched. An id the server maps to several games
 //! stays unmatched, with those games kept as candidates for the match dialog.
 
+use serde::{Deserialize, Serialize};
+
 use super::store::{AutoMatch, ChosenMatch};
 
 /// Where a matched game came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum MatchSource {
     /// The user picked it.
     Chosen,
@@ -15,7 +18,8 @@ pub enum MatchSource {
     Automatic,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum MatchStatus {
     Matched {
         game_id: u64,

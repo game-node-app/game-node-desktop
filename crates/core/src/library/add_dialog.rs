@@ -47,8 +47,11 @@ pub(super) struct AddDialog {
     pub(super) error: Option<ApiError>,
 }
 
+use serde::{Deserialize, Serialize};
+
 /// One game the dialog will add.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddTarget {
     pub entry_key: String,
     pub title: String,
@@ -56,7 +59,8 @@ pub struct AddTarget {
     pub matched: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CollectionOption {
     pub id: String,
     pub name: String,
@@ -64,7 +68,8 @@ pub struct CollectionOption {
     pub picked: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CollectionsView {
     Loading,
     /// The list could not be read; the user can retry.
@@ -73,13 +78,17 @@ pub enum CollectionsView {
 }
 
 /// How far a confirmed add has come.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddProgress {
     pub done: usize,
     pub total: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub type AddProgressView = AddProgress;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddDialogView {
     pub targets: Vec<AddTarget>,
     pub editing_existing: bool,

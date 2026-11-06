@@ -104,7 +104,13 @@ struct State {
     local: gamenode_core::drm_free::LocalView,
     tools: gamenode_core::tools::ToolsView,
     tool_reset_config: bool,
-    tool_last_fetch: std::collections::HashMap<(gamenode_core::tools::ToolId, gamenode_core::tools::ToolChannel), Instant>,
+    tool_last_fetch: std::collections::HashMap<
+        (
+            gamenode_core::tools::ToolId,
+            gamenode_core::tools::ToolChannel,
+        ),
+        Instant,
+    >,
     tool_selected_target_exe: Option<String>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
@@ -115,6 +121,8 @@ struct State {
     /// The latest Play or Install; `launch_seq` tells its answer from an older one.
     launch: Option<LaunchStatus>,
     launch_seq: u64,
+    /// The selection the last snapshot showed, to notice when it changes.
+    published_selection: Option<Vec<String>>,
 }
 
 struct Shared {
@@ -137,7 +145,7 @@ pub struct Engine {
 
 impl Engine {
     /// `publish` is called with every new snapshot, from arbitrary threads, while the engine's
-    /// lock is held: it must hand the snapshot off (e.g. `slint::invoke_from_event_loop`) and
+    /// lock is held: it must hand the snapshot off (e.g. emit a Tauri `engine:snapshot` event) and
     /// must not call back into the engine.
     pub fn new(
         ports: Ports,
@@ -173,6 +181,7 @@ impl Engine {
                     last_account: None,
                     launch: None,
                     launch_seq: 0,
+                    published_selection: None,
                 }),
                 ports,
                 runtime,
@@ -189,14 +198,35 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    pub fn covers_dir(&self) -> &std::path::Path {
+        &self.shared.ports.covers_dir
+    }
+
+    pub fn host_files(&self) -> &Arc<dyn gamenode_core::ports::HostFiles> {
+        &self.shared.ports.files
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.lock();
         self.snapshot_of(&mut state)
     }
 
+    /// The artwork the details panel shows for `game_id`, if any. Takes the engine lock only
+    /// long enough to clone a handle, unlike [`Engine::snapshot`], which rebuilds the view.
+    pub fn artwork(&self, game_id: u64) -> Option<Arc<[u8]>> {
+        self.lock().library.artwork_for(game_id)
+    }
+
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
         self.update_playtime_view(state, unix_now());
         let library = state.library.view();
+        // Details loaded for the previous selection do not belong to the new one.
+        let selection = library.as_ref().map(|view| view.selected.clone());
+        if selection != state.published_selection {
+            state.published_selection = selection;
+            state.local.versions.clear();
+            state.local.restore = None;
+        }
         let mut snapshot = Snapshot::new(
             &state.machine,
             self.shared.ports.credentials.method(),
@@ -210,13 +240,7 @@ impl Engine {
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
         snapshot.tracking = gamenode_core::snapshot::TrackingView {
-            title: state
-                .library
-                .all_rows()
-                .into_iter()
-                .find(|r| r.running)
-                .map(|r| r.title)
-                .unwrap_or_default(),
+            title: state.library.running_title().unwrap_or_default(),
             available: state.playtime.available,
             running: state.playtime.tracker.running(),
         };
@@ -297,12 +321,7 @@ impl Engine {
                     | LibInput::ClearMatch
                     | LibInput::LookupDone { .. }
             );
-        let previous_selection = state.library.view().map(|v| v.selected);
         self.run_library(&mut state, input);
-        if previous_selection != state.library.view().map(|v| v.selected) {
-            state.local.versions.clear();
-            state.local.restore = None;
-        }
         if let Some(key) = state.local_selection.clone()
             && state
                 .library

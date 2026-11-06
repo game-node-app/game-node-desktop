@@ -9,21 +9,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-pub use anticheat::{evaluate_anticheat, AntiCheatReport, AntiCheatSystem};
+pub use anticheat::{AntiCheatReport, AntiCheatSystem, evaluate_anticheat};
 pub use ini::{apply_ini_patch, read_ini_key, revert_ini_patch};
 pub use plan::{
-    plan_deployment, strip_common_top_level_wrapper, target_dir_of, ArchiveEntry, FileAction,
-    PlanError, PlannedDeployment, PlannedFile,
+    ArchiveEntry, FileAction, PlanError, PlannedDeployment, PlannedFile, plan_deployment,
+    strip_common_top_level_wrapper, target_dir_of,
 };
 pub use registry::{
-    builtin_tools, dlss_swapper_test_descriptor, find_tool, fsr4_rdna2_lite_test_descriptor,
-    mfg_unlocker_test_descriptor, optiscaler_descriptor, AddonMode, ArchiveFormat, IniPatch,
-    InstallStrategy, ProxyDllName, SwapperMode, ToolChannel, ToolChannelSpec, ToolDescriptor,
-    ToolId,
+    AddonMode, ArchiveFormat, IniPatch, InstallStrategy, ProxyDllName, SwapperMode, ToolChannel,
+    ToolChannelSpec, ToolDescriptor, ToolId, builtin_tools, dlss_swapper_test_descriptor,
+    find_tool, fsr4_rdna2_lite_test_descriptor, mfg_unlocker_test_descriptor,
+    optiscaler_descriptor,
 };
 
 /// Current lifecycle state of a tool installation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ToolInstallState {
     Installing,
     Installed,
@@ -44,6 +45,7 @@ impl std::fmt::Display for ToolInstallState {
 
 /// Durable record of an installed game tool on a specific game entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolInstallation {
     pub entry_key: String,
     pub tool_id: ToolId,
@@ -58,6 +60,7 @@ pub struct ToolInstallation {
 
 /// Manifest record of an installed file deployed or backed up for a tool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolFileRecord {
     pub entry_key: String,
     pub tool_id: ToolId,
@@ -71,6 +74,7 @@ pub struct ToolFileRecord {
 
 /// Record of an applied INI patch for reversible rollback.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolIniPatchRecord {
     pub entry_key: String,
     pub tool_id: ToolId,
@@ -83,6 +87,7 @@ pub struct ToolIniPatchRecord {
 
 /// Release metadata fetched from an authorized tool repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolRelease {
     pub tool_id: ToolId,
     pub channel: ToolChannel,
@@ -99,6 +104,7 @@ pub struct ToolRelease {
 
 /// Candidate executable discovered inside a game's installation directory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TargetCandidate {
     pub relative_exe: String,
     pub label: String,
@@ -108,6 +114,7 @@ pub struct TargetCandidate {
 
 /// Target inspection result including candidate executables and anti-cheat report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TargetInspection {
     pub entry_key: String,
     pub install_dir: String,
@@ -118,6 +125,7 @@ pub struct TargetInspection {
 
 /// Request to install or update a tool on a game.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstallRequest {
     pub entry_key: String,
     pub tool_id: ToolId,
@@ -132,6 +140,7 @@ pub struct InstallRequest {
 
 /// Content-addressed local archive cache entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CachedToolArchive {
     pub tool_id: ToolId,
     pub channel: ToolChannel,
@@ -157,7 +166,10 @@ pub enum ToolError {
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
     #[error("Release not found for channel {channel:?} version {version}")]
-    ReleaseNotFound { channel: ToolChannel, version: String },
+    ReleaseNotFound {
+        channel: ToolChannel,
+        version: String,
+    },
     #[error("Download failed: {0}")]
     DownloadFailed(String),
     #[error("Checksum mismatch for {path}: expected {expected}, actual {actual}")]
@@ -193,7 +205,11 @@ pub trait ToolStore: Send + Sync {
     fn delete_installation(&self, entry_key: &str, tool_id: &ToolId) -> Result<(), ToolError>;
     fn incomplete_installations(&self) -> Result<Vec<ToolInstallation>, ToolError>;
 
-    fn list_files(&self, entry_key: &str, tool_id: &ToolId) -> Result<Vec<ToolFileRecord>, ToolError>;
+    fn list_files(
+        &self,
+        entry_key: &str,
+        tool_id: &ToolId,
+    ) -> Result<Vec<ToolFileRecord>, ToolError>;
     fn save_files(&self, files: &[ToolFileRecord]) -> Result<(), ToolError>;
     fn update_file_backup_owner(
         &self,
@@ -285,7 +301,8 @@ pub trait ToolInstallerHost: Send + Sync {
 }
 
 /// Top-level view of all installed tools and active tool modal state.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolsView {
     pub installed_by_entry: BTreeMap<String, Vec<GameToolView>>,
     pub modal: Option<ToolModalView>,
@@ -316,7 +333,8 @@ impl ToolsView {
 }
 
 /// View of an installed tool on a game.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameToolView {
     pub tool_id: ToolId,
     pub name: String,
@@ -329,7 +347,8 @@ pub struct GameToolView {
 }
 
 /// View model for the per-game tools modal dialog.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolModalView {
     pub entry_key: String,
     pub title: String,
@@ -346,7 +365,8 @@ pub struct ToolModalView {
 }
 
 /// Transient operation status for the modal.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ToolOperationStatus {
     Installing {
         progress_percent: Option<u8>,
@@ -363,7 +383,8 @@ pub enum ToolOperationStatus {
 }
 
 /// Metadata item for a catalog tool.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolCatalogItemView {
     pub id: ToolId,
     pub name: String,
@@ -371,6 +392,13 @@ pub struct ToolCatalogItemView {
     pub license: String,
     pub source_url: String,
 }
+
+pub type ToolCardView = GameToolView;
+pub type ToolVersionView = ToolRelease;
+pub type ToolTargetExeView = TargetCandidate;
+pub type ToolProxyOptionView = ProxyDllName;
+pub type AntiCheatWarningView = AntiCheatReport;
+pub type ToolInstallStateView = ToolInstallState;
 
 // ----------------------------------------------------------------------------
 // Test Doubles & In-Memory Store
@@ -416,10 +444,9 @@ impl ToolStore for InMemoryToolStore {
 
     fn save_installation(&self, installation: &ToolInstallation) -> Result<(), ToolError> {
         let mut list = self.installations.lock().unwrap();
-        if let Some(idx) = list
-            .iter()
-            .position(|i| i.entry_key == installation.entry_key && i.tool_id == installation.tool_id)
-        {
+        if let Some(idx) = list.iter().position(|i| {
+            i.entry_key == installation.entry_key && i.tool_id == installation.tool_id
+        }) {
             list[idx] = installation.clone();
         } else {
             list.push(installation.clone());
@@ -634,11 +661,9 @@ impl ToolCatalogApi for MockToolCatalogApi {
                     && a.version == release.version
             })
             .cloned()
-            .ok_or_else(|| {
-                ToolError::ReleaseNotFound {
-                    channel: release.channel,
-                    version: release.version.clone(),
-                }
+            .ok_or_else(|| ToolError::ReleaseNotFound {
+                channel: release.channel,
+                version: release.version.clone(),
             })
     }
 
@@ -792,14 +817,26 @@ mod tests {
 
         // Target inspection
         let inspection = host
-            .inspect_target("steam:1091500", "C:/Games/Cyberpunk 2077", "Cyberpunk 2077", None)
+            .inspect_target(
+                "steam:1091500",
+                "C:/Games/Cyberpunk 2077",
+                "Cyberpunk 2077",
+                None,
+            )
             .expect("inspection succeeds");
         assert_eq!(inspection.entry_key, "steam:1091500");
         assert!(!inspection.anticheat.has_warning());
 
         // Install
         let inst = host
-            .install_or_update(&store, &catalog, &opti, &release, &request, "C:/Games/Cyberpunk 2077")
+            .install_or_update(
+                &store,
+                &catalog,
+                &opti,
+                &release,
+                &request,
+                "C:/Games/Cyberpunk 2077",
+            )
             .expect("install succeeds");
         assert_eq!(inst.state, ToolInstallState::Installed);
         assert_eq!(inst.proxy_dll, Some(ProxyDllName::Dxgi));
@@ -812,8 +849,13 @@ mod tests {
         assert_eq!(retrieved.version, "0.7.9");
 
         // Uninstall
-        host.uninstall(&store, "steam:1091500", "optiscaler", "C:/Games/Cyberpunk 2077")
-            .expect("uninstall succeeds");
+        host.uninstall(
+            &store,
+            "steam:1091500",
+            "optiscaler",
+            "C:/Games/Cyberpunk 2077",
+        )
+        .expect("uninstall succeeds");
         let empty = store
             .get_installation("steam:1091500", &opti.id)
             .expect("store get succeeds");
@@ -934,7 +976,13 @@ mod tests {
         }];
 
         store.save_files(&files).unwrap();
-        assert_eq!(store.list_files("steam:123", &ToolId::new("optiscaler")).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .list_files("steam:123", &ToolId::new("optiscaler"))
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Transfer backup owner to higher tool layer (e.g. fsr4-rdna2-lite)
         let new_owner = ToolId::new("fsr4-rdna2-lite");
@@ -948,9 +996,14 @@ mod tests {
             )
             .unwrap();
 
-        let updated = store.list_files("steam:123", &ToolId::new("optiscaler")).unwrap();
+        let updated = store
+            .list_files("steam:123", &ToolId::new("optiscaler"))
+            .unwrap();
         assert_eq!(updated[0].prior_owner_tool_id, Some(new_owner));
-        assert_eq!(updated[0].backup_path.as_deref(), Some("/backups/new_backup.dll"));
+        assert_eq!(
+            updated[0].backup_path.as_deref(),
+            Some("/backups/new_backup.dll")
+        );
         assert_eq!(updated[0].original_sha256.as_deref(), Some("sha_new"));
     }
 
@@ -974,7 +1027,13 @@ mod tests {
             cached_path: Some("/cache/opti.7z".to_string()),
         };
 
-        store.save_releases(&opti_id, ToolChannel::Stable, std::slice::from_ref(&release)).unwrap();
+        store
+            .save_releases(
+                &opti_id,
+                ToolChannel::Stable,
+                std::slice::from_ref(&release),
+            )
+            .unwrap();
         let loaded = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].version, "0.7.9");
@@ -1005,4 +1064,3 @@ mod tests {
         assert_eq!(count_after, 0);
     }
 }
-

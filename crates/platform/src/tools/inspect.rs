@@ -1,8 +1,6 @@
 //! Target executable resolution and anti-cheat folder inspection.
 
-use gamenode_core::tools::{
-    evaluate_anticheat, TargetCandidate, TargetInspection, ToolError,
-};
+use gamenode_core::tools::{TargetCandidate, TargetInspection, ToolError, evaluate_anticheat};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -205,11 +203,10 @@ pub fn validate_target_within_install_dir(
     install_dir: &Path,
     relative_or_abs_path: &str,
 ) -> Result<(PathBuf, String), ToolError> {
-    let canonical_install = strip_verbatim_prefix(
-        &install_dir
-            .canonicalize()
-            .map_err(|_| ToolError::InstallDirNotFound(install_dir.to_string_lossy().to_string()))?,
-    );
+    let canonical_install =
+        strip_verbatim_prefix(&install_dir.canonicalize().map_err(|_| {
+            ToolError::InstallDirNotFound(install_dir.to_string_lossy().to_string())
+        })?);
     if !canonical_install.is_dir() {
         return Err(ToolError::InstallDirNotFound(
             install_dir.to_string_lossy().to_string(),
@@ -218,7 +215,9 @@ pub fn validate_target_within_install_dir(
 
     let trimmed = relative_or_abs_path.trim();
     if trimmed.is_empty() || trimmed == "." {
-        return Err(ToolError::TargetExeNotFound(relative_or_abs_path.to_string()));
+        return Err(ToolError::TargetExeNotFound(
+            relative_or_abs_path.to_string(),
+        ));
     }
 
     let target_path = Path::new(trimmed);
@@ -267,7 +266,10 @@ pub fn validate_target_within_install_dir(
         let resolved = if link_target.is_absolute() {
             link_target
         } else {
-            candidate.parent().unwrap_or(&canonical_install).join(link_target)
+            candidate
+                .parent()
+                .unwrap_or(&canonical_install)
+                .join(link_target)
         };
         if let Ok(canon_link) = resolved.canonicalize() {
             let canon_link = strip_verbatim_prefix(&canon_link);
@@ -310,7 +312,9 @@ pub fn validate_target_within_install_dir(
         Ok(canon) => strip_verbatim_prefix(&canon),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToolError::TargetExeNotFound(relative_or_abs_path.to_string()));
+                return Err(ToolError::TargetExeNotFound(
+                    relative_or_abs_path.to_string(),
+                ));
             } else {
                 return Err(ToolError::Io(format!(
                     "Failed to resolve target executable {relative_or_abs_path}: {err}"
@@ -326,12 +330,13 @@ pub fn validate_target_within_install_dir(
     }
 
     if canonical_target.is_dir() {
-        return Err(ToolError::TargetExeNotFound(relative_or_abs_path.to_string()));
+        return Err(ToolError::TargetExeNotFound(
+            relative_or_abs_path.to_string(),
+        ));
     }
 
-    let rel_str = relative_path_from(&canonical_target, &canonical_install).ok_or_else(|| {
-        ToolError::PathEscapesInstallDir(relative_or_abs_path.to_string())
-    })?;
+    let rel_str = relative_path_from(&canonical_target, &canonical_install)
+        .ok_or_else(|| ToolError::PathEscapesInstallDir(relative_or_abs_path.to_string()))?;
 
     Ok((canonical_target, rel_str))
 }
@@ -623,13 +628,9 @@ mod tests {
         let shipping_exe = shipping_dir.join("Game-Win64-Shipping.exe");
         std::fs::write(&shipping_exe, make_minimal_pe_bytes(true)).unwrap();
 
-        let inspection = inspect_game_target(
-            "steam:12345",
-            root.to_str().unwrap(),
-            "Unreal Game",
-            None,
-        )
-        .expect("inspection succeeds");
+        let inspection =
+            inspect_game_target("steam:12345", root.to_str().unwrap(), "Unreal Game", None)
+                .expect("inspection succeeds");
 
         assert_eq!(
             inspection.selected_exe,
@@ -744,18 +745,24 @@ mod tests {
         .expect("inspection succeeds");
 
         assert!(inspection.anticheat.has_warning());
-        assert!(inspection
-            .anticheat
-            .detected
-            .contains(&AntiCheatSystem::EasyAntiCheat));
-        assert!(inspection
-            .anticheat
-            .detected
-            .contains(&AntiCheatSystem::BattlEye));
-        assert!(inspection
-            .anticheat
-            .detected
-            .contains(&AntiCheatSystem::Blocklisted));
+        assert!(
+            inspection
+                .anticheat
+                .detected
+                .contains(&AntiCheatSystem::EasyAntiCheat)
+        );
+        assert!(
+            inspection
+                .anticheat
+                .detected
+                .contains(&AntiCheatSystem::BattlEye)
+        );
+        assert!(
+            inspection
+                .anticheat
+                .detected
+                .contains(&AntiCheatSystem::Blocklisted)
+        );
     }
 
     #[test]
@@ -770,8 +777,8 @@ mod tests {
         std::fs::write(&secret_exe, make_minimal_pe_bytes(true)).unwrap();
 
         // 1. Direct parent directory traversal
-        let err = validate_target_within_install_dir(&install_dir, "../outside/secret.exe")
-            .unwrap_err();
+        let err =
+            validate_target_within_install_dir(&install_dir, "../outside/secret.exe").unwrap_err();
         assert!(matches!(err, ToolError::PathEscapesInstallDir(_)));
 
         // 2. Symlink escaping install_dir (on Unix)
@@ -796,13 +803,9 @@ mod tests {
             assert!(matches!(err, ToolError::PathEscapesInstallDir(_)));
 
             // Escaped symlink is skipped during discovery
-            let inspection = inspect_game_target(
-                "manual:1",
-                install_dir.to_str().unwrap(),
-                "Title",
-                None,
-            )
-            .unwrap();
+            let inspection =
+                inspect_game_target("manual:1", install_dir.to_str().unwrap(), "Title", None)
+                    .unwrap();
             assert!(inspection.candidates.is_empty());
         }
 
@@ -828,9 +831,8 @@ mod tests {
         assert_eq!(canon, valid_exe.canonicalize().unwrap());
         assert_eq!(rel, "valid.exe");
 
-        let err =
-            validate_target_within_install_dir(&install_dir, secret_exe.to_str().unwrap())
-                .unwrap_err();
+        let err = validate_target_within_install_dir(&install_dir, secret_exe.to_str().unwrap())
+            .unwrap_err();
         assert!(matches!(err, ToolError::PathEscapesInstallDir(_)));
     }
 }

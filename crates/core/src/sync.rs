@@ -1,6 +1,9 @@
 //! PC-wide sync preferences and the gate for sending local playtime to GameNode.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncPreferences {
     pub enabled: bool,
     pub explained: bool,

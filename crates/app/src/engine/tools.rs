@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use gamenode_core::tools::{
-    builtin_tools, evaluate_anticheat, find_tool, GameToolView, InstallRequest, ProxyDllName,
-    ToolCatalogItemView, ToolChannel, ToolId, ToolModalView, ToolOperationStatus,
+    GameToolView, InstallRequest, ProxyDllName, ToolCatalogItemView, ToolChannel, ToolId,
+    ToolModalView, ToolOperationStatus, builtin_tools, evaluate_anticheat, find_tool,
 };
 
 use super::Engine;
@@ -32,15 +32,19 @@ impl Engine {
             if let Some(installer) = &installer {
                 let resolve = |key: &str| -> Option<String> {
                     let state = engine.lock();
-                    if let Some(entry) = state.library.entry(key) {
-                        if !entry.install_dir.is_empty() {
-                            return Some(entry.install_dir.clone());
-                        }
+                    if let Some(entry) = state.library.entry(key)
+                        && !entry.install_dir.is_empty()
+                    {
+                        return Some(entry.install_dir.clone());
                     }
-                    if let Some(id) = key.strip_prefix("manual:") {
-                        if let Some(reg) = state.local.registrations.iter().find(|r| r.id == id && !r.removed) {
-                            return Some(reg.root.clone());
-                        }
+                    if let Some(id) = key.strip_prefix("manual:")
+                        && let Some(reg) = state
+                            .local
+                            .registrations
+                            .iter()
+                            .find(|r| r.id == id && !r.removed)
+                    {
+                        return Some(reg.root.clone());
                     }
                     state
                         .local
@@ -67,7 +71,10 @@ impl Engine {
                     .as_ref()
                     .map(|d| d.name.clone())
                     .unwrap_or_else(|| inst.tool_id.as_str().to_string());
-                let summary = descriptor.as_ref().map(|d| d.summary.clone()).unwrap_or_default();
+                let summary = descriptor
+                    .as_ref()
+                    .map(|d| d.summary.clone())
+                    .unwrap_or_default();
                 let view = GameToolView {
                     tool_id: inst.tool_id,
                     name,
@@ -78,7 +85,10 @@ impl Engine {
                     state: inst.state,
                     summary,
                 };
-                installed_by_entry.entry(inst.entry_key).or_default().push(view);
+                installed_by_entry
+                    .entry(inst.entry_key)
+                    .or_default()
+                    .push(view);
             }
 
             // 3. Catalog items from built-in registry
@@ -129,12 +139,13 @@ impl Engine {
                 .iter()
                 .find(|r| r.key() == entry_key && !r.removed);
             if let Some(reg) = manual {
-                (reg.title.clone(), reg.root.clone(), Some(reg.executable.clone()))
+                (
+                    reg.title.clone(),
+                    reg.root.clone(),
+                    Some(reg.executable.clone()),
+                )
             } else if let Some(entry) = state.library.entry(&entry_key) {
-                let title = entry
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| entry.store_id.clone());
+                let title = entry.name.clone().unwrap_or_else(|| entry.store_id.clone());
                 (title, entry.install_dir.clone(), None)
             } else {
                 return;
@@ -161,11 +172,17 @@ impl Engine {
             .unwrap_or(ToolChannel::Stable);
 
         let proxy = installed_tool
-            .and_then(|t| t.proxy_dll.as_deref().and_then(ProxyDllName::parse_flexible))
+            .and_then(|t| {
+                t.proxy_dll
+                    .as_deref()
+                    .and_then(ProxyDllName::parse_flexible)
+            })
             .unwrap_or(ProxyDllName::Dxgi);
 
         let cached_releases = if let Some(store) = &self.shared.ports.tools {
-            store.load_releases(&active_tool_id, channel).unwrap_or_default()
+            store
+                .load_releases(&active_tool_id, channel)
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -222,11 +239,8 @@ impl Engine {
                         }
 
                         let mut state = engine.lock();
-                        let modal_matches = state
-                            .tools
-                            .modal
-                            .as_ref()
-                            .is_some_and(|m| m.entry_key == k);
+                        let modal_matches =
+                            state.tools.modal.as_ref().is_some_and(|m| m.entry_key == k);
                         if modal_matches {
                             if let Some(sel) = &state.tool_selected_target_exe {
                                 inspection.selected_exe = Some(sel.clone());
@@ -265,27 +279,28 @@ impl Engine {
                         let _ = store.save_releases(&tool_id, channel, &releases);
                         let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
                         let mut state = engine.lock();
-                        state.tool_last_fetch.insert((tool_id.clone(), channel), Instant::now());
+                        state
+                            .tool_last_fetch
+                            .insert((tool_id.clone(), channel), Instant::now());
                         state.tools.total_cache_bytes = bytes;
                         state.tools.total_cache_archives = archives;
 
-                        if let Some(modal) = &mut state.tools.modal {
-                            if modal.entry_key == k
-                                && modal.active_tool_id == tool_id
-                                && modal.selected_channel == channel
+                        if let Some(modal) = &mut state.tools.modal
+                            && modal.entry_key == k
+                            && modal.active_tool_id == tool_id
+                            && modal.selected_channel == channel
+                        {
+                            modal.available_versions = releases;
+                            if modal.selected_version.is_none()
+                                || !modal
+                                    .available_versions
+                                    .iter()
+                                    .any(|r| Some(&r.version) == modal.selected_version.as_ref())
                             {
-                                modal.available_versions = releases;
-                                if modal.selected_version.is_none()
-                                    || !modal
-                                        .available_versions
-                                        .iter()
-                                        .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                                {
-                                    modal.selected_version =
-                                        modal.available_versions.first().map(|r| r.version.clone());
-                                }
-                                engine.publish(&mut state);
+                                modal.selected_version =
+                                    modal.available_versions.first().map(|r| r.version.clone());
                             }
+                            engine.publish(&mut state);
                         }
                     }
                 });
@@ -296,17 +311,17 @@ impl Engine {
     /// Closes the tools modal dialog unless an installation/uninstallation is actively progressing.
     pub fn close_tools(&self) {
         let mut state = self.lock();
-        if let Some(modal) = &state.tools.modal {
-            if matches!(
+        if let Some(modal) = &state.tools.modal
+            && matches!(
                 modal.operation,
                 Some(
                     ToolOperationStatus::Installing { .. }
                         | ToolOperationStatus::Updating { .. }
                         | ToolOperationStatus::Uninstalling
                 )
-            ) {
-                return;
-            }
+            )
+        {
+            return;
         }
         state.tools.modal = None;
         self.publish(&mut state);
@@ -354,27 +369,28 @@ impl Engine {
                         let _ = store.save_releases(&tool_id, channel, &releases);
                         let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
                         let mut state = engine.lock();
-                        state.tool_last_fetch.insert((tool_id.clone(), channel), Instant::now());
+                        state
+                            .tool_last_fetch
+                            .insert((tool_id.clone(), channel), Instant::now());
                         state.tools.total_cache_bytes = bytes;
                         state.tools.total_cache_archives = archives;
 
-                        if let Some(modal) = &mut state.tools.modal {
-                            if modal.entry_key == entry_key
-                                && modal.active_tool_id == tool_id
-                                && modal.selected_channel == channel
+                        if let Some(modal) = &mut state.tools.modal
+                            && modal.entry_key == entry_key
+                            && modal.active_tool_id == tool_id
+                            && modal.selected_channel == channel
+                        {
+                            modal.available_versions = releases;
+                            if modal.selected_version.is_none()
+                                || !modal
+                                    .available_versions
+                                    .iter()
+                                    .any(|r| Some(&r.version) == modal.selected_version.as_ref())
                             {
-                                modal.available_versions = releases;
-                                if modal.selected_version.is_none()
-                                    || !modal
-                                        .available_versions
-                                        .iter()
-                                        .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                                {
-                                    modal.selected_version =
-                                        modal.available_versions.first().map(|r| r.version.clone());
-                                }
-                                engine.publish(&mut state);
+                                modal.selected_version =
+                                    modal.available_versions.first().map(|r| r.version.clone());
                             }
+                            engine.publish(&mut state);
                         }
                     }
                 });
@@ -408,27 +424,28 @@ impl Engine {
                     let _ = store.save_releases(&tool_id, channel, &releases);
                     let (bytes, archives) = catalog.cache_usage().unwrap_or((0, 0));
                     let mut state = engine.lock();
-                    state.tool_last_fetch.insert((tool_id.clone(), channel), Instant::now());
+                    state
+                        .tool_last_fetch
+                        .insert((tool_id.clone(), channel), Instant::now());
                     state.tools.total_cache_bytes = bytes;
                     state.tools.total_cache_archives = archives;
 
-                    if let Some(modal) = &mut state.tools.modal {
-                        if modal.entry_key == entry_key
-                            && modal.active_tool_id == tool_id
-                            && modal.selected_channel == channel
+                    if let Some(modal) = &mut state.tools.modal
+                        && modal.entry_key == entry_key
+                        && modal.active_tool_id == tool_id
+                        && modal.selected_channel == channel
+                    {
+                        modal.available_versions = releases;
+                        if modal.selected_version.is_none()
+                            || !modal
+                                .available_versions
+                                .iter()
+                                .any(|r| Some(&r.version) == modal.selected_version.as_ref())
                         {
-                            modal.available_versions = releases;
-                            if modal.selected_version.is_none()
-                                || !modal
-                                    .available_versions
-                                    .iter()
-                                    .any(|r| Some(&r.version) == modal.selected_version.as_ref())
-                            {
-                                modal.selected_version =
-                                    modal.available_versions.first().map(|r| r.version.clone());
-                            }
-                            engine.publish(&mut state);
+                            modal.selected_version =
+                                modal.available_versions.first().map(|r| r.version.clone());
                         }
+                        engine.publish(&mut state);
                     }
                 }
             });
@@ -487,7 +504,17 @@ impl Engine {
     pub fn install_or_update_tool(&self, is_update: bool) {
         let (request, release, descriptor, install_dir) = {
             let mut state = self.lock();
-            let (entry_key, active_tool_id, channel, selected_proxy, anticheat_confirmed, has_warning, target_exe, selected_version, install_dir) = {
+            let (
+                entry_key,
+                active_tool_id,
+                channel,
+                selected_proxy,
+                anticheat_confirmed,
+                has_warning,
+                target_exe,
+                selected_version,
+                install_dir,
+            ) = {
                 let Some(modal) = &state.tools.modal else {
                     return;
                 };
@@ -532,7 +559,8 @@ impl Engine {
             if has_warning && !anticheat_confirmed {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
-                        message: "Anti-cheat warning must be confirmed before installing".to_string(),
+                        message: "Anti-cheat warning must be confirmed before installing"
+                            .to_string(),
                     });
                 }
                 self.publish(&mut state);
@@ -755,7 +783,10 @@ impl Engine {
                 .as_ref()
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| inst.tool_id.as_str().to_string());
-            let summary = descriptor.as_ref().map(|d| d.summary.clone()).unwrap_or_default();
+            let summary = descriptor
+                .as_ref()
+                .map(|d| d.summary.clone())
+                .unwrap_or_default();
             map.entry(inst.entry_key.clone())
                 .or_default()
                 .push(GameToolView {
@@ -782,17 +813,17 @@ impl Engine {
         state.tools.total_cache_bytes = bytes;
         state.tools.total_cache_archives = archives;
 
-        if let Some(modal) = &mut state.tools.modal {
-            if modal.entry_key == entry_key {
-                modal.tools = new_modal_tools;
+        if let Some(modal) = &mut state.tools.modal
+            && modal.entry_key == entry_key
+        {
+            modal.tools = new_modal_tools;
 
-                match outcome {
-                    Ok(()) => {
-                        modal.operation = None;
-                    }
-                    Err(err_msg) => {
-                        modal.operation = Some(ToolOperationStatus::Failed { message: err_msg });
-                    }
+            match outcome {
+                Ok(()) => {
+                    modal.operation = None;
+                }
+                Err(err_msg) => {
+                    modal.operation = Some(ToolOperationStatus::Failed { message: err_msg });
                 }
             }
         }

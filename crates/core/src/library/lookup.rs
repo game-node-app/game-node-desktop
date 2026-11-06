@@ -124,7 +124,7 @@ impl LibraryMachine {
         let mut effects = vec![Effect::PersistMatches { games, matches }];
         // Ids that appeared while this lookup was out are asked about now.
         effects.extend(self.plan_lookups(now));
-        effects.extend(self.plan_covers(false));
+        effects.extend(self.plan_covers(None));
         effects
     }
 

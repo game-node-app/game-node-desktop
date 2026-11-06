@@ -4,7 +4,7 @@ Started 2026-11-04. This repository is the desktop app's home, separate from the
 (`game-node-clients`). It replaces the Electron prototype on `feat/desktop-client-mvp` and its roadmap. Nothing is
 carried over from that code; the product direction below is restated here so this file stands on its own.
 
-MVP = a native Windows app, written in Rust with a Slint UI, that finds the games installed on this PC across stores,
+MVP = a native Windows app, written in Rust with Tauri v2 and a React + TanStack UI, that finds the games installed on this PC across stores,
 launches them, tracks playtime in the background, reports to GameNode, and installs OptiScaler per game.
 
 Linux follows as its own milestone after the Windows MVP (see [Linux milestone](#linux-milestone-after-the-mvp)).
@@ -43,19 +43,19 @@ library opens without the network.
 Nothing is shared with the TypeScript monorepo as code. What we share with web and mobile is:
 
 - **The server API.** Desktop talks to the same GameNode server through its own Rust client.
-- **The design tokens.** Colors, type scale, spacing and radii are copied as values into a Slint theme.
+- **The design tokens.** Colors, type scale, spacing and radii are copied as CSS custom properties into `ui/src/styles/theme.css`.
 - **The brand assets.** Logos, icons and fonts.
 
 ## Stack
 
 - **Rust**, one Cargo workspace, toolchain pinned in `rust-toolchain.toml`.
-- **Slint** for the UI, using the Skia renderer. A setting switches to Slint's software renderer for machines where
-  GPU rendering fails.
-- **Tokio** for networking, scanning and process work. The UI thread only runs Slint.
+- **Tauri v2 + React 19** for the desktop shell and UI, with `@tanstack/react-virtual` for virtualized grid and list views, `@tanstack/react-query` for query caching and engine snapshot bridging, and `@tanstack/react-store` for client state.
+- **Tokio** for networking, scanning and process work. Tauri commands are asynchronous `#[tauri::command]` handlers.
+- **Custom Asset Protocol** (`gamenode-asset://`) for loading game covers and artwork via `<img loading="lazy" decoding="async" />`.
 - **SQLite** (`rusqlite`) for local data: scan results, matches, the playtime queue, settings and layout.
 - **The OS keyring** (`keyring`) for the session token: Windows Credential Manager. (Step 1 also built the Linux
   Secret Service adapter and its private-file fallback; they are verified in the Linux milestone.)
-- **Translations** through Slint's `@tr()` and gettext `.po` files. English and Brazilian Portuguese at launch.
+- **Translations** through typed catalogs (`ui/src/i18n/`). English and Brazilian Portuguese at launch.
 
 ### Repository layout
 
@@ -67,9 +67,9 @@ crates/
   platform/             OS adapters: process listing and exit waits, registry, keyring, autostart, URL scheme,
                         single instance. Windows for the MVP; the Linux adapters from step 1 stay.
   api/                  GameNode HTTP client and types.
-  app/                  the binary: Slint UI (ui/*.slint, theme, fonts, icons), tray, wiring.
+  app/                  the binary: Tauri v2 desktop host (wiring, IPC commands, custom protocol, tray).
+ui/                     React 19 + TanStack frontend workspace (components, styles, assets, i18n).
 providers/              bundled provider manifests (*.toml), embedded in the binary.
-i18n/                   .po translations.
 docs/
 ```
 
@@ -225,7 +225,7 @@ Rules both ways follow:
 | Linux in the MVP? | No. Windows only. Linux is its own milestone once a real Linux setup is available. | All steps |
 | GameNode login required? | Yes. Matching, playtime and reporting go to the user's account. | Step 1 |
 | Background tracking at login | On by default. A setting to turn it off comes later. | Step 3 |
-| Slint license | GPLv3 if this repository is open source, otherwise Slint's royalty-free license. Decided in step 1. | Step 1 |
+| Desktop UI licenses | Tauri v2, React, TanStack (MIT / Apache-2.0). | Step 1 |
 | Windows code signing | Decided in step 8 (Azure Artifact Signing vs OV certificate). | Step 8 |
 
 Change an assumption and the matching step changes; the order does not.
@@ -250,13 +250,13 @@ reports through it. Steps 5 and 7 can run in parallel after step 4b.
 
 - Cargo workspace with the four crates, `rust-toolchain.toml`, formatting and lint config.
 - Build and test for Windows (cross-built from WSL). Unsigned until step 8.
-- Slint app shell: the window with GameNode's theme (tokens, Roboto, logos), app menu, remembered window size and
-  position, and the software-rendering setting.
+- Desktop app shell: Tauri v2 window with GameNode's theme (tokens, Roboto, logos), app menu, and remembered window size and
+  position.
 - Single instance and the `app.gamenode://` scheme.
 - Sign-in through the browser, session in the keyring, sign-out, and the signed-in user in the top bar.
 - SQLite store with migrations, and Settings with an About page (version, licenses).
 - Translations wired with English and Brazilian Portuguese.
-- Decide the Slint license with the repository's own license.
+- Standardized on GPL-3.0-only for application code, with MIT/Apache-2.0 third-party UI dependencies.
 
 Step 1 also built Linux adapters (Unix-socket single instance, Secret Service with a private-file fallback, XDG
 scheme registration, a tar package). They stay in the tree and keep compiling. Their remaining live checks (Wayland,

@@ -142,6 +142,46 @@ fn a_finished_download_sets_the_cover_and_asks_to_store_it() {
     assert!(fetches(&verify(&mut machine)).is_empty());
 }
 
+fn rescan(machine: &mut LibraryMachine, now: i64) -> Vec<Effect> {
+    machine.handle(Input::ScanRequested);
+    let op = machine.scan.as_ref().unwrap().op;
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![record("100", "G100", "/g")]),
+        now,
+    })
+}
+
+#[test]
+fn a_cover_that_failed_a_moment_ago_is_not_retried_by_the_next_scan() {
+    let mut machine = library(1, |_| {});
+    verify(&mut machine);
+    done(&mut machine, 1100, false, NOW + 1);
+    assert!(fetches(&rescan(&mut machine, NOW + 60)).is_empty());
+    // A failure that keeps happening keeps waiting from its latest attempt.
+    assert!(fetches(&rescan(&mut machine, NOW + COVER_RETRY_AFTER_SECS)).is_empty());
+    assert_eq!(
+        fetches(&rescan(&mut machine, NOW + 1 + COVER_RETRY_AFTER_SECS)),
+        [1100]
+    );
+}
+
+#[test]
+fn a_game_is_queued_once_while_it_waits() {
+    let mut machine = library(6, |_| {});
+    let fetched = fetches(&verify(&mut machine));
+    assert_eq!(fetched.len(), MAX_COVER_DOWNLOADS);
+    // Planning again while two covers still wait does not queue them twice.
+    machine.plan_covers(None);
+    machine.plan_covers(None);
+    let mut total = fetched;
+    for game_id in total.clone() {
+        total.extend(fetches(&done(&mut machine, game_id, true, NOW + 1)));
+    }
+    assert_eq!(total.len(), 6, "each cover is fetched once: {total:?}");
+}
+
 #[test]
 fn a_failed_download_waits_for_the_next_scan_to_be_retried() {
     let mut machine = library(1, |_| {});
@@ -160,17 +200,11 @@ fn a_failed_download_waits_for_the_next_scan_to_be_retried() {
     // Verifying again or a lookup does not retry it.
     assert!(fetches(&verify(&mut machine)).is_empty());
 
-    // The next scan does.
-    machine.handle(Input::ScanRequested);
-    let op = machine.scan.as_ref().unwrap().op;
-    let effects = machine.handle(Input::ProviderScanned {
-        op,
-        provider: "steam".to_owned(),
-        result: Ok(vec![record("100", "G100", "/g")]),
-        now: NOW + 60,
-    });
+    // The next scan does, once the retry delay has passed.
+    let later = NOW + 1 + COVER_RETRY_AFTER_SECS;
+    let effects = rescan(&mut machine, later);
     assert_eq!(fetches(&effects), [1100]);
-    let effects = done(&mut machine, 1100, true, NOW + 61);
+    let effects = done(&mut machine, 1100, true, later + 1);
     assert_eq!(machine.game(1100).unwrap().cover_failed_at, None);
     assert!(matches!(
         effects.as_slice(),
@@ -256,7 +290,7 @@ fn changing_the_match_points_the_entry_at_the_other_games_cover() {
         [Effect::SearchGames { op, .. }] => *op,
         other => panic!("{other:?}"),
     };
-    machine.handle(Input::MatchSearched {
+    let searched = machine.handle(Input::MatchSearched {
         op,
         result: Ok(vec![crate::game_api::GameSummary {
             id: 2000,
@@ -265,11 +299,19 @@ fn changing_the_match_points_the_entry_at_the_other_games_cover() {
             cover_url: good_url(2000),
         }]),
     });
+    assert_eq!(
+        fetches(&searched),
+        [2000],
+        "the search result cover is downloaded before it is picked"
+    );
     let effects = machine.handle(Input::PickMatch {
         game_id: 2000,
         now: NOW + 5,
     });
-    assert_eq!(fetches(&effects), [2000]);
+    assert!(
+        fetches(&effects).is_empty(),
+        "the search result cover was already requested: {effects:?}"
+    );
     assert_eq!(
         machine.match_status(machine.entry(&key).unwrap()),
         MatchStatus::Matched {

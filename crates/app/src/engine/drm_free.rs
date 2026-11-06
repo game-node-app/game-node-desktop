@@ -1028,9 +1028,8 @@ impl Engine {
             if !path.is_dir() {
                 return Err(LocalError::InvalidTarget);
             }
-            let path = gamenode_platform::host::strip_verbatim_prefix(
-                path.to_string_lossy().into_owned(),
-            );
+            let path =
+                gamenode_platform::host::strip_verbatim_prefix(path.to_string_lossy().into_owned());
             let existing = store
                 .watches()
                 .map_err(local_storage)?
@@ -1252,6 +1251,7 @@ impl Engine {
                 engine.enrich_local_games();
             }
             engine.refresh_local_games();
+            gamenode_platform::manifest_cache::release_loaded();
             engine
                 .shared
                 .local_discovering
@@ -1622,6 +1622,7 @@ impl Engine {
                 let mut reconcile = Instant::now();
                 let mut changed = None;
                 let mut was_scanning = false;
+                let mut last_scan_end: Option<Instant> = None;
                 loop {
                     let Some(shared) = weak.upgrade() else {
                         break;
@@ -1665,12 +1666,18 @@ impl Engine {
                     let scanning = shared.local_discovering.load(Ordering::Acquire);
                     if was_scanning && !scanning {
                         reconcile = now + Duration::from_secs(30 * 60);
+                        last_scan_end = Some(now);
                     }
                     was_scanning = scanning;
                     if !scanning
                         && (now >= reconcile
-                            || changed
-                                .is_some_and(|at| now.duration_since(at) >= Duration::from_secs(1)))
+                            // Filesystem events settle for a few seconds and never retrigger a
+                            // scan more often than once a minute (games and installers write
+                            // constantly inside watched folders).
+                            || (changed.is_some_and(|at| {
+                                now.duration_since(at) >= Duration::from_secs(5)
+                            }) && last_scan_end
+                                .is_none_or(|end| now.duration_since(end) >= Duration::from_secs(60))))
                     {
                         Engine {
                             shared: shared.clone(),

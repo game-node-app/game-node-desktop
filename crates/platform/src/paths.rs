@@ -22,7 +22,6 @@ pub const TOOLS_CACHE_DIR: &str = "cache";
 /// Directory inside [`PRIVATE_DIR`] for original file backups before tool modifications.
 pub const TOOL_BACKUPS_DIR: &str = "tool-backups";
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataPaths {
     data_dir: PathBuf,

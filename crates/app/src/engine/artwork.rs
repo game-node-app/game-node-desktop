@@ -33,13 +33,24 @@ pub(super) async fn load(
         return Ok(Some(bytes));
     }
     let credential = credential.ok_or(ApiError::Failed)?;
-    let result = api.fetch_artwork(credential, game_id).await?;
-    if let Some(bytes) = &result {
-        let (dir, bytes) = (dir.to_owned(), bytes.clone());
-        // A cache write failure must not prevent displaying a downloaded image.
-        let stored = tokio::task::spawn_blocking(move || write_cover(&dir, game_id, &bytes)).await;
-        if !matches!(stored, Ok(Ok(_))) {
-            tracing::warn!(game_id, "could not cache game artwork");
+    let mut result = api.fetch_artwork(credential, game_id).await?;
+    if let Some(bytes) = result.take() {
+        let dir = dir.to_owned();
+        // A cache write failure must not prevent displaying a downloaded image. The bytes go
+        // through the blocking task and come back instead of being copied.
+        let stored = tokio::task::spawn_blocking(move || {
+            let stored = write_cover(&dir, game_id, &bytes);
+            (bytes, stored)
+        })
+        .await;
+        match stored {
+            Ok((bytes, stored)) => {
+                if stored.is_err() {
+                    tracing::warn!(game_id, "could not cache game artwork");
+                }
+                result = Some(bytes);
+            }
+            Err(_) => return Err(ApiError::Failed),
         }
     }
     Ok(result)

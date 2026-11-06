@@ -90,6 +90,16 @@ fn searches(effects: &[Effect]) -> Vec<(u64, String)> {
         .collect()
 }
 
+fn fetches(effects: &[Effect]) -> Vec<u64> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::FetchCover { game_id, .. } => Some(*game_id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The effects without detail image loads and membership reads, which are not what these
 /// tests are about.
 fn without_reads(effects: Vec<Effect>) -> Vec<Effect> {
@@ -137,16 +147,34 @@ fn opening_prefills_the_detected_title_and_searches_it() {
 fn search_results_show_title_year_and_cover_and_can_be_picked() {
     let mut machine = library();
     let (op, _) = searches(&open(&mut machine, "570")).remove(0);
-    machine.handle(Input::MatchSearched {
+    let effects = machine.handle(Input::MatchSearched {
         op,
         result: Ok(vec![game(40, "Dota 2"), game(41, "Dota Underlords")]),
     });
+    assert_eq!(
+        fetches(&effects),
+        [40, 41],
+        "the results' covers are downloaded for the dialog"
+    );
     let view = dialog(&mut machine);
     assert!(!view.searching && !view.no_results);
     assert_eq!(view.results.len(), 2);
     assert_eq!(view.results[0].name, "Dota 2");
     assert_eq!(view.results[0].release_year, Some(2011));
     assert!(view.results[0].cover_url.is_some());
+    assert!(
+        view.results[0].cover_file.is_none(),
+        "the cover is not on disk yet"
+    );
+
+    machine.handle(Input::CoverDone {
+        game_id: 40,
+        result: Ok("40.jpg".to_owned()),
+        now: NOW,
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(view.results[0].cover_file.as_deref(), Some("40.jpg"));
+    assert!(view.results[1].cover_file.is_none());
 
     let effects = without_reads(machine.handle(Input::PickMatch {
         game_id: 40,
@@ -160,7 +188,6 @@ fn search_results_show_title_year_and_cover_and_can_be_picked() {
         }
     );
     // The game is stored before the choice that refers to it.
-    // Only a cover download may follow them.
     assert!(
         matches!(
             effects.as_slice(),
@@ -170,7 +197,7 @@ fn search_results_show_title_year_and_cover_and_can_be_picked() {
                 rest @ ..,
             ] if games[0].game_id == 40 && matches.is_empty()
                 && account_id == "a" && choice.game_id == Some(40) && choice.chosen_at == NOW + 1
-                && rest.iter().all(|e| matches!(e, Effect::FetchCover { game_id: 40, .. }))
+                && rest.iter().all(|e| matches!(e, Effect::FetchCover { game_id, .. } if *game_id != 40))
         ),
         "{effects:?}"
     );

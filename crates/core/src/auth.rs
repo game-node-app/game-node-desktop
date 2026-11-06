@@ -7,15 +7,22 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::callback::{self, CallbackError, CallbackOutcome, Provider};
 use crate::credential::SessionCredential;
 use crate::notice::Notice;
+
+pub type AccountSummary = User;
+pub type PendingSignInView = crate::snapshot::AuthView;
+pub type SessionRestoreFailure = SessionError;
 
 /// How long a started sign-in accepts its callback.
 pub const ATTEMPT_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// The signed-in GameNode user, as returned by `/v1/auth/get-session`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: String,
     pub name: String,
@@ -37,7 +44,8 @@ impl User {
 }
 
 /// Why verifying a credential with GameNode failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SessionError {
     /// GameNode answered that the session is invalid, expired or revoked.
     Rejected,
@@ -46,14 +54,16 @@ pub enum SessionError {
 }
 
 /// Why starting a sign-in failed before the browser round trip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SignInFailure {
     BrowserLaunch,
     ServerUnavailable,
 }
 
 /// Result of attempting to invalidate the session on the server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RemoteSignOut {
     Confirmed,
     NotConfirmed,
@@ -61,7 +71,8 @@ pub enum RemoteSignOut {
     Skipped,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Purpose {
     /// Verifying a credential that arrived through a callback.
     SignIn,
@@ -69,7 +80,8 @@ pub enum Purpose {
     Restore,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Stage {
     /// Asking GameNode to start the provider flow.
     Preparing,
@@ -77,7 +89,8 @@ pub enum Stage {
     AwaitingBrowser,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AuthState {
     /// Startup: the stored credential has not been read yet.
     Starting,
@@ -94,7 +107,8 @@ pub enum AuthState {
 }
 
 /// Work for the caller to perform. Credentials inside are redacted in `Debug`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Effect {
     LoadCredential {
         op: u64,
@@ -122,7 +136,8 @@ pub enum Effect {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Input {
     /// The app started; read the stored credential.
     Start,

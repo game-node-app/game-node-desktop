@@ -1,8 +1,10 @@
 //! Cover images on disk: `<covers dir>/<game_id>.jpg`.
 //!
-//! A cover is written to a temporary file in the same folder, synced, and renamed over the final
-//! name, so a reader never sees half an image and a failed write leaves the previous cover alone.
-//! Covers are keyed by game id: changing an entry's match just points it at another file.
+//! A cover is written to a temporary file in the same folder and renamed over the final name, so
+//! a reader never sees half an image and a failed write leaves the previous cover alone. The file
+//! is not flushed to the disk first: covers are cheap to download again, and an `fsync` per cover
+//! stalls a burst of downloads. Covers are keyed by game id: changing an entry's match just
+//! points it at another file.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -22,7 +24,6 @@ pub fn write_cover(dir: &Path, game_id: u64, bytes: &[u8]) -> io::Result<String>
     let written = (|| {
         let mut file = File::create(&temp)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
         drop(file);
         fs::rename(&temp, dir.join(&name))
     })();

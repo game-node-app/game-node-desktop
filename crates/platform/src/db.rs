@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::ports::{SettingsStore, StorageError};
-use gamenode_core::{RendererPreference, Settings, WindowGeometry};
+use gamenode_core::{Settings, WindowGeometry};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// One schema change. Versions start at 1 and increase by exactly one.
@@ -226,9 +226,6 @@ impl SettingsStore for SqliteSettingsStore {
     fn load(&self) -> Result<Settings, StorageError> {
         let conn = self.conn();
         let get = |key| read(&conn, key).map_err(failed);
-        let renderer = get(KEY_RENDERER)?
-            .and_then(|v| RendererPreference::parse(&v))
-            .unwrap_or_default();
         let number = |key| -> Result<Option<i64>, StorageError> {
             Ok(get(key)?.and_then(|v| v.parse().ok()))
         };
@@ -242,7 +239,7 @@ impl SettingsStore for SqliteSettingsStore {
             }),
             _ => None,
         };
-        Ok(Settings { renderer, window })
+        Ok(Settings { window })
     }
 
     fn save(&self, settings: &Settings) -> Result<(), StorageError> {
@@ -254,8 +251,6 @@ impl SettingsStore for SqliteSettingsStore {
                 .map_err(failed)?;
             let mut delete = tx
                 .prepare("DELETE FROM settings WHERE key = ?1")
-                .map_err(failed)?;
-            put.execute(params![KEY_RENDERER, settings.renderer.as_str()])
                 .map_err(failed)?;
             match settings.window {
                 Some(w) => {
@@ -333,7 +328,6 @@ mod tests {
     fn reopening_keeps_settings_and_does_not_reapply_migrations() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         {
@@ -363,7 +357,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
         let mut s = Settings {
-            renderer: RendererPreference::Gpu,
             window: Some(geometry()),
         };
         s.window.as_mut().unwrap().x = None;
@@ -395,6 +388,34 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
     }
 
+    #[test]
+    fn legacy_renderer_row_is_ignored_when_loading_settings() {
+        let dir = TempDir::new().unwrap();
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        let geometry = geometry();
+        store
+            .save(&Settings {
+                window: Some(geometry),
+            })
+            .unwrap();
+
+        for legacy in ["software", "gpu", "turbo", "invalid"] {
+            store
+                .conn()
+                .execute(
+                    "UPDATE settings SET value = ?1 WHERE key = 'renderer'",
+                    [legacy],
+                )
+                .unwrap();
+            assert_eq!(
+                store.load().unwrap(),
+                Settings {
+                    window: Some(geometry),
+                }
+            );
+        }
+    }
+
     const V6_OK: Migration = Migration {
         version: 6,
         name: "add_notes",
@@ -410,7 +431,6 @@ mod tests {
     fn older_database_is_upgraded_in_order_preserving_settings() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         SqliteSettingsStore::open(&db_path(&dir))
@@ -458,10 +478,7 @@ mod tests {
     #[test]
     fn failed_migration_rolls_back_and_keeps_earlier_data() {
         let dir = TempDir::new().unwrap();
-        let saved = Settings {
-            renderer: RendererPreference::Software,
-            window: None,
-        };
+        let saved = Settings { window: None };
         SqliteSettingsStore::open(&db_path(&dir))
             .unwrap()
             .save(&saved)
@@ -547,7 +564,6 @@ mod tests {
     fn a_step_one_database_gains_the_library_tables_and_keeps_its_settings() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         drop(Connection::open(db_path(&dir)).unwrap());
@@ -718,7 +734,6 @@ mod tests {
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
         store
             .save(&Settings {
-                renderer: RendererPreference::Software,
                 window: Some(geometry()),
             })
             .unwrap();

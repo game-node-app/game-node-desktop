@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use super::registry::{
     AddonMode, InstallStrategy, ProxyDllName, SwapperMode, ToolDescriptor, ToolId,
 };
-use super::{ToolFileRecord, ToolIniPatchRecord, ToolInstallation, ToolInstallState};
+use super::{ToolFileRecord, ToolIniPatchRecord, ToolInstallState, ToolInstallation};
 
 /// An entry found inside an extracted tool release archive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +180,11 @@ pub fn plan_deployment(
     // Map destination path -> tool that currently overrides it
     let mut overriding_tools: HashMap<String, ToolId> = HashMap::new();
     for rec in installed_files {
-        let norm = rec.relative_path.replace('\\', "/").trim_matches('/').to_string();
+        let norm = rec
+            .relative_path
+            .replace('\\', "/")
+            .trim_matches('/')
+            .to_string();
         overriding_tools.insert(norm, rec.tool_id.clone());
     }
 
@@ -278,13 +282,19 @@ pub fn plan_deployment(
                     continue;
                 }
                 // Skip the main DLL entry already mapped to proxy DLL
-                if entry.relative_path.eq_ignore_ascii_case(&main_dll_entry.relative_path) {
+                if entry
+                    .relative_path
+                    .eq_ignore_ascii_case(&main_dll_entry.relative_path)
+                {
                     continue;
                 }
 
                 // Check ignored extensions (*.bat, *.cmd, *.sh, *.ps1)
                 let lower_path = entry.relative_path.to_lowercase();
-                if ignored_extensions.iter().any(|ext| lower_path.ends_with(ext)) {
+                if ignored_extensions
+                    .iter()
+                    .any(|ext| lower_path.ends_with(ext))
+                {
                     continue;
                 }
 
@@ -357,7 +367,10 @@ pub fn plan_deployment(
             })
         }
 
-        InstallStrategy::SiblingLibrarySwapper { mode, target_dll_names } => {
+        InstallStrategy::SiblingLibrarySwapper {
+            mode,
+            target_dll_names,
+        } => {
             // Find payload DLL from stripped archive
             let payload_entry = stripped_entries
                 .iter()
@@ -402,10 +415,9 @@ pub fn plan_deployment(
 
                     // First check if a host tool is installed and has companion DLLs
                     for host_id in host_tool_ids {
-                        if let Some(host_inst) = installed_tools
-                            .iter()
-                            .find(|t| &t.tool_id == host_id && t.state == ToolInstallState::Installed)
-                        {
+                        if let Some(host_inst) = installed_tools.iter().find(|t| {
+                            &t.tool_id == host_id && t.state == ToolInstallState::Installed
+                        }) {
                             let host_dir = target_dir_of(&host_inst.target_exe);
                             for target_name in target_dll_names {
                                 let companion_dest = join_rel_path(&host_dir, target_name);
@@ -575,8 +587,8 @@ pub fn plan_deployment(
 mod tests {
     use super::*;
     use crate::tools::registry::{
-        fsr4_rdna2_lite_test_descriptor, mfg_unlocker_test_descriptor, optiscaler_descriptor,
-        ToolChannel,
+        ToolChannel, fsr4_rdna2_lite_test_descriptor, mfg_unlocker_test_descriptor,
+        optiscaler_descriptor,
     };
 
     #[test]
@@ -677,17 +689,20 @@ mod tests {
         assert!(!plan.files.iter().any(|f| f.source_path.ends_with(".bat")));
 
         // Companion files mapped
-        assert!(plan
-            .files
-            .iter()
-            .any(|f| f.destination_path == "Binaries/Win64/fakenvapi.dll"));
-        assert!(plan
-            .files
-            .iter()
-            .any(|f| f.destination_path == "Binaries/Win64/D3D12_OptiScaler/helper.dll"));
-        assert!(plan
-            .created_dirs
-            .contains(&"Binaries/Win64/D3D12_OptiScaler".to_string()));
+        assert!(
+            plan.files
+                .iter()
+                .any(|f| f.destination_path == "Binaries/Win64/fakenvapi.dll")
+        );
+        assert!(
+            plan.files
+                .iter()
+                .any(|f| f.destination_path == "Binaries/Win64/D3D12_OptiScaler/helper.dll")
+        );
+        assert!(
+            plan.created_dirs
+                .contains(&"Binaries/Win64/D3D12_OptiScaler".to_string())
+        );
     }
 
     #[test]
@@ -707,7 +722,10 @@ mod tests {
         ];
 
         let mut existing = HashMap::new();
-        existing.insert("Binaries/Win64/OptiScaler.ini".to_string(), "hash123".to_string());
+        existing.insert(
+            "Binaries/Win64/OptiScaler.ini".to_string(),
+            "hash123".to_string(),
+        );
 
         let plan = plan_deployment(
             &opti,
@@ -833,7 +851,10 @@ mod tests {
 
         assert_eq!(plan.files.len(), 1);
         let file = &plan.files[0];
-        assert_eq!(file.destination_path, "Binaries/Win64/amd_fidelityfx_dx12.dll");
+        assert_eq!(
+            file.destination_path,
+            "Binaries/Win64/amd_fidelityfx_dx12.dll"
+        );
         assert_eq!(file.prior_owner_tool_id, Some(ToolId::new("optiscaler")));
         assert!(file.requires_backup);
     }

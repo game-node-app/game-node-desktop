@@ -286,6 +286,104 @@ mod tests {
         }
     }
 
+    /// Payloads written before the camelCase serde change use snake_case keys and PascalCase enum
+    /// variants. Every persisted record must still load: one unreadable row fails the whole
+    /// local-games view, which then shows no watched folders and no DRM-free games.
+    #[test]
+    fn pre_migration_snake_case_payloads_still_load() {
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        conn.execute(
+            "INSERT INTO manual_registrations(id,file_identity,removed,payload) VALUES('legacy-game','vol:1',0,?1)",
+            [r#"{"id":"legacy-game","title":"Elden Ring","executable":"F:\\Games\\ER\\eldenring.exe","file_identity":"vol:1","root":"F:\\Games\\ER","working_directory":"F:\\Games\\ER","arguments":[],"gameplay":["F:\\Games\\ER\\eldenring.exe"],"launchers":[],"revision":3,"removed":false,"rediscovery_allowed":true,"transferred_from":"old-id","available":true}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO discovery_watches(id,payload) VALUES('legacy-watch',?1)",
+            [r#"{"id":"legacy-watch","path":"F:\\Games","enabled":true}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO discovery_candidates(fingerprint,payload) VALUES('legacy-fp',?1)",
+            [r#"{"fingerprint":"legacy-fp","watch":"legacy-watch","root":"F:\\Games\\Hades","title":"Hades","targets":["F:\\Games\\Hades\\Hades.exe"],"selected_target":"F:\\Games\\Hades\\Hades.exe","evidence":[{"kind":"Product","value":"Hades","strong":true},{"kind":"ExternalId","value":"1145360","strong":false}],"ignored":false,"incomplete":false}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_inferences(account_id,installation_id,payload) VALUES('acct-1','legacy-game',?1)",
+            [r#"{"installation":"legacy-game","revision":3,"title":"Elden Ring","evidence":[{"kind":"Executable","value":"eldenring.exe","strong":true}],"game_id":42,"account":"acct-1"}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO save_profiles(id,installation_id,revision,payload) VALUES('p1','legacy-game',3,?1)",
+            [r#"{"id":"p1","installation":"legacy-game","revision":3,"title":"Elden Ring saves","manifest_hash":"h1","definition":"d","files":["a"],"registry":[],"support":"NeedsSelection","automatic":true}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO backup_jobs(id,installation_id,profile_id,revision,play_period,destination,state,payload) VALUES('j1','legacy-game','p1',3,'2026-01','D:\\Backups','Queued',?1)",
+            [r#"{"id":"j1","installation":"legacy-game","profile":"p1","revision":3,"play_period":"2026-01","destination":"D:\\Backups","state":"Queued","attempts":0,"ready_at":0,"backup_id":null,"error":null}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES('backup_settings',?1)",
+            [r#"{"automatic":true,"destination":"D:\\Backups"}"#],
+        )
+        .unwrap();
+
+        let store = SqliteLocalGameStore::new(Arc::new(Mutex::new(conn)));
+        let registrations = store.registrations().expect("legacy registrations load");
+        assert_eq!(registrations.len(), 1);
+        let game = &registrations[0];
+        assert_eq!(game.file_identity, "vol:1");
+        assert_eq!(game.working_directory, r"F:\Games\ER");
+        assert!(game.rediscovery_allowed);
+        assert_eq!(game.transferred_from.as_deref(), Some("old-id"));
+
+        assert_eq!(
+            store.watches().expect("legacy watches load")[0].id,
+            "legacy-watch"
+        );
+
+        let candidate = store
+            .candidates()
+            .expect("legacy candidates load")
+            .remove(0);
+        assert_eq!(
+            candidate.selected_target.as_deref(),
+            Some(r"F:\Games\Hades\Hades.exe")
+        );
+        let kinds: Vec<_> = candidate.evidence.iter().map(|e| e.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                gamenode_core::drm_free::EvidenceKind::Product,
+                gamenode_core::drm_free::EvidenceKind::ExternalId,
+            ]
+        );
+
+        let inference = store
+            .inferences("acct-1")
+            .expect("legacy inferences load")
+            .remove(0);
+        assert_eq!(inference.game_id, Some(42));
+        assert_eq!(
+            inference.evidence[0].kind,
+            gamenode_core::drm_free::EvidenceKind::Executable
+        );
+
+        let profile = store.profiles().expect("legacy profiles load").remove(0);
+        assert_eq!(
+            profile.support,
+            gamenode_core::drm_free::SaveSupport::NeedsSelection
+        );
+        assert_eq!(profile.manifest_hash, "h1");
+
+        let job = store.jobs().expect("legacy jobs load").remove(0);
+        assert_eq!(job.state, gamenode_core::drm_free::JobState::Queued);
+        assert_eq!(job.play_period.as_deref(), Some("2026-01"));
+
+        let settings = store.backup_settings().expect("legacy settings load");
+        assert_eq!(settings.destination, r"D:\Backups");
+    }
+
     #[test]
     fn upgrade_duplicate_repair_and_tombstone() {
         let mut conn = Connection::open_in_memory().unwrap();

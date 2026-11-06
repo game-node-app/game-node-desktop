@@ -4,7 +4,7 @@ import { ToolsState } from "tools.slint";
 // (`SidebarItem`) are placed by the shell in app.slint. Dialogs live in library-dialogs.slint.
 import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Action, Caption, Heading, Rule } from "controls.slint";
+import { Action, Caption, Heading, Panel, Rule } from "controls.slint";
 import { LibraryState, GameItem, ViewKind, SortKind, MatchKind, Why, EmptyKind, AccessKind, LaunchNote, Standing, StatusKind, SourceKind } from "library-state.slint";
 import { LibraryText } from "library-text.slint";
 import { PlaytimeText } from "playtime-text.slint";
@@ -339,13 +339,99 @@ export component SidebarItem inherits Rectangle {
     touch := TouchArea { enabled: !root.inert; mouse-cursor: pointer; clicked => { scope.focus(); root.clicked(); } }
 }
 
-// One label and its value in the detail pane.
-component Field inherits VerticalLayout {
+// The pinned close control of the details pane.
+component CloseControl inherits Rectangle {
+    in property <bool> inert;
+    callback clicked();
+    width: 32px; height: 32px;
+    forward-focus: scope;
+    accessible-role: button;
+    accessible-label: @tr("Library" => "Close");
+    accessible-enabled: !root.inert;
+    accessible-action-default => { root.clicked(); }
+    border-radius: Theme.radius-sm;
+    border-width: scope.has-focus ? 1px : 0px;
+    border-color: Theme.color-primary;
+    background: touch.has-hover || scope.has-focus ? Theme.color-surface : transparent;
+    Text { x: 0px; width: parent.width; height: parent.height; text: "×"; color: Theme.color-text-default; font-size: Theme.font-size-xl; horizontal-alignment: center; vertical-alignment: center; }
+    scope := FocusScope {
+        enabled: !root.inert;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea { enabled: !root.inert; mouse-cursor: pointer; clicked => { scope.focus(); root.clicked(); } }
+}
+
+// A caption above a card of related rows.
+component DetailGroup inherits VerticalLayout {
+    in property <string> title;
+    spacing: 6px;
+    Caption { text: root.title; font-weight: 600; }
+    @children
+}
+
+// One row of a card: the name, an optional dimmed detail, and the reason while it is disabled.
+component ActionRow inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <string> reason;
+    in property <bool> enabled: true;
+    in property <bool> inert: false;
+    in property <bool> danger: false;
+    // The first row of a card has no divider above it.
+    in property <bool> first: false;
+    callback clicked();
+    horizontal-stretch: 1;
+    forward-focus: scope;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-description: root.reason;
+    accessible-enabled: root.enabled && !root.inert;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    border-radius: Theme.radius-sm;
+    border-width: scope.has-focus ? 1px : 0px;
+    border-color: Theme.color-primary;
+    background: touch.has-hover || scope.has-focus ? Theme.color-surface : transparent;
+    animate background { duration: 120ms; }
+    VerticalLayout {
+        padding-left: 12px; padding-right: 12px; padding-top: 10px; padding-bottom: 10px; spacing: 4px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                text: root.text;
+                color: root.danger ? Theme.color-danger : Theme.color-text-default;
+                opacity: root.enabled ? 1 : 0.45;
+                font-weight: 500; wrap: word-wrap; vertical-alignment: center;
+            }
+            Text { text: "›"; color: Theme.color-text-dimmed; font-size: Theme.font-size-lg; vertical-alignment: center; }
+        }
+        if root.detail != "": Caption { text: root.detail; wrap: word-wrap; }
+        if root.reason != "": Caption { text: root.reason; wrap: word-wrap; }
+    }
+    if !root.first: Rectangle { x: 12px; y: 0px; width: parent.width - 24px; height: 1px; background: Theme.color-border-subtle; }
+    scope := FocusScope {
+        enabled: !root.inert;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" || event.text == "\u{000d}" { if root.enabled { root.clicked(); } return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea { enabled: !root.inert; mouse-cursor: pointer; clicked => { scope.focus(); if root.enabled { root.clicked(); } } }
+}
+
+// One label and its value in the info card. Paths wrap by character, so they never widen the pane.
+component DetailField inherits VerticalLayout {
     in property <string> label;
     in property <string> value;
+    in property <bool> paths: false;
+    in property <bool> dimmed: false;
     spacing: 2px;
     if root.value != "": Caption { text: root.label; }
-    if root.value != "": Text { width: 100%; text: root.value; color: Theme.color-text-default; wrap: word-wrap; }
+    if root.value != "" && !root.paths: Text { width: 100%; text: root.value; color: root.dimmed ? Theme.color-text-dimmed : Theme.color-text-default; wrap: word-wrap; }
+    if root.value != "" && root.paths: Text { width: 100%; text: root.value; color: root.dimmed ? Theme.color-text-dimmed : Theme.color-text-default; wrap: char-wrap; }
 }
 
 // An action with the reason beside it while it is disabled.
@@ -356,77 +442,184 @@ component ActionWithReason inherits VerticalLayout {
     in property <StatusKind> status: StatusKind.unknown;
     callback clicked();
     spacing: 4px;
-    Action { text: root.text; primary: root.primary; outlined: !root.primary; enabled: root.why == Why.available; inert: LibraryState.modal; clicked => { root.clicked(); } }
+    Action { horizontal-stretch: 1; text: root.text; primary: root.primary; outlined: !root.primary; enabled: root.why == Why.available; inert: LibraryState.modal; clicked => { root.clicked(); } }
     if root.why != Why.available: Caption { text: LibraryText.why(root.why, root.status); wrap: word-wrap; }
 }
 
-component DetailPane inherits Rectangle {
-    background: Theme.color-secondary;
-    ScrollView {
-        VerticalLayout {
-            padding: 16px; spacing: 12px;
-            HorizontalLayout {
-                spacing: 8px;
-                Heading { horizontal-stretch: 1; text: @tr("Library" => "Details"); font-size: Theme.font-size-lg; }
-                Action { text: @tr("Library" => "Close"); inert: LibraryState.modal; clicked => { LibraryState.set-detail-open(false); } }
+// The selected game's details, from the hero down to the removal action.
+component DetailBody inherits VerticalLayout {
+    spacing: 16px;
+    // The width the body is given, so the hero height never depends on its own layout pass.
+    in property <length> content-width;
+    width: root.content-width;
+    // Sixteen by nine of the pane's width, kept between 140 and 280 pixels tall.
+    Cover {
+        horizontal-stretch: 1;
+        height: max(140px, min(280px, root.content-width * 9 / 16));
+        source: LibraryState.detail-cover; has-image: LibraryState.detail-has-cover; title: LibraryState.detail-title;
+        text-size: Theme.font-size-md;
+    }
+    VerticalLayout {
+        spacing: 4px;
+        if LibraryState.detail-running: Caption { text: @tr("Library" => "Running"); color: Theme.color-success; font-weight: 600; }
+        Heading { text: LibraryState.detail-title; font-size: Theme.font-size-lg; }
+        if LibraryState.detail-year != "" || LibraryState.detail-provider != "": Caption {
+            text: LibraryState.detail-year + (LibraryState.detail-year != "" && LibraryState.detail-provider != "" ? " · " : "") + LibraryState.detail-provider;
+            wrap: word-wrap;
+        }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
+        if LibraryState.launch-note != LaunchNote.none: Rectangle {
+            horizontal-stretch: 1;
+            background: LibraryState.launch-note == LaunchNote.opening-play || LibraryState.launch-note == LaunchNote.opening-install ? Theme.color-accent-subtle : Theme.color-danger-subtle;
+            border-radius: Theme.radius-sm;
+            VerticalLayout {
+                padding: 10px; spacing: 8px;
+                // Wrapped text inside a rectangle is measured before the rectangle's width is known;
+                // the width is set here so the measured and drawn heights agree.
+                Text { width: root.content-width - 20px; text: LibraryText.launch(LibraryState.launch-note); color: Theme.color-text-default; wrap: word-wrap; }
+                if LibraryState.launch-note != LaunchNote.opening-play && LibraryState.launch-note != LaunchNote.opening-install: Action { text: @tr("Library" => "Dismiss"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.dismiss-launch(); } }
             }
-            if LibraryState.detail-valid: VerticalLayout {
-                spacing: 12px;
-                if LibraryState.detail-running: Caption { text: @tr("Library" => "Running"); color: Theme.color-success; }
-                Heading { text: LibraryState.detail-title; font-size: Theme.font-size-lg; }
-                Field {
-                    label: @tr("Library" => "Playtime");
-                    value: PlaytimeText.duration(LibraryState.detail-playtime-known, LibraryState.detail-playtime-hours, LibraryState.detail-playtime-minutes, LibraryState.detail-playtime-seconds);
+        }
+        if LibraryState.install-why != Why.no-install-rule: ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Caption { horizontal-stretch: 0; text: @tr("Library" => "Playtime"); vertical-alignment: center; }
+        Text {
+            horizontal-stretch: 0;
+            text: PlaytimeText.duration(LibraryState.detail-playtime-known, LibraryState.detail-playtime-hours, LibraryState.detail-playtime-minutes, LibraryState.detail-playtime-seconds);
+            color: Theme.color-text-default; font-weight: 500; vertical-alignment: center;
+        }
+        Caption { horizontal-stretch: 1; text: PlaytimeText.source(LibraryState.detail-playtime-from-store, LibraryState.detail-provider); wrap: word-wrap; vertical-alignment: center; }
+    }
+    DetailGroup {
+        title: @tr("Library" => "GameNode");
+        Panel {
+            horizontal-stretch: 1;
+            background: Theme.color-raised;
+            VerticalLayout {
+                ActionRow {
+                    first: true;
+                    text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…");
+                    reason: LibraryState.match-why == Why.available ? "" : LibraryText.why(LibraryState.match-why, StatusKind.unknown);
+                    enabled: LibraryState.match-why == Why.available;
+                    inert: LibraryState.modal;
+                    clicked => { LibraryState.open-match(); }
                 }
-                Field { label: @tr("Library" => "Playtime source"); value: PlaytimeText.source(LibraryState.detail-playtime-from-store, LibraryState.detail-provider); }
-                ActionWithReason { text: @tr("Library" => "Play"); primary: true; why: LibraryState.play-why; clicked => { LibraryState.play(); } }
-                if LibraryState.install-why != Why.no-install-rule: ActionWithReason { text: @tr("Library" => "Install"); why: LibraryState.install-why; clicked => { LibraryState.install(); } }
-                ActionWithReason { text: LibraryState.change-match ? @tr("Library" => "Change match…") : @tr("Library" => "Match…"); why: LibraryState.match-why; clicked => { LibraryState.open-match(); } }
-                ActionWithReason { text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; status: LibraryState.add-existing-status; clicked => { LibraryState.open-add(); } }
-                if LibraryState.add-why == Why.membership-unavailable: Action { text: @tr("Library" => "Check again"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.refresh-membership(); } }
-                ActionWithReason { text: @tr("Library" => "Game tools…"); why: LibraryState.tools-why; clicked => { LibraryState.open-tools(); } }
-                if LibraryState.detail-tools != "": Field { label: @tr("Library" => "Tools"); value: LibraryState.detail-tools; }
-                if LibraryState.launch-note != LaunchNote.none: Rectangle {
-                    background: LibraryState.launch-note == LaunchNote.opening-play || LibraryState.launch-note == LaunchNote.opening-install ? Theme.color-accent-subtle : Theme.color-danger-subtle;
-                    border-radius: Theme.radius-sm;
-                    VerticalLayout {
-                        padding: 10px; spacing: 8px;
-                        Text { text: LibraryText.launch(LibraryState.launch-note); color: Theme.color-text-default; wrap: word-wrap; }
-                        if LibraryState.launch-note != LaunchNote.opening-play && LibraryState.launch-note != LaunchNote.opening-install: Action { text: @tr("Library" => "Dismiss"); outlined: true; inert: LibraryState.modal; clicked => { LibraryState.dismiss-launch(); } }
-                    }
+                ActionRow {
+                    text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…");
+                    reason: LibraryState.add-why == Why.available ? "" : LibraryText.why(LibraryState.add-why, LibraryState.add-existing-status);
+                    enabled: LibraryState.add-why == Why.available;
+                    inert: LibraryState.modal;
+                    clicked => { LibraryState.open-add(); }
                 }
-                Rule {}
-                Cover {
-                    height: 160px;
-                    source: LibraryState.detail-cover; has-image: LibraryState.detail-has-cover; title: LibraryState.detail-title;
-                    text-size: Theme.font-size-md;
+                if LibraryState.add-why == Why.membership-unavailable: ActionRow {
+                    text: @tr("Library" => "Check again");
+                    inert: LibraryState.modal;
+                    clicked => { LibraryState.refresh-membership(); }
+                }
+            }
+        }
+    }
+    DetailGroup {
+        title: @tr("Library" => "Manage");
+        Panel {
+            horizontal-stretch: 1;
+            background: Theme.color-raised;
+            VerticalLayout {
+                ActionRow {
+                    first: true;
+                    text: @tr("Library" => "Game tools…");
+                    detail: LibraryState.detail-tools;
+                    reason: LibraryState.tools-why == Why.available ? "" : LibraryText.why(LibraryState.tools-why, StatusKind.unknown);
+                    enabled: LibraryState.tools-why == Why.available;
+                    inert: LibraryState.modal;
+                    clicked => { LibraryState.open-tools(); }
                 }
                 if LocalGames.selected-id != "": VerticalLayout {
-                    if LocalGames.match-evidence != "": Caption { text: @tr("DRM-free" => "Inferred from local evidence: {}", LocalGames.match-evidence); wrap: word-wrap; }
-                    Action { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; LocalGames.history-load(); } }
-                    spacing: 6px;
-                    Action { text: @tr("DRM-free" => "Game settings"); clicked => { LocalGames.editing = true; } }
-                    Action { text: @tr("DRM-free" => "Locate executable"); inert: LocalGames.busy; clicked => { LocalGames.locate(); } }
+                    ActionRow { text: @tr("DRM-free" => "Local save protection"); clicked => { LocalGames.protection-open = true; LocalGames.history-load(); } }
+                    ActionRow { text: @tr("DRM-free" => "Game settings"); clicked => { LocalGames.editing = true; } }
+                    ActionRow { text: @tr("DRM-free" => "Locate executable"); inert: LocalGames.busy; clicked => { LocalGames.locate(); } }
                 }
-                Action { text: @tr("DRM-free" => "Remove from library"); inert: LocalGames.busy; clicked => { LocalGames.remove-open = true; } }
-                if LocalGames.error != "": Caption { text: LocalGames.error; wrap: word-wrap; }
-                Field { label: @tr("Library" => "Detected title"); value: LibraryState.detail-detected; }
-                Field { label: @tr("Library" => "GameNode game"); value: LibraryState.detail-matched; }
-                Field { label: @tr("Library" => "Release year"); value: LibraryState.detail-year; }
-                Field { label: @tr("Library" => "Store"); value: LibraryState.detail-provider; }
-                Field { label: @tr("Library" => "Install folder"); value: LibraryState.detail-dir; }
-                Field {
-                    label: @tr("Library" => "Match");
-                    value: LibraryText.match-kind(LibraryState.detail-kind) + (LibraryState.detail-source == SourceKind.none ? "" : " · " + LibraryText.source(LibraryState.detail-source));
+            }
+        }
+    }
+    if LocalGames.error != "": Caption { text: LocalGames.error; color: Theme.color-danger; wrap: word-wrap; }
+    Panel {
+        horizontal-stretch: 1;
+        background: Theme.color-raised;
+        VerticalLayout {
+            padding: 12px; spacing: 10px;
+            DetailField { label: @tr("Library" => "Detected title"); value: LibraryState.detail-detected; }
+            DetailField { label: @tr("Library" => "GameNode game"); value: LibraryState.detail-matched; }
+            DetailField { label: @tr("Library" => "Install folder"); value: LibraryState.detail-dir; paths: true; }
+            DetailField {
+                label: @tr("Library" => "Match");
+                value: LibraryText.match-kind(LibraryState.detail-kind) + (LibraryState.detail-source == SourceKind.none ? "" : " · " + LibraryText.source(LibraryState.detail-source));
+            }
+            DetailField { label: @tr("Library" => "In your GameNode library"); value: LibraryText.standing(LibraryState.detail-standing, LibraryState.detail-standing-status); }
+            if LocalGames.selected-id != "" && LocalGames.match-evidence != "": DetailField { label: @tr("DRM-free" => "Local evidence"); value: LocalGames.match-evidence; dimmed: true; }
+        }
+    }
+    remove-card := Panel {
+        horizontal-stretch: 1;
+        background: Theme.color-raised;
+        VerticalLayout {
+            ActionRow { first: true; text: @tr("DRM-free" => "Remove from library"); danger: true; inert: LocalGames.busy; clicked => { LocalGames.remove-open = true; } }
+        }
+    }
+}
+
+// The details pane: a pinned header above a body that scrolls.
+component DetailPane inherits Rectangle {
+    background: Theme.color-secondary;
+    VerticalLayout {
+        HorizontalLayout {
+            padding-left: 16px; padding-right: 12px; padding-top: 12px; padding-bottom: 12px; spacing: 8px;
+            Heading { horizontal-stretch: 1; text: @tr("Library" => "Details"); font-size: Theme.font-size-lg; vertical-alignment: center; }
+            CloseControl { inert: LibraryState.modal; clicked => { LibraryState.set-detail-open(false); } }
+        }
+        Rule {}
+        scroll := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            // The scroll range is the body's height, which includes its bottom padding, so the last
+            // row clears the pane edge when scrolled to the end. A short body fills the viewport.
+            content-height: max(self.visible-height, body.height);
+            body := VerticalLayout {
+                // Pinned to the top: an unpositioned child is centered when the body is shorter than the viewport.
+                y: 0px;
+                width: scroll.visible-width;
+                height: self.preferred-height;
+                padding-left: 16px; padding-right: 16px; padding-top: 16px; padding-bottom: 24px;
+                spacing: 16px; alignment: start;
+                if LibraryState.detail-valid: DetailBody { content-width: root.width - 32px; }
+                if !LibraryState.detail-valid && LibraryState.selected-count > 1: VerticalLayout {
+                    spacing: 12px;
+                    Heading { font-size: Theme.font-size-lg; text: @tr("Library" => "{} games selected", LibraryState.selected-count); }
+                    DetailGroup {
+                        title: @tr("Library" => "GameNode");
+                        Panel {
+                            horizontal-stretch: 1;
+                            background: Theme.color-raised;
+                            VerticalLayout {
+                                ActionRow {
+                                    first: true;
+                                    text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…");
+                                    reason: LibraryState.add-why == Why.available ? "" : LibraryText.why(LibraryState.add-why, LibraryState.add-existing-status);
+                                    enabled: LibraryState.add-why == Why.available;
+                                    inert: LibraryState.modal;
+                                    clicked => { LibraryState.open-add(); }
+                                }
+                            }
+                        }
+                    }
                 }
-                Field { label: @tr("Library" => "In your GameNode library"); value: LibraryText.standing(LibraryState.detail-standing, LibraryState.detail-standing-status); }
+                if !LibraryState.detail-valid && LibraryState.selected-count <= 1: Caption { text: @tr("Library" => "Select a game to see its details."); wrap: word-wrap; }
             }
-            if !LibraryState.detail-valid && LibraryState.selected-count > 1: VerticalLayout {
-                spacing: 12px;
-                Text { text: @tr("Library" => "{} games selected", LibraryState.selected-count); color: Theme.color-text-default; font-weight: 500; }
-                ActionWithReason { text: LibraryState.edit-existing ? @tr("Library" => "Edit in GameNode…") : @tr("Library" => "Add to GameNode…"); why: LibraryState.add-why; clicked => { LibraryState.open-add(); } }
-            }
-            if !LibraryState.detail-valid && LibraryState.selected-count <= 1: Caption { text: @tr("Library" => "Select a game to see its details."); wrap: word-wrap; }
         }
     }
 }

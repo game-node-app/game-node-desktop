@@ -51,7 +51,9 @@ impl DiscoveryHost for WindowsDiscovery {
                     if cancelled.load(Ordering::Relaxed) {
                         return Err(LocalError::Cancelled);
                     }
-                    let Ok(canonical) = crate::installations::canonical(&directory.to_string_lossy()) else {
+                    let Ok(canonical) =
+                        crate::installations::canonical(&directory.to_string_lossy())
+                    else {
                         incomplete = true;
                         continue;
                     };

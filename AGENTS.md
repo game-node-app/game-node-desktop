@@ -52,7 +52,7 @@ translations, keyboard navigation, or view-state logic.
      ```
    - **Available presets**:
      - Screens: `signed-out`, `library` (`grid`), `list`, `drm-detail`,
-       `drm-missing`, `settings`
+       `drm-missing`, `detail-long`, `settings`
      - Modals: `protection`, `restore`, `discovery`, `editor`, `claim`,
        `match`, `add`, `add-summary`, `sync-explanation`
      - States: `banner`, `empty`, `nothing-matches`

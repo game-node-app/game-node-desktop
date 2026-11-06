@@ -749,12 +749,16 @@ msgid "Could not sync playtime. Your local data is preserved."
 msgstr "Não foi possível sincronizar o tempo de jogo. Seus dados locais foram preservados."
 
 msgctxt "Library"
-msgid "Playtime"
-msgstr "Tempo de jogo"
+msgid "GameNode"
+msgstr "GameNode"
 
 msgctxt "Library"
-msgid "Playtime source"
-msgstr "Fonte do tempo de jogo"
+msgid "Manage"
+msgstr "Gerenciar"
+
+msgctxt "Library"
+msgid "Playtime"
+msgstr "Tempo de jogo"
 
 msgctxt "Library"
 msgid "{} h {} min"
@@ -997,8 +1001,8 @@ msgid "Transfer tracking"
 msgstr "Transferir monitoramento"
 
 msgctxt "DRM-free"
-msgid "Inferred from local evidence: {}"
-msgstr "Inferido de evidências locais: {}"
+msgid "Local evidence"
+msgstr "Evidências locais"
 
 msgctxt "Settings"
 msgid "Signed in"
@@ -1339,10 +1343,6 @@ msgstr "Remover e não importar mais"
 msgctxt "Library"
 msgid "Game tools…"
 msgstr "Ferramentas do jogo…"
-
-msgctxt "Library"
-msgid "Tools"
-msgstr "Ferramentas"
 
 msgctxt "Settings"
 msgid "Archives downloaded from GitHub for offline install and reuse across games."

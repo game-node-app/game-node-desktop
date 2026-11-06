@@ -749,12 +749,16 @@ msgid "Could not sync playtime. Your local data is preserved."
 msgstr "Could not sync playtime. Your local data is preserved."
 
 msgctxt "Library"
-msgid "Playtime"
-msgstr "Playtime"
+msgid "GameNode"
+msgstr "GameNode"
 
 msgctxt "Library"
-msgid "Playtime source"
-msgstr "Playtime source"
+msgid "Manage"
+msgstr "Manage"
+
+msgctxt "Library"
+msgid "Playtime"
+msgstr "Playtime"
 
 msgctxt "Library"
 msgid "{} h {} min"
@@ -997,8 +1001,8 @@ msgid "Transfer tracking"
 msgstr "Transfer tracking"
 
 msgctxt "DRM-free"
-msgid "Inferred from local evidence: {}"
-msgstr "Inferred from local evidence: {}"
+msgid "Local evidence"
+msgstr "Local evidence"
 
 msgctxt "Settings"
 msgid "Signed in"
@@ -1339,10 +1343,6 @@ msgstr "Remove and don't import again"
 msgctxt "Library"
 msgid "Game tools…"
 msgstr "Game tools…"
-
-msgctxt "Library"
-msgid "Tools"
-msgstr "Tools"
 
 msgctxt "Settings"
 msgid "Archives downloaded from GitHub for offline install and reuse across games."

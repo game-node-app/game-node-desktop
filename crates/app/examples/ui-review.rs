@@ -203,6 +203,33 @@ impl DemoData {
                 evidence: "PEFileDescription: Disco Elysium".into(),
                 available: false,
             },
+            // The detail pane's worst case: a long title, an unbroken install path, long
+            // evidence, and an executable that is missing (so Play is disabled with a reason).
+            SeedGame {
+                key: "manual:long".into(),
+                title: "The Extraordinarily Long Title of a Game That Keeps Going Across Several Lines of the Details Pane".into(),
+                detected: "The Extraordinarily Long Title of a Game That Keeps Going Across Several Lines".into(),
+                matched: "Extraordinarily Long Game Title".into(),
+                provider_id: "manual".into(),
+                provider_name: "DRM-free".into(),
+                dir: r"D:\Games\AVeryLongInstallFolderNameWithoutAnySpacesThatMustWrapByCharacterWhenThePaneIsNarrow\Extraordinary".into(),
+                year: "2016".into(),
+                kind: MatchKind::Matched,
+                source: SourceKind::Automatic,
+                standing: Standing::NotInLibrary,
+                standing_status: StatusKind::Unknown,
+                hours: 0,
+                minutes: 47,
+                from_store: false,
+                running: false,
+                executable: r"D:\Games\AVeryLongInstallFolderNameWithoutAnySpacesThatMustWrapByCharacterWhenThePaneIsNarrow\Extraordinary\ExtraordinaryGame-Win64-Shipping.exe".into(),
+                working_dir: r"D:\Games\AVeryLongInstallFolderNameWithoutAnySpacesThatMustWrapByCharacterWhenThePaneIsNarrow\Extraordinary".into(),
+                arguments: String::new(),
+                gameplay: r"D:\Games\AVeryLongInstallFolderNameWithoutAnySpacesThatMustWrapByCharacterWhenThePaneIsNarrow\Extraordinary\ExtraordinaryGame-Win64-Shipping.exe".into(),
+                launchers: String::new(),
+                evidence: "PEFileDescription: Extraordinarily Long Game Title · ProductName: Extraordinarily Long Game Title Deluxe Edition · Folder: D:\\Games\\AVeryLongInstallFolderNameWithoutAnySpacesThatMustWrapByCharacterWhenThePaneIsNarrow · ProductName: Extraordinarily Long Game Title Deluxe Edition".into(),
+                available: false,
+            },
             SeedGame {
                 key: "steam:999".into(),
                 title: "Some Obscure SDK Tool".into(),
@@ -1471,6 +1498,17 @@ fn apply_preset(ui: &AppWindow, data: &mut DemoData, preset: &str) {
             data.detail_open = true;
             sync_library_view(ui, data);
         }
+        "detail-long" => {
+            data.view_kind = ViewKind::Grid;
+            data.selected_key = "manual:long".into();
+            data.detail_open = true;
+            sync_library_view(ui, data);
+            state.set_detail_tools("OptiScaler v0.7.9 · dxgi.dll · a long tools summary that has to wrap inside the card".into());
+            state.set_launch_note(LaunchNote::NoHandler);
+            state.set_match_why(Why::Offline);
+            state.set_add_why(Why::MembershipUnavailable);
+            state.set_tools_why(Why::NeedsVerifiedSession);
+        }
         "settings" | "settings-account" => {
             sync_library_view(ui, data);
             ui.set_signed_in(true);
@@ -2446,6 +2484,7 @@ const STUDIO_HTML: &str = r#"<!DOCTYPE html>
   <button onclick="act({preset:'list'})">Library List</button>
   <button onclick="act({preset:'drm-detail'})">DRM-Free Detail</button>
   <button onclick="act({preset:'drm-missing'})">DRM-Free Missing</button>
+  <button onclick="act({preset:'detail-long'})">Detail Long</button>
   <button onclick="act({preset:'settings'})">Settings</button>
   <span class="group-label">Modals:</span>
   <button onclick="act({preset:'tools'})">Tools Modal</button>
@@ -2763,6 +2802,7 @@ fn apply_cli_flags(
             | "details"
             | "drm-detail"
             | "drm-missing"
+            | "detail-long"
             | "settings"
             | "settings-account"
             | "settings-account-signed-out"

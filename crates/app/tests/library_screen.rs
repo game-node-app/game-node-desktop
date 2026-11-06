@@ -717,6 +717,45 @@ fn library_screens_react_to_keyboard_and_pointer() {
     assert!(take(&log).is_empty(), "focus escaped the sync explanation");
     key(&ui, Key::Escape);
     assert_eq!(*dismissed.borrow(), 1);
+
+    // The end of a long detail pane must remain visible after scrolling to the bottom.
+    // Wrapped evidence and paths previously left the last field below the scroll range.
+    let ui = open(&log);
+    show_details(&ui);
+    let state = ui.global::<LibraryState>();
+    state.set_detail_open(true);
+    state.set_detail_dir(
+        "C:\\Games\\A long game folder name\\Another long folder name\\Game".into(),
+    );
+    let local = ui.global::<gamenode_app::LocalGames>();
+    local.set_selected_id("manual:long".into());
+    local.set_match_evidence("Product name: A long game title · Executable: a long game executable · Folder: a long game folder".into());
+    shots.take("detail-long-before-scroll");
+    ui.window().dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(1000., 600.),
+        delta_x: 0.,
+        delta_y: -5000.,
+    });
+    slint::platform::update_timers_and_animations();
+    shots.take("detail-long-bottom");
+    let mut buffer = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
+    window.request_redraw();
+    assert!(window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, WIDTH as usize);
+    }));
+    let bg = buffer[(HEIGHT as usize - 1) * WIDTH as usize + 780];
+    let differs = |pixel: &PremultipliedRgbaColor| {
+        (pixel.red, pixel.green, pixel.blue) != (bg.red, bg.green, bg.blue)
+    };
+    let row_has_text = |y: usize| (780..1080).any(|x| differs(&buffer[y * WIDTH as usize + x]));
+    assert!(
+        (HEIGHT as usize - 55..HEIGHT as usize - 16).any(row_has_text),
+        "last detail field is missing"
+    );
+    assert!(
+        !(HEIGHT as usize - 10..HEIGHT as usize).any(row_has_text),
+        "detail text is clipped at the bottom"
+    );
 }
 
 /// The detail pane for one selected, matched game, with every action available.

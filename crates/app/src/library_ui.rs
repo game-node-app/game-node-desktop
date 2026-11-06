@@ -833,9 +833,12 @@ pub fn render(ui: &AppWindow, snapshot: &Snapshot) {
                     .find(|i| i.installation == id)
             })
             .map(|i| {
+                // The same fact can arrive from several sources; show each value once.
+                let mut seen = std::collections::HashSet::new();
                 i.evidence
                     .iter()
                     .map(|e| e.value.as_str())
+                    .filter(|value| seen.insert(value.to_lowercase()))
                     .collect::<Vec<_>>()
                     .join(" · ")
             })

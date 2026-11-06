@@ -1,7 +1,8 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createAppQueryClient } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -55,9 +56,7 @@ function renderWithProviders(
   snapshot: Snapshot,
   locale = 'en',
 ) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const queryClient = createAppQueryClient();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
 
   return render(
@@ -348,7 +347,7 @@ describe('Library Feature Tests', () => {
         },
       };
 
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const queryClient = createAppQueryClient();
       queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshot);
 
       const { rerender } = render(

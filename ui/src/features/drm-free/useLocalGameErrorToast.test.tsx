@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
+import { createAppQueryClient } from '../../AppProviders';
 import { createDefaultSnapshot, SNAPSHOT_QUERY_KEY, type Snapshot } from '../../api';
 import { resetUiStore, uiStore } from '../../store/uiStore';
 import { useLocalGameErrorToast } from './useLocalGameErrorToast';
@@ -20,7 +21,7 @@ describe('useLocalGameErrorToast', () => {
 
   beforeEach(() => {
     resetUiStore();
-    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient = createAppQueryClient();
     queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snapshotWithError(null));
   });
 

@@ -12,8 +12,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { commands, isTauriRuntime } from './commands';
 import { getMockHost, mockEnabled } from './mock';
 import {
+  SNAPSHOT_QUERY_KEY,
+  appInfoQueryOptions,
+  licenseNoticesQueryOptions,
+} from './queries';
+import {
   createDefaultSnapshot,
-  type AppInfo,
   type AuthView,
   type LibraryView,
   type LocalView,
@@ -23,9 +27,7 @@ import {
   type ToolsView,
 } from './types';
 
-export const SNAPSHOT_QUERY_KEY = ['snapshot'] as const;
-export const APP_INFO_QUERY_KEY = ['app-info'] as const;
-export const LICENSE_NOTICES_QUERY_KEY = ['license-notices'] as const;
+export { APP_INFO_QUERY_KEY, LICENSE_NOTICES_QUERY_KEY, SNAPSHOT_QUERY_KEY } from './queries';
 export const ENGINE_SNAPSHOT_EVENT = 'engine:snapshot';
 
 /** Shared placeholder snapshot. Read-only: never mutate. */
@@ -139,12 +141,7 @@ export function useSnapshot<TSelected = Snapshot>(
 }
 
 export function useAppInfo() {
-  return useQuery<AppInfo>({
-    queryKey: APP_INFO_QUERY_KEY,
-    queryFn: () => commands.getAppInfo(),
-    staleTime: Infinity,
-    gcTime: Infinity,
-  });
+  return useQuery({ ...appInfoQueryOptions });
 }
 
 /**
@@ -152,11 +149,7 @@ export function useAppInfo() {
  * `gcTime` stays at the client default (5 min) so closing the modal frees it.
  */
 export function useLicenseNotices() {
-  return useQuery<string>({
-    queryKey: LICENSE_NOTICES_QUERY_KEY,
-    queryFn: () => commands.getLicenseNotices(),
-    staleTime: Infinity,
-  });
+  return useQuery({ ...licenseNoticesQueryOptions });
 }
 
 const selectLibrary = (s: Snapshot) => s.library;

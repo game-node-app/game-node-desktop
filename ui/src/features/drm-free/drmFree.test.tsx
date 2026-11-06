@@ -2,8 +2,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { appTheme } from '../../AppProviders';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { appTheme, createAppQueryClient } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -29,9 +29,7 @@ function renderWithProviders(
   initialSnapshot?: Snapshot,
   locale: 'en' | 'pt-BR' = 'en',
 ) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const queryClient = createAppQueryClient();
   const snap = initialSnapshot ?? createDefaultSnapshot();
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snap);
 
@@ -292,7 +290,7 @@ describe('DRM-Free Modals', () => {
       // Keep separate
       rerender(
         <MantineProvider theme={appTheme} defaultColorScheme="dark">
-          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <QueryClientProvider client={createAppQueryClient()}>
             <I18nProvider initialLocale="en">
               <ClaimConflictModal claim={pendingClaim} />
             </I18nProvider>
@@ -305,7 +303,7 @@ describe('DRM-Free Modals', () => {
       // Cancel
       rerender(
         <MantineProvider theme={appTheme} defaultColorScheme="dark">
-          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <QueryClientProvider client={createAppQueryClient()}>
             <I18nProvider initialLocale="en">
               <ClaimConflictModal claim={pendingClaim} />
             </I18nProvider>
@@ -632,7 +630,7 @@ describe('DRM-Free Modals', () => {
       // Cancel
       rerender(
         <MantineProvider theme={appTheme} defaultColorScheme="dark">
-          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <QueryClientProvider client={createAppQueryClient()}>
             <I18nProvider initialLocale="en">
               <SaveProtectionModal installationId="game-123" />
             </I18nProvider>

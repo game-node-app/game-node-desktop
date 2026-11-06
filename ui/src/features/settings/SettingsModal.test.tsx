@@ -1,9 +1,9 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
 import { I18nProvider } from '../../i18n';
-import { appTheme } from '../../AppProviders';
+import { appTheme, createAppQueryClient } from '../../AppProviders';
 import {
   SNAPSHOT_QUERY_KEY,
   APP_INFO_QUERY_KEY,
@@ -35,14 +35,7 @@ function createTestQueryClient(
   appInfo?: Partial<AppInfo>,
   licenseNotices = 'GameNode Desktop - Full offline license notices text',
 ) {
-  const qc = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-        staleTime: Infinity,
-      },
-    },
-  });
+  const qc = createAppQueryClient();
 
   const fullSnapshot: Snapshot = {
     ...createDefaultSnapshot(),

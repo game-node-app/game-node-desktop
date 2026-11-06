@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, act } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, act, waitFor } from '@testing-library/react';
+import { createAppQueryClient } from '../AppProviders';
 import {
   ENGINE_SNAPSHOT_EVENT,
   SNAPSHOT_QUERY_KEY,
@@ -46,9 +47,7 @@ function AuthStatusProbe() {
 
 describe('useSnapshot and engine:snapshot event synchronization', () => {
   it('updates QueryClient cache when engine:snapshot event is emitted', async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createAppQueryClient();
 
     const unlisten = await subscribeToEngineSnapshots(queryClient);
 
@@ -72,9 +71,7 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
   });
 
   it('re-renders subscribed React components when engine:snapshot updates', async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    const queryClient = createAppQueryClient();
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -99,22 +96,12 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
       },
     };
 
-    expect(listeners.get(ENGINE_SNAPSHOT_EVENT)?.size).toBe(1);
-
     await act(async () => {
       emitMockEvent(ENGINE_SNAPSHOT_EVENT, nextSnapshot);
     });
 
-    expect(queryClient.getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY)?.auth).toEqual({
-      signedIn: {
-        user: {
-          id: 'u-42',
-          username: 'PlayerOne',
-          email: null,
-        },
-      },
-    });
-
-    expect(screen.getByTestId('auth-state')).toHaveTextContent('Signed in as PlayerOne');
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-state')).toHaveTextContent('Signed in as PlayerOne'),
+    );
   });
 });

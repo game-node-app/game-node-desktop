@@ -33,6 +33,11 @@ tests (`pnpm --dir ui test --run`), and `cargo test --locked -p gamenode-app` ov
 cross-building and installing to Windows (`scripts/install-windows-wsl.sh`) when iterating on
 UI layout, translations, keyboard navigation, or view-state logic.
 
+For a signed-in UI with fictional games, use `VITE_UI_MOCK=1 pnpm --dir ui dev`.
+The mock runs in memory and resets on reload. See [docs/development.md](docs/development.md)
+for signed-out and locale scenarios and supported interactions. Use the browser for
+isolation; the native Rust host still initializes if launched separately.
+
 ### How to run from scratch
 
 1. **Start the Vite development server**:

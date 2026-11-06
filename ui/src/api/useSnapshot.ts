@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { commands } from './commands';
+import { getMockHost, mockEnabled } from './mock';
 import {
   createDefaultSnapshot,
   type AuthInput,
@@ -28,6 +29,9 @@ export const SNAPSHOT_QUERY_KEY = ['snapshot'] as const;
 export const BOOTSTRAP_QUERY_KEY = ['bootstrap'] as const;
 export const ENGINE_SNAPSHOT_EVENT = 'engine:snapshot';
 
+/** Shared placeholder snapshot. Read-only: never mutate. */
+const DEFAULT_SNAPSHOT: Snapshot = createDefaultSnapshot();
+
 /**
  * Subscribes a QueryClient to coalesced `engine:snapshot` Tauri events.
  * Returns an async cleanup function.
@@ -35,6 +39,11 @@ export const ENGINE_SNAPSHOT_EVENT = 'engine:snapshot';
 export async function subscribeToEngineSnapshots(
   queryClient: QueryClient,
 ): Promise<UnlistenFn> {
+  if (mockEnabled) {
+    return (await getMockHost()).subscribe((snapshot) => {
+      queryClient.setQueryData<Snapshot>(SNAPSHOT_QUERY_KEY, snapshot);
+    });
+  }
   return listen<Snapshot>(ENGINE_SNAPSHOT_EVENT, (event) => {
     queryClient.setQueryData<Snapshot>(SNAPSHOT_QUERY_KEY, event.payload);
   });
@@ -74,18 +83,17 @@ export function useEngineSnapshotSubscription(): void {
 export function useSnapshot<TSelected = Snapshot>(
   select?: (snapshot: Snapshot) => TSelected,
 ) {
-  const fallback = createDefaultSnapshot();
   const query = useQuery({
     queryKey: SNAPSHOT_QUERY_KEY,
     queryFn: () => commands.getSnapshot(),
     staleTime: Infinity,
     gcTime: Infinity,
-    placeholderData: fallback,
+    placeholderData: DEFAULT_SNAPSHOT,
     select,
   });
   return {
     ...query,
-    data: (query.data ?? (select ? select(fallback) : fallback)) as TSelected,
+    data: (query.data ?? (select ? select(DEFAULT_SNAPSHOT) : DEFAULT_SNAPSHOT)) as TSelected,
   };
 }
 
@@ -98,6 +106,19 @@ export function useBootstrapState() {
   });
 }
 
+const selectLibrary = (s: Snapshot) => s.library;
+const selectLocalGames = (s: Snapshot) => s.localGames;
+const selectTools = (s: Snapshot) => s.tools;
+const selectSettings = (s: Snapshot) => s.settings;
+const selectAuth = (s: Snapshot) => ({
+  auth: s.auth,
+  notice: s.notice,
+  storage: s.storage,
+  sync: s.sync,
+  playtimeSource: s.playtimeSource,
+  playtimeError: s.playtimeError,
+});
+
 export function useAuth(): {
   auth: AuthView;
   notice: Snapshot['notice'];
@@ -106,34 +127,27 @@ export function useAuth(): {
   playtimeSource: PlaytimeSource;
   playtimeError: boolean;
 } {
-  const { data } = useSnapshot((s) => ({
-    auth: s.auth,
-    notice: s.notice,
-    storage: s.storage,
-    sync: s.sync,
-    playtimeSource: s.playtimeSource,
-    playtimeError: s.playtimeError,
-  }));
+  const { data } = useSnapshot(selectAuth);
   return data;
 }
 
 export function useLibraryView(): LibraryView | null | undefined {
-  const { data } = useSnapshot((s) => s.library);
+  const { data } = useSnapshot(selectLibrary);
   return data;
 }
 
 export function useLocalGames(): LocalView {
-  const { data } = useSnapshot((s) => s.localGames);
+  const { data } = useSnapshot(selectLocalGames);
   return data;
 }
 
 export function useTools(): ToolsView {
-  const { data } = useSnapshot((s) => s.tools);
+  const { data } = useSnapshot(selectTools);
   return data;
 }
 
 export function useSettings(): Settings {
-  const { data } = useSnapshot((s) => s.settings);
+  const { data } = useSnapshot(selectSettings);
   return data;
 }
 

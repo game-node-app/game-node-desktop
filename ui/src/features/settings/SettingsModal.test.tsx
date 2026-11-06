@@ -524,4 +524,51 @@ describe('SettingsModal Feature Suite', () => {
       expect(screen.getByRole('status')).toHaveTextContent(/Reset hidden games/i);
     });
   });
+
+  describe('DRM-free watched folders', () => {
+    const watchedSnapshot: Partial<Snapshot> = {
+      localGames: {
+        ...createDefaultSnapshot().localGames,
+        watches: [{ id: 'w-1', path: 'C:\\Games\\Indie', enabled: true }],
+      },
+    };
+
+    it('shows the watched-folder controls on the Stores page', () => {
+      openSettingsModal('stores');
+      renderSettings('en', watchedSnapshot);
+
+      expect(screen.getByPlaceholderText('Folder to watch')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Watch folder' })).toBeInTheDocument();
+      expect(screen.getByText('C:\\Games\\Indie')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Rescan watched folders' })).toBeInTheDocument();
+    });
+
+    it('keeps the watched-folder controls off the Backups page', () => {
+      openSettingsModal('backups');
+      renderSettings('en', watchedSnapshot);
+
+      expect(screen.queryByPlaceholderText('Folder to watch')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Watch folder' })).not.toBeInTheDocument();
+    });
+
+    it('adds a typed folder from the Stores page', () => {
+      const watchSpy = vi.spyOn(commands, 'watchLocalFolder');
+      openSettingsModal('stores');
+      renderSettings('en');
+
+      fireEvent.change(screen.getByPlaceholderText('Folder to watch'), {
+        target: { value: '  D:\\Roms  ' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Watch folder' }));
+
+      expect(watchSpy).toHaveBeenCalledWith('D:\\Roms');
+    });
+
+    it('uses the Portuguese label on the Stores page', () => {
+      openSettingsModal('stores');
+      renderSettings('pt-BR');
+
+      expect(screen.getByRole('button', { name: 'Monitorar pasta' })).toBeInTheDocument();
+    });
+  });
 });

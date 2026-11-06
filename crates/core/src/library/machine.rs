@@ -449,8 +449,18 @@ impl LibraryMachine {
             self.games.insert(game.game_id, game);
         }
         self.view_cache = None;
-        self.plan_covers(false)
+        self.plan_covers(None)
     }
+    /// The downloaded landscape artwork of `game_id` while that game is the one whose details
+    /// are shown. Cheap: it only clones a handle.
+    pub fn artwork_for(&self, game_id: u64) -> Option<Arc<[u8]>> {
+        if self.artwork_focus == Some(game_id) {
+            self.artwork.clone()
+        } else {
+            None
+        }
+    }
+
     pub fn game(&self, game_id: u64) -> Option<&GameRecord> {
         self.games.get(&game_id)
     }
@@ -535,7 +545,7 @@ impl LibraryMachine {
             Input::SetAccess { access, now } => {
                 self.access = access;
                 let mut effects = self.plan_lookups(now);
-                effects.extend(self.plan_covers(false));
+                effects.extend(self.plan_covers(None));
                 effects
             }
             Input::CoverDone {
@@ -679,7 +689,7 @@ impl LibraryMachine {
                 self.excluded.clear();
                 let mut effects = vec![Effect::PersistExcluded(Vec::new())];
                 effects.extend(self.plan_lookups(0));
-                effects.extend(self.plan_covers(false));
+                effects.extend(self.plan_covers(None));
                 effects
             }
         }
@@ -849,7 +859,7 @@ impl LibraryMachine {
                 effects.extend(self.start_scan());
             } else {
                 effects.extend(self.plan_lookups(now));
-                effects.extend(self.plan_covers(true));
+                effects.extend(self.plan_covers(Some(now)));
             }
         }
         effects

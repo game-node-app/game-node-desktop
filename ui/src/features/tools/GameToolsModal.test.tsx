@@ -67,7 +67,7 @@ describe('GameToolsModal', () => {
       },
     ],
     selectedVersion: '0.7.2',
-    selectedProxy: 'dxgi.dll',
+    selectedProxy: 'dxgi',
     anticheatConfirmed: false,
     inspection: {
       entryKey: 'steam:1091500',
@@ -88,8 +88,7 @@ describe('GameToolsModal', () => {
       ],
       selectedExe: 'bin/x64/Cyberpunk2077.exe',
       anticheat: {
-        detected: true,
-        systems: ['easyAntiCheat'],
+        detected: ['easyAntiCheat'],
         evidence: ['EasyAntiCheat/EasyAntiCheat_x64.dll'],
       },
     },
@@ -130,22 +129,49 @@ describe('GameToolsModal', () => {
     expect(refreshSpy).toHaveBeenCalled();
 
     // Version select & cached indicator check
-    expect(screen.getByTestId('cached-badge-0.7.2')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('version-option-0.7.1'));
+    expect(screen.getByRole('option', { name: /v0.7.2.*Cached/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('tool-version-select'), { target: { value: '0.7.1' } });
     expect(versionSpy).toHaveBeenCalledWith('0.7.1');
 
     // Target executable candidate selection
-    expect(screen.getByTestId('preferred-badge-bin/x64/Cyberpunk2077.exe')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('target-candidate-bin/x64/REDprelauncher.exe'));
+    expect(screen.getByRole('option', { name: /Cyberpunk2077.exe.*Recommended/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('target-exe-select'), { target: { value: 'bin/x64/REDprelauncher.exe' } });
     expect(targetSpy).toHaveBeenCalledWith('bin/x64/REDprelauncher.exe');
 
     // Proxy DLL selection
-    fireEvent.click(screen.getByTestId('proxy-option-version.dll'));
-    expect(proxySpy).toHaveBeenCalledWith('version.dll');
+    expect(screen.getByTestId('proxy-dll-select')).toHaveValue('dxgi');
+    fireEvent.change(screen.getByTestId('proxy-dll-select'), { target: { value: 'version' } });
+    expect(proxySpy).toHaveBeenCalledWith('version');
 
     // Reset config checkbox
     fireEvent.click(screen.getByTestId('reset-config-checkbox'));
     expect(resetConfigSpy).toHaveBeenCalledWith(true);
+  });
+
+  it('reflects proxy selections returned by the backend', () => {
+    const { rerender } = renderWithProviders(<GameToolsModal modal={baseModal} />);
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nProvider initialLocale="en">
+          <GameToolsModal modal={{ ...baseModal, selectedProxy: 'winmm' }} />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('proxy-dll-select')).toHaveValue('winmm');
+    expect(screen.getByRole('option', { name: 'winmm.dll', selected: true })).toBeInTheDocument();
+  });
+
+  it('shows updating state on the action button', () => {
+    const modal: ToolModalView = {
+      ...baseModal,
+      tools: [{ toolId: 'optiscaler', name: 'OptiScaler', channel: 'stable', version: '0.7.1',
+        targetExe: 'game.exe', state: 'installed', summary: '' }],
+      operation: { updating: { message: 'Updating OptiScaler', progressPercent: null } },
+    };
+    renderWithProviders(<GameToolsModal modal={modal} />);
+    expect(screen.getByTestId('tool-update-button')).toBeDisabled();
+    expect(screen.getByTestId('tool-update-button')).toHaveTextContent('Updating…');
+    expect(screen.getByTestId('tool-operation-progress')).toHaveTextContent('Updating OptiScaler');
   });
 
   it('enforces anti-cheat warning confirmation gating on Install button', () => {
@@ -212,6 +238,7 @@ describe('GameToolsModal', () => {
     renderWithProviders(<GameToolsModal modal={installedModal} />);
 
     expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('installed-version')).toHaveTextContent('Installed version: 0.7.1 (Stable)');
 
     const updateBtn = screen.getByTestId('tool-update-button');
     expect(updateBtn).toBeEnabled();
@@ -241,6 +268,8 @@ describe('GameToolsModal', () => {
       'Extracting OptiScaler files (65%)',
     );
     expect(screen.getByTestId('tool-install-button')).toBeDisabled();
+    expect(screen.getByTestId('tool-install-button')).toHaveTextContent('Installing…');
+    expect(screen.getByTestId('tool-operation-progress').parentElement).toHaveStyle({ padding: '12px 24px 0' });
 
     // Failed operation state
     const failedModal: ToolModalView = {
@@ -286,6 +315,7 @@ describe('GameToolsModal', () => {
     renderWithProviders(<GameToolsModal modal={installedModal} />, undefined, 'pt-BR');
 
     expect(screen.getByText('Ferramentas do jogo')).toBeInTheDocument();
+    expect(screen.getByTestId('installed-version')).toHaveTextContent('Versão instalada: 0.7.1 (Estável)');
     expect(screen.getByTestId('tool-update-button')).toHaveTextContent('Atualizar / Aplicar');
     expect(screen.getByTestId('tool-uninstall-button')).toHaveTextContent('Desinstalar');
     expect(screen.getByText('Versões disponíveis')).toBeInTheDocument();
@@ -299,5 +329,36 @@ describe('GameToolsModal', () => {
     expect(screen.getByTestId('anticheat-warning-banner')).toBeInTheDocument();
     expect(screen.getByText(/Anti-cheat detectado \(easyAntiCheat\)/)).toBeInTheDocument();
     expect(screen.getByTestId('tool-install-button')).toHaveTextContent('Instalar OptiScaler');
+  });
+
+  it('renders when the backend reports no anti-cheat (empty detected list)', () => {
+    // Backend serializes AntiCheatReport as { detected: [], evidence: [] } — no `systems` field.
+    const cleanModal: ToolModalView = {
+      ...baseModal,
+      inspection: {
+        ...baseModal.inspection!,
+        anticheat: { detected: [], evidence: [] },
+      },
+    };
+
+    renderWithProviders(<GameToolsModal modal={cleanModal} />);
+
+    expect(screen.queryByTestId('anticheat-warning-banner')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-install-button')).toBeEnabled();
+  });
+
+  it('renders the backend anti-cheat report shape without crashing', () => {
+    const backendModal: ToolModalView = {
+      ...baseModal,
+      inspection: {
+        ...baseModal.inspection!,
+        anticheat: { detected: ['battlEye', 'blocklisted'], evidence: ['BattlEye/BEClient.dll'] },
+      },
+    };
+
+    renderWithProviders(<GameToolsModal modal={backendModal} />);
+
+    expect(screen.getByTestId('anticheat-warning-banner')).toHaveTextContent('battlEye, blocklisted');
+    expect(screen.getByTestId('tool-install-button')).toBeDisabled();
   });
 });

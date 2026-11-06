@@ -45,17 +45,36 @@ pub fn system_locale() -> String {
     }
 }
 
-/// Helper that coalesces rapid back-to-back engine snapshots before emitting them to the WebView.
+/// The shortest time between two snapshots sent to the WebView.
+const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[derive(Default)]
+struct PublisherState {
+    /// The newest snapshot that has not been sent yet.
+    pending: Option<Snapshot>,
+    /// Whether a task is already waiting to send `pending`.
+    scheduled: bool,
+    /// The newest snapshot the WebView has, so an unchanged one is not sent again.
+    last_sent: Option<Snapshot>,
+    last_sent_at: Option<std::time::Instant>,
+}
+
+/// Throttles engine snapshots before they are emitted to the WebView.
+///
+/// The first snapshot after a quiet period is sent right away. Snapshots that follow within
+/// [`SNAPSHOT_INTERVAL`] collapse into one, sent when the interval ends, so a burst (cover
+/// downloads, playtime ticks) costs one emission and the newest state is always the last one
+/// sent. A snapshot equal to the one already sent is dropped.
 #[derive(Clone)]
 pub struct SnapshotPublisher {
-    pending: Arc<std::sync::Mutex<(Option<Snapshot>, bool)>>,
+    state: Arc<std::sync::Mutex<PublisherState>>,
     emitter: Arc<dyn Fn(Snapshot) + Send + Sync>,
 }
 
 impl SnapshotPublisher {
     pub fn new(emitter: impl Fn(Snapshot) + Send + Sync + 'static) -> Self {
         Self {
-            pending: Arc::new(std::sync::Mutex::new((None, false))),
+            state: Arc::default(),
             emitter: Arc::new(emitter),
         }
     }
@@ -67,52 +86,62 @@ impl SnapshotPublisher {
         })
     }
 
+    /// Hands a snapshot over without blocking: it is sent from a background task.
     pub fn publish(&self, snapshot: Snapshot) {
-        let should_spawn = {
-            let mut pending = self
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            pending.0 = Some(snapshot);
-            if pending.1 {
-                false
-            } else {
-                pending.1 = true;
-                true
+        let wait = {
+            let mut state = lock(&self.state);
+            state.pending = Some(snapshot);
+            if state.scheduled {
+                return;
             }
+            state.scheduled = true;
+            state.last_sent_at.map_or(std::time::Duration::ZERO, |at| {
+                SNAPSHOT_INTERVAL.saturating_sub(at.elapsed())
+            })
         };
 
-        if !should_spawn {
-            return;
-        }
-
-        let pending = self.pending.clone();
+        let state = self.state.clone();
         let emitter = self.emitter.clone();
-
         tauri::async_runtime::spawn(async move {
-            tokio::task::yield_now().await;
+            // Even with no wait, yield so snapshots published back to back share one emission.
+            if wait.is_zero() {
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(wait).await;
+            }
             loop {
-                let snapshot = {
-                    let mut lock = pending
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    lock.0.take()
+                let next = {
+                    let mut state = lock(&state);
+                    match state.pending.take() {
+                        Some(snapshot) if state.last_sent.as_ref() != Some(&snapshot) => {
+                            state.last_sent = Some(snapshot.clone());
+                            state.last_sent_at = Some(std::time::Instant::now());
+                            Some(snapshot)
+                        }
+                        _ => None,
+                    }
                 };
-
-                if let Some(s) = snapshot {
-                    emitter(s);
+                if let Some(snapshot) = next {
+                    emitter(snapshot);
                 }
-
-                let mut lock = pending
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if lock.0.is_none() {
-                    lock.1 = false;
-                    break;
+                {
+                    let mut state = lock(&state);
+                    if state.pending.is_none() {
+                        state.scheduled = false;
+                        break;
+                    }
                 }
+                // Something arrived while sending: send it after the interval.
+                tokio::time::sleep(SNAPSHOT_INTERVAL).await;
             }
         });
     }
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Helper to activate or open details for a game entry given its key (or selection fallback).
@@ -644,39 +673,81 @@ pub async fn clear_tool_cache(engine: tauri::State<'_, Engine>) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    #[tokio::test]
-    async fn test_snapshot_coalescing() {
-        let emit_count = Arc::new(AtomicUsize::new(0));
-        let count_clone = emit_count.clone();
-
-        let publisher = SnapshotPublisher::new(move |_snapshot| {
-            count_clone.fetch_add(1, Ordering::SeqCst);
-        });
-
-        let snapshot = Snapshot::new(
+    fn snapshot_titled(title: &str) -> Snapshot {
+        let mut snapshot = Snapshot::new(
             &gamenode_core::auth::AuthMachine::new(Box::new(|| "nonce".into())),
             gamenode_core::StorageMethod::PrivateFile,
             Default::default(),
             None,
             None,
         );
+        snapshot.tracking.title = title.to_owned();
+        snapshot
+    }
 
-        // Emit 50 snapshots in rapid succession without yielding
-        for _ in 0..50 {
-            publisher.publish(snapshot.clone());
+    fn recording_publisher() -> (SnapshotPublisher, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let publisher = SnapshotPublisher::new(move |snapshot| {
+            sink.lock().unwrap().push(snapshot.tracking.title);
+        });
+        (publisher, seen)
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_coalescing() {
+        let (publisher, seen) = recording_publisher();
+
+        // A burst of different snapshots sent without yielding.
+        for n in 0..50 {
+            publisher.publish(snapshot_titled(&n.to_string()));
         }
+        tokio::time::sleep(Duration::from_millis(400)).await;
 
-        // Wait for tokio tasks to settle
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let total = emit_count.load(Ordering::SeqCst);
+        let seen = seen.lock().unwrap();
         assert!(
-            (1..10).contains(&total),
-            "expected coalescing, got {total} emissions"
+            (1..=3).contains(&seen.len()),
+            "expected coalescing, got {} emissions",
+            seen.len()
         );
+        assert_eq!(seen.last().map(String::as_str), Some("49"), "newest wins");
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_after_a_quiet_period_is_sent_at_once_and_a_burst_ends_on_the_newest() {
+        let (publisher, seen) = recording_publisher();
+
+        publisher.publish(snapshot_titled("first"));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["first"],
+            "not delayed by the interval"
+        );
+
+        publisher.publish(snapshot_titled("second"));
+        publisher.publish(snapshot_titled("third"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "held back until the interval ends"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(*seen.lock().unwrap(), ["first", "third"]);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_snapshot_is_not_sent_again() {
+        let (publisher, seen) = recording_publisher();
+
+        publisher.publish(snapshot_titled("same"));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        publisher.publish(snapshot_titled("same"));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(*seen.lock().unwrap(), ["same"]);
     }
 
     #[test]

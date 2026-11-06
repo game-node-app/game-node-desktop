@@ -105,6 +105,32 @@ pnpm --dir ui dev
 
 This starts the Vite development server on `http://localhost:4777` with instant HMR.
 
+### Mock authenticated library for UI work
+
+Run the frontend with the isolated mock host enabled:
+
+```sh
+pnpm --dir ui install --frozen-lockfile   # first time, or after dependency changes
+VITE_UI_MOCK=1 pnpm --dir ui dev
+```
+
+Restart an already running Vite server with the variable set; the mode is selected
+at startup. Open `http://localhost:4777/`. It starts with a fictional signed-in account and
+12 fictional games, local cover images, and a verified library. Search, filter,
+sort, grid/list view, selection, details, basic matching, the add dialog and
+sign-out/sign-in update the in-memory snapshot. Reload to reset it. Use
+`http://localhost:4777/?scenario=signed-out` to start signed out, and add
+`&locale=pt-BR` (or `?locale=pt-BR` on its own) for Portuguese.
+
+The mock replaces the Tauri command and snapshot-event bridge, including when
+Vite is displayed inside a native dev window. Unsupported commands produce a
+console warning and do nothing; they never fall through to the real host.
+This is a UI fixture, not an HTTP server or a real authenticated API: it does
+not exercise OAuth, remote endpoint contracts, native adapters, or persistence.
+The native Rust host still starts normally if you run it, so use the browser for
+an isolated UI session. The switch only works in Vite development mode; normal
+production builds and ordinary `pnpm --dir ui dev` keep their existing behavior.
+
 ### Running the native app
 
 The Tauri host embeds the built UI (`ui/dist`) through the default `custom-protocol` cargo
@@ -205,6 +231,41 @@ CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=/usr/bin/env \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
   "$(wslpath -w "$PWD/dist/windows/gamenode-desktop/install.ps1")"
 ```
+
+### Windows desktop with frontend hot reload
+
+To run the current workspace in a Windows Tauri window without replacing the
+installed application, quit GameNode completely (including its system-tray
+process), then run from WSL:
+
+```sh
+scripts/dev-windows-wsl.sh
+```
+
+The launcher builds the Windows development executable under
+`target/windows-hmr`, prepares its backup assets, starts a local Vite server,
+and opens the Windows app. It forces the real Tauri bridge rather than the UI
+mock. It uses the same Windows Credential Manager entry and local application
+data as the installed app, so an existing session can be restored and changes
+made during testing affect that data and account. If sign-in is needed, the
+Windows `app.gamenode://` URI handler must be registered; the normal Windows
+installation registers it and forwards the callback to the running dev app.
+
+Keep the launcher running while editing React, CSS, or other Vite frontend
+files; Vite updates the window. Rust and bundled provider changes require
+quitting the app and running the launcher again to rebuild it. Quit via the
+app menu or system tray to stop the development session and Vite; closing the
+window can leave the app in the tray. The launcher refuses to start if another
+GameNode process or a server on port 4777 is running. If interrupted with
+Ctrl+C, quit any development app still running in the tray before restarting.
+The normal installed executable and URI registration are not replaced.
+
+The launcher needs the WSL build tools listed above, Node.js, pnpm, Python 3,
+`curl`, `flock`, and Windows interoperability (`powershell.exe` and
+`wslpath`). The first build can take several minutes and preparing backup
+assets can download the project's pinned inputs. Windows must be able to reach
+WSL's `http://localhost:4777`; if the check fails, inspect WSL localhost
+forwarding and Windows firewall settings.
 
 For the full local workflow, run `scripts/install-windows-wsl.sh` from WSL. It
 builds the locked Windows MSVC executable, installs it for the current Windows

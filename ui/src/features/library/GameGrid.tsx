@@ -1,65 +1,234 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { useVirtualizer, observeElementRect } from '@tanstack/react-virtual';
 import { commands, useLibraryView, type Row } from '../../api';
-import { openContextMenu } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { CoverImage } from './CoverImage';
-import { formatDuration, formatMatchStatus } from './formatters';
+import { formatDuration, formatMatchStatus, getMatchDotColor } from './formatters';
+import { useLibrarySelection, type RowHandlers } from './useRowHandlers';
 
 export interface GameGridProps {
   className?: string;
   style?: React.CSSProperties;
 }
 
+const TILE_WIDTH = 166;
+const TILE_HEIGHT = 294;
+const GAP = 12;
+const ROW_PADDING_Y = 6;
+const ROW_HEIGHT = TILE_HEIGHT + GAP; // 294 + 12 gap
+const INITIAL_WIDTH = 800;
+const SET_COLUMNS_DEBOUNCE_MS = 150;
+const EMPTY_ROWS: Row[] = [];
+
+function columnsForWidth(width: number): number {
+  return Math.max(1, Math.floor((width - GAP) / (TILE_WIDTH + GAP)));
+}
+
+interface GameTileProps extends RowHandlers {
+  row: Row;
+  isSelected: boolean;
+  isFocused: boolean;
+  x: number;
+  y: number;
+}
+
+const GameTile = memo(function GameTile({
+  row,
+  isSelected,
+  isFocused,
+  x,
+  y,
+  onClick,
+  onContextMenu,
+  onDoubleClick,
+}: GameTileProps) {
+  const { t } = useI18n();
+  const dotColor = getMatchDotColor(row.status);
+  const playtimeStr = formatDuration(row.playtime?.seconds, t);
+
+  return (
+    <div
+      data-testid={`game-tile-${row.key}`}
+      role="listitem"
+      aria-label={row.title}
+      aria-selected={isSelected}
+      onClick={(e) => onClick(e, row.key)}
+      onContextMenu={(e) => onContextMenu(e, row.key)}
+      onDoubleClick={(e) => onDoubleClick(e, row.key)}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        transform: `translate(${x}px, ${y}px)`,
+        width: `${TILE_WIDTH}px`,
+        height: `${TILE_HEIGHT}px`,
+        borderRadius: 'var(--radius-md, 8px)',
+        border: isFocused
+          ? '2px solid var(--color-text-default, #D9D9D9)'
+          : isSelected
+            ? '1px solid var(--color-primary, #F15025)'
+            : '1px solid transparent',
+        backgroundColor: isSelected ? 'var(--color-accent-subtle, #F150251F)' : 'transparent',
+        cursor: 'pointer',
+        padding: '8px',
+        display: 'flex',
+        flexDirection: 'column',
+        boxSizing: 'border-box',
+        userSelect: 'none',
+        transition: 'background-color 120ms ease',
+      }}
+    >
+      {/* Cover (150x200px) */}
+      <div
+        style={{
+          width: '150px',
+          height: '200px',
+          borderRadius: 'var(--radius-sm, 4px)',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        <CoverImage
+          coverFile={row.coverFile}
+          title={row.title}
+          detectedName={row.detectedName}
+        />
+      </div>
+
+      {/* Title + Running */}
+      <div
+        title={row.title}
+        style={{
+          marginTop: '6px',
+          fontSize: 'var(--font-size-sm, 14px)',
+          fontWeight: 500,
+          color: 'var(--color-text-default, #D9D9D9)',
+          lineHeight: '17px',
+          height: '34px',
+          overflow: 'hidden',
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+        }}
+      >
+        {row.title}
+        {row.running && (
+          <span
+            style={{
+              color: 'var(--color-success, #3DD68C)',
+              fontWeight: 600,
+              marginLeft: '4px',
+            }}
+          >
+            · {t('Library::Running')}
+          </span>
+        )}
+      </div>
+
+      {/* Provider + Match Status */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          marginTop: '2px',
+          height: '16px',
+        }}
+      >
+        <span
+          title={formatMatchStatus(row.status, t)}
+          style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            backgroundColor: dotColor,
+            flexShrink: 0,
+            display: 'inline-block',
+          }}
+        />
+        <span
+          style={{
+            fontSize: 'var(--font-size-xs, 12px)',
+            color: 'var(--color-text-dimmed, #808080)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {row.providerName}
+        </span>
+      </div>
+
+      {/* Playtime */}
+      <div
+        style={{
+          marginTop: '4px',
+          fontSize: 'var(--font-size-xs, 12px)',
+          color: 'var(--color-text-dimmed, #808080)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {playtimeStr}
+      </div>
+    </div>
+  );
+});
+
 export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
   const library = useLibraryView();
-  const { t } = useI18n();
   const parentRef = useRef<HTMLDivElement>(null);
 
-  const rows: Row[] = library?.rows ?? [];
-  const selectedKeys = new Set(library?.selected ?? []);
+  const rows: Row[] = library?.rows ?? EMPTY_ROWS;
+  const { selectedKeys, handlers } = useLibrarySelection();
   const focusedKey = library?.focused;
 
-  // ResizeObserver to detect container width, fallback to 800 for tests / initial
-  const [containerWidth, setContainerWidth] = useState<number>(() => {
-    if (typeof window !== 'undefined' && parentRef.current?.clientWidth) {
-      return parentRef.current.clientWidth;
-    }
-    return 800;
-  });
+  // Track the column count (not the raw width): the ResizeObserver fires every
+  // frame while resizing, but React bails out when the count is unchanged.
+  const [columns, setColumns] = useState<number>(() => columnsForWidth(INITIAL_WIDTH));
 
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
 
     if (el.clientWidth > 0) {
-      setContainerWidth(el.clientWidth);
+      setColumns(columnsForWidth(el.clientWidth));
     }
 
     if (typeof ResizeObserver === 'undefined') return;
 
+    let frame = 0;
+    let pendingWidth = 0;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const width = entry.contentRect.width || entry.target.clientWidth;
-        if (width > 0) {
-          setContainerWidth(width);
-        }
+        if (width > 0) pendingWidth = width;
+      }
+      if (pendingWidth > 0 && !frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          setColumns(columnsForWidth(pendingWidth));
+        });
       }
     });
 
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
 
-  const columns = Math.max(1, Math.floor((containerWidth - 12) / (166 + 12)));
-
-  // Notify backend when columns change
-  const prevColumnsRef = useRef(columns);
+  // Notify backend when the column count changes (debounced, only on real change).
+  const sentColumnsRef = useRef(columns);
   useEffect(() => {
-    if (prevColumnsRef.current !== columns) {
-      prevColumnsRef.current = columns;
+    if (sentColumnsRef.current === columns) return;
+    const timer = setTimeout(() => {
+      sentColumnsRef.current = columns;
       commands.libraryInput({ setColumns: columns });
-    }
+    }, SET_COLUMNS_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   }, [columns]);
 
   const rowCount = Math.ceil(rows.length / columns);
@@ -67,61 +236,57 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 306, // 294 + 12 gap
-    overscan: 3,
-    initialRect: { width: 800, height: 600 },
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 6,
+    initialRect: { width: INITIAL_WIDTH, height: 600 },
     observeElementRect: (instance, cb) => {
       return observeElementRect(instance, (rect) => {
         cb({
-          width: rect.width || 800,
+          width: rect.width || INITIAL_WIDTH,
           height: rect.height || 600,
         });
       });
     },
   });
 
-  // Scroll to focused item's row when focus changes
+  // Scroll to the focused item's row only when the focused key (or column count)
+  // changes, not on every snapshot, so we never fight the user's own scrolling.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const scrolledToRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!focusedKey) return;
-    const idx = rows.findIndex((r) => r.key === focusedKey);
-    if (idx >= 0) {
-      const rowIndex = Math.floor(idx / columns);
-      virtualizer.scrollToIndex(rowIndex, { align: 'auto' });
+    if (!focusedKey) {
+      scrolledToRef.current = null;
+      return;
     }
-  }, [focusedKey, columns, rows, virtualizer]);
+    const token = `${focusedKey}|${columns}`;
+    if (scrolledToRef.current === token) return;
+    const idx = rowsRef.current.findIndex((r) => r.key === focusedKey);
+    if (idx < 0) return; // rows may arrive later; retried via `rows` below
+    scrolledToRef.current = token;
+    virtualizer.scrollToIndex(Math.floor(idx / columns), { align: 'auto' });
+  }, [focusedKey, columns, virtualizer, rows]);
 
-  const handleTileClick = (e: React.MouseEvent, row: Row) => {
-    if (e.button !== 0) return;
-    if (e.shiftKey) {
-      commands.libraryInput({ select: { key: row.key, mode: 'range' } });
-    } else if (e.ctrlKey || e.metaKey) {
-      commands.libraryInput({ select: { key: row.key, mode: 'toggle' } });
-    } else {
-      commands.libraryInput({ select: { key: row.key, mode: 'replace' } });
-    }
-  };
-
-  const handleTileContextMenu = (e: React.MouseEvent, row: Row) => {
-    e.preventDefault();
-    if (!selectedKeys.has(row.key)) {
-      commands.libraryInput({ select: { key: row.key, mode: 'replace' } });
-    }
-    openContextMenu(e.clientX, e.clientY, row.key);
-  };
-
-  const handleTileDoubleClick = (_e: React.MouseEvent, _row: Row) => {
-    commands.activateEntry();
-  };
-
-  const getMatchDotColor = (status: Row['status']) => {
-    if (typeof status === 'object' && 'matched' in status) {
-      return 'var(--color-success, #3DD68C)';
-    }
-    if (status === 'ambiguous') {
-      return 'var(--color-warning, #F5A524)';
-    }
-    return 'var(--color-text-dimmed, #808080)';
-  };
+  // Flatten tiles of all virtual rows under one parent, keyed by game: a tile
+  // keeps its DOM node (and decoded <img>) when columns/filter/sort reflow it.
+  const tiles: React.ReactNode[] = [];
+  for (const virtualRow of virtualizer.getVirtualItems()) {
+    const startIndex = virtualRow.index * columns;
+    const rowItems = rows.slice(startIndex, startIndex + columns);
+    rowItems.forEach((row, col) => {
+      tiles.push(
+        <GameTile
+          key={row.key}
+          row={row}
+          isSelected={selectedKeys.has(row.key)}
+          isFocused={focusedKey === row.key}
+          x={GAP + col * (TILE_WIDTH + GAP)}
+          y={virtualRow.start + ROW_PADDING_Y}
+          {...handlers}
+        />,
+      );
+    });
+  }
 
   return (
     <div
@@ -145,165 +310,7 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
           position: 'relative',
         }}
       >
-        {virtualizer.getVirtualItems().map((virtualRow) => {
-          const startIndex = virtualRow.index * columns;
-          const rowItems = rows.slice(startIndex, startIndex + columns);
-
-          return (
-            <div
-              key={virtualRow.key}
-              data-index={virtualRow.index}
-              data-testid={`grid-virtual-row-${virtualRow.index}`}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: `${virtualRow.size}px`,
-                transform: `translateY(${virtualRow.start}px)`,
-                display: 'flex',
-                gap: '12px',
-                padding: '6px 12px',
-                boxSizing: 'border-box',
-              }}
-            >
-              {rowItems.map((row) => {
-                const isSelected = selectedKeys.has(row.key);
-                const isFocused = focusedKey === row.key;
-                const dotColor = getMatchDotColor(row.status);
-                const playtimeStr = formatDuration(row.playtime?.seconds, t);
-
-                return (
-                  <div
-                    key={row.key}
-                    data-testid={`game-tile-${row.key}`}
-                    role="listitem"
-                    aria-label={row.title}
-                    aria-selected={isSelected}
-                    onClick={(e) => handleTileClick(e, row)}
-                    onContextMenu={(e) => handleTileContextMenu(e, row)}
-                    onDoubleClick={(e) => handleTileDoubleClick(e, row)}
-                    style={{
-                      width: '166px',
-                      height: '294px',
-                      borderRadius: 'var(--radius-md, 8px)',
-                      border: isFocused
-                        ? '2px solid var(--color-text-default, #D9D9D9)'
-                        : isSelected
-                          ? '1px solid var(--color-primary, #F15025)'
-                          : '1px solid transparent',
-                      backgroundColor: isSelected
-                        ? 'var(--color-accent-subtle, #F150251F)'
-                        : 'transparent',
-                      cursor: 'pointer',
-                      padding: '8px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      boxSizing: 'border-box',
-                      userSelect: 'none',
-                      transition: 'background-color 120ms ease',
-                    }}
-                  >
-                    {/* Cover (150x200px) */}
-                    <div
-                      style={{
-                        width: '150px',
-                        height: '200px',
-                        borderRadius: 'var(--radius-sm, 4px)',
-                        overflow: 'hidden',
-                        flexShrink: 0,
-                      }}
-                    >
-                      <CoverImage
-                        coverFile={row.coverFile}
-                        title={row.title}
-                        detectedName={row.detectedName}
-                      />
-                    </div>
-
-                    {/* Title + Running */}
-                    <div
-                      title={row.title}
-                      style={{
-                        marginTop: '6px',
-                        fontSize: 'var(--font-size-sm, 14px)',
-                        fontWeight: 500,
-                        color: 'var(--color-text-default, #D9D9D9)',
-                        lineHeight: '17px',
-                        height: '34px',
-                        overflow: 'hidden',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                      }}
-                    >
-                      {row.title}
-                      {row.running && (
-                        <span
-                          style={{
-                            color: 'var(--color-success, #3DD68C)',
-                            fontWeight: 600,
-                            marginLeft: '4px',
-                          }}
-                        >
-                          · {t('Library::Running')}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Provider + Match Status */}
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        marginTop: '2px',
-                        height: '16px',
-                      }}
-                    >
-                      <span
-                        title={formatMatchStatus(row.status, t)}
-                        style={{
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          backgroundColor: dotColor,
-                          flexShrink: 0,
-                          display: 'inline-block',
-                        }}
-                      />
-                      <span
-                        style={{
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          color: 'var(--color-text-dimmed, #808080)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {row.providerName}
-                      </span>
-                    </div>
-
-                    {/* Playtime */}
-                    <div
-                      style={{
-                        marginTop: '4px',
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        color: 'var(--color-text-dimmed, #808080)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {playtimeStr}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+        {tiles}
       </div>
     </div>
   );

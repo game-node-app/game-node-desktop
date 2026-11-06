@@ -15,14 +15,13 @@ export interface GameToolsModalProps {
 }
 
 export const PROXY_DLL_OPTIONS: ProxyDllName[] = [
-  'dxgi.dll',
-  'winmm.dll',
-  'version.dll',
-  'dbghelp.dll',
-  'd3d12.dll',
-  'wininet.dll',
-  'winhttp.dll',
-  'OptiScaler.asi',
+  'dxgi',
+  'winmm',
+  'version',
+  'dbghelp',
+  'd3d12',
+  'wininet',
+  'winhttp',
 ];
 
 export const GameToolsModal: React.FC<GameToolsModalProps> = ({
@@ -76,7 +75,8 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
           ('installing' in modal.operation || 'updating' in modal.operation))),
   );
 
-  const anticheatDetected = Boolean(modal.inspection?.anticheat?.detected);
+  const anticheatSystems = modal.inspection?.anticheat.detected ?? [];
+  const anticheatDetected = anticheatSystems.length > 0;
   const anticheatBlocked = anticheatDetected && !modal.anticheatConfirmed;
 
   return (
@@ -151,63 +151,12 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
           style={{
             padding: '24px',
             overflowY: 'auto',
+            minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
             gap: '20px',
           }}
         >
-          {/* Operation Status / Error Banner */}
-          {modal.operation && typeof modal.operation === 'object' && 'failed' in modal.operation && (
-            <div
-              data-testid="tool-operation-error"
-              style={{
-                padding: '12px 16px',
-                backgroundColor: 'var(--color-danger-subtle, #E5484D1F)',
-                border: '1px solid var(--color-danger, #E5484D)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
-            >
-              {modal.operation.failed.message}
-            </div>
-          )}
-
-          {modal.operation &&
-            (modal.operation === 'uninstalling' ||
-              (typeof modal.operation === 'object' &&
-                ('installing' in modal.operation || 'updating' in modal.operation))) && (
-              <div
-                data-testid="tool-operation-progress"
-                style={{
-                  padding: '12px 16px',
-                  backgroundColor: 'var(--color-accent-subtle, #F150251F)',
-                  border: '1px solid var(--color-primary, #F15025)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <span>⏳</span>
-                <span>
-                  {modal.operation === 'uninstalling'
-                    ? 'Uninstalling…'
-                    : 'installing' in modal.operation
-                      ? `Installing: ${modal.operation.installing.message}${
-                          modal.operation.installing.progressPercent != null
-                            ? ` (${modal.operation.installing.progressPercent}%)`
-                            : ''
-                        }`
-                      : `Updating: ${modal.operation.updating.message}${
-                          modal.operation.updating.progressPercent != null
-                            ? ` (${modal.operation.updating.progressPercent}%)`
-                            : ''
-                        }`}
-                </span>
-              </div>
-            )}
-
           {/* Anti-cheat warning banner */}
           {anticheatDetected && (
             <div
@@ -226,7 +175,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 {(
                   t('tools.antiCheatDetectedInstallingProxyDllsIn') ||
                   'Anti-cheat detected ({}). Installing proxy DLLs in online anti-cheat games may cause a ban.'
-                ).replace('{}', modal.inspection?.anticheat.systems.join(', ') || 'Online protection')}
+                ).replace('{}', anticheatSystems.join(', ') || 'Online protection')}
               </div>
 
               {modal.inspection?.anticheat.evidence && modal.inspection.anticheat.evidence.length > 0 && (
@@ -329,6 +278,12 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               )}
             </div>
 
+            {isInstalled && installedTool && (
+              <div data-testid="installed-version">
+                {t('tools.installedVersion', { version: installedTool.version })} ({t(`tools.${installedTool.channel}`)})
+              </div>
+            )}
+
             {/* Channel selector & Refresh versions */}
             <div
               style={{
@@ -410,7 +365,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                   <select
                     id="tool-version-select"
                     data-testid="tool-version-select"
-                    aria-label="Available versions"
+                    aria-label={t('tools.availableVersions')}
                     value={modal.selectedVersion ?? ''}
                     onChange={(e) => commands.selectToolVersion(e.target.value)}
                     style={{
@@ -426,69 +381,10 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                     {modal.availableVersions.map((v) => (
                       <option key={v.version} value={v.version}>
                         {v.tagName || v.version} {v.publishedAt ? `(${v.publishedAt})` : ''}
-                        {v.cachedPath ? ' [Cached]' : ''}
+                        {v.cachedPath ? ` [${t('tools.cached')}]` : ''}
                       </option>
                     ))}
                   </select>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '140px', overflowY: 'auto' }}>
-                    {modal.availableVersions.map((v) => {
-                      const isSelected = v.version === modal.selectedVersion;
-                      return (
-                        <div
-                          key={v.version}
-                          data-testid={`version-option-${v.version}`}
-                          onClick={() => commands.selectToolVersion(v.version)}
-                          style={{
-                            padding: '6px 10px',
-                            backgroundColor: isSelected
-                              ? 'var(--settings-bg-raised, #222222)'
-                              : 'var(--settings-bg-base, #111111)',
-                            border: `1px solid ${
-                              isSelected ? 'var(--color-primary, #F15025)' : 'var(--settings-border-subtle, #2A2A2A)'
-                            }`,
-                            borderRadius: 'var(--radius-sm, 4px)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <div>
-                            <span style={{ fontWeight: isSelected ? 600 : 400, fontSize: 'var(--font-size-xs, 12px)' }}>
-                              {v.tagName || v.version}
-                            </span>
-                            {v.publishedAt && (
-                              <span
-                                style={{
-                                  fontSize: 'var(--font-size-xs, 12px)',
-                                  color: 'var(--color-text-dimmed, #808080)',
-                                  marginLeft: '8px',
-                                }}
-                              >
-                                {v.publishedAt}
-                              </span>
-                            )}
-                          </div>
-                          {v.cachedPath && (
-                            <span
-                              data-testid={`cached-badge-${v.version}`}
-                              style={{
-                                padding: '1px 6px',
-                                borderRadius: 'var(--radius-xs, 2px)',
-                                fontSize: '10px',
-                                backgroundColor: 'var(--color-success-subtle, #3DD68C1F)',
-                                color: 'var(--color-success, #3DD68C)',
-                                fontWeight: 600,
-                              }}
-                            >
-                              Cached
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
                 </div>
               )}
             </div>
@@ -506,12 +402,12 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                     marginBottom: '6px',
                   }}
                 >
-                  Target executable
+                  {t('tools.targetExecutable')}
                 </label>
                 <select
                   id="target-exe-select"
                   data-testid="target-exe-select"
-                  aria-label="Target executable"
+                  aria-label={t('tools.targetExecutable')}
                   value={modal.inspection.selectedExe ?? modal.inspection.candidates[0]?.relativeExe ?? ''}
                   onChange={(e) => commands.selectToolTargetExe(e.target.value)}
                   style={{
@@ -528,72 +424,10 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                   {modal.inspection.candidates.map((cand) => (
                     <option key={cand.relativeExe} value={cand.relativeExe}>
                       {cand.relativeExe} {cand.architecture ? `(${cand.architecture})` : ''}
-                      {cand.preferred ? ' [Recommended]' : ''}
+                      {cand.preferred ? ` [${t('tools.recommended')}]` : ''}
                     </option>
                   ))}
                 </select>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {modal.inspection.candidates.map((cand) => {
-                    const isSelected =
-                      cand.relativeExe ===
-                      (modal.inspection?.selectedExe ?? modal.inspection?.candidates[0]?.relativeExe);
-                    return (
-                      <button
-                        key={cand.relativeExe}
-                        type="button"
-                        data-testid={`target-candidate-${cand.relativeExe}`}
-                        onClick={() => commands.selectToolTargetExe(cand.relativeExe)}
-                        style={{
-                          padding: '6px 10px',
-                          borderRadius: 'var(--radius-sm, 4px)',
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          backgroundColor: isSelected
-                            ? 'var(--color-primary, #F15025)'
-                            : 'var(--settings-bg-base, #111111)',
-                          color: isSelected
-                            ? 'var(--color-on-primary, #EDEDED)'
-                            : 'var(--color-text-default, #D9D9D9)',
-                          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                        }}
-                      >
-                        <span>{cand.label || cand.relativeExe}</span>
-                        {cand.architecture && (
-                          <span
-                            style={{
-                              fontSize: '10px',
-                              opacity: 0.8,
-                              padding: '1px 4px',
-                              backgroundColor: 'rgba(0,0,0,0.2)',
-                              borderRadius: '2px',
-                            }}
-                          >
-                            {cand.architecture}
-                          </span>
-                        )}
-                        {cand.preferred && (
-                          <span
-                            data-testid={`preferred-badge-${cand.relativeExe}`}
-                            style={{
-                              fontSize: '10px',
-                              fontWeight: 600,
-                              padding: '1px 4px',
-                              backgroundColor: isSelected ? '#FFFFFF33' : 'var(--color-primary, #F15025)',
-                              color: '#FFFFFF',
-                              borderRadius: '2px',
-                            }}
-                          >
-                            Preferred
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
             )}
 
@@ -614,7 +448,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               <select
                 id="proxy-dll-select"
                 data-testid="proxy-dll-select"
-                aria-label="Proxy DLL"
+                aria-label={t('tools.proxyDllName')}
                 value={modal.selectedProxy}
                 onChange={(e) => commands.selectToolProxy(e.target.value)}
                 style={{
@@ -630,39 +464,10 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               >
                 {PROXY_DLL_OPTIONS.map((dll) => (
                   <option key={dll} value={dll}>
-                    {dll} {dll === 'dxgi.dll' ? '(Recommended)' : ''}
+                    {dll}.dll {dll === 'dxgi' ? `(${t('tools.recommended')})` : ''}
                   </option>
                 ))}
               </select>
-
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                {PROXY_DLL_OPTIONS.map((dll) => {
-                  const isSelected = dll === modal.selectedProxy;
-                  return (
-                    <button
-                      key={dll}
-                      type="button"
-                      data-testid={`proxy-option-${dll}`}
-                      onClick={() => commands.selectToolProxy(dll)}
-                      style={{
-                        padding: '4px 10px',
-                        borderRadius: 'var(--radius-sm, 4px)',
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        backgroundColor: isSelected
-                          ? 'var(--color-primary, #F15025)'
-                          : 'var(--settings-bg-base, #111111)',
-                        color: isSelected
-                          ? 'var(--color-on-primary, #EDEDED)'
-                          : 'var(--color-text-default, #D9D9D9)',
-                        border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {dll}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             {/* Reset configuration checkbox */}
@@ -688,6 +493,61 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               </label>
             </div>
           </div>
+        </div>
+
+        <div style={{ padding: modal.operation ? '12px 24px 0' : 0 }} aria-live="polite">
+          {/* Operation Status / Error Banner */}
+          {modal.operation && typeof modal.operation === 'object' && 'failed' in modal.operation && (
+            <div
+              data-testid="tool-operation-error"
+              style={{
+                padding: '12px 16px',
+                backgroundColor: 'var(--color-danger-subtle, #E5484D1F)',
+                border: '1px solid var(--color-danger, #E5484D)',
+                borderRadius: 'var(--radius-sm, 4px)',
+                color: 'var(--color-text-default, #D9D9D9)',
+              }}
+            >
+              {modal.operation.failed.message}
+            </div>
+          )}
+
+          {modal.operation &&
+            (modal.operation === 'uninstalling' ||
+              (typeof modal.operation === 'object' &&
+                ('installing' in modal.operation || 'updating' in modal.operation))) && (
+              <div
+                data-testid="tool-operation-progress"
+                style={{
+                  padding: '12px 16px',
+                  backgroundColor: 'var(--color-accent-subtle, #F150251F)',
+                  border: '1px solid var(--color-primary, #F15025)',
+                  borderRadius: 'var(--radius-sm, 4px)',
+                  color: 'var(--color-text-default, #D9D9D9)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                <span>⏳</span>
+                <span>
+                  {modal.operation === 'uninstalling'
+                    ? t('tools.uninstalling')
+                    : 'installing' in modal.operation
+                      ? `${modal.operation.installing.message}${
+                          modal.operation.installing.progressPercent != null
+                            ? ` (${modal.operation.installing.progressPercent}%)`
+                            : ''
+                        }`
+                      : `${modal.operation.updating.message}${
+                          modal.operation.updating.progressPercent != null
+                            ? ` (${modal.operation.updating.progressPercent}%)`
+                            : ''
+                        }`}
+                </span>
+              </div>
+            )}
+
         </div>
 
         {/* Footer actions */}
@@ -732,7 +592,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 opacity: isBusy ? 0.5 : 1,
               }}
             >
-              {t('tools.uninstall')}
+              {modal.operation === 'uninstalling' ? t('tools.uninstalling') : t('tools.uninstall')}
             </button>
           )}
 
@@ -753,7 +613,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 opacity: isBusy || anticheatBlocked ? 0.5 : 1,
               }}
             >
-              {t('tools.updateApply')}
+              {modal.operation && typeof modal.operation === 'object' && 'updating' in modal.operation ? t('tools.updating') : t('tools.updateApply')}
             </button>
           ) : (
             <button
@@ -772,7 +632,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
                 opacity: isBusy || anticheatBlocked ? 0.5 : 1,
               }}
             >
-              {t('tools.installOptiscaler')}
+              {modal.operation && typeof modal.operation === 'object' && 'installing' in modal.operation ? t('tools.installing') : t('tools.installOptiscaler')}
             </button>
           )}
         </div>

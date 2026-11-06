@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    time::SystemTime,
 };
 pub const SOURCE: &str =
     "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml";
@@ -19,6 +20,50 @@ struct Metadata {
     etag: Option<String>,
     checked: i64,
     hash: String,
+}
+/// The parsed manifest is large, so every consumer shares one parse until the file changes.
+struct Loaded {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+    snapshot: ManifestSnapshot,
+}
+static LOADED: Mutex<Option<Loaded>> = Mutex::new(None);
+fn stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+fn shared(path: &Path) -> Option<ManifestSnapshot> {
+    let (len, modified) = stamp(path)?;
+    let loaded = LOADED.lock().ok()?;
+    let loaded = loaded.as_ref()?;
+    (loaded.path == path && loaded.len == len && loaded.modified == modified)
+        .then(|| loaded.snapshot.clone())
+}
+fn load_file(path: &Path) -> Result<ManifestSnapshot, LocalError> {
+    if let Some(snapshot) = shared(path) {
+        return Ok(snapshot);
+    }
+    let stamp = stamp(path);
+    let snapshot = ManifestCache::snapshot(&read_bounded(path)?)?;
+    if let (Some((len, modified)), Ok(mut loaded)) = (stamp, LOADED.lock()) {
+        *loaded = Some(Loaded {
+            path: path.to_owned(),
+            len,
+            modified,
+            snapshot: snapshot.clone(),
+        });
+    }
+    Ok(snapshot)
+}
+/// Drops the shared parsed manifest so an idle app does not keep it resident.
+pub fn release_loaded() {
+    forget_loaded();
+}
+fn forget_loaded() {
+    if let Ok(mut loaded) = LOADED.lock() {
+        *loaded = None;
+    }
 }
 pub struct ManifestCache {
     pub directory: PathBuf,
@@ -47,12 +92,10 @@ impl ManifestCache {
     }
     pub fn load(&self) -> Result<ManifestSnapshot, LocalError> {
         let cached = self.directory.join("manifest.yaml");
-        if let Ok(bytes) = read_bounded(&cached)
-            && let Ok(snapshot) = Self::snapshot(&bytes)
-        {
+        if let Ok(snapshot) = load_file(&cached) {
             return Ok(snapshot);
         }
-        Self::snapshot(&read_bounded(&self.baseline)?)
+        load_file(&self.baseline)
     }
     pub fn update(&self, now: i64) -> Result<ManifestSnapshot, LocalError> {
         self.update_from_source(now, SOURCE)
@@ -122,6 +165,7 @@ impl ManifestCache {
             Err(_) => return Ok(current),
         };
         atomic_write(&self.directory.join("manifest.yaml"), &bytes)?;
+        forget_loaded();
         metadata.etag = etag;
         metadata.hash = snapshot.hash.clone();
         atomic_write(

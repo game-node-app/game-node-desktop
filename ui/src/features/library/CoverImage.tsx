@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { coverAssetUrl } from '../../api';
 
 export interface CoverImageProps {
@@ -9,6 +9,19 @@ export interface CoverImageProps {
   style?: React.CSSProperties;
 }
 
+/**
+ * Cover URLs that have already finished loading in this session. The virtualized
+ * grid/list remounts <img> elements as rows scroll in and out; for known covers
+ * the browser serves the decoded image from cache, so we skip the fade-in and
+ * avoid a blank flash.
+ */
+const loadedCovers = new Set<string>();
+
+/** Test helper: forget which covers have loaded. */
+export function resetLoadedCovers(): void {
+  loadedCovers.clear();
+}
+
 export const CoverImage: React.FC<CoverImageProps> = ({
   coverFile,
   title,
@@ -16,17 +29,34 @@ export const CoverImage: React.FC<CoverImageProps> = ({
   className,
   style,
 }) => {
-  const [hasError, setHasError] = useState(false);
   const src = coverAssetUrl(coverFile);
+  // Keyed by URL so a failure never outlives the src it happened for: when the
+  // cover changes (e.g. arrives after a failed attempt) the new src is retried.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const hasError = src != null && failedSrc === src;
+  const loaded = src != null && (loadedSrc === src || loadedCovers.has(src));
+
+  const markLoaded = useCallback((url: string) => {
+    loadedCovers.add(url);
+    setLoadedSrc(url);
+  }, []);
 
   if (src && !hasError) {
     return (
       <img
+        // Cached images can finish before React attaches onLoad.
+        ref={(img) => {
+          if (img && img.complete && img.naturalWidth > 0 && !loadedCovers.has(src)) {
+            markLoaded(src);
+          }
+        }}
         src={src}
         alt={title}
         loading="lazy"
         decoding="async"
-        onError={() => setHasError(true)}
+        onLoad={() => markLoaded(src)}
+        onError={() => setFailedSrc(src)}
         className={className}
         style={{
           width: '100%',
@@ -34,6 +64,9 @@ export const CoverImage: React.FC<CoverImageProps> = ({
           objectFit: 'cover',
           display: 'block',
           borderRadius: 'inherit',
+          backgroundColor: 'var(--color-surface, #262525)',
+          opacity: loaded ? 1 : 0,
+          transition: loaded ? 'opacity 120ms ease' : undefined,
           ...style,
         }}
       />

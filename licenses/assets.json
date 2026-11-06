@@ -1,6 +1,6 @@
 [
   {
-    "path": "crates/app/ui/fonts/Roboto-Variable.ttf",
+    "path": "ui/src/assets/fonts/Roboto-Variable.ttf",
     "source": "https://raw.githubusercontent.com/google/fonts/1c627bfa375fc51cf86fabeca4f6e08a95f0aa5c/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf",
     "sha256": "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
     "license": "OFL-1.1"
@@ -12,31 +12,31 @@
     "license": "OFL-1.1"
   },
   {
-    "path": "crates/app/ui/icons/gamenode-logo.svg",
+    "path": "crates/app/icons/gamenode-logo.svg",
     "source": "openspec/changes/bootstrap-desktop-foundation/references/assets/gamenode-logo.svg",
     "sha256": "bdd1cce84624e13fa4516a4c2377d163f6bb2fd57e6d62e507a39a061e0fe83b",
     "license": "GPL-3.0-only"
   },
   {
-    "path": "crates/app/ui/icons/gamenode.png",
+    "path": "crates/app/icons/gamenode.png",
     "source": "../game-node-clients/apps/mobile/assets/android/icon/drawable-xxxhdpi-icon.png",
     "sha256": "e31c75769177f34e76cc3a11e46ca6b891bd6bf557b52a61e7da5686c2e11a26",
     "license": "GPL-3.0-only"
   },
   {
-    "path": "crates/app/ui/icons/library.svg",
+    "path": "crates/app/icons/library.svg",
     "source": "Authored for GameNode Desktop foundation UI, 2026-11-04",
     "sha256": "2c2023a8cb24554f1bdfb56a180c5ac5d3df730e4d527075c654a25b375be41c",
     "license": "GPL-3.0-only"
   },
   {
-    "path": "crates/app/ui/icons/settings.svg",
+    "path": "crates/app/icons/settings.svg",
     "source": "Authored for GameNode Desktop foundation UI, 2026-11-04",
     "sha256": "1fe3b2f62deeb285fa095677e674c317b8aa050de9d8cf7ffc651e152e60c2a6",
     "license": "GPL-3.0-only"
   },
   {
-    "path": "crates/app/ui/icons/arrow.svg",
+    "path": "crates/app/icons/arrow.svg",
     "source": "Authored for GameNode Desktop foundation UI, 2026-11-04",
     "sha256": "0711bc4bf19be22549b1aff3c8678015c69e0d7c7b56238a0f63f2bb80bec46f",
     "license": "GPL-3.0-only"

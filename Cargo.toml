@@ -6,8 +6,7 @@ members = ["crates/core", "crates/platform", "crates/api", "crates/app"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-# GPL-3.0-only is the repository license. It is also the Slint licensing path used by this
-# application (Slint is offered as GPL-3.0-only OR a royalty-free OR a commercial license).
+# GPL-3.0-only is the repository license.
 license = "GPL-3.0-only"
 authors = ["GameNode"]
 publish = false

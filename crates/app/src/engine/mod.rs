@@ -104,7 +104,13 @@ struct State {
     local: gamenode_core::drm_free::LocalView,
     tools: gamenode_core::tools::ToolsView,
     tool_reset_config: bool,
-    tool_last_fetch: std::collections::HashMap<(gamenode_core::tools::ToolId, gamenode_core::tools::ToolChannel), Instant>,
+    tool_last_fetch: std::collections::HashMap<
+        (
+            gamenode_core::tools::ToolId,
+            gamenode_core::tools::ToolChannel,
+        ),
+        Instant,
+    >,
     tool_selected_target_exe: Option<String>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
@@ -137,7 +143,7 @@ pub struct Engine {
 
 impl Engine {
     /// `publish` is called with every new snapshot, from arbitrary threads, while the engine's
-    /// lock is held: it must hand the snapshot off (e.g. `slint::invoke_from_event_loop`) and
+    /// lock is held: it must hand the snapshot off (e.g. emit a Tauri `engine:snapshot` event) and
     /// must not call back into the engine.
     pub fn new(
         ports: Ports,
@@ -187,6 +193,14 @@ impl Engine {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn covers_dir(&self) -> &std::path::Path {
+        &self.shared.ports.covers_dir
+    }
+
+    pub fn host_files(&self) -> &Arc<dyn gamenode_core::ports::HostFiles> {
+        &self.shared.ports.files
     }
 
     pub fn snapshot(&self) -> Snapshot {

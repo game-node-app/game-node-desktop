@@ -57,11 +57,12 @@ PY
 read -r build_version < "$package/VERSION"
 read -r target < "$stage/target"
 read -r binary < "$stage/binary"
+pnpm --dir ui build
 GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-app --locked
 cp "$binary" "$package/libexec/gamenode"
 cp LICENSE "$package/LICENSE"
 cp packaging/linux/README.md "$package/README.md"
-cp crates/app/ui/icons/gamenode.png "$package/gamenode.png"
+cp crates/app/icons/gamenode.png "$package/gamenode.png"
 cp packaging/linux/{install.sh,uninstall.sh,gamenode.sh,desktop-integration.sh} "$package/"
 cp -R licenses "$package/licenses"
 chmod 755 "$package/libexec/gamenode" "$package/install.sh" "$package/uninstall.sh" "$package/gamenode.sh"

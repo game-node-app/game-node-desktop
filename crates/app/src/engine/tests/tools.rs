@@ -1,8 +1,8 @@
 use super::*;
 use gamenode_core::drm_free::Registration;
 use gamenode_core::tools::{
-    optiscaler_descriptor, CachedToolArchive, InMemoryToolStore, MockToolCatalogApi,
-    MockToolInstallerHost, ToolChannel, ToolOperationStatus, ToolRelease,
+    CachedToolArchive, InMemoryToolStore, MockToolCatalogApi, MockToolInstallerHost, ToolChannel,
+    ToolOperationStatus, ToolRelease, optiscaler_descriptor,
 };
 
 async fn eventually(mut predicate: impl FnMut() -> bool) {
@@ -252,9 +252,7 @@ async fn install_update_and_uninstall_optiscaler_lifecycle() {
     .await;
 
     // 1. Install OptiScaler Stable v0.7.9
-    th.harness
-        .engine
-        .select_tool_proxy("dxgi.dll".to_string());
+    th.harness.engine.select_tool_proxy("dxgi.dll".to_string());
     th.harness.engine.install_or_update_tool(false);
 
     eventually(|| {
@@ -283,7 +281,8 @@ async fn install_update_and_uninstall_optiscaler_lifecycle() {
     eventually(|| {
         let snapshot = th.harness.engine.snapshot();
         snapshot.tools.modal.as_ref().is_some_and(|m| {
-            m.selected_channel == ToolChannel::Nightly && m.selected_version.as_deref() == Some("0.8.0-pre1")
+            m.selected_channel == ToolChannel::Nightly
+                && m.selected_version.as_deref() == Some("0.8.0-pre1")
         })
     })
     .await;
@@ -291,9 +290,16 @@ async fn install_update_and_uninstall_optiscaler_lifecycle() {
     th.harness.engine.install_or_update_tool(true);
     eventually(|| {
         let snapshot = th.harness.engine.snapshot();
-        snapshot.tools.installed_by_entry.get("manual:game1").is_some_and(|list| {
-            list.iter().any(|t| t.version == "0.8.0-pre1")
-        }) && snapshot.tools.modal.as_ref().is_some_and(|m| m.operation.is_none())
+        snapshot
+            .tools
+            .installed_by_entry
+            .get("manual:game1")
+            .is_some_and(|list| list.iter().any(|t| t.version == "0.8.0-pre1"))
+            && snapshot
+                .tools
+                .modal
+                .as_ref()
+                .is_some_and(|m| m.operation.is_none())
     })
     .await;
 
@@ -307,8 +313,16 @@ async fn install_update_and_uninstall_optiscaler_lifecycle() {
     th.harness.engine.uninstall_tool();
     eventually(|| {
         let snapshot = th.harness.engine.snapshot();
-        snapshot.tools.installed_by_entry.get("manual:game1").is_none_or(|list| list.is_empty())
-            && snapshot.tools.modal.as_ref().is_some_and(|m| m.operation.is_none())
+        snapshot
+            .tools
+            .installed_by_entry
+            .get("manual:game1")
+            .is_none_or(|list| list.is_empty())
+            && snapshot
+                .tools
+                .modal
+                .as_ref()
+                .is_some_and(|m| m.operation.is_none())
     })
     .await;
 

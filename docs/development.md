@@ -4,10 +4,10 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the commit-message convention used
 by developers and AI agents.
 
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
-rustfmt and Clippy; Slint and slint-build are pinned together to 1.18.1. Install
-Rust using rustup, then let rustup install the toolchain when invoking Cargo.
-Keep `Cargo.lock` and use `--locked`. The workspace has exactly four packages:
-core, platform, api and app. Core has no Slint or OS adapter dependency.
+rustfmt and Clippy. Install Rust using rustup, then let rustup install the toolchain
+when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has
+exactly four packages: core, platform, api and app. Core has no Tauri or OS adapter dependency.
+Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Linux (Ubuntu/Debian, native x86-64)
 
@@ -16,21 +16,16 @@ Install native prerequisites:
 ```sh
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config cmake ninja-build clang libclang-dev python3 git curl \
-  libfontconfig1-dev libfreetype6-dev libx11-dev libx11-xcb-dev libxcb1-dev x11-xserver-utils \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxrandr-dev libxi-dev \
-  libxcursor-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-  libegl1-mesa-dev libgl1-mesa-dev libvulkan-dev
+  libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 ```
 
-The selected Winit backend supports X11 and Wayland. Running the graphical
-application requires a logged-in graphical session, its display connection and
-working graphics drivers; software rendering is the foundation's alternative.
+The desktop application is powered by Tauri v2 with WebKitGTK on Linux. Running
+the graphical application requires a logged-in graphical session and display connection.
 Secret Service uses the user D-Bus session and an installed service such as
 GNOME Keyring or KWallet. No Secret Service activates the documented private-file
 fallback; a locked service must not do so. SQLite is bundled and does not require
 a separately installed SQLite development package. The HTTP client uses Rustls,
-not OpenSSL. Skia builds can download a matching prebuilt archive; source builds
-need the C++/Clang/Python toolchain listed above and network access for Skia sources.
+not OpenSSL.
 
 ## Windows (native x86-64 MSVC)
 
@@ -40,8 +35,8 @@ Ninja, Python 3, Git and rustup. Use an x64 Native Tools command prompt or a
 PowerShell session with that developer environment initialized. Ensure these
 tools are on PATH; if libclang cannot be located, set `LIBCLANG_PATH` to the LLVM
 `bin` directory. Use the `x86_64-pc-windows-msvc` Rust host toolchain. Windows
-Credential Manager is the credential backend and has no file fallback. Slint
-uses Winit with Skia or software rendering; Qt and WebView are not required.
+Credential Manager is the credential backend and has no file fallback. Tauri v2
+uses WebView2 on Windows.
 
 Native Linux and Windows builds require their corresponding prerequisites above.
 This change does not configure hosted CI runners; its verification commands are
@@ -50,6 +45,7 @@ run locally, and cross-compilation does not replace native OS acceptance.
 ## Required checks (both platforms)
 
 ```sh
+pnpm --dir ui build
 cargo metadata --no-deps --format-version 1
 cargo check --workspace --locked
 cargo fmt --all -- --check
@@ -77,71 +73,73 @@ application data. Unit/mock tests do not prove real-provider OAuth, native
 installation, keyboard navigation, or graphical X11/Wayland behavior. Record
 those separately using the change's acceptance tasks.
 
-## Live UI Screen Studio and hot-reload (WSL / Linux)
+## Frontend Development and Preview Workflow (Vite & T3 Code Preview)
 
 For day-to-day UI iteration, visual inspection, keyboard/mouse testing, and
-AI-agent verification—including Windows-gated DRM-free and local save-protection
-screens—prefer the isolated software-rendered screen studio over cross-building
+AI-agent verification—including DRM-free and local save-protection screens—prefer
+the Vite development server and interactive browser preview over cross-building
 and reinstalling the Windows package on every edit.
 
-[`crates/app/examples/ui-review.rs`](../crates/app/examples/ui-review.rs) runs
-`AppWindow` inside Slint's deterministic `MinimalSoftwareWindow` with in-memory
-fixture state (no database, credential store, or network access) and encodes
-frames directly to PNG or PPM. [`scripts/dev-screen.sh`](../scripts/dev-screen.sh)
-wraps it with a background file watcher and CLI driver.
+The frontend is located in `ui/` and is built with React 19, `@tauri-apps/api`,
+`@tanstack/react-query`, `@tanstack/react-virtual`, and `@tanstack/react-store`.
 
-### Starting from scratch
+### Architecture Guardrails
+
+- **Async Tauri Commands**: Handlers implemented in Rust must be asynchronous
+  `#[tauri::command]` functions that offload heavy computation or blocking I/O to
+  worker threads, keeping IPC responsive.
+- **Custom Asset Protocol**: Cover images and artwork are loaded via the custom
+  `gamenode-asset://` protocol (`gamenode-asset://localhost/cover/<file>` and
+  `gamenode-asset://localhost/artwork/<game_id>`). In React, render covers using
+  `<img loading="lazy" decoding="async" />`.
+- **Virtualized Views**: The game library grid and list views utilize `@tanstack/react-virtual`
+  for high-performance DOM virtualization with large game collections.
+- **State & Query Bridge**: Use `@tanstack/react-query` to bridge engine snapshot events
+  and query cache updates, and `@tanstack/react-store` for client-side UI state.
+
+### Running the Vite Development Server
 
 ```sh
-./scripts/dev-screen.sh start
+pnpm --dir ui dev
 ```
 
-This builds `ui-review` (`--locked`), starts the HTTP studio on
-`http://127.0.0.1:4777`, keeps the latest rendered frame at
-`/tmp/gamenode-screen.png`, and watches `crates/app/ui/**`,
-`crates/app/examples/ui-review.rs`, and `i18n/**`. Whenever a watched file
-changes, it automatically rebuilds and restarts the server while restoring the
-active preset, locale, and window size from `/tmp/gamenode-ui-state.json`.
+This starts the Vite development server on `http://localhost:4777` with instant HMR.
 
-### Driving the screen from the CLI or browser
+### Running the native app
 
-- **Browser / T3 Code Preview**: open `http://127.0.0.1:4777` to see the live
-  1:1 canvas, click/drag/scroll/type directly on the Slint window, switch
-  presets/locales/window sizes from the top toolbar, and inspect the live state
-  JSON in the side panel.
-- **CLI subcommands** (each command updates `/tmp/gamenode-screen.png` and
-  prints the updated state JSON):
+The Tauri host embeds the built UI (`ui/dist`) through the default `custom-protocol` cargo
+feature, so build the frontend first and run the host:
+
+```sh
+pnpm --dir ui build
+cargo run -p gamenode-app
+```
+
+Without that feature Tauri treats the build as a dev build and loads `devUrl`
+(`http://localhost:4777`), which shows a blank "Operation was cancelled" window when no Vite
+server is running. For native HMR, start `pnpm --dir ui dev` and run
+`cargo run -p gamenode-app --no-default-features`.
+
+### Driving and previewing from T3 Code Preview
+
+- **Browser / T3 Code Preview**: open `http://localhost:4777` via `preview_open`
+  (`target: { kind: "environment-port", port: 4777 }`) to preview and interact with
+  the UI directly.
+- **Automated Frontend Tests**:
   ```sh
-  ./scripts/dev-screen.sh status                         # Print current screen & property state JSON
-  ./scripts/dev-screen.sh preset drm-detail en           # Open a preset (with optional locale and WxH)
-  ./scripts/dev-screen.sh preset restore pt_BR 1100x720  # Save protection + restore preview in pt_BR
-  ./scripts/dev-screen.sh preset editor en               # DRM-free game settings editor modal
-  ./scripts/dev-screen.sh locale pt_BR                   # Switch between en and pt_BR
-  ./scripts/dev-screen.sh resize 640x420                 # Test compact (640x420) or wide (1440x900) sizes
-  ./scripts/dev-screen.sh click 520 340                  # Click logical coordinates (x, y)
-  ./scripts/dev-screen.sh key Escape                     # Send key (Escape, Tab, Return, DownArrow, F5, ...)
-  ./scripts/dev-screen.sh type "Celeste"                 # Type text into focused input
-  ./scripts/dev-screen.sh shot /tmp/review.png           # Save a PNG or PPM screenshot to a custom path
-  ./scripts/dev-screen.sh stop                           # Stop the background server and watcher
+  pnpm --dir ui test --run
   ```
-- **One-shot snapshot mode** (without starting the server):
+- **Building Frontend Assets**:
   ```sh
-  cargo run --locked -p gamenode-app --example ui-review -- /tmp/shot.png library protection pt_BR
-  ```
-- **Headless integration tests** (can also dump per-step PPM screenshots when
-  `GAMENODE_SHOTS=<dir>` is set):
-  ```sh
-  GAMENODE_SHOTS=/tmp/shots cargo test --locked -p gamenode-app --test library_screen --test library_pt_br
+  pnpm --dir ui build
   ```
 
 ### Scope and limitations
 
-The live screen studio verifies `.slint` layouts, responsive sizing, focus
-scopes, keyboard navigation, localization (`en` and `pt_BR`), and UI callback
-wiring, but it **does not** exercise:
-- Native Winit/OS window decorations, DPI scale factors from a physical monitor,
-  or the Windows system tray (`ui/tray.slint`).
-- Skia GPU rendering or automatic GPU-to-software startup fallback.
+Vite browser preview verifies React components, styling, responsive sizing, focus
+scopes, keyboard navigation, and localization (`en` and `pt-BR`), but it **does not** exercise:
+- Native OS window decorations, DPI scale factors from a physical monitor, or the native
+  Windows system tray.
 - Real OS adapters (`gamenode-platform`): Windows Credential Manager, Secret
   Service, native file dialogs, Windows process/parent tracking, directory-change
   notifications, registry access, or Ludusavi helper execution.
@@ -227,7 +225,7 @@ Application data is preserved.
 
 On 2026-11-04, 104 Linux tests and 94 actual Windows tests passed. The Linux
 locked check, formatting and Clippy passed; the Windows MSVC-target cross-build
-passed and the installed native app opened in pt-BR using Skia. See
+passed and the installed native app opened in pt-BR. See
 `windows-verification.md` for the local installation evidence and limits.
 This checkout has no configured Git remote. Clean-checkout native CI builds
 and uploaded CI artifacts remain pending; WSL cross-compilation and execution

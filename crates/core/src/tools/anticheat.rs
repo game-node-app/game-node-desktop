@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 /// Known anti-cheat technologies and blocklist categories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum AntiCheatSystem {
     EasyAntiCheat,
     BattlEye,
@@ -23,6 +24,7 @@ impl std::fmt::Display for AntiCheatSystem {
 
 /// Evaluation report indicating whether anti-cheat markers or blocklisted titles were found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AntiCheatReport {
     pub detected: Vec<AntiCheatSystem>,
     pub evidence: Vec<String>,
@@ -93,7 +95,9 @@ pub fn evaluate_anticheat<'a>(
         for blocked in BLOCKLISTED_TITLES {
             if normalized_title == *blocked || normalized_title.contains(blocked) {
                 detected_systems.insert(AntiCheatSystem::Blocklisted);
-                evidence.push(format!("Title '{title}' matches blocklist entry '{blocked}'"));
+                evidence.push(format!(
+                    "Title '{title}' matches blocklist entry '{blocked}'"
+                ));
                 break;
             }
         }
@@ -109,8 +113,12 @@ pub fn evaluate_anticheat<'a>(
         let filename = parts.last().copied().unwrap_or("");
 
         // EasyAntiCheat detection
-        let is_eac_dir = parts.iter().take(parts.len().saturating_sub(1)).any(|&p| p == "easyanticheat");
-        let is_eac_file = filename.starts_with("easyanticheat") || filename.starts_with("install_easyanticheat");
+        let is_eac_dir = parts
+            .iter()
+            .take(parts.len().saturating_sub(1))
+            .any(|&p| p == "easyanticheat");
+        let is_eac_file =
+            filename.starts_with("easyanticheat") || filename.starts_with("install_easyanticheat");
 
         if is_eac_dir || is_eac_file {
             detected_systems.insert(AntiCheatSystem::EasyAntiCheat);
@@ -118,7 +126,10 @@ pub fn evaluate_anticheat<'a>(
         }
 
         // BattlEye detection
-        let is_be_dir = parts.iter().take(parts.len().saturating_sub(1)).any(|&p| p == "battleye");
+        let is_be_dir = parts
+            .iter()
+            .take(parts.len().saturating_sub(1))
+            .any(|&p| p == "battleye");
         let is_be_file = filename.starts_with("beservice")
             || filename.starts_with("beclient")
             || filename.starts_with("install_battleye");
@@ -183,7 +194,11 @@ mod tests {
         let report = evaluate_anticheat(
             "steam:54321",
             "Tactical Shooter",
-            ["BattlEye/BEService_x64.exe", "BattlEye/BEClient_x64.dll", "Binaries/Game.exe"],
+            [
+                "BattlEye/BEService_x64.exe",
+                "BattlEye/BEClient_x64.dll",
+                "Binaries/Game.exe",
+            ],
         );
         assert!(report.has_warning());
         assert_eq!(report.detected, vec![AntiCheatSystem::BattlEye]);

@@ -186,12 +186,21 @@ fn counts_installed_games_per_provider_and_keeps_empty_ones() {
         &rows,
         [("steam", "Steam"), ("shop", "Shop"), ("gog", "GOG")],
     );
-    let pairs: Vec<_> = counted
-        .iter()
-        .map(|c| (c.provider.as_str(), c.count))
-        .collect();
+    let pairs: Vec<_> = counted.iter().map(|c| (c.id.as_str(), c.count)).collect();
     assert_eq!(pairs, [("steam", 2), ("shop", 2), ("gog", 0)]);
     assert_eq!(counted[0].name, "Steam");
+}
+
+#[test]
+fn provider_counts_reach_the_frontend_with_the_keys_it_reads() {
+    // The UI's `ProviderCount` is `{ id, name, count }`; a sidebar button without `id` cannot
+    // send its filter, so the wire shape is pinned here.
+    let counted = counts(&sample(), [("steam", "Steam")]);
+    let json = serde_json::to_value(&counted[0]).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "id": "steam", "name": "Steam", "count": 2 })
+    );
 }
 
 #[test]

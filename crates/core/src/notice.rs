@@ -1,15 +1,21 @@
 //! User-facing statuses and errors, as codes. The app translates them (English / pt-BR).
 
+use serde::{Deserialize, Serialize};
+
 /// How prominently a notice is shown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Severity {
     Info,
     Warning,
     Error,
 }
 
+pub type NoticeKind = Severity;
+
 /// A foundation status or error. Carries no credential, URL or other sensitive data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Notice {
     /// The system browser could not be opened.
     BrowserLaunchFailed,

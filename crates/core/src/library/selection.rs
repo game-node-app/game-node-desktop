@@ -6,10 +6,13 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use super::machine::LibraryMachine;
 
 /// How a click or Enter changes the selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SelectMode {
     /// A plain click: only this entry.
     Replace,
@@ -19,7 +22,8 @@ pub enum SelectMode {
     Range,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Direction {
     Up,
     Down,

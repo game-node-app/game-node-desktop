@@ -3,12 +3,12 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use gamenode_core::ToolId;
 use gamenode_core::ports::StorageError;
 use gamenode_core::tools::{
     ProxyDllName, ToolChannel, ToolError, ToolFileRecord, ToolIniPatchRecord, ToolInstallState,
     ToolInstallation, ToolRelease, ToolStore,
 };
-use gamenode_core::ToolId;
 use rusqlite::{Connection, OptionalExtension, params};
 
 const INI_PATCH_PREFIX: &str = "__ini_patch__:";
@@ -32,7 +32,9 @@ fn state_from_str(s: &str) -> Result<ToolInstallState, ToolError> {
         "installed" => Ok(ToolInstallState::Installed),
         "updating" => Ok(ToolInstallState::Updating),
         "uninstalling" => Ok(ToolInstallState::Uninstalling),
-        other => Err(ToolError::Failed(format!("unknown tool install state: {other}"))),
+        other => Err(ToolError::Failed(format!(
+            "unknown tool install state: {other}"
+        ))),
     }
 }
 
@@ -506,12 +508,13 @@ impl ToolStore for SqliteToolStore {
                 let sha256: Option<String> = row.get(9)?;
                 let cached_path: Option<String> = row.get(10)?;
 
-                let channel = ToolChannel::from_str(&channel_str)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                let channel = ToolChannel::from_str(&channel_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
                         1,
                         rusqlite::types::Type::Text,
                         Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-                    ))?;
+                    )
+                })?;
 
                 Ok(ToolRelease {
                     tool_id: ToolId::new(tool_id_str),
@@ -628,8 +631,8 @@ impl ToolStore for SqliteToolStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gamenode_core::library::{LastAccount, LibraryStore};
     use crate::db::SqliteSettingsStore;
+    use gamenode_core::library::{LastAccount, LibraryStore};
     use tempfile::TempDir;
 
     fn open_test_store(dir: &TempDir) -> (SqliteSettingsStore, SqliteToolStore) {
@@ -694,9 +697,7 @@ mod tests {
             .expect("inst1 should exist");
         assert_eq!(retrieved, inst1);
 
-        let not_found = store
-            .get_installation("manual:game123", &fsr_id)
-            .unwrap();
+        let not_found = store.get_installation("manual:game123", &fsr_id).unwrap();
         assert!(not_found.is_none());
 
         // Check list_for_entry
@@ -729,7 +730,9 @@ mod tests {
         assert_eq!(retrieved_updated.updated_at, 2000);
 
         // Delete installation
-        store.delete_installation("steam:1091500", &opti_id).unwrap();
+        store
+            .delete_installation("steam:1091500", &opti_id)
+            .unwrap();
         assert!(
             store
                 .get_installation("steam:1091500", &opti_id)
@@ -861,7 +864,10 @@ mod tests {
         let listed_opti = store.list_files("steam:100", &opti_id).unwrap();
         assert_eq!(listed_opti.len(), 2);
         assert_eq!(listed_opti[0].relative_path, "amd_fidelityfx_dx12.dll");
-        assert_eq!(listed_opti[0].backup_path.as_deref(), Some("/backups/base_amd_fidelityfx_dx12.dll"));
+        assert_eq!(
+            listed_opti[0].backup_path.as_deref(),
+            Some("/backups/base_amd_fidelityfx_dx12.dll")
+        );
         assert_eq!(listed_opti[1].relative_path, "dxgi.dll");
         assert_eq!(listed_opti[1].created_dirs, vec!["plugins"]);
 
@@ -974,13 +980,22 @@ mod tests {
         // Delete files for OptiScaler - INI patches MUST remain intact!
         store.delete_files("steam:100", &opti_id).unwrap();
         assert_eq!(store.list_files("steam:100", &opti_id).unwrap().len(), 0);
-        assert_eq!(store.list_ini_patches("steam:100", &opti_id).unwrap().len(), 1);
+        assert_eq!(
+            store.list_ini_patches("steam:100", &opti_id).unwrap().len(),
+            1
+        );
 
         // Now delete INI patches for OptiScaler
         store.delete_ini_patches("steam:100", &opti_id).unwrap();
-        assert_eq!(store.list_ini_patches("steam:100", &opti_id).unwrap().len(), 0);
+        assert_eq!(
+            store.list_ini_patches("steam:100", &opti_id).unwrap().len(),
+            0
+        );
         // MFG Unlocker patch still exists
-        assert_eq!(store.list_ini_patches("steam:100", &mfg_id).unwrap().len(), 1);
+        assert_eq!(
+            store.list_ini_patches("steam:100", &mfg_id).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -992,7 +1007,9 @@ mod tests {
 
         // Initially no fetch time
         assert_eq!(
-            store.last_release_fetch_time(&opti_id, ToolChannel::Stable).unwrap(),
+            store
+                .last_release_fetch_time(&opti_id, ToolChannel::Stable)
+                .unwrap(),
             None
         );
 
@@ -1025,7 +1042,9 @@ mod tests {
             },
         ];
 
-        store.save_releases(&opti_id, ToolChannel::Stable, &stable_releases).unwrap();
+        store
+            .save_releases(&opti_id, ToolChannel::Stable, &stable_releases)
+            .unwrap();
 
         // Check fetch timestamp is now populated
         let fetch_time = store
@@ -1038,7 +1057,10 @@ mod tests {
         let loaded = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].version, "0.7.9");
-        assert_eq!(loaded[0].cached_path.as_deref(), Some("/cache/OptiScaler-v0.7.9.7z"));
+        assert_eq!(
+            loaded[0].cached_path.as_deref(),
+            Some("/cache/OptiScaler-v0.7.9.7z")
+        );
         assert_eq!(loaded[1].version, "0.7.8");
         assert!(loaded[1].cached_path.is_none());
 
@@ -1056,12 +1078,17 @@ mod tests {
             sha256: Some("sha_stable_1".to_string()),
             cached_path: None, // incoming API has no local cached_path
         }];
-        store.save_releases(&opti_id, ToolChannel::Stable, &refreshed_releases).unwrap();
+        store
+            .save_releases(&opti_id, ToolChannel::Stable, &refreshed_releases)
+            .unwrap();
 
         // Verify existing cached_path was preserved
         let reloaded = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded[0].cached_path.as_deref(), Some("/cache/OptiScaler-v0.7.9.7z"));
+        assert_eq!(
+            reloaded[0].cached_path.as_deref(),
+            Some("/cache/OptiScaler-v0.7.9.7z")
+        );
 
         // Clear cached archives metadata
         let cleared = store.clear_cached_archives_metadata().unwrap();
@@ -1170,6 +1197,9 @@ mod tests {
 
         let releases = store.load_releases(&opti_id, ToolChannel::Stable).unwrap();
         assert_eq!(releases.len(), 1);
-        assert_eq!(releases[0].cached_path.as_deref(), Some("/cache/OptiScaler.7z"));
+        assert_eq!(
+            releases[0].cached_path.as_deref(),
+            Some("/cache/OptiScaler.7z")
+        );
     }
 }

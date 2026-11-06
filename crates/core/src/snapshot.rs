@@ -1,4 +1,4 @@
-//! What the UI renders: plain data derived from core state.
+use serde::{Deserialize, Serialize};
 
 use crate::auth::{AuthMachine, AuthState, Stage, User};
 use crate::callback::Provider;
@@ -7,7 +7,10 @@ use crate::library::{LaunchStatus, LibraryView};
 use crate::notice::Notice;
 use crate::settings::Settings;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub use crate::auth::Input;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AuthView {
     /// Startup, before the stored session has been read.
     Starting,
@@ -28,7 +31,8 @@ pub enum AuthView {
 }
 
 /// A complete, immutable view of the application for the UI. Never contains credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub local_games: crate::drm_free::LocalView,
     pub playtime_error: bool,
@@ -84,7 +88,8 @@ impl Snapshot {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TrackingView {
     pub title: String,
     pub available: bool,

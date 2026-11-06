@@ -1,8 +1,8 @@
 use super::*;
 use crate::db::{SETTING_KEYS, SqliteSettingsStore};
+use gamenode_core::Settings;
 use gamenode_core::library::{SidebarSelection, SortDirection, SortKey, ViewMode};
 use gamenode_core::ports::SettingsStore;
-use gamenode_core::{RendererPreference, Settings};
 use tempfile::TempDir;
 
 fn open(dir: &TempDir) -> SqliteSettingsStore {
@@ -406,10 +406,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
     let dir = TempDir::new().unwrap();
     let settings = open(&dir);
     let store = settings.library_store();
-    let saved = Settings {
-        renderer: RendererPreference::Software,
-        window: None,
-    };
+    let saved = Settings { window: None };
     settings.save(&saved).unwrap();
     store
         .save_layout(&LibraryLayout {

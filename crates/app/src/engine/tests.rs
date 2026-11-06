@@ -15,8 +15,8 @@ use gamenode_core::ports::{
 };
 use gamenode_core::provider::{Platform, memory::FixedRoots};
 use gamenode_core::{
-    AuthView, Input, Notice, RendererPreference, SessionCredential, SessionError, Settings,
-    SignInFailure, Snapshot, User,
+    AuthView, Input, Notice, SessionCredential, SessionError, Settings, SignInFailure, Snapshot,
+    User, WindowGeometry,
 };
 use tokio::sync::watch;
 use url::Url;
@@ -353,40 +353,6 @@ async fn idle_auth_ticks_do_not_publish_rebuilt_snapshots() {
     h.engine.dispatch(Input::Tick);
 
     assert!(!h.snapshots.has_changed().unwrap());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ui_commands_return_while_engine_work_is_blocked_and_preserve_order() {
-    let h = harness(FakeApi::new(), FakeCreds::with(None));
-    let commands = crate::ui_commands::UiCommands::new(h.engine.clone());
-    let (entered, started) = std::sync::mpsc::channel();
-    let (release, gate) = std::sync::mpsc::channel();
-    commands.submit(move |_| {
-        entered.send(()).unwrap();
-        gate.recv().unwrap();
-    });
-    started.recv_timeout(Duration::from_secs(5)).unwrap();
-
-    // These calls must return even while an earlier command is blocked. A later action
-    // must observe the settings from the preceding command, just as Play must observe
-    // the selection made immediately before it.
-    commands.submit(|engine| {
-        engine.update_settings(|settings| settings.renderer = RendererPreference::Software);
-    });
-    let (observed, result) = std::sync::mpsc::channel();
-    commands.submit(move |engine| {
-        observed.send(engine.snapshot().settings.renderer).unwrap();
-    });
-    assert!(matches!(
-        result.try_recv(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
-    release.send(()).unwrap();
-    assert_eq!(
-        result.recv_timeout(Duration::from_secs(5)).unwrap(),
-        RendererPreference::Software,
-    );
-    commands.flush();
 }
 
 /// Like [`harness`], but the GameNode auth and game requests go through `remote` when given.
@@ -917,8 +883,15 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 
     let started = Instant::now();
     h.engine.start();
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Software);
+    h.engine.update_settings(|s| {
+        s.window = Some(WindowGeometry {
+            x: Some(10),
+            y: Some(20),
+            width: 800,
+            height: 600,
+            maximized: false,
+        });
+    });
     let _ = h.engine.snapshot();
     h.engine.dispatch(Input::CancelSignIn);
     assert!(
@@ -929,8 +902,14 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 
     // The settings change is visible immediately even though restoration is still running.
     assert_eq!(
-        h.engine.snapshot().settings.renderer,
-        RendererPreference::Software
+        h.engine.snapshot().settings.window,
+        Some(WindowGeometry {
+            x: Some(10),
+            y: Some(20),
+            width: 800,
+            height: 600,
+            maximized: false,
+        })
     );
     assert_eq!(h.engine.snapshot().auth, AuthView::Starting);
     h.until("restored eventually", |s| {
@@ -943,10 +922,22 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 async fn settings_changes_are_persisted_in_order() {
     let mut h = harness(FakeApi::new(), FakeCreds::with(None));
     h.signed_out().await;
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Software);
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Gpu);
+    let geom1 = WindowGeometry {
+        x: Some(1),
+        y: Some(1),
+        width: 800,
+        height: 600,
+        maximized: false,
+    };
+    let geom2 = WindowGeometry {
+        x: Some(2),
+        y: Some(2),
+        width: 1024,
+        height: 768,
+        maximized: true,
+    };
+    h.engine.update_settings(|s| s.window = Some(geom1));
+    h.engine.update_settings(|s| s.window = Some(geom2));
     for _ in 0..50 {
         if h.settings.saved.lock().unwrap().len() == 2 {
             break;
@@ -955,8 +946,8 @@ async fn settings_changes_are_persisted_in_order() {
     }
     let saved = h.settings.saved.lock().unwrap().clone();
     assert_eq!(
-        saved.iter().map(|s| s.renderer).collect::<Vec<_>>(),
-        [RendererPreference::Software, RendererPreference::Gpu]
+        saved.iter().map(|s| s.window).collect::<Vec<_>>(),
+        [Some(geom1), Some(geom2)]
     );
 }
 

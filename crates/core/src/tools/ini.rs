@@ -94,7 +94,10 @@ pub fn apply_ini_patch(
     if let Some((idx, old_val)) = found_key_idx {
         let leading_spaces = leading_whitespace(&lines[idx]);
         lines[idx] = format!("{leading_spaces}{key} = {value}");
-        (join_lines(&lines, newline, had_trailing_newline || true), Some(old_val))
+        (
+            join_lines(&lines, newline, had_trailing_newline || true),
+            Some(old_val),
+        )
     } else if let Some(sec_start) = target_sec_start_idx {
         let insert_idx = target_sec_end_idx.unwrap_or(lines.len());
         // If there are trailing blank lines before the next section, insert before them
@@ -103,7 +106,10 @@ pub fn apply_ini_patch(
             actual_insert -= 1;
         }
         lines.insert(actual_insert, format!("{key} = {value}"));
-        (join_lines(&lines, newline, had_trailing_newline || true), None)
+        (
+            join_lines(&lines, newline, had_trailing_newline || true),
+            None,
+        )
     } else {
         // Section not found: append new section and key
         if !lines.is_empty() && !lines.last().unwrap().trim().is_empty() {
@@ -239,9 +245,18 @@ LoadAsiPlugins = auto ; default setting
 Path = .\plugins
 "#;
 
-        assert_eq!(read_ini_key(content, "General", "LogLevel").as_deref(), Some("info"));
-        assert_eq!(read_ini_key(content, "plugins", "loadasiplugins").as_deref(), Some("auto"));
-        assert_eq!(read_ini_key(content, "Plugins", "Path").as_deref(), Some(r".\plugins"));
+        assert_eq!(
+            read_ini_key(content, "General", "LogLevel").as_deref(),
+            Some("info")
+        );
+        assert_eq!(
+            read_ini_key(content, "plugins", "loadasiplugins").as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            read_ini_key(content, "Plugins", "Path").as_deref(),
+            Some(r".\plugins")
+        );
         assert_eq!(read_ini_key(content, "Plugins", "Missing"), None);
         assert_eq!(read_ini_key(content, "NonExistent", "Key"), None);
     }

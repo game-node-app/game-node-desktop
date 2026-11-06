@@ -1,7 +1,10 @@
 //! A game's standing in the user's GameNode library, as last read from GameNode.
 
+use serde::{Deserialize, Serialize};
+
 /// The status of a GameNode library entry, as GameNode names them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum EntryStatus {
     Playing,
     Finished,
@@ -9,6 +12,8 @@ pub enum EntryStatus {
     Dropped,
     Ongoing,
 }
+
+pub type GameStatus = EntryStatus;
 
 impl EntryStatus {
     pub const ALL: [EntryStatus; 5] = [
@@ -40,7 +45,8 @@ impl EntryStatus {
 
 /// Whether a matched game is in the user's GameNode library. Read from GameNode when the entry is
 /// selected; never guessed from local data.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Membership {
     /// Not read yet (or not readable right now because no verified session).
     #[default]
@@ -52,6 +58,8 @@ pub enum Membership {
     /// The read failed; Add stays disabled and nothing is sent.
     Unavailable,
 }
+
+pub type StandingView = Membership;
 
 use crate::game_api::{ApiError, LibraryEntry};
 

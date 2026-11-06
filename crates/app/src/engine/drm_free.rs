@@ -1028,9 +1028,8 @@ impl Engine {
             if !path.is_dir() {
                 return Err(LocalError::InvalidTarget);
             }
-            let path = gamenode_platform::host::strip_verbatim_prefix(
-                path.to_string_lossy().into_owned(),
-            );
+            let path =
+                gamenode_platform::host::strip_verbatim_prefix(path.to_string_lossy().into_owned());
             let existing = store
                 .watches()
                 .map_err(local_storage)?

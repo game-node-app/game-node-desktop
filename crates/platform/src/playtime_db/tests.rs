@@ -1,6 +1,7 @@
 use super::*;
 use crate::db::{MIGRATIONS, SqliteSettingsStore};
 use gamenode_core::ports::SettingsStore;
+use gamenode_core::settings::Settings;
 use tempfile::TempDir;
 fn session(account: &str, id: &str) -> Session {
     Session {
@@ -136,10 +137,7 @@ fn step_two_upgrade_preserves_settings_entries_and_matches() {
     .unwrap();
     drop(conn);
     let db = SqliteSettingsStore::open(&path).unwrap();
-    assert_eq!(
-        db.load().unwrap().renderer,
-        gamenode_core::RendererPreference::Software
-    );
+    assert_eq!(db.load().unwrap(), Settings::default());
     let conn = db.conn();
     assert_eq!(
         conn.query_row("SELECT name FROM library_entries", [], |r| r

@@ -140,9 +140,9 @@ pub fn list_archive_entries(archive_path: &Path) -> Result<Vec<ArchiveEntry>, To
                 .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open zip: {e}")))?;
             let mut entries = Vec::new();
             for i in 0..archive.len() {
-                let zip_file = archive
-                    .by_index(i)
-                    .map_err(|e| ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}")))?;
+                let zip_file = archive.by_index(i).map_err(|e| {
+                    ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}"))
+                })?;
                 let clean = validate_archive_entry_path(zip_file.name())?;
                 if clean.as_os_str().is_empty() {
                     continue;
@@ -172,8 +172,9 @@ pub fn extract_archive_to_dir(
     match archive_type {
         ArchiveType::SevenZip => {
             let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            let mut reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty())
-                .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open 7z: {e}")))?;
+            let mut reader =
+                sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty())
+                    .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open 7z: {e}")))?;
 
             reader
                 .for_each_entries(|entry, stream| {
@@ -247,9 +248,9 @@ pub fn extract_archive_to_dir(
                 .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open zip: {e}")))?;
 
             for i in 0..archive.len() {
-                let mut zip_file = archive
-                    .by_index(i)
-                    .map_err(|e| ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}")))?;
+                let mut zip_file = archive.by_index(i).map_err(|e| {
+                    ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}"))
+                })?;
 
                 let clean = validate_archive_entry_path(zip_file.name())?;
                 if clean.as_os_str().is_empty() {
@@ -276,9 +277,11 @@ pub fn extract_archive_to_dir(
                     });
                 } else {
                     if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| ToolError::Io(e.to_string()))?;
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| ToolError::Io(e.to_string()))?;
                     }
-                    let mut out_file = File::create(&target).map_err(|e| ToolError::Io(e.to_string()))?;
+                    let mut out_file =
+                        File::create(&target).map_err(|e| ToolError::Io(e.to_string()))?;
                     let mut buf = [0u8; 64 * 1024];
                     let mut file_size = 0u64;
                     loop {
@@ -361,7 +364,13 @@ pub fn parse_body_sha256(body: &str, asset_name: &str) -> Option<String> {
     let mut all_hashes = Vec::new();
     for line in &lines {
         for word in line.split(|c: char| {
-            c.is_whitespace() || c == '|' || c == '`' || c == '(' || c == ')' || c == ':' || c == '='
+            c.is_whitespace()
+                || c == '|'
+                || c == '`'
+                || c == '('
+                || c == ')'
+                || c == ':'
+                || c == '='
         }) {
             let clean = word.trim();
             if clean.len() == 64 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -550,12 +559,13 @@ impl ToolCatalogApi for GitHubToolCatalog {
         descriptor: &ToolDescriptor,
         channel: ToolChannel,
     ) -> Result<Vec<ToolRelease>, ToolError> {
-        let channel_spec = descriptor.channel_spec(channel).ok_or_else(|| {
-            ToolError::ReleaseNotFound {
-                channel,
-                version: String::new(),
-            }
-        })?;
+        let channel_spec =
+            descriptor
+                .channel_spec(channel)
+                .ok_or_else(|| ToolError::ReleaseNotFound {
+                    channel,
+                    version: String::new(),
+                })?;
 
         // Guardrail: verify repo is declared on this descriptor
         if !descriptor
@@ -579,7 +589,9 @@ impl ToolCatalogApi for GitHubToolCatalog {
             .get(&endpoint)
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .send()
-            .map_err(|e| ToolError::DownloadFailed(format!("Failed to query GitHub releases: {e}")))?;
+            .map_err(|e| {
+                ToolError::DownloadFailed(format!("Failed to query GitHub releases: {e}"))
+            })?;
 
         if !response.status().is_success() {
             return Err(ToolError::DownloadFailed(format!(
@@ -588,8 +600,10 @@ impl ToolCatalogApi for GitHubToolCatalog {
             )));
         }
 
-        let raw_releases: Vec<GitHubReleaseDto> = serde_json::from_reader(response)
-            .map_err(|e| ToolError::DownloadFailed(format!("Failed to parse releases JSON: {e}")))?;
+        let raw_releases: Vec<GitHubReleaseDto> =
+            serde_json::from_reader(response).map_err(|e| {
+                ToolError::DownloadFailed(format!("Failed to parse releases JSON: {e}"))
+            })?;
 
         let mut releases = Vec::new();
         let target_ext = match channel_spec.archive_format {
@@ -630,11 +644,8 @@ impl ToolCatalogApi for GitHubToolCatalog {
                 trimmed_tag.to_string()
             };
 
-            let mut sha256 = extract_asset_sha256(
-                asset.digest.as_deref(),
-                rel.body.as_deref(),
-                &asset.name,
-            );
+            let mut sha256 =
+                extract_asset_sha256(asset.digest.as_deref(), rel.body.as_deref(), &asset.name);
 
             // Check if archive already exists in cache
             let sanitized_version = sanitize_path_segment(&clean_ver);
@@ -865,8 +876,8 @@ mod tests {
     use gamenode_core::tools::registry::optiscaler_descriptor;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::thread;
 
     #[test]
@@ -985,9 +996,21 @@ mod tests {
 
         // Test listing
         let entries = list_archive_entries(&zip_path).unwrap();
-        assert!(entries.iter().any(|e| e.relative_path == "OptiScaler.dll" && !e.is_dir));
-        assert!(entries.iter().any(|e| e.relative_path == "OptiScaler.ini" && !e.is_dir));
-        assert!(entries.iter().any(|e| e.relative_path == "plugins/sample.asi" && !e.is_dir));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "OptiScaler.dll" && !e.is_dir)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "OptiScaler.ini" && !e.is_dir)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "plugins/sample.asi" && !e.is_dir)
+        );
 
         // Test extraction
         let extract_dir = temp.path().join("extracted_zip");
@@ -1010,7 +1033,11 @@ mod tests {
         let src_dir = temp.path().join("sevenz_src");
         std::fs::create_dir_all(src_dir.join("D3D12_OptiScaler")).unwrap();
         std::fs::write(src_dir.join("OptiScaler.dll"), b"sevenz dll content").unwrap();
-        std::fs::write(src_dir.join("OptiScaler.ini"), b"[General]\nLogLevel=debug\n").unwrap();
+        std::fs::write(
+            src_dir.join("OptiScaler.ini"),
+            b"[General]\nLogLevel=debug\n",
+        )
+        .unwrap();
         std::fs::write(
             src_dir.join("D3D12_OptiScaler/helper.dll"),
             b"d3d12 helper content",
@@ -1022,9 +1049,21 @@ mod tests {
 
         // Test listing
         let entries = list_archive_entries(&sevenz_path).unwrap();
-        assert!(entries.iter().any(|e| e.relative_path == "OptiScaler.dll" && !e.is_dir));
-        assert!(entries.iter().any(|e| e.relative_path == "OptiScaler.ini" && !e.is_dir));
-        assert!(entries.iter().any(|e| e.relative_path == "D3D12_OptiScaler/helper.dll" && !e.is_dir));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "OptiScaler.dll" && !e.is_dir)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "OptiScaler.ini" && !e.is_dir)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.relative_path == "D3D12_OptiScaler/helper.dll" && !e.is_dir)
+        );
 
         // Test extraction
         let extract_dir = temp.path().join("extracted_7z");
@@ -1053,8 +1092,16 @@ mod tests {
         // Build a real 7z archive fixture
         let fixture_src = temp.path().join("fixture_src");
         std::fs::create_dir_all(&fixture_src).unwrap();
-        std::fs::write(fixture_src.join("OptiScaler.dll"), b"OptiScaler 0.7.9 binary").unwrap();
-        std::fs::write(fixture_src.join("OptiScaler.ini"), b"[OptiScaler]\nVersion=0.7.9\n").unwrap();
+        std::fs::write(
+            fixture_src.join("OptiScaler.dll"),
+            b"OptiScaler 0.7.9 binary",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture_src.join("OptiScaler.ini"),
+            b"[OptiScaler]\nVersion=0.7.9\n",
+        )
+        .unwrap();
         let archive_file = temp.path().join("OptiScaler-v0.7.9.7z");
         sevenz_rust2::compress_to_path(&fixture_src, &archive_file).unwrap();
         let archive_bytes = std::fs::read(&archive_file).unwrap();
@@ -1080,7 +1127,10 @@ mod tests {
                         if reader.read_line(&mut request_line).is_ok() {
                             loop {
                                 let mut line = String::new();
-                                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                                if reader.read_line(&mut line).is_err()
+                                    || line == "\r\n"
+                                    || line.is_empty()
+                                {
                                     break;
                                 }
                             }
@@ -1111,7 +1161,9 @@ mod tests {
                                 );
                                 let _ = stream.write_all(resp.as_bytes());
                                 let _ = stream.write_all(&body_bytes);
-                            } else if request_line.contains("/repos/optiscaler/OptiScaler-nightly/releases") {
+                            } else if request_line
+                                .contains("/repos/optiscaler/OptiScaler-nightly/releases")
+                            {
                                 let body = serde_json::json!([
                                     {
                                         "tag_name": "v0.8.0-nightly.1",
@@ -1207,21 +1259,35 @@ mod tests {
         // 6. Test checksum mismatch rejection
         let mut mismatched = stable.clone();
         mismatched.version = "0.7.9-mismatch".to_string();
-        mismatched.sha256 = Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
-        let err = catalog.ensure_cached_archive(&descriptor, &mismatched).unwrap_err();
+        mismatched.sha256 =
+            Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
+        let err = catalog
+            .ensure_cached_archive(&descriptor, &mismatched)
+            .unwrap_err();
         match err {
-            ToolError::ChecksumMismatch { expected, actual, .. } => {
-                assert_eq!(expected, "0000000000000000000000000000000000000000000000000000000000000000");
+            ToolError::ChecksumMismatch {
+                expected, actual, ..
+            } => {
+                assert_eq!(
+                    expected,
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                );
                 assert_eq!(actual, archive_sha256);
             }
             other => panic!("Expected ChecksumMismatch, got: {other:?}"),
         }
 
         // Verify .part file was deleted
-        let target_dir = cache_dir.join("optiscaler").join("stable").join("0.7.9-mismatch");
+        let target_dir = cache_dir
+            .join("optiscaler")
+            .join("stable")
+            .join("0.7.9-mismatch");
         if target_dir.exists() {
             let files: Vec<_> = std::fs::read_dir(&target_dir).unwrap().collect();
-            assert!(files.is_empty(), "Part files must be cleaned up on mismatch");
+            assert!(
+                files.is_empty(),
+                "Part files must be cleaned up on mismatch"
+            );
         }
 
         // 7. Test cache usage & clear cache
@@ -1302,7 +1368,9 @@ mod tests {
             cached_path: None,
         };
 
-        let err = catalog.ensure_cached_archive(&descriptor, &corrupt_release).unwrap_err();
+        let err = catalog
+            .ensure_cached_archive(&descriptor, &corrupt_release)
+            .unwrap_err();
         match err {
             ToolError::ExtractionFailed(msg) => {
                 assert!(msg.contains("integrity check failed"));
@@ -1349,7 +1417,9 @@ mod tests {
         let mut desc = optiscaler_descriptor();
         desc.channels.clear(); // remove channels
 
-        let err = catalog.fetch_releases(&desc, ToolChannel::Stable).unwrap_err();
+        let err = catalog
+            .fetch_releases(&desc, ToolChannel::Stable)
+            .unwrap_err();
         match err {
             ToolError::ReleaseNotFound { channel, .. } => {
                 assert_eq!(channel, ToolChannel::Stable);

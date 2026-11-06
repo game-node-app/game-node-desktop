@@ -6,6 +6,7 @@ pub mod scheduler;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Registration {
     pub id: String,
     pub title: String,
@@ -36,6 +37,7 @@ impl Registration {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum EvidenceKind {
     Product,
     Description,
@@ -45,12 +47,14 @@ pub enum EvidenceKind {
     ExternalId,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Evidence {
     pub kind: EvidenceKind,
     pub value: String,
     pub strong: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Inference {
     pub installation: String,
     pub revision: u64,
@@ -60,6 +64,7 @@ pub struct Inference {
     pub account: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Candidate {
     pub fingerprint: String,
     pub watch: String,
@@ -72,12 +77,14 @@ pub struct Candidate {
     pub incomplete: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchRoot {
     pub id: String,
     pub path: String,
     pub enabled: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProcessPolicy {
     Ignored,
     Folder,
@@ -87,6 +94,7 @@ pub enum ProcessPolicy {
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SaveSupport {
     Supported,
     NeedsSelection,
@@ -94,6 +102,7 @@ pub enum SaveSupport {
     NoSaves,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveProfile {
     pub id: String,
     pub installation: String,
@@ -107,6 +116,7 @@ pub struct SaveProfile {
     pub automatic: Option<bool>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum JobState {
     Queued,
     Running,
@@ -117,6 +127,7 @@ pub enum JobState {
     Cancelled,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupJob {
     pub id: String,
     pub installation: String,
@@ -131,6 +142,7 @@ pub struct BackupJob {
     pub error: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupSettings {
     pub automatic: bool,
     pub destination: String,
@@ -166,7 +178,8 @@ pub trait InstallationHost: Send + Sync {
     }
     fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError>;
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveryReport {
     pub candidates: Vec<Candidate>,
     pub incomplete: bool,
@@ -211,7 +224,8 @@ pub trait LocalGameStore: Send + Sync {
     fn backup_settings(&self) -> Result<BackupSettings, StorageError>;
     fn save_backup_settings(&self, value: &BackupSettings) -> Result<(), StorageError>;
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BackupOperation {
     Preview,
     Backup,
@@ -219,7 +233,8 @@ pub enum BackupOperation {
     RestorePreview { backup: String },
     Restore { backup: String },
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupRequest {
     pub job_id: Option<String>,
     pub profile: SaveProfile,
@@ -227,7 +242,8 @@ pub struct BackupRequest {
     pub destination: String,
     pub operation: BackupOperation,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupReport {
     pub state: JobState,
     pub json: String,
@@ -333,7 +349,8 @@ pub fn records(registrations: &[Registration]) -> Vec<crate::provider::Record> {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupVersion {
     pub installation: String,
     pub profile: String,
@@ -354,19 +371,22 @@ impl BackupVersion {
         )
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RestorePlan {
     pub request: BackupRequest,
     pub targets: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingClaim {
     pub registration: Registration,
     pub store_key: String,
     pub store_title: String,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalView {
     pub pending_claim: Option<PendingClaim>,
     pub inferences: Vec<Inference>,
@@ -387,6 +407,21 @@ pub struct LocalView {
     pub jobs: Vec<BackupJob>,
     pub settings: BackupSettings,
 }
+
+pub type LocalGameSummary = Registration;
+pub type LocalEditorView = Registration;
+pub type CandidateExeView = Candidate;
+pub type SaveProtectionView = SaveProfile;
+pub type SavePathStatusView = String;
+pub type SaveRegistryStatusView = String;
+pub type BackupHistoryEntryView = BackupVersion;
+pub type RestorePreviewView = RestorePlan;
+pub type BackupJobStateView = JobState;
+pub type DiscoveryModalView = DiscoveryReport;
+pub type DiscoveredCandidateView = Candidate;
+pub type ClaimConflictView = PendingClaim;
+pub type RemoveLocalModalView = Registration;
+pub type LocalBackupSettings = BackupSettings;
 
 /// Windows CRT argument rules, without a program-name prefix. Unbalanced quotes are rejected.
 pub fn parse_arguments(text: &str) -> Result<Vec<String>, LocalError> {

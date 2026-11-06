@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use gamenode_core::ports::{ProcessError, Processes};
 use gamenode_core::tools::{
-    apply_ini_patch, plan_deployment, revert_ini_patch, ArchiveEntry, FileAction, InstallRequest,
-    TargetInspection, ToolCatalogApi, ToolDescriptor, ToolError, ToolFileRecord, ToolId,
-    ToolIniPatchRecord, ToolInstallState, ToolInstallation, ToolInstallerHost, ToolRelease,
-    ToolStore,
+    ArchiveEntry, FileAction, InstallRequest, TargetInspection, ToolCatalogApi, ToolDescriptor,
+    ToolError, ToolFileRecord, ToolId, ToolIniPatchRecord, ToolInstallState, ToolInstallation,
+    ToolInstallerHost, ToolRelease, ToolStore, apply_ini_patch, plan_deployment, revert_ini_patch,
 };
 
 use crate::tools::catalog;
@@ -230,7 +229,9 @@ impl PlatformToolInstaller {
                 Ok(())
             }
             Err(ProcessError::Unsupported) => Ok(()),
-            Err(e) => Err(ToolError::Failed(format!("Failed to list running processes: {e}"))),
+            Err(e) => Err(ToolError::Failed(format!(
+                "Failed to list running processes: {e}"
+            ))),
         }
     }
 }
@@ -270,8 +271,10 @@ impl ToolInstallerHost for PlatformToolInstaller {
         self.ensure_game_stopped(&canonical_install_dir)?;
 
         // 3. Validate target_exe inside canonical_install_dir and exists
-        let (_canon_target, normalized_target_exe) =
-            inspect::validate_target_within_install_dir(&canonical_install_dir, &request.target_exe)?;
+        let (_canon_target, normalized_target_exe) = inspect::validate_target_within_install_dir(
+            &canonical_install_dir,
+            &request.target_exe,
+        )?;
 
         // 4. Anti-cheat check
         if descriptor.requires_anticheat_check && !request.anticheat_confirmed {
@@ -374,7 +377,10 @@ impl ToolInstallerHost for PlatformToolInstaller {
             target_exe: normalized_target_exe.clone(),
             proxy_dll: plan.proxy_dll,
             state: transient_state,
-            installed_at: existing_install.as_ref().map(|i| i.installed_at).unwrap_or(now),
+            installed_at: existing_install
+                .as_ref()
+                .map(|i| i.installed_at)
+                .unwrap_or(now),
             updated_at: now,
         };
         store.save_installation(&current_install)?;
@@ -437,7 +443,8 @@ impl ToolInstallerHost for PlatformToolInstaller {
                             prior_file.original_sha256.as_deref(),
                         )?;
                     } else {
-                        let obsolete_disk_path = canonical_install_dir.join(&prior_file.relative_path);
+                        let obsolete_disk_path =
+                            canonical_install_dir.join(&prior_file.relative_path);
                         if obsolete_disk_path.is_file() {
                             journal.record_overwritten_or_removed(&obsolete_disk_path)?;
                         }
@@ -466,11 +473,15 @@ impl ToolInstallerHost for PlatformToolInstaller {
                 let dest_full = canonical_install_dir.join(&file.destination_path);
                 for comp in Path::new(&file.destination_path).components() {
                     if let std::path::Component::ParentDir = comp {
-                        return Err(ToolError::PathEscapesInstallDir(file.destination_path.clone()));
+                        return Err(ToolError::PathEscapesInstallDir(
+                            file.destination_path.clone(),
+                        ));
                     }
                 }
                 if !inspect::path_starts_with(&dest_full, &canonical_install_dir) {
-                    return Err(ToolError::PathEscapesInstallDir(file.destination_path.clone()));
+                    return Err(ToolError::PathEscapesInstallDir(
+                        file.destination_path.clone(),
+                    ));
                 }
 
                 let direct_source = staging_dir.path().join(&file.source_path);
@@ -510,8 +521,11 @@ impl ToolInstallerHost for PlatformToolInstaller {
                             installed_sha256: disk_sha,
                             backup_path: prior_rec.and_then(|r| r.backup_path.clone()),
                             original_sha256: prior_rec.and_then(|r| r.original_sha256.clone()),
-                            prior_owner_tool_id: prior_rec.and_then(|r| r.prior_owner_tool_id.clone()),
-                            created_dirs: prior_rec.map(|r| r.created_dirs.clone()).unwrap_or_default(),
+                            prior_owner_tool_id: prior_rec
+                                .and_then(|r| r.prior_owner_tool_id.clone()),
+                            created_dirs: prior_rec
+                                .map(|r| r.created_dirs.clone())
+                                .unwrap_or_default(),
                         });
                     }
 
@@ -547,8 +561,10 @@ impl ToolInstallerHost for PlatformToolInstaller {
                                     relative_path: file.destination_path.clone(),
                                     installed_sha256: new_sha,
                                     backup_path: prior_rec.and_then(|r| r.backup_path.clone()),
-                                    original_sha256: prior_rec.and_then(|r| r.original_sha256.clone()),
-                                    prior_owner_tool_id: prior_rec.and_then(|r| r.prior_owner_tool_id.clone()),
+                                    original_sha256: prior_rec
+                                        .and_then(|r| r.original_sha256.clone()),
+                                    prior_owner_tool_id: prior_rec
+                                        .and_then(|r| r.prior_owner_tool_id.clone()),
                                     created_dirs: vec![],
                                 });
                             }
@@ -559,27 +575,32 @@ impl ToolInstallerHost for PlatformToolInstaller {
                         let prior_rec = prior_tool_files
                             .iter()
                             .find(|r| r.relative_path == file.destination_path);
-                        let (backup_path, original_sha256, prior_owner_tool_id) = if let Some(pr) = prior_rec {
-                            (pr.backup_path.clone(), pr.original_sha256.clone(), pr.prior_owner_tool_id.clone())
-                        } else if dest_full.is_file() && file.requires_backup {
-                            let orig_sha = catalog::compute_file_sha256(&dest_full)?;
-                            let safe_name = format!(
-                                "{}_{}",
-                                sanitize_path_segment(&file.destination_path),
-                                &orig_sha[..16.min(orig_sha.len())]
-                            );
-                            let backup_file = tool_backup_dir.join(safe_name);
-                            std::fs::copy(&dest_full, &backup_file)
-                                .map_err(|e| ToolError::Io(e.to_string()))?;
-                            journal.record_created_backup(backup_file.clone());
-                            (
-                                Some(backup_file.to_string_lossy().to_string()),
-                                Some(orig_sha),
-                                file.prior_owner_tool_id.clone(),
-                            )
-                        } else {
-                            (None, None, file.prior_owner_tool_id.clone())
-                        };
+                        let (backup_path, original_sha256, prior_owner_tool_id) =
+                            if let Some(pr) = prior_rec {
+                                (
+                                    pr.backup_path.clone(),
+                                    pr.original_sha256.clone(),
+                                    pr.prior_owner_tool_id.clone(),
+                                )
+                            } else if dest_full.is_file() && file.requires_backup {
+                                let orig_sha = catalog::compute_file_sha256(&dest_full)?;
+                                let safe_name = format!(
+                                    "{}_{}",
+                                    sanitize_path_segment(&file.destination_path),
+                                    &orig_sha[..16.min(orig_sha.len())]
+                                );
+                                let backup_file = tool_backup_dir.join(safe_name);
+                                std::fs::copy(&dest_full, &backup_file)
+                                    .map_err(|e| ToolError::Io(e.to_string()))?;
+                                journal.record_created_backup(backup_file.clone());
+                                (
+                                    Some(backup_file.to_string_lossy().to_string()),
+                                    Some(orig_sha),
+                                    file.prior_owner_tool_id.clone(),
+                                )
+                            } else {
+                                (None, None, file.prior_owner_tool_id.clone())
+                            };
 
                         if dest_full.is_file() {
                             journal.record_overwritten_or_removed(&dest_full)?;
@@ -607,7 +628,10 @@ impl ToolInstallerHost for PlatformToolInstaller {
                                 std::fs::create_dir_all(&dir_to_create)
                                     .map_err(|e| ToolError::Io(e.to_string()))?;
                                 journal.record_created_dir(dir_to_create.clone());
-                                if let Some(rel) = inspect::relative_path_from(&dir_to_create, &canonical_install_dir) {
+                                if let Some(rel) = inspect::relative_path_from(
+                                    &dir_to_create,
+                                    &canonical_install_dir,
+                                ) {
                                     created_dirs_for_file.push(rel);
                                 }
                             }
@@ -635,17 +659,26 @@ impl ToolInstallerHost for PlatformToolInstaller {
             for patch in &plan.ini_patches {
                 let config_file_path = canonical_install_dir.join(&patch.config_path);
                 if config_file_path.is_file() {
-                    let content = std::fs::read_to_string(&config_file_path)
-                        .map_err(|e| ToolError::Io(format!("Failed to read {}: {e}", config_file_path.display())))?;
+                    let content = std::fs::read_to_string(&config_file_path).map_err(|e| {
+                        ToolError::Io(format!(
+                            "Failed to read {}: {e}",
+                            config_file_path.display()
+                        ))
+                    })?;
                     journal.record_ini_modification(&config_file_path, &content);
 
                     let (new_content, applied_prior_val) =
                         apply_ini_patch(&content, &patch.section, &patch.key, &patch.applied_value);
-                    std::fs::write(&config_file_path, new_content.as_bytes())
-                        .map_err(|e| ToolError::Io(format!("Failed to write {}: {e}", config_file_path.display())))?;
+                    std::fs::write(&config_file_path, new_content.as_bytes()).map_err(|e| {
+                        ToolError::Io(format!(
+                            "Failed to write {}: {e}",
+                            config_file_path.display()
+                        ))
+                    })?;
 
                     if patch.tool_id == descriptor.id {
-                        let existing_patches = store.list_ini_patches(&request.entry_key, &descriptor.id)?;
+                        let existing_patches =
+                            store.list_ini_patches(&request.entry_key, &descriptor.id)?;
                         let existing_record = existing_patches.iter().find(|p| {
                             p.config_path == patch.config_path
                                 && p.section.eq_ignore_ascii_case(&patch.section)
@@ -916,12 +949,8 @@ impl ToolInstallerHost for PlatformToolInstaller {
         for inst in incomplete {
             if let Some(install_dir) = resolve_install_dir(&inst.entry_key) {
                 if Path::new(&install_dir).is_dir() {
-                    let _ = self.uninstall(
-                        store,
-                        &inst.entry_key,
-                        inst.tool_id.as_str(),
-                        &install_dir,
-                    );
+                    let _ =
+                        self.uninstall(store, &inst.entry_key, inst.tool_id.as_str(), &install_dir);
                 } else {
                     let _ = store.delete_installation(&inst.entry_key, &inst.tool_id);
                     let _ = store.delete_files(&inst.entry_key, &inst.tool_id);
@@ -941,14 +970,14 @@ impl ToolInstallerHost for PlatformToolInstaller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
     use gamenode_core::ports::{ProcessIdentity, ProcessInfo};
     use gamenode_core::tools::registry::{
-        fsr4_rdna2_lite_test_descriptor, mfg_unlocker_test_descriptor, optiscaler_descriptor,
-        ProxyDllName, ToolChannel,
+        ProxyDllName, ToolChannel, fsr4_rdna2_lite_test_descriptor, mfg_unlocker_test_descriptor,
+        optiscaler_descriptor,
     };
     use gamenode_core::tools::{CachedToolArchive, InMemoryToolStore};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     struct MockProcesses {
@@ -1002,7 +1031,13 @@ mod tests {
             }
         }
 
-        fn register_archive(&self, tool_id: ToolId, channel: ToolChannel, version: &str, path: &Path) {
+        fn register_archive(
+            &self,
+            tool_id: ToolId,
+            channel: ToolChannel,
+            version: &str,
+            path: &Path,
+        ) {
             let sha = catalog::compute_file_sha256(path).unwrap();
             let meta = std::fs::metadata(path).unwrap();
             let mut map = self.archives.lock().unwrap();
@@ -1035,12 +1070,16 @@ mod tests {
             release: &ToolRelease,
         ) -> Result<CachedToolArchive, ToolError> {
             let map = self.archives.lock().unwrap();
-            map.get(&(descriptor.id.clone(), release.channel, release.version.clone()))
-                .cloned()
-                .ok_or_else(|| ToolError::ReleaseNotFound {
-                    channel: release.channel,
-                    version: release.version.clone(),
-                })
+            map.get(&(
+                descriptor.id.clone(),
+                release.channel,
+                release.version.clone(),
+            ))
+            .cloned()
+            .ok_or_else(|| ToolError::ReleaseNotFound {
+                channel: release.channel,
+                version: release.version.clone(),
+            })
         }
 
         fn cache_usage(&self) -> Result<(u64, usize), ToolError> {
@@ -1101,7 +1140,11 @@ mod tests {
         std::fs::write(root.join("Game.exe"), inspect::make_minimal_pe_bytes(true)).unwrap();
         let content_dir = root.join("Content/Paks");
         std::fs::create_dir_all(&content_dir).unwrap();
-        std::fs::write(content_dir.join("pakchunk0-Windows.pak"), b"pak content 12345").unwrap();
+        std::fs::write(
+            content_dir.join("pakchunk0-Windows.pak"),
+            b"pak content 12345",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1120,7 +1163,11 @@ mod tests {
         std::fs::create_dir_all(&helper_dir).unwrap();
         std::fs::create_dir_all(&streamline_dir).unwrap();
 
-        std::fs::write(fixture_src.join("OptiScaler.dll"), b"OptiScaler 0.7.9 binary").unwrap();
+        std::fs::write(
+            fixture_src.join("OptiScaler.dll"),
+            b"OptiScaler 0.7.9 binary",
+        )
+        .unwrap();
         std::fs::write(
             fixture_src.join("OptiScaler.ini"),
             b"[General]\nLogLevel = info\n",
@@ -1137,7 +1184,11 @@ mod tests {
         )
         .unwrap();
         // Companion files that must be ignored/skipped
-        std::fs::write(fixture_src.join("OptiScaler Setup.bat"), b"@echo off\r\npause").unwrap();
+        std::fs::write(
+            fixture_src.join("OptiScaler Setup.bat"),
+            b"@echo off\r\npause",
+        )
+        .unwrap();
         std::fs::write(fixture_src.join("run.sh"), b"#!/bin/sh\necho test").unwrap();
 
         let archive_7z = temp.path().join("OptiScaler-v0.7.9.7z");
@@ -1251,7 +1302,12 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(store.list_files("steam:12345", &opti_desc.id).unwrap().is_empty());
+        assert!(
+            store
+                .list_files("steam:12345", &opti_desc.id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(!backups_dir.join("steam_12345/optiscaler").exists());
     }
 
@@ -1273,7 +1329,11 @@ mod tests {
             b"[General]\nLogLevel = info\n",
         )
         .unwrap();
-        std::fs::write(v77_src.join("obsolete_companion.dll"), b"v0.7.7 obsolete file").unwrap();
+        std::fs::write(
+            v77_src.join("obsolete_companion.dll"),
+            b"v0.7.7 obsolete file",
+        )
+        .unwrap();
 
         let v77_archive = temp.path().join("OptiScaler-v0.7.7.7z");
         sevenz_rust2::compress_to_path(&v77_src, &v77_archive).unwrap();
@@ -1298,8 +1358,18 @@ mod tests {
         let catalog = MockCatalog::new();
 
         let opti_desc = optiscaler_descriptor();
-        catalog.register_archive(opti_desc.id.clone(), ToolChannel::Stable, "0.7.7", &v77_archive);
-        catalog.register_archive(opti_desc.id.clone(), ToolChannel::Stable, "0.7.9", &v79_archive);
+        catalog.register_archive(
+            opti_desc.id.clone(),
+            ToolChannel::Stable,
+            "0.7.7",
+            &v77_archive,
+        );
+        catalog.register_archive(
+            opti_desc.id.clone(),
+            ToolChannel::Stable,
+            "0.7.9",
+            &v79_archive,
+        );
 
         let release_v77 = ToolRelease {
             tool_id: opti_desc.id.clone(),
@@ -1445,7 +1515,11 @@ mod tests {
         let fixture_src = temp.path().join("opti_src");
         std::fs::create_dir_all(&fixture_src).unwrap();
         std::fs::write(fixture_src.join("OptiScaler.dll"), b"OptiScaler DLL bytes").unwrap();
-        std::fs::write(fixture_src.join("OptiScaler.ini"), b"[General]\nLogLevel=1\n").unwrap();
+        std::fs::write(
+            fixture_src.join("OptiScaler.ini"),
+            b"[General]\nLogLevel=1\n",
+        )
+        .unwrap();
         let archive_7z = temp.path().join("OptiScaler.7z");
         sevenz_rust2::compress_to_path(&fixture_src, &archive_7z).unwrap();
 
@@ -1455,7 +1529,12 @@ mod tests {
         let catalog = MockCatalog::new();
 
         let opti_desc = optiscaler_descriptor();
-        catalog.register_archive(opti_desc.id.clone(), ToolChannel::Stable, "0.7.9", &archive_7z);
+        catalog.register_archive(
+            opti_desc.id.clone(),
+            ToolChannel::Stable,
+            "0.7.9",
+            &archive_7z,
+        );
 
         let release = ToolRelease {
             tool_id: opti_desc.id.clone(),
@@ -1606,7 +1685,11 @@ mod tests {
             // Fixture 3: MFG Unlocker AddonOverlay plugin (.asi)
             let mfg_src = temp.path().join("mfg_src");
             std::fs::create_dir_all(&mfg_src).unwrap();
-            std::fs::write(mfg_src.join("MFGUnlocker.asi"), b"MFG Unlocker ASI plugin binary").unwrap();
+            std::fs::write(
+                mfg_src.join("MFGUnlocker.asi"),
+                b"MFG Unlocker ASI plugin binary",
+            )
+            .unwrap();
             let mfg_7z = temp.path().join("mfg.7z");
             sevenz_rust2::compress_to_path(&mfg_src, &mfg_7z).unwrap();
 
@@ -1754,13 +1837,10 @@ mod tests {
             // Uninstall in the specified order!
             for tool_name in &order {
                 installer
-                    .uninstall(
-                        &store,
-                        "steam:12345",
-                        tool_name,
-                        game_dir.to_str().unwrap(),
-                    )
-                    .unwrap_or_else(|e| panic!("uninstall {tool_name} failed in order {order:?}: {e}"));
+                    .uninstall(&store, "steam:12345", tool_name, game_dir.to_str().unwrap())
+                    .unwrap_or_else(|e| {
+                        panic!("uninstall {tool_name} failed in order {order:?}: {e}")
+                    });
             }
 
             // Verify byte-identical to initial unmodded state
@@ -1782,7 +1862,9 @@ mod tests {
         let bin_win64 = game_dir.join("Binaries/Win64");
         let running_exe = bin_win64.join("Game-Win64-Shipping.exe");
 
-        let procs = Arc::new(MockProcesses::new(vec![running_exe.to_string_lossy().to_string()]));
+        let procs = Arc::new(MockProcesses::new(vec![
+            running_exe.to_string_lossy().to_string(),
+        ]));
         let installer = PlatformToolInstaller::new(backups_dir, procs.clone());
         let store = InMemoryToolStore::default();
         let catalog = MockCatalog::new();
@@ -1838,7 +1920,11 @@ mod tests {
 
         // Stop the game
         *procs.running.lock().unwrap() = vec![];
-        assert!(installer.ensure_game_stopped(&game_dir.canonicalize().unwrap()).is_ok());
+        assert!(
+            installer
+                .ensure_game_stopped(&game_dir.canonicalize().unwrap())
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1954,7 +2040,17 @@ mod tests {
 
         assert_eq!(recovered, 1);
         assert_eq!(store.incomplete_installations().unwrap().len(), 0);
-        assert!(store.get_installation("steam:12345", &opti_id).unwrap().is_none());
-        assert!(store.list_files("steam:12345", &opti_id).unwrap().is_empty());
+        assert!(
+            store
+                .get_installation("steam:12345", &opti_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .list_files("steam:12345", &opti_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-for tool in cargo clang-cl llvm-lib lld-link llvm-rc cmake ninja; do
+for tool in cargo clang-cl llvm-lib lld-link llvm-rc cmake ninja pnpm; do
     command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
+pnpm --dir ui build
 export XWIN_ARCH=x86_64
 cargo xwin build --workspace --target x86_64-pc-windows-msvc --locked
 package=dist/windows/gamenode-desktop

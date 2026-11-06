@@ -14,8 +14,11 @@ use crate::library::membership::EntryStatus;
 /// The largest cover that is downloaded.
 pub const MAX_COVER_BYTES: usize = 5 * 1024 * 1024;
 
+use serde::{Deserialize, Serialize};
+
 /// Why a cover was not downloaded. All of them are kept as "failed" and retried on a later scan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CoverError {
     #[error("the cover download failed")]
     Failed,
@@ -25,7 +28,8 @@ pub enum CoverError {
     NotAnImage,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ApiError {
     /// The server refused the session (`401`).
     #[error("GameNode rejected the session")]
@@ -36,7 +40,8 @@ pub enum ApiError {
 }
 
 /// A GameNode game as the library shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameSummary {
     pub id: u64,
     pub name: String,
@@ -45,21 +50,24 @@ pub struct GameSummary {
     pub cover_url: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchPage {
     pub games: Vec<GameSummary>,
     pub complete: Option<bool>,
 }
 
 /// One answer of the external-game lookup: this store id is this GameNode game.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalMatch {
     pub uid: String,
     pub game: GameSummary,
 }
 
 /// The caller's entry for a game, as GameNode has it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryEntry {
     /// `None` when GameNode sent a status this build does not know. The game is still in the
     /// library.
@@ -70,7 +78,8 @@ pub struct LibraryEntry {
 }
 
 /// One of the user's GameNode collections.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Collection {
     pub id: String,
     pub name: String,

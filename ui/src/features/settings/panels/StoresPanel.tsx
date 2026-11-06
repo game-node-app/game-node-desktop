@@ -2,6 +2,20 @@ import React, { useState } from 'react';
 import { commands, useLibraryView, useLocalGames } from '../../../api';
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
+import {
+  settingsButtonGhost,
+  settingsButtonSecondary,
+  settingsCard,
+  settingsInput,
+  settingsPillWarning,
+  settingsRow,
+  settingsRowDescription,
+  settingsRowInfo,
+  settingsRowTitle,
+  settingsSection,
+  settingsSectionDescription,
+  settingsSectionTitle,
+} from '../settingsClasses';
 
 export const StoresPanel: React.FC = () => {
   const { t, locale } = useI18n();
@@ -13,7 +27,9 @@ export const StoresPanel: React.FC = () => {
   const providers = library?.providers ?? [];
   const failedProviders = library?.failedProviders ?? [];
   const isScanning = library?.scanning ?? false;
-  const watches = localGames?.watches ?? [];
+  // Removing a watch disables it but keeps its registrations (games stay in the library).
+  // Disabled roots must not be listed as watched.
+  const watches = (localGames?.watches ?? []).filter((watch) => watch.enabled);
   const localBusy = localGames?.busy ?? false;
   const discoveryScanning = localGames?.discoveryScanning ?? false;
   const discoveryError = localGames?.discoveryError ?? null;
@@ -56,16 +72,16 @@ export const StoresPanel: React.FC = () => {
   };
 
   return (
-    <div className="settings-section">
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Detected stores') || 'Detected stores'}</h3>
-        <span className="settings-section-description">
+    <div className={settingsSection}>
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Detected stores') || 'Detected stores'}</h3>
+        <span className={settingsSectionDescription}>
           {t('Game providers configured on this system.')}
         </span>
 
-        <div className="settings-card">
+        <div className={settingsCard}>
           {providers.length === 0 ? (
-            <div className="settings-row-description">
+            <div className={settingsRowDescription}>
               {t('No installed games found') || 'No installed games found'}
             </div>
           ) : (
@@ -81,13 +97,13 @@ export const StoresPanel: React.FC = () => {
               }
 
               return (
-                <div key={provider.id} className="settings-row" style={{ padding: '4px 0' }}>
-                  <div className="settings-row-info">
-                    <span className="settings-row-title">{provider.name}</span>
-                    <span className="settings-row-description">{description}</span>
+                <div key={provider.id} className={`${settingsRow} py-1`}>
+                  <div className={settingsRowInfo}>
+                    <span className={settingsRowTitle}>{provider.name}</span>
+                    <span className={settingsRowDescription}>{description}</span>
                   </div>
                   {hasFailed && (
-                    <span className="settings-pill settings-pill-warning">
+                    <span className={settingsPillWarning}>
                       {t('Failed') || 'Failed'}
                     </span>
                   )}
@@ -97,10 +113,10 @@ export const StoresPanel: React.FC = () => {
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+        <div className="mt-compact flex items-center gap-compact">
           <button
             type="button"
-            className="settings-button settings-button-secondary"
+            className={settingsButtonSecondary}
             disabled={isScanning}
             onClick={handleRescan}
           >
@@ -108,7 +124,7 @@ export const StoresPanel: React.FC = () => {
           </button>
           <button
             type="button"
-            className="settings-button settings-button-ghost"
+            className={settingsButtonGhost}
             onClick={handleResetExcluded}
           >
             {t('Reset hidden games') !== 'Reset hidden games' ? t('Reset hidden games') : (locale === 'pt-BR' ? 'Restaurar entradas excluídas' : 'Reset hidden games')}
@@ -117,17 +133,17 @@ export const StoresPanel: React.FC = () => {
       </div>
 
       {/* DRM-free games: watched folders (moved here from Backups to match the pre-migration Lojas page) */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('DRM-free games') || 'DRM-free games'}</h3>
-        <span className="settings-section-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('DRM-free games') || 'DRM-free games'}</h3>
+        <span className={settingsSectionDescription}>
           {t('Watched folders and local discoveries.') || 'Watched folders and local discoveries.'}
         </span>
 
-        <div className="settings-card">
-          <div style={{ display: 'flex', gap: '8px' }}>
+        <div className={settingsCard}>
+          <div className="flex gap-compact">
             <input
               type="text"
-              className="settings-input"
+              className={settingsInput}
               value={newFolderInput}
               onChange={(e) => setNewFolderInput(e.target.value)}
               placeholder={t('DRM-free::Folder to watch') || 'Folder to watch'}
@@ -135,7 +151,7 @@ export const StoresPanel: React.FC = () => {
             />
             <button
               type="button"
-              className="settings-button settings-button-secondary"
+              className={settingsButtonSecondary}
               disabled={localBusy}
               onClick={handleAddWatchFolder}
             >
@@ -145,28 +161,23 @@ export const StoresPanel: React.FC = () => {
             </button>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+          <div className="mt-compact flex flex-col gap-compact">
             {watches.length === 0 ? (
-              <span className="settings-row-description">
+              <span className={settingsRowDescription}>
                 {locale === 'pt-BR' ? 'Nenhuma pasta monitorada.' : 'No watched folders configured.'}
               </span>
             ) : (
               watches.map((watch) => (
                 <div
                   key={watch.id}
-                  className="settings-row"
-                  style={{
-                    padding: '8px 12px',
-                    backgroundColor: 'var(--settings-bg-raised, #222222)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                  }}
+                  className={`${settingsRow} rounded-sm bg-raised px-sm py-compact`}
                 >
-                  <span className="settings-row-title" style={{ wordBreak: 'break-all' }}>
+                  <span className={`${settingsRowTitle} break-all`}>
                     {watch.path}
                   </span>
                   <button
                     type="button"
-                    className="settings-button settings-button-ghost"
+                    className={settingsButtonGhost}
                     onClick={() => handleRemoveWatch(watch.id)}
                   >
                     {t('DRM-free::Remove watch') !== 'DRM-free::Remove watch'
@@ -179,36 +190,36 @@ export const StoresPanel: React.FC = () => {
           </div>
 
           {discoveryScanning && (
-            <span className="settings-row-description" style={{ marginTop: '8px' }}>
+            <span className={`${settingsRowDescription} mt-compact`}>
               {t('DRM-free::Checking watched folders…') !== 'DRM-free::Checking watched folders…'
                 ? t('DRM-free::Checking watched folders…')
                 : 'Checking watched folders…'}
             </span>
           )}
           {!discoveryScanning && discoveryError && (
-            <span className="settings-row-description" role="alert" style={{ marginTop: '8px', color: 'var(--color-danger, #e5484d)' }}>
+            <span className="mt-compact text-xs text-danger" role="alert">
               {discoveryError}
             </span>
           )}
           {!discoveryScanning && !discoveryError && discoveryIncomplete.length > 0 && (
-            <span className="settings-row-description" style={{ marginTop: '8px' }}>
+            <span className={`${settingsRowDescription} mt-compact`}>
               {t('DRM-free::Some folders could not be checked completely.') !== 'DRM-free::Some folders could not be checked completely.'
                 ? t('DRM-free::Some folders could not be checked completely.')
                 : 'Some folders could not be checked completely.'}
             </span>
           )}
           {!discoveryScanning && !discoveryError && discoveryCompleted && (
-            <span className="settings-row-description" style={{ marginTop: '8px' }}>
+            <span className={`${settingsRowDescription} mt-compact`}>
               {t('DRM-free::Recognized games in watched folders are added to your library automatically.') !== 'DRM-free::Recognized games in watched folders are added to your library automatically.'
                 ? t('DRM-free::Recognized games in watched folders are added to your library automatically.')
                 : 'Recognized games in watched folders are added to your library automatically.'}
             </span>
           )}
 
-          <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+          <div className="mt-sm flex gap-compact">
             <button
               type="button"
-              className="settings-button settings-button-secondary"
+              className={settingsButtonSecondary}
               disabled={localBusy || discoveryScanning}
               onClick={handleRescanFolders}
             >
@@ -218,7 +229,7 @@ export const StoresPanel: React.FC = () => {
             </button>
             <button
               type="button"
-              className="settings-button settings-button-ghost"
+              className={settingsButtonGhost}
               disabled={localBusy}
               onClick={handleResetIgnores}
             >

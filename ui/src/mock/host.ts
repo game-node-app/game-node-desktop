@@ -98,12 +98,24 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string }
     subscribe(listener: Listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
-      if (cmd === 'get_bootstrap_state') return { snapshot: copy(), locale: options.locale ?? 'en', version: 'mock', licenseNotices: 'Mock UI development session', backgroundSupported: false };
+      if (cmd === 'get_app_info') {
+        return { locale: options.locale ?? 'en', version: 'mock', backgroundSupported: false };
+      }
+      if (cmd === 'get_license_notices') return 'Mock UI development session';
       if (cmd === 'dispatch_auth') {
         const input = args.input as AuthInput;
         if (input === 'signOut') { snapshot.auth = 'signedOut'; snapshot.library = null; }
         else if (typeof input === 'object' && 'startSignIn' in input) signIn();
       } else if (cmd === 'library_input') libraryInput(args.input as LibraryInput);
+      else if (cmd === 'remove_entry') {
+        const key = args.key as string;
+        rows = rows.filter(row => row.key !== key);
+        const lib = snapshot.library;
+        if (lib) {
+          lib.selected = lib.selected.filter(item => item !== key);
+          if (lib.focused === key) lib.focused = null;
+        }
+      } else if (cmd === 'remove_local_game') { /* the mock has no DRM-free registrations */ }
       else if (cmd === 'set_sync_enabled') snapshot.sync.enabled = args.enabled as boolean;
       else if (cmd === 'dismiss_sync_explanation') snapshot.sync.explained = true;
       else if (cmd === 'set_playtime_source') snapshot.playtimeSource = args.source as Snapshot['playtimeSource'];

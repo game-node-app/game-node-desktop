@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { IconX } from '@tabler/icons-react';
+import { FloatingModal } from '../../components/FloatingModal';
 import { commands, useLocalGames, type Registration } from '../../api';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -14,6 +16,12 @@ export function parseArguments(input: string): string[] {
   if (!matches) return [];
   return matches.map((arg) => (arg.startsWith('"') && arg.endsWith('"') ? arg.slice(1, -1) : arg));
 }
+
+const fieldLabelClass = 'mb-1.5 block text-sm font-medium text-text-default';
+const fieldInputClass =
+  'w-full rounded-sm border border-border-subtle bg-secondary px-sm py-compact text-sm text-text-default placeholder:text-text-dimmed focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand';
+const secondaryButtonClass =
+  'inline-flex items-center justify-center whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 
 export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: propRegistration, onClose }) => {
   const { t } = useI18n();
@@ -57,17 +65,6 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
     onClose?.();
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
-
   if (!isOpen || !targetReg) {
     return null;
   }
@@ -109,88 +106,37 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="local-editor-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="local-game-editor"
+      defaultSize={{ width: 640, height: 560 }}
+      minSize={{ width: 520, height: 400 }}
+      zIndex={1000}
+      closeOnClickOutside
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '640px',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--settings-bg-base, #111111)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-modal)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
-      >
+      <FloatingModal.Overlay backgroundOpacity={0.62} />
+      <FloatingModal.Content className="flex flex-col bg-chrome">
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <FloatingModal.Header className="bg-chrome px-control-inline py-md">
           <div>
-            <h2 id="local-editor-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <FloatingModal.Title className="text-lg font-semibold text-text-default">
               {t('drmFree.gameSettings')}
-            </h2>
-            <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
-              {targetReg.title}
-            </div>
+            </FloatingModal.Title>
+            <div className="text-xs text-text-dimmed">{targetReg.title}</div>
           </div>
-          <button
-            type="button"
+          <FloatingModal.CloseButton
             aria-label="Close"
-            onClick={handleClose}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
+            icon={<IconX size={18} stroke={1.5} />}
+            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+          />
+        </FloatingModal.Header>
 
         {/* Content */}
-        <div
-          style={{
-            padding: '24px',
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
+        <FloatingModal.Body className="gap-md p-control-inline">
           {/* Title */}
           <div>
-            <label
-              htmlFor="local-editor-title"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-title" className={fieldLabelClass}>
               {t('drmFree.title')}
             </label>
             <input
@@ -200,26 +146,16 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className={fieldInputClass}
             />
           </div>
 
           {/* Executable */}
           <div>
-            <label
-              htmlFor="local-editor-executable"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-executable" className={fieldLabelClass}>
               {t('drmFree.executable')}
             </label>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div className="flex gap-compact">
               <input
                 id="local-editor-executable"
                 data-testid="local-editor-executable"
@@ -227,27 +163,12 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
                 type="text"
                 value={executable}
                 onChange={(e) => setExecutable(e.target.value)}
-                style={{
-                  flex: 1,
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '8px 12px',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                }}
+                className={`${fieldInputClass} flex-1`}
               />
               <button
                 type="button"
                 onClick={() => commands.pickLocalExecutable(targetReg.id)}
-                style={{
-                  backgroundColor: 'var(--settings-bg-raised, #222222)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '8px 16px',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
+                className={secondaryButtonClass}
               >
                 {t('drmFree.locateExecutable')}
               </button>
@@ -256,18 +177,8 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
 
           {/* Candidate executable switcher */}
           {matchingCandidate && matchingCandidate.targets.length > 1 && (
-            <div
-              style={{
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-              }}
-            >
-              <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+            <div className="flex flex-col gap-compact rounded-sm border border-border-subtle bg-secondary p-sm">
+              <div className="text-xs text-text-dimmed">
                 {t('drmFree.severalLaunchTargetsChooseAnExecutableBelow')}
               </div>
               <select
@@ -275,14 +186,7 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
                 aria-label="Candidate executables"
                 value={executable}
                 onChange={(e) => handleCandidateChange(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--settings-bg-raised, #222222)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '6px 10px',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                }}
+                className="w-full cursor-pointer rounded-sm border border-border-subtle bg-raised px-2.5 py-1.5 text-sm text-text-default focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               >
                 {matchingCandidate.targets.map((tgt) => (
                   <option key={tgt} value={tgt}>
@@ -290,21 +194,17 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
                   </option>
                 ))}
               </select>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              <div className="flex flex-wrap gap-1.5">
                 {matchingCandidate.targets.map((tgt) => (
                   <button
                     key={tgt}
                     type="button"
                     onClick={() => handleCandidateChange(tgt)}
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      backgroundColor: executable === tgt ? 'var(--color-primary, #F15025)' : 'var(--settings-bg-raised, #222222)',
-                      color: executable === tgt ? 'var(--color-on-primary, #EDEDED)' : 'var(--color-text-default, #D9D9D9)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      cursor: 'pointer',
-                    }}
+                    className={`rounded-sm border border-border-subtle px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                      executable === tgt
+                        ? 'bg-brand text-on-primary'
+                        : 'bg-raised text-text-default hover:bg-surface'
+                    }`}
                   >
                     {tgt}
                   </button>
@@ -315,10 +215,7 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
 
           {/* Root Folder */}
           <div>
-            <label
-              htmlFor="local-editor-root"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-root" className={fieldLabelClass}>
               {t('drmFree.gameFolder')}
             </label>
             <input
@@ -328,23 +225,13 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               type="text"
               value={root}
               onChange={(e) => setRoot(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className={fieldInputClass}
             />
           </div>
 
           {/* Working Directory */}
           <div>
-            <label
-              htmlFor="local-editor-working-dir"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-working-dir" className={fieldLabelClass}>
               {t('drmFree.workingDirectory')}
             </label>
             <input
@@ -354,23 +241,13 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               type="text"
               value={workingDirectory}
               onChange={(e) => setWorkingDirectory(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className={fieldInputClass}
             />
           </div>
 
           {/* Arguments */}
           <div>
-            <label
-              htmlFor="local-editor-arguments"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-arguments" className={fieldLabelClass}>
               {t('drmFree.arguments')}
             </label>
             <input
@@ -381,23 +258,13 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               value={argsText}
               onChange={(e) => setArgsText(e.target.value)}
               placeholder="-flag --param=value"
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-              }}
+              className={fieldInputClass}
             />
           </div>
 
           {/* Gameplay Executables */}
           <div>
-            <label
-              htmlFor="local-editor-gameplay"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-gameplay" className={fieldLabelClass}>
               {t('drmFree.gameplayExecutablesOnePerLine')}
             </label>
             <textarea
@@ -407,24 +274,13 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               rows={3}
               value={gameplayText}
               onChange={(e) => setGameplayText(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-                resize: 'vertical',
-              }}
+              className={`${fieldInputClass} resize-y`}
             />
           </div>
 
           {/* Launcher Executables */}
           <div>
-            <label
-              htmlFor="local-editor-launchers"
-              style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}
-            >
+            <label htmlFor="local-editor-launchers" className={fieldLabelClass}>
               {t('drmFree.launcherExecutablesOnePerLine')}
             </label>
             <textarea
@@ -434,60 +290,27 @@ export const LocalGameEditor: React.FC<LocalGameEditorProps> = ({ registration: 
               rows={3}
               value={launchersText}
               onChange={(e) => setLaunchersText(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                padding: '8px 12px',
-                color: 'var(--color-text-default, #D9D9D9)',
-                resize: 'vertical',
-              }}
+              className={`${fieldInputClass} resize-y`}
             />
           </div>
-        </div>
+        </FloatingModal.Body>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '8px',
-          }}
-        >
-          <button
-            type="button"
-            onClick={handleClose}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-            }}
-          >
+        <FloatingModal.Footer className="px-control-inline py-md">
+          <button type="button" onClick={handleClose} className={secondaryButtonClass}>
             {t('drmFree.cancel')}
           </button>
           <button
             type="button"
             onClick={handleSave}
-            style={{
-              padding: '8px 20px',
-              backgroundColor: 'var(--color-primary, #F15025)',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-on-primary, #EDEDED)',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.save')}
           </button>
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

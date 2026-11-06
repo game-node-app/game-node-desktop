@@ -99,8 +99,20 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
       },
     };
 
+    expect(listeners.get(ENGINE_SNAPSHOT_EVENT)?.size).toBe(1);
+
     await act(async () => {
       emitMockEvent(ENGINE_SNAPSHOT_EVENT, nextSnapshot);
+    });
+
+    expect(queryClient.getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY)?.auth).toEqual({
+      signedIn: {
+        user: {
+          id: 'u-42',
+          username: 'PlayerOne',
+          email: null,
+        },
+      },
     });
 
     expect(screen.getByTestId('auth-state')).toHaveTextContent('Signed in as PlayerOne');

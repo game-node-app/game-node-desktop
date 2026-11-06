@@ -25,6 +25,19 @@
   to maintain high rendering performance with large game collections.
 - **State & Query Bridge**: Use `@tanstack/react-query` to bridge engine snapshot events
   and query cache updates, and `@tanstack/react-store` for responsive UI state (e.g., sidebar resizing).
+- **Styling System**: Style React views with Tailwind CSS utility classes backed by
+  `ui/tailwind.config.ts` and the Version 3.0 tokens in `ui/src/styles/theme.css`.
+  Do not add static inline `style` objects for layout, color, typography, borders or
+  interaction states; reserve inline styles for runtime values such as virtualizer
+  offsets, measured pane widths and pointer-anchored positions. Use Mantine v9
+  (`Menu`, `Notification`, `Switch`, `SegmentedControl`) for complex controls; they are
+  mounted through `MantineProvider` in `AppProviders.tsx`. Use the shared
+  `FloatingModal` (`ui/src/components/FloatingModal`) for large work surfaces that
+  benefit from dragging and resizing, and `AppModal` (`ui/src/components/AppModal`)
+  for centered confirmations and notices. Both share the last-opened-on-top layer
+  stack, focus trapping, Escape handling and trigger-focus restoration; do not
+  hand-roll those behaviors. Use `@tabler/icons-react` instead of loose SVG assets,
+  and keep `@tanstack/react-virtual` as the library virtualization engine.
 
 ## Preferred UI testing & visual verification workflow
 

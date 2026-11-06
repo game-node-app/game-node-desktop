@@ -1,5 +1,11 @@
 import React, { useEffect, useRef } from 'react';
+import { AppModal } from '../../components/AppModal';
 import { useI18n } from '../../i18n';
+import {
+  settingsButtonDanger,
+  settingsButtonSecondary,
+} from './settingsClasses';
+import { PlainModalScrollArea } from './PlainModalScrollArea';
 
 export interface DiscardChangesDialogProps {
   onCancel: () => void;
@@ -11,48 +17,11 @@ export const DiscardChangesDialog: React.FC<DiscardChangesDialogProps> = ({
   onConfirm,
 }) => {
   const { t, locale } = useI18n();
-  const dialogRef = useRef<HTMLDivElement>(null);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     cancelBtnRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onCancel();
-        return;
-      }
-
-      if (event.key === 'Tab' && dialogRef.current) {
-        const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusables.length === 0) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-
-        if (event.shiftKey) {
-          if (document.activeElement === first || !dialogRef.current.contains(document.activeElement)) {
-            event.preventDefault();
-            last.focus();
-          }
-        } else {
-          if (document.activeElement === last || !dialogRef.current.contains(document.activeElement)) {
-            event.preventDefault();
-            first.focus();
-          }
-        }
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-    };
-  }, [onCancel]);
 
   const title =
     locale === 'pt-BR'
@@ -66,51 +35,50 @@ export const DiscardChangesDialog: React.FC<DiscardChangesDialogProps> = ({
       : 'You have unsaved changes. Do you want to discard them?');
 
   return (
-    <div
-      className="settings-dialog-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          onCancel();
-        }
-      }}
+    <AppModal.Root
+      opened
+      onClose={onCancel}
+      centered
+      zIndex={1010}
+      scrollAreaComponent={PlainModalScrollArea}
+      withinPortal
     >
-      <div
-        ref={dialogRef}
-        className="settings-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="discard-dialog-title"
+      <AppModal.Overlay backgroundOpacity={0.65} />
+      <AppModal.Content
+        classNames={{
+          content:
+            'w-[90%] max-w-[480px] flex-none rounded-md border border-border-subtle bg-secondary p-6 text-white shadow-alert',
+        }}
       >
-        <h2 id="discard-dialog-title" className="settings-header-title">
-          {title}
-        </h2>
-        <p className="settings-section-description">{message}</p>
         <div
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '10px',
-            marginTop: '8px',
-          }}
+          role="alertdialog"
+          aria-labelledby="discard-dialog-title"
+          className="flex flex-col gap-md"
         >
-          <button
-            ref={cancelBtnRef}
-            type="button"
-            className="settings-button settings-button-secondary"
-            onClick={onCancel}
-            aria-label={locale === 'pt-BR' ? 'Continuar editando' : 'Keep editing'}
-          >
-            {t('Cancel') || 'Cancel'}
-          </button>
-          <button
-            type="button"
-            className="settings-button settings-button-danger"
-            onClick={onConfirm}
-          >
-            {t('Discard') || 'Discard'}
-          </button>
+          <h2 id="discard-dialog-title" className="text-lg font-bold text-white">
+            {title}
+          </h2>
+          <p className="text-sm text-[var(--settings-text-secondary)]">{message}</p>
+          <div className="mt-compact flex justify-end gap-[10px]">
+            <button
+              ref={cancelBtnRef}
+              type="button"
+              className={settingsButtonSecondary}
+              onClick={onCancel}
+              aria-label={locale === 'pt-BR' ? 'Continuar editando' : 'Keep editing'}
+            >
+              {t('Cancel') || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              className={settingsButtonDanger}
+              onClick={onConfirm}
+            >
+              {t('Discard') || 'Discard'}
+            </button>
+          </div>
         </div>
-      </div>
-    </div>
+      </AppModal.Content>
+    </AppModal.Root>
   );
 };

@@ -81,7 +81,8 @@ the Vite development server and interactive browser preview over cross-building
 and reinstalling the Windows package on every edit.
 
 The frontend is located in `ui/` and is built with React 19, `@tauri-apps/api`,
-`@tanstack/react-query`, `@tanstack/react-virtual`, and `@tanstack/react-store`.
+`@tanstack/react-query`, `@tanstack/react-virtual`, `@tanstack/react-store`,
+Tailwind CSS 3.4, Mantine v9, and `@tabler/icons-react`.
 
 ### Architecture Guardrails
 
@@ -96,6 +97,42 @@ The frontend is located in `ui/` and is built with React 19, `@tauri-apps/api`,
   for high-performance DOM virtualization with large game collections.
 - **State & Query Bridge**: Use `@tanstack/react-query` to bridge engine snapshot events
   and query cache updates, and `@tanstack/react-store` for client-side UI state.
+
+### Styling with Tailwind CSS and Mantine
+
+Tailwind handles layout and visual styling; Mantine supplies accessible overlay and
+form primitives. Both use the Version 3.0 design tokens shared with
+`game-node-clients`.
+
+- `ui/tailwind.config.ts` defines the utility tokens: `brand`, `paper`, `secondary`,
+  `tertiary`, `chrome`, `chrome-border`, `surface`, `raised`, `border-subtle`,
+  `text-default`, `text-dimmed`, `danger`, `success` and `warning`, plus the
+  project spacing, radii, font sizes and control dimensions.
+- `ui/src/styles/theme.css` keeps the `@font-face`, the Version 3.0 CSS variables and
+  the CSS layer order: Mantine styles first, Tailwind base inside the `tailwind`
+  layer, and Tailwind utilities last so utilities win when applied.
+- `ui/src/AppProviders.tsx` mounts `MantineProvider` with the dark `appTheme`, the
+  brand palette and the GameNode variant color resolver. Render overlays inside that
+  provider; standalone component tests need their own `MantineProvider` wrapper.
+- Prefer utility classes for layout, colors, typography, borders, radii and
+  `hover`/`active`/`focus-visible` states. Keep inline `style` only for runtime
+  values such as virtualizer transforms and sizes, measured sidebar/detail-pane
+  widths, pointer-anchored menu coordinates and computed status colors.
+- Use `Menu`, `Notification`, `Switch` and `SegmentedControl` from Mantine for
+  complex controls.
+- Use the shared `FloatingModal` (`ui/src/components/FloatingModal`) for large work
+  surfaces that benefit from dragging and resizing. It provides header dragging,
+  bottom-right resizing, viewport clamping, keyboard resize, geometry persistence
+  and focus trapping.
+- Use the shared `AppModal` (`ui/src/components/AppModal`) for centered confirmation
+  and notice dialogs.
+- Both modal primitives use one layer stack: the last modal opened renders on top,
+  only the topmost surface handles Escape, and closing restores focus to its trigger
+  (`useFocusRestore`).
+- Use `@tabler/icons-react` components instead of loose SVG assets.
+- Keep `@tanstack/react-virtual` as the library virtualization engine. Do not wrap
+  virtual tiles or rows in Mantine layout components; style their containers with
+  Tailwind classes instead.
 
 ### Running the Vite Development Server
 

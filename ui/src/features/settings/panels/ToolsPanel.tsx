@@ -2,6 +2,18 @@ import React from 'react';
 import { commands, useTools } from '../../../api';
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
+import {
+  settingsButtonGhost,
+  settingsCard,
+  settingsPill,
+  settingsRow,
+  settingsRowDescription,
+  settingsRowInfo,
+  settingsRowTitle,
+  settingsSection,
+  settingsSectionDescription,
+  settingsSectionTitle,
+} from '../settingsClasses';
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
@@ -34,27 +46,27 @@ export const ToolsPanel: React.FC = () => {
       : t('No tool archives cached') || 'No tool archives cached';
 
   return (
-    <div className="settings-section">
+    <div className={settingsSection}>
       {/* Tool Download Cache */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Tool download cache') || 'Tool download cache'}</h3>
-        <span className="settings-section-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Tool download cache') || 'Tool download cache'}</h3>
+        <span className={settingsSectionDescription}>
           {t('Archives downloaded from GitHub for offline install and reuse across games.') ||
             'Archives downloaded from GitHub for offline install and reuse across games.'}
         </span>
 
-        <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-title">{t('Cached archives') || 'Cached archives'}</span>
-              <span className="settings-row-description">{cacheDesc}</span>
+        <div className={settingsCard}>
+          <div className={settingsRow}>
+            <div className={settingsRowInfo}>
+              <span className={settingsRowTitle}>{t('Cached archives') || 'Cached archives'}</span>
+              <span className={settingsRowDescription}>{cacheDesc}</span>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <span className="settings-pill">{formatBytes(cacheBytes)}</span>
+            <div className="flex items-center gap-compact">
+              <span className={settingsPill}>{formatBytes(cacheBytes)}</span>
               <button
                 type="button"
-                className="settings-button settings-button-ghost"
+                className={settingsButtonGhost}
                 disabled={cacheArchives === 0}
                 onClick={handleClearCache}
               >
@@ -66,28 +78,28 @@ export const ToolsPanel: React.FC = () => {
       </div>
 
       {/* Supported Tools / Catalog */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Supported tools') || 'Supported tools'}</h3>
-        <span className="settings-section-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Supported tools') || 'Supported tools'}</h3>
+        <span className={settingsSectionDescription}>
           {t('Built-in tool catalog and official open-source licenses.') ||
             'Built-in tool catalog and official open-source licenses.'}
         </span>
 
-        <div className="settings-card">
+        <div className={settingsCard}>
           {catalog.length === 0 ? (
-            <span className="settings-row-description">OptiScaler</span>
+            <span className={settingsRowDescription}>OptiScaler</span>
           ) : (
             catalog.map((tool) => (
-              <div key={tool.id} className="settings-row" style={{ padding: '6px 0' }}>
-                <div className="settings-row-info">
-                  <span className="settings-row-title">{tool.name}</span>
-                  <span className="settings-row-description">{tool.summary}</span>
+              <div key={tool.id} className={`${settingsRow} py-1.5`}>
+                <div className={settingsRowInfo}>
+                  <span className={settingsRowTitle}>{tool.name}</span>
+                  <span className={settingsRowDescription}>{tool.summary}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <span className="settings-pill">{tool.license}</span>
+                <div className="flex items-center gap-compact">
+                  <span className={settingsPill}>{tool.license}</span>
                   <button
                     type="button"
-                    className="settings-button settings-button-ghost"
+                    className={settingsButtonGhost}
                     onClick={() => handleOpenSource(tool.sourceUrl)}
                   >
                     {t('Source') || 'Source'}

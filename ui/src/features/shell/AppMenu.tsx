@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  IconInfoCircle,
+  IconLibrary,
+  IconLogout,
+  IconPlus,
+  IconPower,
+  IconRefresh,
+  IconSettings,
+} from '@tabler/icons-react';
+import type { TablerIcon } from '@tabler/icons-react';
 import { commands } from '../../api/commands';
 import { openSettingsModal, uiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -15,6 +25,16 @@ export interface AppMenuProps {
   onClose?: () => void;
   className?: string;
 }
+
+const MENU_ICONS: Record<string, TablerIcon> = {
+  library: IconLibrary,
+  rescan: IconRefresh,
+  'add-game': IconPlus,
+  settings: IconSettings,
+  about: IconInfoCircle,
+  'sign-out': IconLogout,
+  quit: IconPower,
+};
 
 export function AppMenu({
   isSignedIn = false,
@@ -131,12 +151,7 @@ export function AppMenu({
       <div
         data-testid="app-menu-backdrop"
         onClick={handleClose}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 900,
-          backgroundColor: 'transparent',
-        }}
+        className="fixed inset-0 z-[900] bg-transparent"
       />
 
       <div
@@ -145,36 +160,18 @@ export function AppMenu({
         aria-label={t('Application menu')}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
-        className={className}
         data-testid="app-menu"
-        style={{
-          position: 'absolute',
-          top: 'calc(100% + 4px)',
-          right: '16px',
-          zIndex: 1000,
-          minWidth: '220px',
-          backgroundColor: 'var(--color-raised, #222222)',
-          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          padding: '8px',
-          boxShadow: 'var(--shadow-modal, 0 16px 36px rgba(0, 0, 0, 0.4))',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '2px',
-        }}
+        className={`absolute top-[calc(100%_+_4px)] right-md z-[1000] flex min-w-[220px] flex-col gap-[2px] rounded-md border border-border-subtle bg-raised p-compact shadow-modal ${className ?? ''}`}
       >
         {items.map((item, index) => {
           const isFocused = index === focusedIndex;
+          const ItemIcon = MENU_ICONS[item.id];
           return (
-            <div key={item.id} style={{ display: 'contents' }}>
+            <div key={item.id} className="contents">
               {item.separatorBefore && (
                 <div
                   role="separator"
-                  style={{
-                    height: '1px',
-                    backgroundColor: 'var(--color-border-subtle, #2A2A2A)',
-                    margin: '6px 4px',
-                  }}
+                  className="mx-[4px] my-[6px] h-px bg-border-subtle"
                 />
               )}
               <button
@@ -186,26 +183,20 @@ export function AppMenu({
                 tabIndex={isFocused ? 0 : -1}
                 onClick={item.action}
                 onMouseEnter={() => setFocusedIndex(index)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '8px 12px',
-                  backgroundColor: isFocused
-                    ? 'var(--color-surface, #262525)'
-                    : 'transparent',
-                  color: isFocused
-                    ? 'var(--color-on-primary, #EDEDED)'
-                    : 'var(--color-text-default, #D9D9D9)',
-                  border: 'none',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  fontSize: 'var(--font-size-sm, 14px)',
-                  cursor: 'pointer',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
+                className={`flex w-full cursor-pointer items-center gap-compact rounded-sm px-sm py-compact text-left text-sm outline-none ${
+                  isFocused
+                    ? 'bg-surface text-on-primary'
+                    : 'bg-transparent text-text-default'
+                }`}
               >
+                {ItemIcon && (
+                  <ItemIcon
+                    size={16}
+                    stroke={1.75}
+                    aria-hidden="true"
+                    className="shrink-0"
+                  />
+                )}
                 {item.label}
               </button>
             </div>

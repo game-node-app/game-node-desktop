@@ -1,5 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { commands, useLocalGames, type Registration } from '../../api';
+import React, { useState } from 'react';
+import { IconX } from '@tabler/icons-react';
+import { AppModal } from '../../components/AppModal';
+import {
+  commands,
+  useLibraryView,
+  useLocalGames,
+  type Registration,
+} from '../../api';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
@@ -17,6 +24,7 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
   onClose,
 }) => {
   const { t } = useI18n();
+  const library = useLibraryView();
   const localGames = useLocalGames();
   const removeModalEntryKey = useUiStore((s) => s.removeModalEntryKey);
 
@@ -32,14 +40,20 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
 
   const [allowRediscovery, setAllowRediscovery] = useState(false);
 
-  const rawId = effectiveEntryKey ? effectiveEntryKey.replace(/^manual:/, '') : '';
+  const isManual = effectiveEntryKey?.startsWith('manual:') ?? false;
+  const localId =
+    isManual && effectiveEntryKey ? effectiveEntryKey.replace(/^manual:/, '') : null;
   const registration =
     propRegistration ??
-    localGames.registrations.find(
-      (r) => r.id === rawId || r.id === effectiveEntryKey || `manual:${r.id}` === effectiveEntryKey,
-    );
+    (localId
+      ? localGames.registrations.find((r) => r.id === localId)
+      : undefined);
 
-  const title = registration?.title ?? 'this game';
+  // Store entries have no local registration, so fall back to the visible row title.
+  const rowTitle = effectiveEntryKey
+    ? library?.rows.find((r) => r.key === effectiveEntryKey)?.title
+    : undefined;
+  const title = registration?.title ?? rowTitle ?? 'this game';
 
   const handleClose = () => {
     uiStore.setState((s) => ({ ...s, removeModalEntryKey: null }));
@@ -50,160 +64,78 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
     if (effectiveEntryKey) {
       commands.removeEntry(effectiveEntryKey, allowRediscovery);
     }
-    if (rawId) {
-      commands.removeLocalGame(rawId, allowRediscovery);
+    // Only DRM-free registrations have a local record to mark as removed.
+    if (localId) {
+      commands.removeLocalGame(localId, allowRediscovery);
     }
     handleClose();
   };
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
 
   if (!isOpen || !effectiveEntryKey) {
     return null;
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="remove-game-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
-    >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '560px',
-          backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-alert)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
+    <AppModal.Root opened onClose={handleClose} centered size={560} transitionProps={{ duration: 0 }}>
+      <AppModal.Overlay backgroundOpacity={0.62} />
+      <AppModal.Content
+        classNames={{
+          content:
+            'flex w-full flex-col overflow-hidden rounded-md border border-border-subtle bg-secondary shadow-alert',
         }}
       >
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <AppModal.Header className="flex shrink-0 items-center justify-between gap-md border-b border-border-subtle bg-secondary px-control-inline py-md">
           <div>
-            <h2 id="remove-game-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <AppModal.Title className="text-lg font-semibold text-text-default">
               {t('drmFree.removeFromLibrary')}
-            </h2>
-            <div
-              data-testid="remove-game-title-header"
-              style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}
-            >
+            </AppModal.Title>
+            <div data-testid="remove-game-title-header" className="text-xs text-text-dimmed">
               {title}
             </div>
           </div>
-          <button
-            type="button"
+          <AppModal.CloseButton
             aria-label="Close"
-            onClick={handleClose}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
+            icon={<IconX size={18} stroke={1.5} />}
+            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+          />
+        </AppModal.Header>
 
         {/* Body */}
-        <div
-          style={{
-            padding: '24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
-          <div style={{ fontSize: 'var(--font-size-sm, 14px)', color: 'var(--color-text-default, #D9D9D9)' }}>
-            <p style={{ marginBottom: '8px' }}>
-              Are you sure you want to remove <strong data-testid="remove-game-target-title">{title}</strong> from your library?
+        <AppModal.Body className="flex min-h-0 flex-1 flex-col gap-md overflow-y-auto p-control-inline">
+          <div className="text-sm text-text-default">
+            <p className="mb-compact">
+              Are you sure you want to remove{' '}
+              <strong data-testid="remove-game-target-title">{title}</strong> from your library?
             </p>
-            <p style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+            <p className="text-text-dimmed">
               Game files and local save backups will not be deleted from your computer.
             </p>
           </div>
 
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              padding: '12px 14px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-              fontSize: 'var(--font-size-sm, 14px)',
-            }}
-          >
+          <label className="flex cursor-pointer items-center gap-2.5 rounded-sm border border-border-subtle bg-raised px-3.5 py-sm text-sm text-text-default">
             <input
               type="checkbox"
               id="allow-rediscovery-checkbox"
               data-testid="allow-rediscovery-checkbox"
               checked={allowRediscovery}
               onChange={(e) => setAllowRediscovery(e.target.checked)}
-              style={{ cursor: 'pointer' }}
+              className="h-4 w-4 cursor-pointer accent-brand"
             />
-            <span>Allow rediscovery in watched folders</span>
+            <span>
+              {isManual
+                ? t('drmFree.allowRediscoveryInWatchedFolders')
+                : t('drmFree.allowRediscoveryOnFutureScans')}
+            </span>
           </label>
-        </div>
+        </AppModal.Body>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '8px',
-          }}
-        >
+        <div className="flex shrink-0 justify-end gap-compact border-t border-border-subtle px-control-inline py-md">
           <button
             type="button"
             onClick={handleClose}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'transparent',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-dimmed, #808080)',
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm px-md py-compact text-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.cancel')}
           </button>
@@ -212,20 +144,12 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
             data-testid="confirm-remove-button"
             aria-label={t('drmFree.removeFromLibrary')}
             onClick={handleConfirm}
-            style={{
-              padding: '8px 20px',
-              backgroundColor: 'var(--color-danger, #E5484D)',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: '#FFFFFF',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-transparent bg-danger px-md py-compact text-sm font-semibold text-white transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
           >
             {t('drmFree.removeFromLibrary')}
           </button>
         </div>
-      </div>
-    </div>
+      </AppModal.Content>
+    </AppModal.Root>
   );
 };

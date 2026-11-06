@@ -57,14 +57,8 @@ export const CoverImage: React.FC<CoverImageProps> = ({
         decoding="async"
         onLoad={() => markLoaded(src)}
         onError={() => setFailedSrc(src)}
-        className={className}
+        className={`block h-full w-full rounded-[inherit] bg-surface object-cover ${className ?? ''}`}
         style={{
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          display: 'block',
-          borderRadius: 'inherit',
-          backgroundColor: 'var(--color-surface, #262525)',
           opacity: loaded ? 1 : 0,
           transition: loaded ? 'opacity 120ms ease' : undefined,
           ...style,
@@ -75,42 +69,15 @@ export const CoverImage: React.FC<CoverImageProps> = ({
 
   return (
     <div
-      className={className}
       data-testid="cover-placeholder"
-      style={{
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'var(--color-surface, #262525)',
-        color: 'var(--color-text-dimmed, #808080)',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-        padding: '8px',
-        fontSize: 'var(--font-size-xs, 12px)',
-        overflow: 'hidden',
-        wordBreak: 'break-word',
-        borderRadius: 'inherit',
-        userSelect: 'none',
-        ...style,
-      }}
+      className={`flex h-full w-full select-none flex-col items-center justify-center overflow-hidden break-words rounded-[inherit] bg-surface p-2 text-center text-xs text-text-dimmed ${
+        className ?? ''
+      }`}
+      style={style}
     >
-      <span style={{ fontWeight: 500, color: 'var(--color-text-default, #D9D9D9)' }}>
-        {title}
-      </span>
+      <span className="font-medium text-text-default">{title}</span>
       {detectedName && detectedName !== title && (
-        <span
-          style={{
-            fontSize: '10px',
-            marginTop: '4px',
-            opacity: 0.8,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            maxWidth: '100%',
-          }}
-        >
+        <span className="mt-1 max-w-full truncate text-[10px] opacity-80">
           {detectedName}
         </span>
       )}

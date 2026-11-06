@@ -78,6 +78,32 @@ impl LibraryMachine {
         self.start_cover_downloads()
     }
 
+    /// Queues covers for games the match dialog lists, before any installed entry points at
+    /// them. An explicit search retries a cover that failed before, so its results stop showing
+    /// placeholders once the network recovers.
+    pub(super) fn plan_option_covers(
+        &mut self,
+        game_ids: impl IntoIterator<Item = u64>,
+    ) -> Vec<Effect> {
+        if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
+            return vec![];
+        }
+        for game_id in game_ids {
+            let wanted = self.games.get(&game_id).is_some_and(|game| {
+                game.cover_file.is_none()
+                    && game
+                        .cover_url
+                        .as_deref()
+                        .and_then(cover::download_url)
+                        .is_some()
+            });
+            if wanted {
+                self.covers.push(game_id);
+            }
+        }
+        self.start_cover_downloads()
+    }
+
     fn start_cover_downloads(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
         while self.covers.running.len() < MAX_COVER_DOWNLOADS {

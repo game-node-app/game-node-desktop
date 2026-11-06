@@ -1,7 +1,25 @@
 import React from 'react';
+import { Switch } from '@mantine/core';
+import { IconShieldCheck } from '@tabler/icons-react';
 import { commands, useLocalGames } from '../../../api';
 import { pushToast, uiStore, useUiStore } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
+import {
+  settingsButtonGhost,
+  settingsButtonPrimary,
+  settingsButtonSecondary,
+  settingsCard,
+  settingsInfoBox,
+  settingsInput,
+  settingsPillWarning,
+  settingsRow,
+  settingsRowDescription,
+  settingsRowInfo,
+  settingsRowTitle,
+  settingsSection,
+  settingsSectionDescription,
+  settingsSectionTitle,
+} from '../settingsClasses';
 
 export const BackupsPanel: React.FC = () => {
   const { t, locale } = useI18n();
@@ -51,9 +69,9 @@ export const BackupsPanel: React.FC = () => {
   };
 
   return (
-    <div className="settings-section">
-      <div className="settings-info-box">
-        <span>🛡</span>
+    <div className={settingsSection}>
+      <div className={settingsInfoBox}>
+        <IconShieldCheck size={14} stroke={1.75} aria-hidden="true" />
         <span>
           {t('DRM-free::Backups stay on this PC. A backup on the same drive cannot protect against drive loss.') ||
             'Backups stay on this PC. A backup on the same drive cannot protect against drive loss.'}
@@ -61,72 +79,63 @@ export const BackupsPanel: React.FC = () => {
       </div>
 
       {/* Automatic Protection */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Automatic protection') || 'Automatic protection'}</h3>
-        <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-title">{t('Automatic backups') || 'Automatic backups'}</span>
-              <span className="settings-row-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Automatic protection') || 'Automatic protection'}</h3>
+        <div className={settingsCard}>
+          <div className={settingsRow}>
+            <div className={settingsRowInfo}>
+              <span className={settingsRowTitle}>{t('Automatic backups') || 'Automatic backups'}</span>
+              <span className={settingsRowDescription}>
                 {t('Generates local backups automatically.') || 'Generates local backups automatically.'}
               </span>
             </div>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={isAutomatic}
-                onChange={handleToggleAutomatic}
-                aria-label={t('Automatic backups') || 'Automatic backups'}
-              />
-              <span className="settings-toggle-slider" />
-            </label>
+            <Switch
+              aria-label={t('Automatic backups') || 'Automatic backups'}
+              checked={isAutomatic}
+              onChange={handleToggleAutomatic}
+              color="brand"
+              size="md"
+            />
           </div>
         </div>
       </div>
 
       {/* Backup Destination */}
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t('Backup destination') || 'Backup destination'}</h3>
-        <span className="settings-section-description">
+      <div className={settingsSection}>
+        <h3 className={settingsSectionTitle}>{t('Backup destination') || 'Backup destination'}</h3>
+        <span className={settingsSectionDescription}>
           {t('Local folder where DRM-free game backups are saved.') ||
             'Local folder where DRM-free game backups are saved.'}
         </span>
-        <div className="settings-card">
-          <div style={{ display: 'flex', gap: '8px' }}>
+        <div className={settingsCard}>
+          <div className="flex gap-compact">
             <input
               type="text"
-              className="settings-input"
+              className={settingsInput}
               value={draftValue}
               onChange={(e) => handleChangeDestination(e.target.value)}
               aria-label={t('Backup destination') || 'Backup destination'}
             />
             <button
               type="button"
-              className="settings-button settings-button-secondary"
+              className={settingsButtonSecondary}
               onClick={handleBrowseDestination}
             >
               {t('Choose folder…') || 'Browse'}
             </button>
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginTop: '8px',
-            }}
-          >
+          <div className="mt-compact flex items-center justify-between">
             {isDirty ? (
-              <span className="settings-pill settings-pill-warning">
+              <span className={settingsPillWarning}>
                 {t('Unsaved changes') || 'Unsaved changes'}
               </span>
             ) : <span />}
 
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div className="flex gap-compact">
               <button
                 type="button"
-                className="settings-button settings-button-ghost"
+                className={settingsButtonGhost}
                 disabled={!isDirty}
                 onClick={handleRevertDestination}
               >
@@ -134,7 +143,7 @@ export const BackupsPanel: React.FC = () => {
               </button>
               <button
                 type="button"
-                className="settings-button settings-button-primary"
+                className={settingsButtonPrimary}
                 disabled={!isDirty}
                 onClick={handleSaveDestination}
               >

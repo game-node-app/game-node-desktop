@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { IconX } from '@tabler/icons-react';
+import { FloatingModal } from '../../components/FloatingModal';
 import { commands, useLocalGames, type SaveSupport } from '../../api';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -29,6 +31,15 @@ export function formatSaveSupport(support?: SaveSupport): string {
       return 'Not configured';
   }
 }
+
+const sectionCardClass =
+  'flex flex-col gap-sm rounded-md border border-border-subtle bg-secondary p-md';
+const smallButtonClass =
+  'inline-flex items-center justify-center whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-3.5 py-compact text-xs font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50';
+const pathRowClass =
+  'break-all rounded-sm border border-border-subtle bg-chrome px-2.5 py-1.5 text-xs';
+const smallInputClass =
+  'min-w-0 flex-1 rounded-sm border border-border-subtle bg-chrome px-sm py-compact text-xs text-text-default placeholder:text-text-dimmed focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand';
 
 export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
   installationId: propInstallationId,
@@ -76,17 +87,6 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, localGames.restore]);
-
   if (!isOpen || !effectiveKey) {
     return null;
   }
@@ -107,156 +107,86 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
       ? profile.automatic
       : localGames.settings.automatic;
 
+  const supportToneClass =
+    profile?.support === 'supported'
+      ? 'bg-success-subtle text-success'
+      : profile?.support === 'unsupported'
+        ? 'bg-danger-subtle text-danger'
+        : 'bg-warning-subtle text-warning';
+
+  const jobToneClass =
+    job?.state === 'successful' || job?.state === 'unchanged'
+      ? 'bg-success-subtle text-success'
+      : job?.state === 'failed'
+        ? 'bg-danger-subtle text-danger'
+        : 'bg-accent-subtle text-brand';
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="save-protection-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="save-protection"
+      defaultSize={{ width: 720, height: 600 }}
+      minSize={{ width: 560, height: 420 }}
+      zIndex={1000}
+      closeOnClickOutside
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '720px',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--settings-bg-base, #111111)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-modal)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
-      >
+      <FloatingModal.Overlay backgroundOpacity={0.62} />
+      <FloatingModal.Content className="flex flex-col bg-chrome">
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <FloatingModal.Header className="bg-chrome px-control-inline py-md">
           <div>
-            <h2 id="save-protection-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <FloatingModal.Title className="text-lg font-semibold text-text-default">
               {t('drmFree.localSaveProtection')}
-            </h2>
-            <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
-              {title}
-            </div>
+            </FloatingModal.Title>
+            <div className="text-xs text-text-dimmed">{title}</div>
           </div>
-          <button
-            type="button"
+          <FloatingModal.CloseButton
             aria-label="Close"
-            onClick={handleClose}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
+            icon={<IconX size={18} stroke={1.5} />}
+            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+          />
+        </FloatingModal.Header>
 
         {/* Content */}
-        <div
-          style={{
-            padding: '24px',
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '20px',
-          }}
-        >
+        <FloatingModal.Body className="gap-lg p-control-inline">
           {/* Two-step Restore Confirmation View */}
           {localGames.restore ? (
             <div
               data-testid="restore-confirmation-view"
-              style={{
-                backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                border: '1px solid var(--color-warning, #F5A524)',
-                borderRadius: 'var(--radius-md, 8px)',
-                padding: '20px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '16px',
-              }}
+              className="flex flex-col gap-md rounded-md border border-warning bg-secondary p-lg"
             >
               <div>
-                <h3 style={{ fontSize: 'var(--font-size-md, 16px)', color: 'var(--color-warning, #F5A524)' }}>
-                  {t('drmFree.restorePreview')}
-                </h3>
-                <p style={{ fontSize: 'var(--font-size-sm, 14px)', color: 'var(--color-text-default, #D9D9D9)', marginTop: '4px' }}>
+                <h3 className="text-md text-warning">{t('drmFree.restorePreview')}</h3>
+                <p className="mt-1 text-sm text-text-default">
                   {t('drmFree.restoreReplacesTheseTargetsAfterPreservingA')}
                 </p>
               </div>
 
-              <div
-                style={{
-                  backgroundColor: 'var(--settings-bg-base, #111111)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  padding: '12px',
-                  maxHeight: '160px',
-                  overflowY: 'auto',
-                  fontFamily: 'monospace',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                }}
-              >
+              <div className="max-h-[160px] overflow-y-auto rounded-sm border border-border-subtle bg-chrome p-sm font-mono text-xs">
                 {localGames.restore.targets.length === 0 ? (
-                  <span style={{ color: 'var(--color-text-dimmed, #808080)' }}>No files will be modified.</span>
+                  <span className="text-text-dimmed">No files will be modified.</span>
                 ) : (
                   localGames.restore.targets.map((tgt, i) => (
-                    <div key={i} style={{ padding: '2px 0', wordBreak: 'break-all' }}>
+                    <div key={i} className="break-all py-0.5">
                       {tgt}
                     </div>
                   ))
                 )}
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <div className="flex justify-end gap-compact">
                 <button
                   type="button"
                   onClick={() => commands.cancelLocalRestore()}
-                  style={{
-                    padding: '8px 16px',
-                    backgroundColor: 'var(--settings-bg-raised, #222222)',
-                    border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    cursor: 'pointer',
-                  }}
+                  className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                 >
                   {t('drmFree.cancel')}
                 </button>
                 <button
                   type="button"
                   onClick={() => commands.confirmLocalRestore()}
-                  style={{
-                    padding: '8px 20px',
-                    backgroundColor: 'var(--color-danger, #E5484D)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: '#FFFFFF',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
+                  className="inline-flex items-center justify-center rounded-sm border border-transparent bg-danger px-md py-compact text-sm font-semibold text-white transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
                 >
                   {t('drmFree.confirmRestore')}
                 </button>
@@ -268,63 +198,26 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
               {hasOverlappingSaves && (
                 <div
                   data-testid="overlapping-saves-banner"
-                  style={{
-                    padding: '12px 16px',
-                    backgroundColor: 'var(--color-warning-subtle, #F5A5241F)',
-                    border: '1px solid var(--color-warning, #F5A524)',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: 'var(--color-text-default, #D9D9D9)',
-                    fontSize: 'var(--font-size-sm, 14px)',
-                  }}
+                  className="rounded-sm border border-warning bg-warning-subtle px-md py-sm text-sm text-text-default"
                 >
                   {t('drmFree.anotherInstallationSharesTheseSavesBackupAnd')}
                 </div>
               )}
 
               {/* Profile summary card */}
-              <div
-                style={{
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  padding: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div className={sectionCardClass}>
+                <div className="flex items-center justify-between gap-sm">
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 'var(--font-size-md, 16px)' }}>
+                    <div className="text-md font-semibold text-text-default">
                       {profile?.title || t('drmFree.noSaveProfileChooseASaveLocation')}
                     </div>
-                    <div
-                      data-testid="save-support-text"
-                      style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}
-                    >
+                    <div data-testid="save-support-text" className="text-xs text-text-dimmed">
                       Support: {formatSaveSupport(profile?.support)}
                     </div>
                   </div>
                   <span
                     data-testid="save-support-badge"
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      backgroundColor:
-                        profile?.support === 'supported'
-                          ? 'var(--color-success-subtle, #3DD68C1F)'
-                          : profile?.support === 'unsupported'
-                            ? 'var(--color-danger-subtle, #E5484D1F)'
-                            : 'var(--color-warning-subtle, #F5A5241F)',
-                      color:
-                        profile?.support === 'supported'
-                          ? 'var(--color-success, #3DD68C)'
-                          : profile?.support === 'unsupported'
-                            ? 'var(--color-danger, #E5484D)'
-                            : 'var(--color-warning, #F5A524)',
-                      fontWeight: 600,
-                    }}
+                    className={`rounded-sm px-2.5 py-1 text-xs font-semibold ${supportToneClass}`}
                   >
                     {profile?.support ?? 'not configured'}
                   </span>
@@ -332,36 +225,19 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
 
                 {/* Backed-up files */}
                 <div>
-                  <div
-                    style={{
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      fontWeight: 600,
-                      color: 'var(--color-text-dimmed, #808080)',
-                      marginBottom: '6px',
-                    }}
-                  >
+                  <div className="mb-1.5 text-xs font-semibold text-text-dimmed">
                     {t('drmFree.saveFoldersFiles')}:
                   </div>
                   {profile && profile.files.length > 0 ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div className="flex flex-col gap-1">
                       {profile.files.map((file, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            padding: '6px 10px',
-                            backgroundColor: 'var(--settings-bg-base, #111111)',
-                            border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                            borderRadius: 'var(--radius-sm, 4px)',
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            wordBreak: 'break-all',
-                          }}
-                        >
+                        <div key={i} className={`${pathRowClass} text-text-default`}>
                           {file}
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+                    <div className="text-xs text-text-dimmed">
                       {t('drmFree.noSaveLocationsResolvedYet')}
                     </div>
                   )}
@@ -370,30 +246,12 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
                 {/* Backed-up registry keys */}
                 {profile && profile.registry.length > 0 && (
                   <div>
-                    <div
-                      style={{
-                        fontSize: 'var(--font-size-xs, 12px)',
-                        fontWeight: 600,
-                        color: 'var(--color-text-dimmed, #808080)',
-                        marginBottom: '6px',
-                      }}
-                    >
+                    <div className="mb-1.5 text-xs font-semibold text-text-dimmed">
                       {t('drmFree.registryKeys')}:
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div className="flex flex-col gap-1">
                       {profile.registry.map((reg, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            padding: '6px 10px',
-                            backgroundColor: 'var(--settings-bg-base, #111111)',
-                            border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                            borderRadius: 'var(--radius-sm, 4px)',
-                            fontSize: 'var(--font-size-xs, 12px)',
-                            color: 'var(--color-text-dimmed, #808080)',
-                            wordBreak: 'break-all',
-                          }}
-                        >
+                        <div key={i} className={`${pathRowClass} text-text-dimmed`}>
                           {reg}
                         </div>
                       ))}
@@ -403,22 +261,12 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
               </div>
 
               {/* Automatic backup toggle */}
-              <div
-                style={{
-                  padding: '14px 16px',
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
+              <div className="flex items-center justify-between gap-md rounded-md border border-border-subtle bg-secondary px-md py-3.5">
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 'var(--font-size-sm, 14px)' }}>
+                  <div className="text-sm font-semibold text-text-default">
                     {t('drmFree.backUpThisGameAutomatically')}
                   </div>
-                  <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
+                  <div className="text-xs text-text-dimmed">
                     {t('drmFree.createsALocalSnapshotAfterEachPlay')}
                   </div>
                 </div>
@@ -428,130 +276,68 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
                   data-testid="automatic-backup-toggle"
                   checked={isAutoBackupChecked}
                   onChange={(e) => commands.setLocalProfileAutomatic(id, e.target.checked)}
-                  style={{ cursor: 'pointer', transform: 'scale(1.2)' }}
+                  className="h-4 w-4 cursor-pointer accent-brand"
                 />
               </div>
 
               {/* Custom save path & profile override */}
-              <div
-                style={{
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  padding: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 'var(--font-size-sm, 14px)' }}>
+              <div className={sectionCardClass}>
+                <div className="text-sm font-semibold text-text-default">
                   {t('drmFree.saveLocationProfileOverride')}
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div className="flex gap-compact">
                   <button
                     type="button"
                     onClick={() => commands.pickLocalSaves(id, true)}
-                    style={{
-                      padding: '8px 14px',
-                      backgroundColor: 'var(--settings-bg-raised, #222222)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      cursor: 'pointer',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallButtonClass}
                   >
                     Browse folder
                   </button>
                   <button
                     type="button"
                     onClick={() => commands.pickLocalSaves(id, false)}
-                    style={{
-                      padding: '8px 14px',
-                      backgroundColor: 'var(--settings-bg-raised, #222222)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      cursor: 'pointer',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallButtonClass}
                   >
                     Browse file
                   </button>
                 </div>
 
                 {/* Custom location input */}
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div className="flex gap-compact">
                   <input
                     type="text"
                     placeholder="Custom save file or folder"
                     aria-label="Custom save path"
                     value={customLocation}
                     onChange={(e) => setCustomLocation(e.target.value)}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'var(--settings-bg-base, #111111)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      padding: '8px 12px',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallInputClass}
                   />
                   <button
                     type="button"
                     onClick={() => commands.configureLocalSaves(id, customLocation)}
                     disabled={!customLocation.trim()}
-                    style={{
-                      padding: '8px 14px',
-                      backgroundColor: 'var(--settings-bg-raised, #222222)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      cursor: customLocation.trim() ? 'pointer' : 'not-allowed',
-                      opacity: customLocation.trim() ? 1 : 0.5,
-                      whiteSpace: 'nowrap',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallButtonClass}
                   >
                     Save path
                   </button>
                 </div>
 
                 {/* Profile title override */}
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div className="flex gap-compact">
                   <input
                     type="text"
                     placeholder="Exact save profile title"
                     aria-label="Save profile title"
                     value={profileTitleInput}
                     onChange={(e) => setProfileTitleInput(e.target.value)}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'var(--settings-bg-base, #111111)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      padding: '8px 12px',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallInputClass}
                   />
                   <button
                     type="button"
                     onClick={() => commands.chooseLocalSaveProfile(id, profileTitleInput)}
                     disabled={!profileTitleInput.trim()}
-                    style={{
-                      padding: '8px 14px',
-                      backgroundColor: 'var(--settings-bg-raised, #222222)',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      color: 'var(--color-text-default, #D9D9D9)',
-                      cursor: profileTitleInput.trim() ? 'pointer' : 'not-allowed',
-                      opacity: profileTitleInput.trim() ? 1 : 0.5,
-                      whiteSpace: 'nowrap',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
+                    className={smallButtonClass}
                   >
                     {t('drmFree.changeSaveProfile')}
                   </button>
@@ -559,50 +345,19 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
               </div>
 
               {/* Backup Now & Job Status */}
-              <div
-                style={{
-                  padding: '14px 16px',
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
+              <div className="flex items-center justify-between gap-md rounded-md border border-border-subtle bg-secondary px-md py-3.5">
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 'var(--font-size-sm, 14px)' }}>
-                    Immediate backup
-                  </div>
+                  <div className="text-sm font-semibold text-text-default">Immediate backup</div>
                   {job && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                    <div className="mt-1 flex items-center gap-compact">
                       <span
                         data-testid="backup-job-state-badge"
-                        style={{
-                          padding: '2px 8px',
-                          borderRadius: 'var(--radius-sm, 4px)',
-                          fontSize: 'var(--font-size-xs, 12px)',
-                          backgroundColor:
-                            job.state === 'successful' || job.state === 'unchanged'
-                              ? 'var(--color-success-subtle, #3DD68C1F)'
-                              : job.state === 'failed'
-                                ? 'var(--color-danger-subtle, #E5484D1F)'
-                                : 'var(--color-accent-subtle, #F150251F)',
-                          color:
-                            job.state === 'successful' || job.state === 'unchanged'
-                              ? 'var(--color-success, #3DD68C)'
-                              : job.state === 'failed'
-                                ? 'var(--color-danger, #E5484D)'
-                                : 'var(--color-primary, #F15025)',
-                          fontWeight: 600,
-                        }}
+                        className={`rounded-sm px-2 py-0.5 text-xs font-semibold ${jobToneClass}`}
                       >
                         {job.state}
                       </span>
                       {job.error && (
-                        <span style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-danger, #E5484D)' }}>
-                          {job.error}
-                        </span>
+                        <span className="text-xs text-danger">{job.error}</span>
                       )}
                     </div>
                   )}
@@ -613,67 +368,31 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
                   data-testid="backup-local-now-button"
                   onClick={() => commands.backupLocalNow(id)}
                   disabled={job?.state === 'running' || job?.state === 'queued'}
-                  style={{
-                    padding: '8px 18px',
-                    backgroundColor: 'var(--color-primary, #F15025)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm, 4px)',
-                    color: 'var(--color-on-primary, #EDEDED)',
-                    fontWeight: 600,
-                    cursor: job?.state === 'running' || job?.state === 'queued' ? 'not-allowed' : 'pointer',
-                    opacity: job?.state === 'running' || job?.state === 'queued' ? 0.6 : 1,
-                  }}
+                  className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {t('drmFree.backupNow')}
                 </button>
               </div>
 
               {/* Backup History */}
-              <div
-                style={{
-                  backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-                  border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-md, 8px)',
-                  padding: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontWeight: 600, fontSize: 'var(--font-size-sm, 14px)' }}>
-                    Backup history
-                  </div>
+              <div className={sectionCardClass}>
+                <div className="flex items-center justify-between gap-sm">
+                  <div className="text-sm font-semibold text-text-default">Backup history</div>
                   <button
                     type="button"
                     onClick={() => commands.loadLocalHistory(id)}
-                    style={{
-                      padding: '4px 10px',
-                      backgroundColor: 'transparent',
-                      border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                      borderRadius: 'var(--radius-sm, 4px)',
-                      color: 'var(--color-text-dimmed, #808080)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                      cursor: 'pointer',
-                    }}
+                    className="inline-flex cursor-pointer items-center justify-center rounded-sm border border-border-subtle bg-transparent px-2.5 py-1 text-xs text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     Refresh
                   </button>
                 </div>
 
                 {versions.length === 0 ? (
-                  <div
-                    style={{
-                      padding: '16px',
-                      textAlign: 'center',
-                      color: 'var(--color-text-dimmed, #808080)',
-                      fontSize: 'var(--font-size-xs, 12px)',
-                    }}
-                  >
+                  <div className="p-md text-center text-xs text-text-dimmed">
                     No backups recorded yet.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div className="flex flex-col gap-compact">
                     {versions.map((ver) => {
                       const versionKey = `${ver.profile.length}:${ver.profile}:${ver.id.length}:${ver.id}:${ver.destination}`;
 
@@ -681,41 +400,18 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
                         <div
                           key={ver.id}
                           data-testid={`backup-version-${ver.id}`}
-                          style={{
-                            padding: '10px 14px',
-                            backgroundColor: 'var(--settings-bg-base, #111111)',
-                            border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                            borderRadius: 'var(--radius-sm, 4px)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                          }}
+                          className="flex items-center justify-between gap-sm rounded-sm border border-border-subtle bg-chrome px-3.5 py-2.5"
                         >
                           <div>
-                            <div style={{ fontWeight: 500, fontSize: 'var(--font-size-sm, 14px)' }}>
-                              {ver.label}
-                            </div>
-                            <div
-                              style={{
-                                fontSize: 'var(--font-size-xs, 12px)',
-                                color: 'var(--color-text-dimmed, #808080)',
-                              }}
-                            >
+                            <div className="text-sm font-medium text-text-default">{ver.label}</div>
+                            <div className="text-xs text-text-dimmed">
                               {formatBytes(ver.bytes)} · {ver.destination}
                             </div>
                           </div>
                           <button
                             type="button"
                             onClick={() => commands.previewLocalRestore(versionKey)}
-                            style={{
-                              padding: '6px 14px',
-                              backgroundColor: 'var(--settings-bg-raised, #222222)',
-                              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-                              borderRadius: 'var(--radius-sm, 4px)',
-                              color: 'var(--color-text-default, #D9D9D9)',
-                              cursor: 'pointer',
-                              fontSize: 'var(--font-size-xs, 12px)',
-                            }}
+                            className="inline-flex cursor-pointer items-center justify-center whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-3.5 py-1.5 text-xs text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                           >
                             Restore
                           </button>
@@ -727,33 +423,21 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
               </div>
             </>
           )}
-        </div>
+        </FloatingModal.Body>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-          }}
-        >
+        <FloatingModal.Footer className="px-control-inline py-md">
           <button
             type="button"
             onClick={handleClose}
-            style={{
-              padding: '8px 20px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.close')}
           </button>
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

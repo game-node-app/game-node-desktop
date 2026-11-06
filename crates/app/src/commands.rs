@@ -3,14 +3,12 @@ use std::sync::Arc;
 use crate::engine::Engine;
 use gamenode_core::{Snapshot, WindowGeometry};
 
-/// Bootstrap payload sent to the React frontend on initial load.
+/// App metadata the React shell needs at startup.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BootstrapState {
-    pub snapshot: Snapshot,
+pub struct AppInfo {
     pub locale: String,
     pub version: String,
-    pub license_notices: String,
     pub background_supported: bool,
 }
 
@@ -186,16 +184,18 @@ pub async fn get_snapshot(engine: tauri::State<'_, Engine>) -> Result<Snapshot, 
 }
 
 #[tauri::command]
-pub async fn get_bootstrap_state(
-    engine: tauri::State<'_, Engine>,
-) -> Result<BootstrapState, String> {
-    Ok(BootstrapState {
-        snapshot: engine.snapshot(),
+pub async fn get_app_info() -> Result<AppInfo, String> {
+    Ok(AppInfo {
         locale: normalize_locale(&system_locale()).to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        license_notices: include_str!("../../../licenses/THIRD-PARTY-NOTICES.txt").to_string(),
         background_supported: cfg!(windows),
     })
+}
+
+/// Bundled third-party notices. Serialized only when the About panel requests them.
+#[tauri::command]
+pub async fn get_license_notices() -> Result<String, String> {
+    Ok(include_str!("../../../licenses/THIRD-PARTY-NOTICES.txt").to_string())
 }
 
 #[tauri::command]

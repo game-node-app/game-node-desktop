@@ -1,14 +1,17 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MantineProvider } from '@mantine/core';
 import { I18nProvider } from '../../i18n';
+import { appTheme } from '../../AppProviders';
 import {
   SNAPSHOT_QUERY_KEY,
-  BOOTSTRAP_QUERY_KEY,
+  APP_INFO_QUERY_KEY,
+  LICENSE_NOTICES_QUERY_KEY,
   createDefaultSnapshot,
   commands,
   type Snapshot,
-  type BootstrapState,
+  type AppInfo,
 } from '../../api';
 import {
   uiStore,
@@ -27,7 +30,11 @@ function ShortcutTestHarness() {
   return <SettingsModal />;
 }
 
-function createTestQueryClient(snapshot?: Partial<Snapshot>, bootstrap?: Partial<BootstrapState>) {
+function createTestQueryClient(
+  snapshot?: Partial<Snapshot>,
+  appInfo?: Partial<AppInfo>,
+  licenseNotices = 'GameNode Desktop - Full offline license notices text',
+) {
   const qc = new QueryClient({
     defaultOptions: {
       queries: {
@@ -63,17 +70,16 @@ function createTestQueryClient(snapshot?: Partial<Snapshot>, bootstrap?: Partial
     },
   };
 
-  const fullBootstrap: BootstrapState = {
-    snapshot: fullSnapshot,
+  const fullAppInfo: AppInfo = {
     locale: 'en',
     version: '0.2.0',
-    licenseNotices: 'GameNode Desktop - Full offline license notices text',
     backgroundSupported: false,
-    ...bootstrap,
+    ...appInfo,
   };
 
   qc.setQueryData(SNAPSHOT_QUERY_KEY, fullSnapshot);
-  qc.setQueryData(BOOTSTRAP_QUERY_KEY, fullBootstrap);
+  qc.setQueryData(APP_INFO_QUERY_KEY, fullAppInfo);
+  qc.setQueryData(LICENSE_NOTICES_QUERY_KEY, licenseNotices);
 
   return qc;
 }
@@ -81,17 +87,20 @@ function createTestQueryClient(snapshot?: Partial<Snapshot>, bootstrap?: Partial
 function renderSettings(
   locale = 'en',
   snapshot?: Partial<Snapshot>,
-  bootstrap?: Partial<BootstrapState>,
+  appInfo?: Partial<AppInfo>,
+  licenseNotices?: string,
 ) {
-  const queryClient = createTestQueryClient(snapshot, bootstrap);
+  const queryClient = createTestQueryClient(snapshot, appInfo, licenseNotices);
 
   const utils = render(
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider initialLocale={locale}>
-        <ToastContainer />
-        <ShortcutTestHarness />
-      </I18nProvider>
-    </QueryClientProvider>,
+    <MantineProvider theme={appTheme} defaultColorScheme="dark">
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider initialLocale={locale}>
+          <ToastContainer />
+          <ShortcutTestHarness />
+        </I18nProvider>
+      </QueryClientProvider>
+    </MantineProvider>,
   );
 
   return { ...utils, queryClient };
@@ -137,9 +146,9 @@ describe('SettingsModal Feature Suite', () => {
 
     it('switches topics and resets scroll top position', () => {
       openSettingsModal();
-      const { container } = renderSettings('en');
+      renderSettings('en');
 
-      const scrollContainer = container.querySelector('.settings-scroll-content');
+      const scrollContainer = document.querySelector('.settings-scroll-content');
       expect(scrollContainer).not.toBeNull();
 
       if (scrollContainer) {
@@ -338,9 +347,12 @@ describe('SettingsModal Feature Suite', () => {
 
     it('opens License Notices modal, and Escape closes it first while restoring focus to Show license notices', () => {
       openSettingsModal('about');
-      renderSettings('en', undefined, {
-        licenseNotices: 'Copyright 2026 GameNode Desktop Full License Text',
-      });
+      renderSettings(
+        'en',
+        undefined,
+        undefined,
+        'Copyright 2026 GameNode Desktop Full License Text',
+      );
 
       const showNoticesBtn = screen.getByRole('button', { name: /Show license notices/i });
       showNoticesBtn.focus();
@@ -562,6 +574,29 @@ describe('SettingsModal Feature Suite', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Watch folder' }));
 
       expect(watchSpy).toHaveBeenCalledWith('D:\\Roms');
+    });
+
+    it('stops monitoring a folder without removing its registered games', () => {
+      const removeSpy = vi.spyOn(commands, 'removeLocalWatch');
+      openSettingsModal('stores');
+      renderSettings('en', watchedSnapshot);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove watch' }));
+
+      expect(removeSpy).toHaveBeenCalledWith('w-1');
+    });
+
+    it('does not list disabled watches', () => {
+      openSettingsModal('stores');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          watches: [{ id: 'w-1', path: 'C:\\Games\\Indie', enabled: false }],
+        },
+      });
+
+      expect(screen.queryByText('C:\\Games\\Indie')).not.toBeInTheDocument();
+      expect(screen.getByText('No watched folders configured.')).toBeInTheDocument();
     });
 
     it('uses the Portuguese label on the Stores page', () => {

@@ -46,6 +46,12 @@ const GameTile = memo(function GameTile({
   const dotColor = getMatchDotColor(row.status);
   const playtimeStr = formatDuration(row.playtime?.seconds, t);
 
+  const selectionClass = isFocused
+    ? 'border-2 border-text-default'
+    : isSelected
+      ? 'border border-brand'
+      : 'border border-transparent';
+
   return (
     <div
       data-testid={`game-tile-${row.key}`}
@@ -55,39 +61,13 @@ const GameTile = memo(function GameTile({
       onClick={(e) => onClick(e, row.key)}
       onContextMenu={(e) => onContextMenu(e, row.key)}
       onDoubleClick={(e) => onDoubleClick(e, row.key)}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        transform: `translate(${x}px, ${y}px)`,
-        width: `${TILE_WIDTH}px`,
-        height: `${TILE_HEIGHT}px`,
-        borderRadius: 'var(--radius-md, 8px)',
-        border: isFocused
-          ? '2px solid var(--color-text-default, #D9D9D9)'
-          : isSelected
-            ? '1px solid var(--color-primary, #F15025)'
-            : '1px solid transparent',
-        backgroundColor: isSelected ? 'var(--color-accent-subtle, #F150251F)' : 'transparent',
-        cursor: 'pointer',
-        padding: '8px',
-        display: 'flex',
-        flexDirection: 'column',
-        boxSizing: 'border-box',
-        userSelect: 'none',
-        transition: 'background-color 120ms ease',
-      }}
+      className={`absolute left-0 top-0 box-border flex h-[294px] w-[166px] cursor-pointer select-none flex-col rounded-md p-2 transition-colors ${selectionClass} ${
+        isSelected ? 'bg-accent-subtle' : 'bg-transparent'
+      }`}
+      style={{ transform: `translate(${x}px, ${y}px)` }}
     >
       {/* Cover (150x200px) */}
-      <div
-        style={{
-          width: '150px',
-          height: '200px',
-          borderRadius: 'var(--radius-sm, 4px)',
-          overflow: 'hidden',
-          flexShrink: 0,
-        }}
-      >
+      <div className="h-[200px] w-[150px] shrink-0 overflow-hidden rounded-sm">
         <CoverImage
           coverFile={row.coverFile}
           title={row.title}
@@ -98,78 +78,30 @@ const GameTile = memo(function GameTile({
       {/* Title + Running */}
       <div
         title={row.title}
-        style={{
-          marginTop: '6px',
-          fontSize: 'var(--font-size-sm, 14px)',
-          fontWeight: 500,
-          color: 'var(--color-text-default, #D9D9D9)',
-          lineHeight: '17px',
-          height: '34px',
-          overflow: 'hidden',
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-        }}
+        className="mt-1.5 line-clamp-2 h-[34px] overflow-hidden text-sm font-medium leading-[17px] text-text-default"
       >
         {row.title}
         {row.running && (
-          <span
-            style={{
-              color: 'var(--color-success, #3DD68C)',
-              fontWeight: 600,
-              marginLeft: '4px',
-            }}
-          >
+          <span className="ml-1 font-semibold text-success">
             · {t('Library::Running')}
           </span>
         )}
       </div>
 
       {/* Provider + Match Status */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          marginTop: '2px',
-          height: '16px',
-        }}
-      >
+      <div className="mt-0.5 flex h-4 items-center gap-1.5">
         <span
           title={formatMatchStatus(row.status, t)}
-          style={{
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            backgroundColor: dotColor,
-            flexShrink: 0,
-            display: 'inline-block',
-          }}
+          className="inline-block h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: dotColor }}
         />
-        <span
-          style={{
-            fontSize: 'var(--font-size-xs, 12px)',
-            color: 'var(--color-text-dimmed, #808080)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <span className="truncate text-xs text-text-dimmed">
           {row.providerName}
         </span>
       </div>
 
       {/* Playtime */}
-      <div
-        style={{
-          marginTop: '4px',
-          fontSize: 'var(--font-size-xs, 12px)',
-          color: 'var(--color-text-dimmed, #808080)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <div className="mt-1 truncate text-xs text-text-dimmed">
         {playtimeStr}
       </div>
     </div>
@@ -292,23 +224,12 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
     <div
       ref={parentRef}
       data-testid="game-grid-container"
-      className={className}
-      style={{
-        flex: 1,
-        width: '100%',
-        height: '100%',
-        overflowY: 'auto',
-        position: 'relative',
-        backgroundColor: 'var(--color-background, #161616)',
-        ...style,
-      }}
+      className={`relative h-full w-full flex-1 overflow-y-auto bg-body ${className ?? ''}`}
+      style={style}
     >
       <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: '100%',
-          position: 'relative',
-        }}
+        className="relative w-full"
+        style={{ height: `${virtualizer.getTotalSize()}px` }}
       >
         {tiles}
       </div>

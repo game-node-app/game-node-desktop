@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+import { IconX } from '@tabler/icons-react';
+import { FloatingModal } from '../../components/FloatingModal';
 import {
   closeSettingsModal,
   setSettingsTopic,
@@ -6,9 +8,8 @@ import {
   useUiStore,
   type SettingsTopic,
 } from '../../store/uiStore';
-import { useAuth, useBootstrapState, useLocalGames } from '../../api';
+import { useAppInfo, useAuth, useLocalGames } from '../../api';
 import { useI18n } from '../../i18n';
-import './settings.css';
 
 import { AccountPanel } from './panels/AccountPanel';
 import { StoresPanel } from './panels/StoresPanel';
@@ -17,6 +18,7 @@ import { ToolsPanel } from './panels/ToolsPanel';
 import { AboutPanel } from './panels/AboutPanel';
 import { DiscardChangesDialog } from './DiscardChangesDialog';
 import { LicenseNoticesModal } from './LicenseNoticesModal';
+import { settingsCloseButton } from './settingsClasses';
 
 interface TopicItem {
   id: SettingsTopic;
@@ -61,11 +63,10 @@ export const SettingsModal: React.FC = () => {
   const backupDestinationDraft = useUiStore((s) => s.backupDestinationDraft);
 
   const { auth } = useAuth();
-  const { data: bootstrap } = useBootstrapState();
+  const { data: appInfo } = useAppInfo();
   const localGames = useLocalGames();
 
   const contentPaneRef = useRef<HTMLDivElement>(null);
-  const modalRef = useRef<HTMLDivElement>(null);
   const showLicenseNoticesButtonRef = useRef<HTMLButtonElement>(null);
 
   const currentDestination = localGames?.settings?.destination ?? '';
@@ -78,66 +79,6 @@ export const SettingsModal: React.FC = () => {
       contentPaneRef.current.scrollTop = 0;
     }
   }, [settingsTopic]);
-
-  // Global escape key handler when settings modal is open
-  useEffect(() => {
-    if (!settingsOpen) return;
-
-    function handleWindowKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        const state = uiStore.state;
-        if (state.licenseModalOpen || state.discardBackupConfirmOpen) {
-          return;
-        }
-
-        event.preventDefault();
-        const dirty =
-          state.backupDestinationDraft !== null &&
-          state.backupDestinationDraft !== (localGames?.settings?.destination ?? '');
-
-        if (dirty) {
-          uiStore.setState((prev) => ({
-            ...prev,
-            discardBackupConfirmOpen: true,
-            pendingSettingsAction: () => closeSettingsModal(),
-          }));
-        } else {
-          closeSettingsModal();
-        }
-      }
-    }
-
-    window.addEventListener('keydown', handleWindowKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleWindowKeyDown);
-    };
-  }, [settingsOpen, localGames?.settings?.destination]);
-
-  // Tab key focus trapping inside active dialog
-  const handleModalKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (licenseModalOpen || discardBackupConfirmOpen) return;
-
-    if (event.key === 'Tab' && modalRef.current) {
-      const focusables = modalRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-
-      if (event.shiftKey) {
-        if (document.activeElement === first || !modalRef.current.contains(document.activeElement)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (document.activeElement === last || !modalRef.current.contains(document.activeElement)) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    }
-  };
 
   const handleRequestClose = () => {
     if (isDirty) {
@@ -212,113 +153,131 @@ export const SettingsModal: React.FC = () => {
   const activeTopic = TOPICS.find((t) => t.id === settingsTopic) ?? TOPICS[0];
 
   return (
-    <div
-      className="settings-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          handleRequestClose();
-        }
-      }}
-    >
-      <div
-        ref={modalRef}
-        className="settings-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('settings.settings') || 'Settings'}
-        onKeyDown={handleModalKeyDown}
+    <>
+      <FloatingModal.Root
+        opened
+        onClose={handleRequestClose}
+        geometryKey="settings"
+        defaultSize={{ width: 960, height: 720 }}
+        minSize={{ width: 720, height: 480 }}
+        zIndex={1000}
+        closeOnEscape
+        closeOnClickOutside
       >
-        {/* Left Sidebar */}
-        <aside className="settings-sidebar">
-          {/* User Block */}
-          <div className="settings-user-block">
-            <div className="settings-user-avatar">{isSignedIn ? initial : '•'}</div>
-            <div className="settings-user-info">
-              <span className="settings-user-name">
-                {isSignedIn ? identity : t('settings.noSession') || 'No session'}
-              </span>
-              <span className="settings-user-status">
-                {isSignedIn ? t('settings.signedIn') || 'Signed in' : t('settings.noSession') || 'No session'}
-              </span>
-            </div>
-          </div>
-
-          <div
-            style={{
-              height: '1px',
-              backgroundColor: 'var(--settings-border-subtle, #2a2a2a)',
-            }}
-          />
-
-          <span className="settings-group-header">
-            {t('settings.settings') || 'SETTINGS'}
-          </span>
-
-          {/* Topics Navigation */}
-          <nav className="settings-nav" aria-label="Settings Topics">
-            {TOPICS.map((topic) => {
-              const isSelected = topic.id === settingsTopic;
-              return (
-                <button
-                  key={topic.id}
-                  type="button"
-                  className={`settings-nav-item ${isSelected ? 'active' : ''}`}
-                  onClick={() => handleSelectTopic(topic.id)}
-                >
-                  {t(topic.titleKey) || topic.titleKey}
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Sidebar Footer */}
-          <div className="settings-sidebar-footer">
-            GameNode · {bootstrap?.version ?? '0.1.0'}
-          </div>
-        </aside>
-
-        {/* Right Content Pane */}
-        <section className="settings-content-wrapper">
-          {/* Header */}
-          <header className="settings-header">
-            <div className="settings-header-titles">
-              <h2 className="settings-header-title">{t(activeTopic.titleKey) || activeTopic.titleKey}</h2>
-              <span className="settings-header-description">{t(activeTopic.descKey) || activeTopic.descKey}</span>
-            </div>
-            <button
-              type="button"
-              className="settings-close-button"
-              onClick={handleRequestClose}
-              aria-label={t('settings.closeSettings') || 'Close settings'}
+        <FloatingModal.Overlay backgroundOpacity={0.62} />
+        <FloatingModal.Content
+          aria-label={t('settings.settings') || 'Settings'}
+          className="flex flex-row bg-[var(--settings-bg-base)] p-0 text-white"
+        >
+          {/* Left Sidebar */}
+          <aside className="flex w-sidebar shrink-0 flex-col gap-sm border-r border-border-subtle bg-chrome px-sm py-md">
+            {/* User Block */}
+            <div
+              data-floating-modal-handle=""
+              className="flex cursor-grab touch-none items-center gap-[10px] rounded-sm bg-secondary p-compact select-none active:cursor-grabbing"
             >
-              ×
-            </button>
-          </header>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand text-sm font-semibold text-white">
+                {isSignedIn ? initial : '•'}
+              </div>
+              <div className="flex min-w-0 flex-col">
+                <span className="truncate text-sm font-semibold text-white">
+                  {isSignedIn ? identity : t('settings.noSession') || 'No session'}
+                </span>
+                <span className="text-xs text-[var(--settings-text-secondary)]">
+                  {isSignedIn ? t('settings.signedIn') || 'Signed in' : t('settings.noSession') || 'No session'}
+                </span>
+              </div>
+            </div>
 
-          {/* Scrollable Content */}
-          <div ref={contentPaneRef} className="settings-scroll-content">
-            {settingsTopic === 'account' && <AccountPanel />}
-            {settingsTopic === 'stores' && <StoresPanel />}
-            {settingsTopic === 'backups' && <BackupsPanel />}
-            {settingsTopic === 'tools' && <ToolsPanel />}
-            {settingsTopic === 'about' && (
-              <AboutPanel showLicenseNoticesButtonRef={showLicenseNoticesButtonRef} />
-            )}
-          </div>
-        </section>
+            <div className="h-px bg-border-subtle" />
 
-        {/* Overlays on top of settings modal */}
-        {discardBackupConfirmOpen && (
-          <DiscardChangesDialog
-            onCancel={handleCancelDiscard}
-            onConfirm={handleConfirmDiscard}
-          />
-        )}
+            <span className="px-compact py-1 text-xs font-bold uppercase tracking-[0.05em] text-[var(--settings-text-muted)]">
+              {t('settings.settings') || 'SETTINGS'}
+            </span>
 
-        {licenseModalOpen && (
-          <LicenseNoticesModal onClose={handleCloseLicenseModal} />
-        )}
-      </div>
-    </div>
+            {/* Topics Navigation */}
+            <nav className="flex flex-col gap-1" aria-label="Settings Topics">
+              {TOPICS.map((topic) => {
+                const isSelected = topic.id === settingsTopic;
+                return (
+                  <button
+                    key={topic.id}
+                    type="button"
+                    aria-current={isSelected ? 'page' : undefined}
+                    className={`flex w-full items-center gap-[10px] rounded-sm px-sm py-compact text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                      isSelected
+                        ? 'active bg-accent-subtle font-semibold text-brand'
+                        : 'font-medium text-[var(--settings-text-secondary)] hover:bg-raised hover:text-white'
+                    }`}
+                    onClick={() => handleSelectTopic(topic.id)}
+                  >
+                    {t(topic.titleKey) || topic.titleKey}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {/* Sidebar Footer */}
+            <div className="mt-auto truncate p-compact text-xs text-[var(--settings-text-muted)]">
+              GameNode · {appInfo?.version ?? '0.1.0'}
+            </div>
+          </aside>
+
+          {/* Right Content Pane */}
+          <section className="flex min-w-0 flex-1 flex-col bg-[var(--settings-bg-base)]">
+            {/* Header */}
+            <header
+              data-floating-modal-handle=""
+              className="flex cursor-grab touch-none items-start justify-between border-b border-border-subtle px-control-inline py-lg select-none active:cursor-grabbing"
+            >
+              <div className="flex flex-col gap-1">
+                <h2 className="text-lg font-bold text-white">
+                  {t(activeTopic.titleKey) || activeTopic.titleKey}
+                </h2>
+                <span className="text-sm text-[var(--settings-text-secondary)]">
+                  {t(activeTopic.descKey) || activeTopic.descKey}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={settingsCloseButton}
+                onClick={handleRequestClose}
+                aria-label={t('settings.closeSettings') || 'Close settings'}
+              >
+                <IconX size={18} stroke={1.75} aria-hidden="true" />
+              </button>
+            </header>
+
+            {/* Scrollable Content */}
+            <div
+              ref={contentPaneRef}
+              className="settings-scroll-content flex flex-1 flex-col gap-6 overflow-y-auto p-6"
+            >
+              {settingsTopic === 'account' && <AccountPanel />}
+              {settingsTopic === 'stores' && <StoresPanel />}
+              {settingsTopic === 'backups' && <BackupsPanel />}
+              {settingsTopic === 'tools' && <ToolsPanel />}
+              {settingsTopic === 'about' && (
+                <AboutPanel showLicenseNoticesButtonRef={showLicenseNoticesButtonRef} />
+              )}
+            </div>
+          </section>
+
+          <FloatingModal.ResizeHandle />
+        </FloatingModal.Content>
+      </FloatingModal.Root>
+
+      {/* Overlays on top of settings modal */}
+      {discardBackupConfirmOpen && (
+        <DiscardChangesDialog
+          onCancel={handleCancelDiscard}
+          onConfirm={handleConfirmDiscard}
+        />
+      )}
+
+      {licenseModalOpen && (
+        <LicenseNoticesModal onClose={handleCloseLicenseModal} />
+      )}
+    </>
   );
 };

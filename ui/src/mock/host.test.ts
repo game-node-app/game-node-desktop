@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMockHost } from './host';
-import type { BootstrapState, Snapshot } from '../api/types';
+import type { AppInfo, Snapshot } from '../api/types';
 
 describe('UI mock host', () => {
   it('starts with a verified mock session and deterministic games', async () => {
     const host = createMockHost();
-    const state = await host.invoke('get_bootstrap_state') as BootstrapState;
-    expect(state.snapshot.auth).toEqual({ signedIn: { user: { id: 'mock-user', username: 'UI Developer', email: 'ui@example.invalid' } } });
-    expect(state.snapshot.library?.access).toBe('verified');
-    expect(state.snapshot.library?.rows).toHaveLength(12);
-    state.snapshot.library!.rows.length = 0;
+    const snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.auth).toEqual({ signedIn: { user: { id: 'mock-user', username: 'UI Developer', email: 'ui@example.invalid' } } });
+    expect(snapshot.library?.access).toBe('verified');
+    expect(snapshot.library?.rows).toHaveLength(12);
+    snapshot.library!.rows.length = 0;
     expect((await host.invoke('get_snapshot') as Snapshot).library?.rows).toHaveLength(12);
   });
 
   it('publishes interactions and resets on sign out and sign in', async () => {
     const host = createMockHost({ signedOut: true, locale: 'pt-BR' });
-    expect((await host.invoke('get_bootstrap_state') as BootstrapState).locale).toBe('pt-BR');
+    expect((await host.invoke('get_app_info') as AppInfo).locale).toBe('pt-BR');
     expect((await host.invoke('get_snapshot') as Snapshot).auth).toBe('signedOut');
     const listener = vi.fn();
     const unsubscribe = host.subscribe(listener);

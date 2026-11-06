@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { appTheme } from '../../AppProviders';
 import {
   commands,
   createDefaultSnapshot,
@@ -34,9 +36,11 @@ function renderWithProviders(
   queryClient.setQueryData(SNAPSHOT_QUERY_KEY, snap);
 
   return render(
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
-    </QueryClientProvider>,
+    <MantineProvider theme={appTheme} defaultColorScheme="dark">
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider initialLocale={locale}>{ui}</I18nProvider>
+      </QueryClientProvider>
+    </MantineProvider>,
   );
 }
 
@@ -287,22 +291,26 @@ describe('DRM-Free Modals', () => {
 
       // Keep separate
       rerender(
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <I18nProvider initialLocale="en">
-            <ClaimConflictModal claim={pendingClaim} />
-          </I18nProvider>
-        </QueryClientProvider>,
+        <MantineProvider theme={appTheme} defaultColorScheme="dark">
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <I18nProvider initialLocale="en">
+              <ClaimConflictModal claim={pendingClaim} />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MantineProvider>,
       );
       fireEvent.click(screen.getByTestId('claim-resolve-separate'));
       expect(resolveSpy).toHaveBeenCalledWith(false);
 
       // Cancel
       rerender(
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <I18nProvider initialLocale="en">
-            <ClaimConflictModal claim={pendingClaim} />
-          </I18nProvider>
-        </QueryClientProvider>,
+        <MantineProvider theme={appTheme} defaultColorScheme="dark">
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <I18nProvider initialLocale="en">
+              <ClaimConflictModal claim={pendingClaim} />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MantineProvider>,
       );
       fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
       expect(cancelSpy).toHaveBeenCalled();
@@ -354,6 +362,74 @@ describe('DRM-Free Modals', () => {
 
       expect(removeEntrySpy).toHaveBeenCalledWith('manual:hollow-knight', true);
       expect(removeLocalSpy).toHaveBeenCalledWith('hollow-knight', true);
+    });
+
+    it('removes a store entry without touching local registrations', () => {
+      const removeEntrySpy = vi.spyOn(commands, 'removeEntry').mockResolvedValue(undefined);
+      const removeLocalSpy = vi
+        .spyOn(commands, 'removeLocalGame')
+        .mockResolvedValue(undefined);
+
+      const snapshot = createDefaultSnapshot();
+      snapshot.library = {
+        generation: 1,
+        layout: {
+          view: 'grid',
+          sort: { key: 'title', direction: 'ascending' },
+          filter: 'all',
+          sidebarWidth: 200,
+          detailWidth: 320,
+          detailOpen: false,
+        },
+        search: '',
+        access: 'verified',
+        total: 1,
+        providers: [{ id: 'steam', name: 'Steam', count: 1 }],
+        rows: [
+          {
+            key: 'steam:620',
+            title: 'Portal 2',
+            detectedName: 'Portal 2',
+            matchedName: 'Portal 2',
+            provider: 'steam',
+            providerName: 'Steam',
+            running: false,
+            status: { matched: { gameId: 7, source: 'automatic' } },
+            coverFile: null,
+            playtime: { seconds: 0, source: 'store' },
+          },
+        ],
+        scanning: false,
+        failedProviders: [],
+        selected: ['steam:620'],
+        focused: 'steam:620',
+        actions: {
+          selected: 1,
+          play: 'available',
+          install: 'available',
+          matchGame: 'available',
+          addToGamenode: 'available',
+          changeMatch: false,
+        },
+      };
+
+      renderWithProviders(
+        <RemoveLocalGameModal entryKey="steam:620" open={true} />,
+        snapshot,
+      );
+
+      expect(screen.getByTestId('remove-game-target-title')).toHaveTextContent(
+        'Portal 2',
+      );
+      expect(
+        screen.getByText('Allow rediscovery on future scans'),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('allow-rediscovery-checkbox'));
+      fireEvent.click(screen.getByTestId('confirm-remove-button'));
+
+      expect(removeEntrySpy).toHaveBeenCalledWith('steam:620', true);
+      expect(removeLocalSpy).not.toHaveBeenCalled();
     });
 
     it('renders localized modal in pt-BR', () => {
@@ -555,11 +631,13 @@ describe('DRM-Free Modals', () => {
 
       // Cancel
       rerender(
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <I18nProvider initialLocale="en">
-            <SaveProtectionModal installationId="game-123" />
-          </I18nProvider>
-        </QueryClientProvider>,
+        <MantineProvider theme={appTheme} defaultColorScheme="dark">
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <I18nProvider initialLocale="en">
+              <SaveProtectionModal installationId="game-123" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MantineProvider>,
       );
       // Escape or cancel button
       fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));

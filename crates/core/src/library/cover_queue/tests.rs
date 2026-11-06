@@ -290,7 +290,7 @@ fn changing_the_match_points_the_entry_at_the_other_games_cover() {
         [Effect::SearchGames { op, .. }] => *op,
         other => panic!("{other:?}"),
     };
-    machine.handle(Input::MatchSearched {
+    let searched = machine.handle(Input::MatchSearched {
         op,
         result: Ok(vec![crate::game_api::GameSummary {
             id: 2000,
@@ -299,11 +299,19 @@ fn changing_the_match_points_the_entry_at_the_other_games_cover() {
             cover_url: good_url(2000),
         }]),
     });
+    assert_eq!(
+        fetches(&searched),
+        [2000],
+        "the search result cover is downloaded before it is picked"
+    );
     let effects = machine.handle(Input::PickMatch {
         game_id: 2000,
         now: NOW + 5,
     });
-    assert_eq!(fetches(&effects), [2000]);
+    assert!(
+        fetches(&effects).is_empty(),
+        "the search result cover was already requested: {effects:?}"
+    );
     assert_eq!(
         machine.match_status(machine.entry(&key).unwrap()),
         MatchStatus::Matched {

@@ -1,4 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
+import { IconX } from '@tabler/icons-react';
+import { AppModal } from '../../components/AppModal';
 import { commands, useLocalGames, type PendingClaim } from '../../api';
 import { useI18n } from '../../i18n';
 
@@ -24,150 +26,64 @@ export const ClaimConflictModal: React.FC<ClaimConflictModalProps> = ({ claim: p
     onClose?.();
   };
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleCancel();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
-
   if (!isOpen || !claim) {
     return null;
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="claim-conflict-heading"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'var(--settings-overlay, rgba(0, 0, 0, 0.62))',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-        padding: 'var(--modal-margin, 24px)',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) handleCancel();
-      }}
-    >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '600px',
-          backgroundColor: 'var(--settings-bg-surface, #1A1A1A)',
-          border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          boxShadow: 'var(--shadow-alert)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
+    <AppModal.Root opened onClose={handleCancel} centered size={600} transitionProps={{ duration: 0 }}>
+      <AppModal.Overlay backgroundOpacity={0.62} />
+      <AppModal.Content
+        classNames={{
+          content:
+            'flex w-full flex-col overflow-hidden rounded-md border border-border-subtle bg-secondary shadow-alert',
         }}
       >
         {/* Header */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <AppModal.Header className="flex shrink-0 items-center justify-between gap-md border-b border-border-subtle bg-secondary px-control-inline py-md">
           <div>
-            <h2 id="claim-conflict-heading" style={{ fontSize: 'var(--font-size-lg, 18px)', fontWeight: 600 }}>
+            <AppModal.Title className="text-lg font-semibold text-text-default">
               {t('drmFree.thisGameIsAlreadyTrackedByA')}
-            </h2>
-            <div style={{ fontSize: 'var(--font-size-xs, 12px)', color: 'var(--color-text-dimmed, #808080)' }}>
-              {claim.registration.title}
-            </div>
+            </AppModal.Title>
+            <div className="text-xs text-text-dimmed">{claim.registration.title}</div>
           </div>
-          <button
-            type="button"
+          <AppModal.CloseButton
             aria-label="Close"
-            onClick={handleCancel}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: 'transparent',
-              color: 'var(--color-text-dimmed, #808080)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
+            icon={<IconX size={18} stroke={1.5} />}
+            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+          />
+        </AppModal.Header>
 
         {/* Body */}
-        <div
-          style={{
-            padding: '24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px',
-          }}
-        >
-          <div style={{ fontSize: 'var(--font-size-sm, 14px)', color: 'var(--color-text-default, #D9D9D9)' }}>
-            <p style={{ marginBottom: '8px' }}>
+        <AppModal.Body className="flex min-h-0 flex-1 flex-col gap-md overflow-y-auto p-control-inline">
+          <div className="text-sm text-text-default">
+            <p className="mb-compact">
               <strong>{claim.registration.title}</strong> was matched with store entry{' '}
               <strong>{claim.storeTitle}</strong>.
             </p>
-            <p style={{ color: 'var(--color-text-dimmed, #808080)' }}>
+            <p className="text-text-dimmed">
               {t('drmFree.useTheExistingEntryOrTransferTracking')}
             </p>
           </div>
 
-          <div
-            style={{
-              padding: '12px 16px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              fontSize: 'var(--font-size-xs, 12px)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '4px',
-            }}
-          >
+          <div className="flex flex-col gap-1 rounded-sm border border-border-subtle bg-raised px-md py-sm text-xs">
             <div>
-              <span style={{ color: 'var(--color-text-dimmed, #808080)' }}>Manual Registration: </span>
+              <span className="text-text-dimmed">Manual Registration: </span>
               <span>{claim.registration.title}</span>
             </div>
             <div>
-              <span style={{ color: 'var(--color-text-dimmed, #808080)' }}>Matched Store Entry: </span>
+              <span className="text-text-dimmed">Matched Store Entry: </span>
               <span>{claim.storeTitle}</span>
             </div>
           </div>
-        </div>
+        </AppModal.Body>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '16px 24px',
-            borderTop: '1px solid var(--settings-border-subtle, #2A2A2A)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '8px',
-          }}
-        >
+        <div className="flex shrink-0 justify-end gap-compact border-t border-border-subtle px-control-inline py-md">
           <button
             type="button"
             onClick={handleCancel}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'transparent',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-dimmed, #808080)',
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm px-md py-compact text-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.cancel')}
           </button>
@@ -175,14 +91,7 @@ export const ClaimConflictModal: React.FC<ClaimConflictModalProps> = ({ claim: p
             type="button"
             data-testid="claim-resolve-separate"
             onClick={() => handleResolve(false)}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'var(--settings-bg-raised, #222222)',
-              border: '1px solid var(--settings-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.useExistingEntry')}
           </button>
@@ -190,20 +99,12 @@ export const ClaimConflictModal: React.FC<ClaimConflictModalProps> = ({ claim: p
             type="button"
             data-testid="claim-resolve-transfer"
             onClick={() => handleResolve(true)}
-            style={{
-              padding: '8px 20px',
-              backgroundColor: 'var(--color-primary, #F15025)',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-on-primary, #EDEDED)',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
+            className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.transferTracking')}
           </button>
         </div>
-      </div>
-    </div>
+      </AppModal.Content>
+    </AppModal.Root>
   );
 };

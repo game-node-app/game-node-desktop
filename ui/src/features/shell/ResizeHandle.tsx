@@ -102,28 +102,10 @@ export function ResizeHandle({
       aria-valuemax={maxWidth}
       onPointerDown={handlePointerDown}
       onKeyDown={handleKeyDown}
-      className={className}
       data-testid="sidebar-resize-handle"
-      style={{
-        width: '8px',
-        cursor: 'col-resize',
-        userSelect: 'none',
-        touchAction: 'none',
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-        zIndex: 50,
-      }}
+      className={`relative z-50 flex h-full w-[8px] cursor-col-resize touch-none items-center justify-center select-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset focus-visible:outline-none ${className ?? ''}`}
     >
-      <div
-        style={{
-          width: '1px',
-          height: '100%',
-          backgroundColor: 'var(--color-border-subtle, #2A2A2A)',
-        }}
-      />
+      <div className="h-full w-px bg-border-subtle" />
     </div>
   );
 }

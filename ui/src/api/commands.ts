@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getMockHost, mockEnabled } from './mock';
 import type {
+  AppInfo,
   AuthInput,
-  BootstrapState,
   LaunchKind,
   LibraryInput,
   PlaytimeSource,
@@ -13,7 +13,7 @@ import type {
 } from './types';
 import { createDefaultSnapshot } from './types';
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   return (
     typeof window !== 'undefined' &&
     ('__TAURI_INTERNALS__' in window || '__TAURI_IPC__' in window)
@@ -38,14 +38,19 @@ export const commands = {
   getSnapshot: () =>
     safeInvoke<Snapshot>('get_snapshot', undefined, () => createDefaultSnapshot()),
 
-  getBootstrapState: () =>
-    safeInvoke<BootstrapState>('get_bootstrap_state', undefined, () => ({
-      snapshot: createDefaultSnapshot(),
+  getAppInfo: () =>
+    safeInvoke<AppInfo>('get_app_info', undefined, () => ({
       locale: 'en',
       version: '0.1.0',
-      licenseNotices: 'GameNode Desktop - GPL-3.0-only',
       backgroundSupported: false,
     })),
+
+  getLicenseNotices: () =>
+    safeInvoke<string>(
+      'get_license_notices',
+      undefined,
+      () => 'GameNode Desktop - GPL-3.0-only',
+    ),
 
   dispatchAuth: (input: AuthInput) =>
     safeInvoke<void>('dispatch_auth', { input }, () => undefined),

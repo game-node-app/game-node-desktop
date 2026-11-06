@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { FloatingModal } from '../../components/FloatingModal';
 import { commands, useLibraryView, coverAssetUrl, type MatchOption } from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason } from '../library/formatters';
@@ -15,15 +16,6 @@ export const MatchDialog: React.FC = () => {
 
     // Focus query input when dialog opens
     inputRef.current?.focus();
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        commands.libraryInput('closeMatch');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
   }, [dialog]);
 
   if (!dialog) return null;
@@ -59,89 +51,45 @@ export const MatchDialog: React.FC = () => {
   };
 
   const renderOptionRow = (option: MatchOption, testIdPrefix: string) => {
-    const coverUrl = coverAssetUrl(option.coverFile) || option.coverUrl;
+    // Covers are served from the local cache over the asset protocol. A search result whose
+    // cover is still downloading shows its title until the next snapshot arrives.
+    const coverUrl = coverAssetUrl(option.coverFile);
 
     return (
       <div
         key={option.gameId}
         data-testid={`${testIdPrefix}-${option.gameId}`}
         onClick={() => handlePickMatch(option.gameId)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '8px 10px',
-          backgroundColor: option.current
-            ? 'var(--color-accent-subtle, #F150251F)'
-            : 'var(--color-raised, #222222)',
-          border: option.current
-            ? '1px solid var(--color-primary, #F15025)'
-            : '1px solid transparent',
-          borderRadius: 'var(--radius-sm, 4px)',
-          cursor: 'pointer',
-          userSelect: 'none',
-          transition: 'background-color 120ms ease',
-        }}
+        className={`flex cursor-pointer select-none items-center gap-sm rounded-sm border px-xs py-compact transition-colors duration-[120ms] ${
+          option.current
+            ? 'border-brand bg-accent-subtle'
+            : 'border-transparent bg-raised'
+        }`}
       >
         {/* Cover thumbnail */}
-        <div
-          style={{
-            width: '32px',
-            height: '42px',
-            borderRadius: 'var(--radius-xs, 2px)',
-            overflow: 'hidden',
-            backgroundColor: 'var(--color-surface, #262525)',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
+        <div className="flex h-[42px] w-[32px] shrink-0 items-center justify-center overflow-hidden rounded-xs bg-surface">
           {coverUrl ? (
             <img
               src={coverUrl}
               alt={option.name}
               loading="lazy"
               decoding="async"
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              className="h-full w-full object-cover"
             />
           ) : (
-            <span
-              style={{
-                fontSize: '8px',
-                color: 'var(--color-text-dimmed, #808080)',
-                padding: '2px',
-                textAlign: 'center',
-              }}
-            >
+            <span className="p-[2px] text-center text-[8px] text-text-dimmed">
               {option.name}
             </span>
           )}
         </div>
 
         {/* Title and Year */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              color: 'var(--color-text-default, #D9D9D9)',
-              fontWeight: 500,
-              fontSize: 'var(--font-size-sm, 14px)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-text-default">
             {option.name}
           </div>
           {option.releaseYear && (
-            <div
-              style={{
-                color: 'var(--color-text-dimmed, #808080)',
-                fontSize: 'var(--font-size-xs, 12px)',
-              }}
-            >
-              {option.releaseYear}
-            </div>
+            <div className="text-xs text-text-dimmed">{option.releaseYear}</div>
           )}
         </div>
 
@@ -149,12 +97,7 @@ export const MatchDialog: React.FC = () => {
         {option.current && (
           <span
             data-testid="match-current-badge"
-            style={{
-              color: 'var(--color-primary, #F15025)',
-              fontSize: 'var(--font-size-xs, 12px)',
-              fontWeight: 600,
-              flexShrink: 0,
-            }}
+            className="shrink-0 text-xs font-semibold text-brand"
           >
             {t('Library::Current')}
           </span>
@@ -168,16 +111,7 @@ export const MatchDialog: React.FC = () => {
             e.stopPropagation();
             handlePickMatch(option.gameId);
           }}
-          style={{
-            padding: '4px 10px',
-            fontSize: 'var(--font-size-xs, 12px)',
-            backgroundColor: 'transparent',
-            border: '1px solid var(--color-border-subtle, #2A2A2A)',
-            borderRadius: 'var(--radius-xs, 2px)',
-            color: 'var(--color-text-default, #D9D9D9)',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
+          className="shrink-0 rounded-xs border border-border-subtle px-xs py-1 text-xs text-text-default hover:bg-surface"
         >
           {t('Library::Pick match') !== 'Library::Pick match' ? t('Library::Pick match') : 'Pick match'}
         </button>
@@ -186,127 +120,76 @@ export const MatchDialog: React.FC = () => {
   };
 
   return (
-    <div
-      data-testid="match-dialog-overlay"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.75)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 2000,
-        padding: '16px',
-      }}
+    <FloatingModal.Root
+      opened
+      onClose={handleClose}
+      geometryKey="match-dialog"
+      defaultSize={{ width: 620, height: 560 }}
+      minSize={{ width: 480, height: 360 }}
+      zIndex={2000}
+      closeOnClickOutside
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="match-dialog-title"
+      <FloatingModal.Overlay
+        data-testid="match-dialog-overlay"
+        backgroundOpacity={0.75}
+      />
+      <FloatingModal.Content
         data-testid="match-dialog"
-        style={{
-          width: '620px',
-          maxWidth: '100%',
-          maxHeight: '90vh',
-          backgroundColor: 'var(--color-secondary, #1A1A1A)',
-          borderRadius: 'var(--radius-md, 8px)',
-          border: '1px solid var(--color-border-subtle, #2A2A2A)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          boxShadow: 'var(--shadow-modal, 0 32px 80px rgba(0, 0, 0, 0.55))',
-        }}
+        className="flex flex-col bg-secondary"
       >
         {/* Header */}
-        <div style={{ padding: '20px 20px 12px 20px' }}>
-          <h2
-            id="match-dialog-title"
-            data-testid="match-dialog-title"
-            style={{
-              fontSize: 'var(--font-size-lg, 18px)',
-              fontWeight: 600,
-              color: 'var(--color-text-default, #D9D9D9)',
-            }}
-          >
-            {t('Library::Match to a GameNode game')}
-          </h2>
-          <div
-            data-testid="match-dialog-subtitle"
-            style={{
-              fontSize: 'var(--font-size-xs, 12px)',
-              color: 'var(--color-text-dimmed, #808080)',
-              marginTop: '4px',
-            }}
-          >
-            {formatI18n(
-              t('Library::{} from {}') !== 'Library::{} from {}'
-                ? t('Library::{} from {}')
-                : '{0} from {1}',
-              dialog.detectedName,
-              dialog.providerName,
-            )}
+        <FloatingModal.Header className="px-lg pb-sm pt-lg">
+          <div className="min-w-0">
+            <FloatingModal.Title
+              data-testid="match-dialog-title"
+              className="text-lg font-semibold text-text-default"
+            >
+              {t('Library::Match to a GameNode game')}
+            </FloatingModal.Title>
+            <div
+              data-testid="match-dialog-subtitle"
+              className="mt-1 text-xs text-text-dimmed"
+            >
+              {formatI18n(
+                t('Library::{} from {}') !== 'Library::{} from {}'
+                  ? t('Library::{} from {}')
+                  : '{0} from {1}',
+                dialog.detectedName,
+                dialog.providerName,
+              )}
+            </div>
           </div>
-        </div>
+        </FloatingModal.Header>
 
         {/* Search input form */}
-        <form
-          onSubmit={handleSearchSubmit}
-          style={{
-            display: 'flex',
-            gap: '8px',
-            padding: '0 20px 12px 20px',
-          }}
-        >
+        <form onSubmit={handleSearchSubmit} className="flex gap-compact px-lg pb-sm">
           <input
             ref={inputRef}
             type="text"
             data-testid="match-search-input"
+            data-autofocus
             value={dialog.query}
             onChange={(e) =>
               commands.libraryInput({ setMatchQuery: e.target.value })
             }
             placeholder={t('Library::Search GameNode')}
-            style={{
-              flex: 1,
-              height: '34px',
-              padding: '0 10px',
-              backgroundColor: 'var(--color-surface, #262525)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              border: '1px solid var(--color-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              fontSize: 'var(--font-size-sm, 14px)',
-              outline: 'none',
-            }}
+            className="h-[34px] flex-1 rounded-sm border border-border-subtle bg-surface px-xs text-sm text-text-default outline-none focus:border-brand"
           />
           <button
             type="submit"
             data-testid="match-search-submit-btn"
-            style={{
-              padding: '0 16px',
-              height: '34px',
-              backgroundColor: 'var(--color-primary, #F15025)',
-              color: 'var(--color-on-primary, #EDEDED)',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 4px)',
-              fontSize: 'var(--font-size-sm, 14px)',
-              fontWeight: 500,
-              cursor: 'pointer',
-            }}
+            className="h-[34px] rounded-sm bg-brand px-md text-sm font-medium text-on-primary hover:bg-brand-4"
           >
             {t('Library::Search') !== 'Library::Search' ? t('Library::Search') : 'Search'}
           </button>
         </form>
 
         {/* Status / Searching / Error notices */}
-        <div style={{ padding: '0 20px' }}>
+        <div className="px-lg">
           {dialog.searching && (
             <div
               data-testid="match-searching-notice"
-              style={{
-                fontSize: 'var(--font-size-xs, 12px)',
-                color: 'var(--color-text-dimmed, #808080)',
-                marginBottom: '8px',
-              }}
+              className="mb-compact text-xs text-text-dimmed"
             >
               {t('Library::Searching…')}
             </div>
@@ -315,11 +198,7 @@ export const MatchDialog: React.FC = () => {
           {dialog.noResults && (
             <div
               data-testid="match-no-results-notice"
-              style={{
-                fontSize: 'var(--font-size-xs, 12px)',
-                color: 'var(--color-warning, #F5A524)',
-                marginBottom: '8px',
-              }}
+              className="mb-compact text-xs text-warning"
             >
               {t('Library::No games found. Try different words.')}
             </div>
@@ -328,11 +207,7 @@ export const MatchDialog: React.FC = () => {
           {dialog.error && (
             <div
               data-testid="match-error-notice"
-              style={{
-                fontSize: 'var(--font-size-xs, 12px)',
-                color: 'var(--color-danger, #E5484D)',
-                marginBottom: '8px',
-              }}
+              className="mb-compact text-xs text-danger"
             >
               {dialog.error === 'rejected' &&
                 t('Library::GameNode rejected your session. Sign in again.')}
@@ -347,11 +222,7 @@ export const MatchDialog: React.FC = () => {
           {dialog.searchBlocked && (
             <div
               data-testid="match-search-blocked-notice"
-              style={{
-                fontSize: 'var(--font-size-xs, 12px)',
-                color: 'var(--color-warning, #F5A524)',
-                marginBottom: '8px',
-              }}
+              className="mb-compact text-xs text-warning"
             >
               {formatReason(dialog.searchBlocked, t)}
             </div>
@@ -359,32 +230,17 @@ export const MatchDialog: React.FC = () => {
         </div>
 
         {/* Scrollable list of Candidates and Results */}
-        <div
+        <FloatingModal.Body
           data-testid="match-options-container"
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '0 20px 16px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            minHeight: '140px',
-            maxHeight: '340px',
-          }}
+          className="gap-sm px-lg pb-md"
         >
           {/* Candidates */}
           {dialog.candidates.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div
-                style={{
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  fontWeight: 600,
-                  color: 'var(--color-text-dimmed, #808080)',
-                }}
-              >
+            <div className="flex flex-col gap-[6px]">
+              <div className="text-xs font-semibold text-text-dimmed">
                 {t('Library::GameNode suggests')}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div className="flex flex-col gap-1">
                 {dialog.candidates.map((c) => renderOptionRow(c, 'candidate'))}
               </div>
             </div>
@@ -392,52 +248,27 @@ export const MatchDialog: React.FC = () => {
 
           {/* Results */}
           {dialog.results.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div
-                style={{
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  fontWeight: 600,
-                  color: 'var(--color-text-dimmed, #808080)',
-                }}
-              >
+            <div className="flex flex-col gap-[6px]">
+              <div className="text-xs font-semibold text-text-dimmed">
                 {t('Library::Search results')}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div className="flex flex-col gap-1">
                 {dialog.results.map((r) => renderOptionRow(r, 'result'))}
               </div>
             </div>
           )}
-        </div>
+        </FloatingModal.Body>
 
         {/* Footer Actions */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '12px 20px',
-            borderTop: '1px solid var(--color-border-subtle, #2A2A2A)',
-            backgroundColor: 'var(--color-chrome, #111111)',
-            gap: '8px',
-            flexWrap: 'wrap',
-          }}
-        >
-          <div style={{ display: 'flex', gap: '8px' }}>
+        <FloatingModal.Footer className="flex-wrap justify-between bg-chrome px-lg py-sm">
+          <div className="flex gap-compact">
             {/* Not a game */}
             <button
               type="button"
               data-testid="match-not-a-game-btn"
               aria-label="Not a game"
               onClick={handleMarkNoGame}
-              style={{
-                padding: '8px 14px',
-                fontSize: 'var(--font-size-xs, 12px)',
-                backgroundColor: 'transparent',
-                border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                borderRadius: 'var(--radius-sm, 4px)',
-                color: 'var(--color-text-default, #D9D9D9)',
-                cursor: 'pointer',
-              }}
+              className="rounded-sm border border-border-subtle px-[14px] py-compact text-xs text-text-default hover:bg-raised"
             >
               {t('Library::Not on GameNode')}
             </button>
@@ -449,15 +280,7 @@ export const MatchDialog: React.FC = () => {
                 data-testid="match-clear-match-btn"
                 aria-label="Clear match"
                 onClick={handleClearMatch}
-                style={{
-                  padding: '8px 14px',
-                  fontSize: 'var(--font-size-xs, 12px)',
-                  backgroundColor: 'transparent',
-                  border: '1px solid var(--color-border-subtle, #2A2A2A)',
-                  borderRadius: 'var(--radius-sm, 4px)',
-                  color: 'var(--color-text-default, #D9D9D9)',
-                  cursor: 'pointer',
-                }}
+                className="rounded-sm border border-border-subtle px-[14px] py-compact text-xs text-text-default hover:bg-raised"
               >
                 {t('Library::Use the automatic match')}
               </button>
@@ -470,21 +293,14 @@ export const MatchDialog: React.FC = () => {
             data-testid="match-close-btn"
             aria-label="Close"
             onClick={handleClose}
-            style={{
-              padding: '8px 16px',
-              fontSize: 'var(--font-size-xs, 12px)',
-              backgroundColor: 'transparent',
-              border: '1px solid var(--color-border-subtle, #2A2A2A)',
-              borderRadius: 'var(--radius-sm, 4px)',
-              color: 'var(--color-text-default, #D9D9D9)',
-              cursor: 'pointer',
-              marginLeft: 'auto',
-            }}
+            className="ml-auto rounded-sm border border-border-subtle px-md py-compact text-xs text-text-default hover:bg-raised"
           >
             {t('Library::Close')}
           </button>
-        </div>
-      </div>
-    </div>
+        </FloatingModal.Footer>
+
+        <FloatingModal.ResizeHandle />
+      </FloatingModal.Content>
+    </FloatingModal.Root>
   );
 };

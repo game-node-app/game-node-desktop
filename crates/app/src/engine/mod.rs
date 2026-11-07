@@ -71,6 +71,12 @@ fn unix_now() -> i64 {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+#[derive(Default)]
+struct ScanPersistenceState {
+    pending: usize,
+    failures: std::collections::BTreeSet<String>,
+}
+
 /// Runs blocking storage jobs one at a time, in submission order.
 struct StorageWorker {
     jobs: mpsc::Sender<Job>,
@@ -134,6 +140,7 @@ struct Shared {
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
+    scan_persistence: Arc<Mutex<ScanPersistenceState>>,
     publish: Box<dyn Fn(Snapshot) + Send + Sync>,
 }
 
@@ -186,6 +193,7 @@ impl Engine {
                 ports,
                 runtime,
                 storage: StorageWorker::new(),
+                scan_persistence: Arc::default(),
                 publish: Box::new(publish),
             }),
         }
@@ -209,6 +217,44 @@ impl Engine {
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.lock();
         self.snapshot_of(&mut state)
+    }
+
+    /// Local installation paths keyed by the stable provider entry key.
+    pub fn installation_directories(&self) -> std::collections::HashMap<String, String> {
+        self.lock()
+            .library
+            .installed_entries()
+            .map(|entry| (entry.key.clone(), entry.install_dir.clone()))
+            .collect()
+    }
+
+    /// Clears scan-write errors before a daemon-initiated scan operation.
+    pub fn reset_scan_persistence_failures(&self) {
+        self.shared
+            .scan_persistence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .failures
+            .clear();
+    }
+
+    /// Number of scan writes still queued and the providers whose latest scan write failed.
+    pub fn scan_persistence_status(&self) -> (usize, Vec<String>) {
+        let state = self
+            .shared
+            .scan_persistence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (state.pending, state.failures.iter().cloned().collect())
+    }
+
+    /// Waits asynchronously until all earlier writes on the FIFO storage worker finish.
+    pub async fn flush_storage(&self) {
+        let (completed, receiver) = tokio::sync::oneshot::channel();
+        self.shared.storage.submit(move || {
+            let _ = completed.send(());
+        });
+        let _ = receiver.await;
     }
 
     /// The artwork the details panel shows for `game_id`, if any. Takes the engine lock only
@@ -596,10 +642,28 @@ impl Engine {
                 provider,
                 outcome,
                 now,
-            } => self.persist(move |store| match outcome {
-                ScanOutcome::Scanned(records) => store.save_scan(&provider, &records, now),
-                ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
-            }),
+            } => {
+                let store = ports.library.clone();
+                let persistence = self.shared.scan_persistence.clone();
+                persistence
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .pending += 1;
+                self.shared.storage.submit(move || {
+                    let result = match outcome {
+                        ScanOutcome::Scanned(records) => store.save_scan(&provider, &records, now),
+                        ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
+                    };
+                    let mut state = persistence
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.pending = state.pending.saturating_sub(1);
+                    if let Err(error) = result {
+                        tracing::warn!(%error, %provider, "could not persist provider scan");
+                        state.failures.insert(provider);
+                    }
+                });
+            }
             LibEffect::PersistLayout(layout) => {
                 self.persist(move |store| store.save_layout(&layout))
             }

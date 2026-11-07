@@ -20,6 +20,14 @@ path = "src/lib.rs"
 name = "gamenode"
 path = "src/main.rs"
 
+[[bin]]
+name = "gamenode-daemon"
+path = "src/bin/daemon.rs"
+
+[[bin]]
+name = "gamenode-cli"
+path = "src/bin/cli.rs"
+
 [features]
 # Serve the embedded `ui/dist` bundle instead of the Vite dev server (`devUrl`). Tauri treats a
 # build without this feature as a dev build, so it stays on by default; use
@@ -39,12 +47,19 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sy
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 url.workspace = true
+prost = "0.14"
+tonic = { version = "0.14", features = ["transport"] }
+tonic-prost = "0.14"
+tokio-stream = { version = "0.1", features = ["net"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+tonic-prost-build = "0.14"
 
 [dev-dependencies]
 httpmock = "0.9.0"

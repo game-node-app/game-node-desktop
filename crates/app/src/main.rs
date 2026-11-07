@@ -4,15 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamenode_app::commands;
-use gamenode_app::engine::{Engine, Ports};
 use gamenode_core::geometry;
-use gamenode_core::library::LibraryStore;
-use gamenode_core::ports::SettingsStore;
 use gamenode_core::{Input, WindowGeometry};
-use gamenode_platform::{
-    browser::SystemBrowser, credentials, db::SqliteSettingsStore, display, ipc, paths::DataPaths,
-    random,
-};
+use gamenode_platform::{display, ipc};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -82,38 +76,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!(%error, "could not register login startup");
     }
 
-    let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
-    paths.ensure_data_dir()?;
-    let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
-    let initial_settings = store.load()?;
-
-    let platform = gamenode_core::provider::Platform::current()
-        .ok_or("GameNode Desktop supports Windows and Linux only")?;
-    let providers = gamenode_app::providers::load_bundled(platform).providers;
-    let library_store = Arc::new(store.library_store());
-    let layout = library_store.load_layout().unwrap_or_else(|error| {
-        tracing::warn!(%error, "could not read the saved library layout; using the default");
-        Default::default()
-    });
-    let library = gamenode_core::library::LibraryMachine::new(providers, layout);
-
-    let displays = display::available_displays();
-    let can_position = display::can_position_windows();
-    let plan = geometry::plan_window(initial_settings.window, &displays, can_position);
-
-    let credentials = {
-        let paths = paths.clone();
-        std::thread::spawn(move || credentials::open_store(&paths))
-            .join()
-            .map_err(|_| "Credential storage initialization failed")?
-    };
-
-    let client = Arc::new(gamenode_api::GameNodeClient::new(
-        gamenode_api::server_url_from_env()?,
-    )?);
-    let processes: Arc<dyn gamenode_core::ports::Processes> =
-        Arc::new(gamenode_platform::processes::HostProcesses::new());
-
     let app_handle_slot = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
     let slot_clone = app_handle_slot.clone();
 
@@ -124,49 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let pub_clone = publisher.clone();
-    let engine = Engine::new(
-        Ports {
-            backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
-                paths.data_dir(),
-            )?)),
-            local_games: Some(Arc::new(store.local_game_store())),
-            installations: Some(Arc::new(
-                gamenode_platform::installations::WindowsInstallations,
-            )),
-            tools: Some(Arc::new(store.tool_store())),
-            tool_catalog: Some(Arc::new(
-                gamenode_platform::tools::catalog::GitHubToolCatalog::new(paths.tools_cache_dir())?,
-            )),
-            tool_installer: Some(Arc::new(
-                gamenode_platform::tools::PlatformToolInstaller::new(
-                    paths.tool_backups_dir(),
-                    processes.clone(),
-                ),
-            )),
-            processes,
-            playtime: Arc::new(store.playtime_store()),
-            playtime_api: client.clone(),
-            settings: store,
-            credentials,
-            api: client.clone(),
-            browser: Arc::new(SystemBrowser),
-            library: library_store,
-            games: client,
-            files: Arc::new(gamenode_platform::host::StdHostFiles),
-            roots: Arc::new(gamenode_platform::host::SystemRoots::new()),
-            uri: Arc::new(gamenode_platform::uri::SystemUriOpener),
-            covers_dir: paths.covers_dir(),
-            platform,
-        },
+    let application = gamenode_app::bootstrap::build(
+        move |snapshot| publisher.publish(snapshot),
         runtime.handle().clone(),
-        initial_settings,
-        library,
-        Box::new(random::nonce),
-        move |snapshot| {
-            pub_clone.publish(snapshot);
-        },
-    );
+    )?;
+    let paths = application.paths;
+    let engine = application.engine;
+    let displays = display::available_displays();
+    let can_position = display::can_position_windows();
+    let plan = geometry::plan_window(application.initial_settings.window, &displays, can_position);
 
     let mut builder = tauri::Builder::default();
     builder = gamenode_app::protocol::register_asset_protocol(

@@ -141,6 +141,8 @@ struct Shared {
     runtime: Handle,
     storage: StorageWorker,
     scan_persistence: Arc<Mutex<ScanPersistenceState>>,
+    #[cfg(target_os = "linux")]
+    plugin_manager: Mutex<Option<crate::plugin_host::PluginManager>>,
     publish: Box<dyn Fn(Snapshot) + Send + Sync>,
 }
 
@@ -194,6 +196,8 @@ impl Engine {
                 runtime,
                 storage: StorageWorker::new(),
                 scan_persistence: Arc::default(),
+                #[cfg(target_os = "linux")]
+                plugin_manager: Mutex::new(None),
                 publish: Box::new(publish),
             }),
         }
@@ -214,6 +218,28 @@ impl Engine {
         &self.shared.ports.files
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn set_plugin_manager(&self, manager: crate::plugin_host::PluginManager) {
+        *self
+            .shared
+            .plugin_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(manager);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn shutdown_plugins(&self) {
+        let manager = self
+            .shared
+            .plugin_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(manager) = manager {
+            self.shared.runtime.block_on(manager.shutdown());
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.lock();
         self.snapshot_of(&mut state)
@@ -228,7 +254,7 @@ impl Engine {
             .collect()
     }
 
-    /// Clears scan-write errors before a daemon-initiated scan operation.
+    /// Clears scan-write errors before a host-initiated scan operation.
     pub fn reset_scan_persistence_failures(&self) {
         self.shared
             .scan_persistence
@@ -602,6 +628,27 @@ impl Engine {
                     });
                     return;
                 };
+                #[cfg(target_os = "linux")]
+                if found.id() == "steam"
+                    && let Some(manager) = self
+                        .shared
+                        .plugin_manager
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone()
+                {
+                    let engine = self.clone();
+                    self.shared.runtime.spawn(async move {
+                        let result = manager.run_steam_discovery(op.to_string()).await;
+                        engine.library_input(LibInput::ProviderScanned {
+                            op,
+                            provider,
+                            result,
+                            now: unix_now(),
+                        });
+                    });
+                    return;
+                }
                 let (engine, files, roots, platform) = (
                     self.clone(),
                     ports.files.clone(),

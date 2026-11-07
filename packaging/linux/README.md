@@ -21,29 +21,15 @@ The browser may ask permission to open GameNode when completing sign-in.
 ```text
 gamenode-desktop/
 ├── gamenode.sh          # Run this launcher
-├── libexec/gamenode     # Internal executable
-├── libexec/gamenode-daemon
-├── libexec/gamenode-cli
+├── libexec/gamenode     # Desktop host
+├── libexec/gamenode-plugin-steam # Official Linux Steam discovery plugin
 ├── VERSION
 └── build-manifest.json
 ```
 
-The package also includes a command-line client for the same local Engine. Run
-`libexec/gamenode-cli help` to see commands. Functional commands start the daemon
-on demand; `daemon status` only checks it. For example, `auth status`,
-`auth login google`, `games scan`, and `games list`. Scan and login wait by default;
-pass `--no-wait` to return an operation ID and query it with
-`operations status <operation-id>`. `--json` prints a versioned JSON envelope.
-Game actions
-take the entry key printed by `games list`, such as `steam:620`. Also available
-are `auth logout`, `settings sync on|off`, `settings playtime-source store|internal`,
-`games search`/`match`, `games status`, no-match/clear-match, and
-`games add <entry-key> [status]` with optional `--collection <id>` selections.
-Use `games status <entry-key> --status <status>` to change an existing account
-entry while retaining its collections; `--no-collections` explicitly clears them.
-The daemon uses
-the normal per-user GameNode data directory and is single-instance with the
-desktop app.
+The desktop process owns the Engine and profile. It hosts the Linux Plugin API and
+starts the official Steam discovery plugin only when a scan requests it. Both
+executables are packaged together; no separate daemon or CLI is included.
 
 When upgrading from a package with the binary at its root, extract into a fresh
 directory rather than overlaying the old archive: tar extraction does not remove

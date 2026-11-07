@@ -1,4 +1,4 @@
-//! Shared application bootstrap for the desktop shell and the future daemon.
+//! Shared application bootstrap for the Tauri desktop host.
 //!
 //! This module owns no UI types: callers provide a snapshot publisher and retain
 //! the paths/settings they need for their own host lifecycle.

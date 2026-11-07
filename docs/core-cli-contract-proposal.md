@@ -1,9 +1,10 @@
 # Proposta técnica — primeiro marco Core/Daemon + CLI
 
-**Status:** proposta para revisão, 2026-11-07; não implementada nem aprovada como
-contrato definitivo. As decisões confirmadas permanecem no
-[planejamento arquitetural](plugin-architecture-plan.md). Este documento é a fonte
-da proposta técnica deste marco; não substitui as specs do produto estável.
+**Status:** superada em 2026-11-07. A direção atual mantém Engine e perfil no
+processo Tauri e hospeda nele a Plugin API; o CLI/daemon não é mais um produto.
+Consulte o [plano atual de plugins](plugin-architecture-plan.md). O texto abaixo é
+mantido apenas como registro histórico da proposta Core/Daemon + CLI e não orienta
+implementação atual.
 
 ## Recorte e dados de teste
 

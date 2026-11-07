@@ -27,6 +27,13 @@ Archive status applies to these records, not to all features they describe.
 Authentication, discovery, playtime, backups and game tools that remain in main
 specs are still current. Historical source and verification evidence are preserved.
 
+## Superseded Core/Daemon GUI migration
+
+[`2026-11-07-connect-tauri-gui-to-daemon-superseded/`](2026-11-07-connect-tauri-gui-to-daemon-superseded/)
+records the unstarted proposal to make Tauri a client of a separate Core daemon.
+The product direction changed to keep the Engine in the Tauri process and host
+the Plugin API there. The prior proposal was not synchronized to stable specs.
+
 ## Superseded plugin planning
 
 The following former `docs/mvp-roadmap.md` proposals are archived and have been

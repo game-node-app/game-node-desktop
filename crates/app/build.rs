@@ -38,7 +38,6 @@ fn embed_provider_manifests() {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=proto/client.proto");
     println!("cargo:rerun-if-env-changed=GAMENODE_BUILD_VERSION");
     let version = std::env::var("GAMENODE_BUILD_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").expect("package version"));
@@ -48,6 +47,5 @@ fn main() {
     );
     println!("cargo:rustc-env=GAMENODE_BUILD_VERSION={version}");
     embed_provider_manifests();
-    tonic_prost_build::compile_protos("proto/client.proto").expect("compile Client API protobuf");
     tauri_build::build();
 }

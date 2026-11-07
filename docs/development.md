@@ -5,8 +5,9 @@ by developers and AI agents.
 
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
 rustfmt and Clippy. Install Rust using rustup, then let rustup install the toolchain
-when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has
-exactly four packages: core, platform, api and app. Core has no Tauri or OS adapter dependency.
+when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has six
+packages: core, platform, api, plugin-protocol, plugin-steam and app. Core has no
+Tauri or OS adapter dependency.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Linux (Ubuntu/Debian, native x86-64)
@@ -26,6 +27,41 @@ GNOME Keyring or KWallet. No Secret Service activates the documented private-fil
 fallback; a locked service must not do so. SQLite is bundled and does not require
 a separately installed SQLite development package. The HTTP client uses Rustls,
 not OpenSSL.
+
+The desktop process owns the Engine and profile. On Linux it hosts the Plugin API
+at `$XDG_RUNTIME_DIR/gamenode-desktop/plugins.sock` (or the private temporary
+directory used by single-instance IPC). This versioned gRPC API is separate from
+Tauri's React `invoke` bridge. The official Steam discovery plugin runs only for a
+requested scan and is started from beside the desktop executable.
+
+### Plugin security and diagnostics
+
+The host accepts only its own Linux UID, the bundled Steam plugin identity and
+the `library.discovery.steam` capability. Socket permissions are owner-only;
+messages and connections have fixed size and concurrency limits, and each launch
+gets a short-lived session credential. The plugin receives neither GameNode REST
+credentials nor authentication callback URLs. Host diagnostics report lifecycle
+and sanitized failure codes; they must not log session credentials or manifest
+contents.
+
+These checks authenticate a local session; they do not sandbox a native process.
+The plugin runs with the user's OS permissions and can access files and start
+processes available to that user. Only the bundled official plugin is supported
+in this first slice. Windows continues to run Steam discovery in-process; the
+Plugin API transport is Linux-only.
+
+### Linux plugin acceptance record (partial)
+
+On 2026-11-07, the packaged build
+`0.1.0+g45a68f777cda.dirty.20261107T225815749341Z` was launched with a disposable
+`GAMENODE_DATA_DIR`. After sign-in, a Steam scan completed successfully and
+persisted 14 installed entries with ids, titles and install paths. The same-user
+protocol handler was found pointing at a removed package; rerunning a package
+launcher registered a valid handler, and `gio open app.gamenode://test` reached
+the already-running host. The app stayed responsive during the scan.
+
+Still pending for full acceptance: an empty Steam result, missing-plugin and
+timeout recovery, preservation after a plugin failure, and a clean GUI shutdown.
 
 ## Windows (native x86-64 MSVC)
 
@@ -183,40 +219,16 @@ Without that feature Tauri treats the build as a dev build and loads `devUrl`
 server is running. For native HMR, start `pnpm --dir ui dev` and run
 `cargo run -p gamenode-app --no-default-features`.
 
-### CLI and local daemon (Linux first milestone)
-
-The workspace builds `gamenode-daemon` and `gamenode-cli`. The daemon uses the
-same Engine, database and credential store as the Tauri host, and both hosts share
-the per-user instance lock. Do not run them against the same profile at once.
-Functional CLI commands start the daemon on demand; `daemon status` only checks it:
+To exercise Linux Steam discovery from a development build, build both binaries
+so the host can resolve the plugin beside itself:
 
 ```sh
-cargo run -p gamenode-app --bin gamenode-cli -- daemon status
-cargo run -p gamenode-app --bin gamenode-cli -- auth status
-# On a new profile, sign in once before loading the local library:
-cargo run -p gamenode-app --bin gamenode-cli -- auth login --provider google
-cargo run -p gamenode-app --bin gamenode-cli -- games scan
-cargo run -p gamenode-app --bin gamenode-cli -- games list
+cargo build --locked -p gamenode-app -p gamenode-plugin-steam
 ```
 
-`games scan` waits for provider scans and their storage writes; pass `--no-wait`
-to return an operation ID, then query it with `operations status <operation-id>`.
-`auth login <provider>` opens the browser and waits for verified sign-in; use
-`--no-wait` to return after starting the flow. Commands accept `--json` for a
-versioned JSON envelope. Listing or scanning requires a restored account session;
-the CLI reports that requirement instead of presenting an unloaded library as empty.
-The CLI also supports logout, `settings sync on|off`,
-`settings playtime-source store|internal`, play/install/remove by an entry key
-from `games list`, and `games search <entry-key> <query>` followed by
-`games match <entry-key> <game-id>`, with `no-match` and `clear-match`.
-`games status <entry-key> --status <status>` changes the status of a game already
-in the account while keeping its existing collections. `games add <entry-key>
-[status]` adds a matched game to the account; repeated `--collection <id>` sets
-the selected collections and `--no-collections` clears them. Its local API
-currently uses a private Unix socket. `daemon stop` waits for queued storage writes
-and refuses to interrupt an active scan; Windows transport remains future work.
-Set `GAMENODE_DATA_DIR` to a disposable directory when exercising the daemon
-locally; omit it to use the existing per-user desktop profile.
+`cargo run -p gamenode-app` still starts only the desktop host; if the plugin
+binary is absent, a Steam scan reports a provider failure and keeps the previous
+successful data.
 
 ### Driving and previewing from T3 Code Preview
 

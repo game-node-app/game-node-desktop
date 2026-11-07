@@ -1,6 +1,6 @@
-# Prova de gRPC local do GameNode
+# Experimento isolado de gRPC local
 
-Experimento isolado da arquitetura futura. Não é o daemon do produto, não contém
+Experimento histórico de transporte. Não é o Plugin API do produto, não contém
 funcionalidades de jogos e não acessa banco, credenciais ou o IPC do Tauri.
 Seu workspace e `Cargo.lock` próprios evitam alterar as dependências do desktop.
 
@@ -77,7 +77,5 @@ executável. A checagem de UID diferente existe no código, mas não foi exercit
 uma segunda conta do SO neste ambiente.
 
 Os caminhos são fornecidos explicitamente e devem estar sob um pai confiável.
-Descoberta do endpoint, endurecimento contra corridas de filesystem, limites de
-conexões, rotação em sessão ativa e entrega de credenciais a plugins são decisões
-de produção ainda pendentes. O lock aqui é do experimento: a exclusão mútua real
-entre Tauri e daemon continua uma tarefa da migração.
+Este experimento não é a fonte de decisões do Plugin API Tauri, que tem seu
+próprio contrato, endpoint e ciclo de vida no change `host-tauri`.

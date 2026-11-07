@@ -1,0 +1,51 @@
+syntax = "proto3";
+package gamenode.plugin.v1;
+
+service PluginHost {
+  rpc OpenSession (OpenSessionRequest) returns (OpenSessionReply);
+  rpc SubmitDiscovery (SubmitDiscoveryRequest) returns (SubmitDiscoveryReply);
+}
+
+message OpenSessionRequest {
+  string plugin_id = 1;
+  string plugin_version = 2;
+  uint32 api_major = 3;
+  uint32 api_minor = 4;
+  bytes session_credential = 5;
+  repeated string requested_capabilities = 6;
+}
+
+message OpenSessionReply {
+  string session_id = 1;
+  repeated string granted_capabilities = 2;
+}
+
+message DiscoveryRecord {
+  string id = 1;
+  string name = 2;
+  string install_dir = 3;
+  map<string, string> fields = 4;
+}
+
+message DiscoveryResult {
+  repeated DiscoveryRecord records = 1;
+}
+
+message PluginFailure {
+  string code = 1;
+  string message = 2;
+}
+
+message SubmitDiscoveryRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+  string operation_id = 3;
+  oneof outcome {
+    DiscoveryResult completed = 4;
+    PluginFailure failed = 5;
+  }
+}
+
+message SubmitDiscoveryReply {
+  bool accepted = 1;
+}

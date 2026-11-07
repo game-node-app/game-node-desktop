@@ -1,5 +1,9 @@
 # Proposal
 
+> Superseded before implementation on 2026-11-07. The desktop Tauri process
+> remains the Engine owner and hosts the Plugin API. See the active `host-tauri`
+> change; this proposal is retained only as historical context.
+
 ## Why
 
 The Linux Tauri application still owns an Engine directly, while the new CLI uses a separate daemon. They cannot safely share the same profile or live application state. Making the daemon the sole Engine owner lets the GUI and CLI use one authenticated session, library, tracker, and settings state.

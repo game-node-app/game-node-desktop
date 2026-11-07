@@ -71,6 +71,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut owner = owner.serve(runtime.handle());
 
+    #[cfg(target_os = "linux")]
+    let plugin_api = gamenode_app::plugin_host::PluginApi::default();
+    #[cfg(target_os = "linux")]
+    let plugin_api_server = gamenode_app::plugin_host::PluginApiServer::start(
+        runtime.handle(),
+        endpoint.dir().join("plugins.sock"),
+        plugin_api.clone(),
+    )?;
+    #[cfg(target_os = "linux")]
+    let plugin_manager = gamenode_app::plugin_host::PluginManager::bundled(
+        plugin_api,
+        endpoint.dir().join("plugins.sock"),
+    )?;
+
     #[cfg(windows)]
     if let Err(error) = gamenode_platform::autostart::register() {
         tracing::warn!(%error, "could not register login startup");
@@ -92,6 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let paths = application.paths;
     let engine = application.engine;
+    #[cfg(target_os = "linux")]
+    engine.set_plugin_manager(plugin_manager);
     let displays = display::available_displays();
     let can_position = display::can_position_windows();
     let plan = geometry::plan_window(application.initial_settings.window, &displays, can_position);
@@ -365,6 +381,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = builder.build(tauri::generate_context!())?;
     app.run(|_app_handle, _event| {});
+
+    #[cfg(target_os = "linux")]
+    engine.shutdown_plugins();
+    #[cfg(target_os = "linux")]
+    runtime.block_on(plugin_api_server.shutdown());
 
     runtime.shutdown_timeout(Duration::from_secs(1));
     Ok(())

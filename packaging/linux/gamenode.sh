@@ -18,6 +18,10 @@ integration_mode=portable
     integration_error 'GameNode internal binary (libexec/gamenode) is missing or not executable. Extract the complete package again.'
     exit 1
 }
+[[ -x "$integration_dir/libexec/gamenode-plugin-steam" ]] || {
+    integration_error 'Official Steam discovery plugin (libexec/gamenode-plugin-steam) is missing or not executable. Extract the complete package again.'
+    exit 1
+}
 # Preserve installed mode when launched from the stable installation.
 if [[ -f "$integration_dir/.gamenode-desktop-install" ]] &&
    grep -Fxq 'mode=installed' "$integration_dir/.gamenode-desktop-install"; then

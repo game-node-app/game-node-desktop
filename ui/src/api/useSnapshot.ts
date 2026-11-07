@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { shallow } from '@tanstack/react-store';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { commands, isTauriRuntime } from './commands';
 import { getMockHost, mockEnabled } from './mock';
@@ -146,7 +147,7 @@ export function useAppInfo() {
 
 /**
  * Mount only from the notices viewer: this transfers ~4.8 MB over IPC.
- * `gcTime` stays at the client default (5 min) so closing the modal frees it.
+ * `gcTime: 0` in the query options drops the payload as soon as the modal closes.
  */
 export function useLicenseNotices() {
   return useQuery({ ...licenseNoticesQueryOptions });
@@ -156,23 +157,40 @@ const selectLibrary = (s: Snapshot) => s.library;
 const selectLocalGames = (s: Snapshot) => s.localGames;
 const selectTools = (s: Snapshot) => s.tools;
 const selectSettings = (s: Snapshot) => s.settings;
-const selectAuth = (s: Snapshot) => ({
-  auth: s.auth,
-  notice: s.notice,
-  storage: s.storage,
-  sync: s.sync,
-  playtimeSource: s.playtimeSource,
-  playtimeError: s.playtimeError,
-});
 
-export function useAuth(): {
+interface AuthSelection {
   auth: AuthView;
   notice: Snapshot['notice'];
   storage: Snapshot['storage'];
   sync: Snapshot['sync'];
   playtimeSource: PlaytimeSource;
   playtimeError: boolean;
-} {
+}
+
+/**
+ * Snapshot events replace the whole snapshot object, so building this selection
+ * fresh would give App, TopBar and Settings a new object (and a re-render) for
+ * every unrelated library/tools update. Return the previous object while all
+ * fields stay shallow-equal.
+ */
+let lastAuthSelection: AuthSelection | null = null;
+const selectAuth = (s: Snapshot): AuthSelection => {
+  const next: AuthSelection = {
+    auth: s.auth,
+    notice: s.notice,
+    storage: s.storage,
+    sync: s.sync,
+    playtimeSource: s.playtimeSource,
+    playtimeError: s.playtimeError,
+  };
+  if (lastAuthSelection && shallow(lastAuthSelection, next)) {
+    return lastAuthSelection;
+  }
+  lastAuthSelection = next;
+  return next;
+};
+
+export function useAuth(): AuthSelection {
   const { data } = useSnapshot(selectAuth);
   return data;
 }

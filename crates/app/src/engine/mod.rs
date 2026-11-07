@@ -6,6 +6,7 @@
 //! reordered after the sign-out that follows it.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,7 +27,7 @@ use gamenode_core::steam::SteamWebApi;
 use gamenode_core::{
     AuthMachine, Effect, Input, SessionCredential, Settings, SignInFailure, Snapshot,
 };
-use gamenode_platform::covers::write_cover;
+use gamenode_platform::covers::{artwork_dir, write_cover};
 use tokio::runtime::Handle;
 
 mod artwork;
@@ -43,6 +44,9 @@ use steam_login::SteamLoginWindow;
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The shortest time between snapshots published for cover completions.
+const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 
 /// The adapters the engine drives.
 #[derive(Clone)]
@@ -178,6 +182,10 @@ struct Shared {
     steam: Option<Arc<SteamAccount>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
+    /// A cover completion is waiting for the coalescing flush task to publish it.
+    cover_flush_pending: AtomicBool,
+    /// A task is scheduled (or running) to publish the newest cover completions.
+    cover_flush_scheduled: AtomicBool,
     publish: Box<dyn Fn(Snapshot) + Send + Sync>,
 }
 
@@ -246,6 +254,8 @@ impl Engine {
             storage: StorageWorker::new(),
             steam: steam.clone(),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
+            cover_flush_pending: AtomicBool::new(false),
+            cover_flush_scheduled: AtomicBool::new(false),
             publish: Box::new(publish),
         });
         // The service publishes every transition; a weak reference keeps the engine droppable
@@ -292,6 +302,13 @@ impl Engine {
     /// long enough to clone a handle, unlike [`Engine::snapshot`], which rebuilds the view.
     pub fn artwork(&self, game_id: u64) -> Option<Arc<[u8]>> {
         self.lock().library.artwork_for(game_id)
+    }
+
+    /// The title of the game that is running, if any. Cheap enough for the tray tooltip on every
+    /// maintenance tick: it takes the lock only long enough to look at the running set, instead
+    /// of building a full snapshot.
+    pub fn running_title(&self) -> Option<String> {
+        self.lock().library.running_title()
     }
 
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
@@ -705,6 +722,7 @@ impl Engine {
     /// Feeds an input to the library and launches its effects. Never blocks on I/O.
     pub fn library_input(&self, input: LibInput) {
         let mut state = self.lock();
+        let cover_done = matches!(&input, LibInput::CoverDone { .. });
         let read_trigger = matches!(
             &input,
             LibInput::Loaded { .. } | LibInput::ProviderScanned { .. }
@@ -767,7 +785,62 @@ impl Engine {
         if submit_trigger {
             self.submit_totals(&mut state);
         }
-        self.publish(&mut state);
+        if cover_done {
+            self.publish_cover(&mut state);
+        } else {
+            self.publish(&mut state);
+        }
+    }
+
+    /// Publishes one cover completion, coalescing the rest of a burst.
+    ///
+    /// The first completion publishes immediately so the UI shows a cover as soon as it is
+    /// ready. Further completions only update state; a flush task publishes the newest state
+    /// after [`COVER_FLUSH_INTERVAL`], and keeps doing so while covers keep arriving. This keeps
+    /// a first sync from rebuilding the full library snapshot once per downloaded cover while
+    /// still publishing the final state.
+    fn publish_cover(&self, state: &mut State) {
+        if self
+            .shared
+            .cover_flush_scheduled
+            .swap(true, Ordering::AcqRel)
+        {
+            self.shared
+                .cover_flush_pending
+                .store(true, Ordering::Release);
+            return;
+        }
+        // This completion starts a burst: publish its state now, so nothing is pending.
+        self.shared
+            .cover_flush_pending
+            .store(false, Ordering::Release);
+        self.publish(state);
+
+        // A weak reference keeps the engine droppable while this task waits.
+        let weak = Arc::downgrade(&self.shared);
+        self.shared.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(COVER_FLUSH_INTERVAL).await;
+                let Some(shared) = weak.upgrade() else {
+                    return;
+                };
+                let engine = Engine { shared };
+                let mut state = engine.lock();
+                if !engine
+                    .shared
+                    .cover_flush_pending
+                    .swap(false, Ordering::AcqRel)
+                {
+                    engine
+                        .shared
+                        .cover_flush_scheduled
+                        .store(false, Ordering::Release);
+                    return;
+                }
+                engine.publish(&mut state);
+                // Stay scheduled: another completion may start while this one publishes.
+            }
+        });
     }
 
     /// Scans every provider again. Requests made while a scan runs coalesce into one more scan.
@@ -1206,7 +1279,7 @@ impl Engine {
                 let (engine, api, dir) = (
                     self.clone(),
                     ports.games.clone(),
-                    ports.covers_dir.join("artworks"),
+                    artwork_dir(&ports.covers_dir),
                 );
                 self.shared.runtime.spawn(async move {
                     let result =

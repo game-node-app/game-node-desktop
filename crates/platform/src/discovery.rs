@@ -21,6 +21,7 @@ impl DiscoveryHost for WindowsDiscovery {
             use std::collections::BTreeSet;
             let root = crate::installations::canonical(&watch.path)?;
             let data = crate::paths::DataPaths::resolve().ok_or(LocalError::InvalidTarget)?;
+            let _release = crate::manifest_cache::release_on_drop();
             let manifest =
                 crate::manifest_cache::ManifestCache::bundled(data.data_dir())?.load()?;
             let mut results = Vec::new();

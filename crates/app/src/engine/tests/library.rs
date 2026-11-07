@@ -869,3 +869,93 @@ async fn activating_an_entry_launches_playable_games_and_opens_details_when_unav
     crate::commands::activate_entry_by_key(&h.engine, "steam:missing");
     assert!(view(&h.engine.snapshot()).unwrap().layout.detail_open);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() {
+    const COVERS: u64 = 64;
+    let api = FakeApi::new();
+    // Keep the first downloads in flight until after the counting starts; the same delay also
+    // slows the session check, which only makes the setup wait for the library to be ready.
+    *api.delay.lock().unwrap() = Duration::from_millis(300);
+    let mut h = harness(api.clone(), FakeCreds::with(Some("stored")));
+    *h.store.account.lock().unwrap() = Some(account("u1", "Ana"));
+    let mut cache = LibraryCache::default();
+    for i in 0..COVERS {
+        let store_id = (100 + i).to_string();
+        let game_id = 1100 + i;
+        cache.entries.push(StoredEntry {
+            key: format!("steam:{store_id}"),
+            provider: "steam".to_owned(),
+            store_id: store_id.clone(),
+            name: Some(format!("Game {i}")),
+            install_dir: format!("Game {i}"),
+            fields: Default::default(),
+            installed: false,
+            owned: true,
+            family_shared: false,
+            first_seen: 1,
+            last_seen: 1,
+        });
+        cache.auto_matches.push(AutoMatch {
+            category: 1,
+            uid: store_id,
+            game_ids: vec![game_id],
+            // Fresh enough that the scan does not ask the server about these ids.
+            checked_at: i64::MAX,
+        });
+        cache.games.push(GameRecord {
+            game_id,
+            name: format!("Game {i}"),
+            release_year: None,
+            cover_url: Some(format!(
+                "//images.igdb.com/igdb/image/upload/t_thumb/co{game_id}.jpg"
+            )),
+            cover_file: None,
+            cover_failed_at: None,
+        });
+    }
+    *h.store.cache.lock().unwrap() = cache;
+    h.engine.start();
+    h.until("the cached library and its covers are queued", |s| {
+        matches!(s.auth, AuthView::SignedIn { .. })
+            && view(s).is_some_and(|v| {
+                v.rows.iter().filter(|row| row.owned).count() as u64 == COVERS && !v.scanning
+            })
+    })
+    .await;
+
+    // Start counting after the library is ready; every remaining publish is cover-driven.
+    h.publishes.store(0, Ordering::SeqCst);
+    *api.delay.lock().unwrap() = Duration::ZERO;
+    h.until("every cover completed", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.iter().filter(|row| row.cover_file.is_some()).count() as u64 == COVERS
+        })
+    })
+    .await;
+    // The trailing flush publishes the final state after the burst.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let published = h.publishes.load(Ordering::SeqCst);
+    assert!(
+        published < COVERS as usize / 4,
+        "{published} snapshots published for {COVERS} cover completions"
+    );
+
+    let snapshot = h.engine.snapshot();
+    let rows = &view(&snapshot).unwrap().rows;
+    let mut covered = 0;
+    for row in rows.iter() {
+        let Some(game_id) = row.status.game_id() else {
+            continue;
+        };
+        if (1100..1100 + COVERS).contains(&game_id) {
+            assert_eq!(
+                row.cover_file.as_deref(),
+                Some(format!("{game_id}.jpg").as_str())
+            );
+            covered += 1;
+        }
+    }
+    assert_eq!(covered, COVERS as usize, "the final snapshot lost a cover");
+}

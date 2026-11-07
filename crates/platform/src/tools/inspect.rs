@@ -519,6 +519,7 @@ pub fn inspect_game_target(
     }
 
     let manifest_hints: Vec<String> = if let Some(data) = crate::paths::DataPaths::resolve() {
+        let _release = crate::manifest_cache::release_on_drop();
         if let Ok(cache) = crate::manifest_cache::ManifestCache::bundled(data.data_dir()) {
             if let Ok(manifest) = cache.load() {
                 match manifest.index.exact(title).as_slice() {

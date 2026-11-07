@@ -6,10 +6,13 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use super::machine::LibraryMachine;
 
 /// How a click or Enter changes the selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SelectMode {
     /// A plain click: only this entry.
     Replace,
@@ -19,7 +22,8 @@ pub enum SelectMode {
     Range,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Direction {
     Up,
     Down,
@@ -196,8 +200,12 @@ impl LibraryMachine {
     /// Forgets selected entries that are no longer installed.
     pub(super) fn prune_selection(&mut self) {
         let entries = &self.entries;
-        self.selection
-            .retain(|key| entries.get(key).is_some_and(|entry| entry.installed));
+        let excluded = &self.excluded;
+        self.selection.retain(|key| {
+            entries
+                .get(key)
+                .is_some_and(|entry| entry.installed && !excluded.contains(key))
+        });
     }
 }
 

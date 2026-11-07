@@ -23,7 +23,7 @@ if ($preservePreviousHandler) {
     & reg.exe export 'HKCU\Software\Classes\app.gamenode' $backup /y | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not preserve the previous URI handler' }
 }
-foreach ($name in @('gamenode.exe', 'LICENSE', 'README.md', 'licenses', 'install.ps1', 'uninstall.ps1')) {
+foreach ($name in @('gamenode.exe', 'LICENSE', 'README.md', 'licenses', 'backup-assets', 'install.ps1', 'uninstall.ps1')) {
     $source = Join-Path $SourceDirectory $name
     if (!(Test-Path -LiteralPath $source)) { throw "Package is missing $name" }
     Copy-Item -LiteralPath $source -Destination $installDir -Recurse -Force
@@ -38,6 +38,7 @@ $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'GameNode D
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $binary
+$shortcut.IconLocation = "$binary,0"
 $shortcut.WorkingDirectory = $installDir
 $shortcut.Description = 'GameNode Desktop'
 $shortcut.Save()

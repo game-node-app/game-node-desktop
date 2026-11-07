@@ -2,7 +2,8 @@
 //!
 //! A cover is wanted for every matched game of an installed entry that has no downloaded file and
 //! a cover URL that passes [`cover::download_url`]. A download that failed is not tried again
-//! until the next scan finishes. Downloads only run with a verified session, at most
+//! until the next scan finishes, and then only once [`COVER_RETRY_AFTER_SECS`] have passed since
+//! it failed, so a flaky network does not download the same covers on every scan. Downloads only run with a verified session, at most
 //! [`MAX_COVER_DOWNLOADS`] at once; the rest wait here.
 
 use std::collections::{BTreeSet, VecDeque};
@@ -13,23 +14,42 @@ use super::machine::{Access, Effect, LibraryMachine, Phase};
 /// Covers downloaded at the same time.
 pub const MAX_COVER_DOWNLOADS: usize = 4;
 
+/// How long a failed cover download waits before a scan may try it again.
+pub const COVER_RETRY_AFTER_SECS: i64 = 5 * 60;
+
 #[derive(Debug, Default)]
 pub(super) struct CoverQueue {
     waiting: VecDeque<u64>,
+    /// The ids in `waiting`, so queuing a cover is not a linear search.
+    queued: BTreeSet<u64>,
     running: BTreeSet<u64>,
 }
 
 impl CoverQueue {
     pub(super) fn clear(&mut self) {
         self.waiting.clear();
+        self.queued.clear();
         self.running.clear();
+    }
+
+    fn push(&mut self, game_id: u64) {
+        if !self.running.contains(&game_id) && self.queued.insert(game_id) {
+            self.waiting.push_back(game_id);
+        }
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        let game_id = self.waiting.pop_front()?;
+        self.queued.remove(&game_id);
+        Some(game_id)
     }
 }
 
 impl LibraryMachine {
     /// Queues the covers that are missing and starts as many downloads as may run now.
-    /// `retry_failed` also queues covers whose last download failed.
-    pub(super) fn plan_covers(&mut self, retry_failed: bool) -> Vec<Effect> {
+    /// `retry_failed_at` is the current time when covers whose last download failed at least
+    /// [`COVER_RETRY_AFTER_SECS`] ago should be queued again, and `None` to leave them alone.
+    pub(super) fn plan_covers(&mut self, retry_failed_at: Option<i64>) -> Vec<Effect> {
         if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
             return vec![];
         }
@@ -39,7 +59,11 @@ impl LibraryMachine {
             .filter(|game_id| {
                 self.games.get(game_id).is_some_and(|game| {
                     game.cover_file.is_none()
-                        && (retry_failed || game.cover_failed_at.is_none())
+                        && game.cover_failed_at.is_none_or(|failed_at| {
+                            retry_failed_at.is_some_and(|now| {
+                                now.saturating_sub(failed_at) >= COVER_RETRY_AFTER_SECS
+                            })
+                        })
                         && game
                             .cover_url
                             .as_deref()
@@ -49,8 +73,32 @@ impl LibraryMachine {
             })
             .collect();
         for game_id in wanted {
-            if !self.covers.running.contains(&game_id) && !self.covers.waiting.contains(&game_id) {
-                self.covers.waiting.push_back(game_id);
+            self.covers.push(game_id);
+        }
+        self.start_cover_downloads()
+    }
+
+    /// Queues covers for games the match dialog lists, before any installed entry points at
+    /// them. An explicit search retries a cover that failed before, so its results stop showing
+    /// placeholders once the network recovers.
+    pub(super) fn plan_option_covers(
+        &mut self,
+        game_ids: impl IntoIterator<Item = u64>,
+    ) -> Vec<Effect> {
+        if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
+            return vec![];
+        }
+        for game_id in game_ids {
+            let wanted = self.games.get(&game_id).is_some_and(|game| {
+                game.cover_file.is_none()
+                    && game
+                        .cover_url
+                        .as_deref()
+                        .and_then(cover::download_url)
+                        .is_some()
+            });
+            if wanted {
+                self.covers.push(game_id);
             }
         }
         self.start_cover_downloads()
@@ -59,7 +107,7 @@ impl LibraryMachine {
     fn start_cover_downloads(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
         while self.covers.running.len() < MAX_COVER_DOWNLOADS {
-            let Some(game_id) = self.covers.waiting.pop_front() else {
+            let Some(game_id) = self.covers.pop() else {
                 break;
             };
             let url: Option<CoverUrl> = self

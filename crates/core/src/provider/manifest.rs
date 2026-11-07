@@ -60,10 +60,10 @@ pub struct ScanSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UriAction {
-    /// A URI template such as `steam://rungameid/{id}`.
-    pub uri: String,
+#[serde(untagged, deny_unknown_fields)]
+pub enum UriAction {
+    Uri { uri: String },
+    Executable { executable: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

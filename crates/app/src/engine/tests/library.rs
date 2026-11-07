@@ -126,6 +126,7 @@ pub(super) struct FakeLibrary {
     pub(super) games: Mutex<Vec<GameRecord>>,
     pub(super) covers_ready: Mutex<Vec<(u64, String)>>,
     pub(super) account: Mutex<Option<LastAccount>>,
+    pub(super) excluded: Mutex<Vec<String>>,
 }
 
 impl FakeLibrary {
@@ -183,6 +184,12 @@ impl LibraryStore for FakeLibrary {
         Ok(LibraryLayout::default())
     }
     fn save_layout(&self, _layout: &LibraryLayout) -> Result<(), StorageError> {
+        Ok(())
+    }
+    fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
+        self.pause();
+        *self.excluded.lock().unwrap() = excluded.to_vec();
+        self.cache.lock().unwrap().excluded = excluded.to_vec();
         Ok(())
     }
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {
@@ -392,6 +399,10 @@ async fn play_and_install_open_the_providers_links_without_blocking() {
 
     // The link is held at the operating system: Play returns and shows "opening".
     h.uri.gate.close();
+    h.engine
+        .open_entry("steam:620".to_owned(), LaunchKind::Play);
+    // Repeated activation while the OS opener is still working must not enqueue a second
+    // launch for the same action.
     h.engine
         .open_entry("steam:620".to_owned(), LaunchKind::Play);
     assert_eq!(
@@ -718,4 +729,104 @@ async fn editing_a_store_game_uses_update_without_importing_the_account_library(
     assert_eq!(*h.api.updated.lock().unwrap(), [7]);
     assert!(h.api.created.lock().unwrap().is_empty());
     assert_eq!(view(&snapshot).unwrap().rows.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_store_entry_temporarily_or_permanently_and_resetting_ignores() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("listed", |s| {
+        view(s).is_some_and(|v| v.rows.len() == 1 && !v.scanning)
+    })
+    .await;
+
+    // Temporary removal removes the entry immediately; rescan brings it back.
+    h.engine.remove_entry("steam:620".to_owned(), true);
+    let snapshot = h.engine.snapshot();
+    assert!(view(&snapshot).unwrap().rows.is_empty());
+    assert_eq!(view(&snapshot).unwrap().total, 0);
+
+    h.engine.rescan();
+    h.until("restored after rescan", |s| {
+        view(s).is_some_and(|v| v.rows.len() == 1 && !v.scanning)
+    })
+    .await;
+
+    // Permanent removal persists the exclusion and keeps it out across rescans.
+    h.engine.remove_entry("steam:620".to_owned(), false);
+    let snapshot = h.engine.snapshot();
+    assert!(view(&snapshot).unwrap().rows.is_empty());
+    assert_eq!(view(&snapshot).unwrap().total, 0);
+    let store = h.store.clone();
+    eventually("excluded persisted", || {
+        *store.excluded.lock().unwrap() == ["steam:620"]
+    })
+    .await;
+
+    let scans_before = h.store.scans.lock().unwrap().len();
+    h.engine.rescan();
+    let store = h.store.clone();
+    eventually("rescan finished", || {
+        store.scans.lock().unwrap().len() > scans_before
+    })
+    .await;
+    h.until("still excluded after rescan", |s| {
+        view(s).is_some_and(|v| v.rows.is_empty() && v.total == 0 && !v.scanning)
+    })
+    .await;
+
+    // Resetting ignored discoveries restores the excluded store entry.
+    h.engine.reset_local_ignores();
+    let store = h.store.clone();
+    eventually("excluded cleared", || {
+        store.excluded.lock().unwrap().is_empty()
+    })
+    .await;
+    h.until("restored after reset_local_ignores", |s| {
+        view(s).is_some_and(|v| v.rows.len() == 1 && v.total == 1 && !v.scanning)
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activating_an_entry_launches_playable_games_and_opens_details_when_unavailable() {
+    use gamenode_core::library::{Direction, Input as LibInput};
+
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("listed", |s| {
+        view(s).is_some_and(|v| v.rows.len() == 1 && !v.scanning)
+    })
+    .await;
+
+    // Close the detail pane first; activating a playable entry by key (double-click) selects and
+    // launches it without forcing the detail pane open.
+    h.engine.library_input(LibInput::SetDetailOpen(false));
+    assert!(!view(&h.engine.snapshot()).unwrap().layout.detail_open);
+
+    crate::commands::activate_entry_by_key(&h.engine, "steam:620");
+    h.until("played via double-click key", |s| s.launch.is_none())
+        .await;
+    assert_eq!(*h.uri.opened.lock().unwrap(), ["steam://rungameid/620"]);
+    assert_eq!(view(&h.engine.snapshot()).unwrap().selected, ["steam:620"]);
+
+    // Navigating with the keyboard sets focus; activating with an empty key (Enter) launches the
+    // focused entry.
+    h.uri.opened.lock().unwrap().clear();
+    h.engine.library_input(LibInput::Move {
+        direction: Direction::Home,
+        extend: false,
+    });
+    crate::commands::activate_entry_by_key(&h.engine, "");
+    h.until("played via keyboard focus", |s| s.launch.is_none())
+        .await;
+    assert_eq!(*h.uri.opened.lock().unwrap(), ["steam://rungameid/620"]);
+
+    // When Play is unavailable (e.g. an unknown key leaves nothing selected), activating falls back
+    // to opening the detail pane.
+    h.engine.library_input(LibInput::SetDetailOpen(false));
+    crate::commands::activate_entry_by_key(&h.engine, "steam:missing");
+    assert!(view(&h.engine.snapshot()).unwrap().layout.detail_open);
 }

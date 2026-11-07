@@ -12,10 +12,13 @@ use crate::game_api::{ApiError, LibraryEntry};
 
 use super::add_dialog::{AddProgress, Collections, Stage};
 use super::machine::{Effect, LibraryMachine};
+use serde::{Deserialize, Serialize};
+
 use super::membership::{EntryStatus, Membership};
 
 /// What happened to one game.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum AddOutcome {
     /// Created, with the status GameNode applies.
     Added(EntryStatus),
@@ -27,7 +30,10 @@ pub enum AddOutcome {
     Failed(ApiError),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub type AddOutcomeItem = AddOutcome;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddItem {
     pub entry_key: String,
     pub title: String,
@@ -35,7 +41,8 @@ pub struct AddItem {
 }
 
 /// The result of a confirmed add: one item per target, in the order they were selected.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AddSummary {
     pub items: Vec<AddItem>,
 }

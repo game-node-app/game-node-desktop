@@ -15,7 +15,7 @@ handles tokens separately from SQLite.
 The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
-`window.height`, `window.maximized`, `library.layout`, `account.last_id` and
+`window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
 `account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
 (the `SETTING_KEYS` list in `db.rs`). A fresh database
 defaults to GPU rendering, the default library layout and no games. No session
@@ -108,3 +108,74 @@ or matches. Step 2 builds refuse the newer schema and leave it untouched.
 or invalid values select `store`. Games without a supported store counter always
 use Internal. Changing source preserves store totals and internal sessions
 separately, without merging or deleting either history.
+
+## DRM-free installations and local protection
+
+Migration `0004_drm_free_backups.sql` adds Windows-user-owned tables:
+
+- `manual_registrations`: stable `id`, canonical `file_identity`, `removed` tombstone
+  and serialized launch/tracking `payload`. A unique partial index rejects duplicate
+  active file identities. Missing executables remain unavailable registrations.
+- `discovery_watches`: watch `id` and configuration `payload`.
+- `discovery_candidates`: stable `fingerprint` and review/ignore `payload`.
+- `local_inferences`: account-scoped `account_id`, `installation_id`, evidence and
+  automatic catalog `payload`; chosen matches retain their existing account scope.
+- `save_profiles`: `id`, `installation_id`, `revision`, frozen definition `payload`.
+- `backup_jobs`: `id`, `installation_id`, `profile_id`, `revision`, `play_period`,
+  `destination`, `state` and result `payload`. A play-period identity deduplicates
+  automatic work. Profile changes cancel obsolete queued jobs transactionally.
+- `backup_destinations`: previously used local destination `path` values.
+
+The `backup_settings` settings key stores independent automatic-backup control
+and destination. Save profiles and protection belong to the OS user and survive
+GameNode account changes. They never inherit a catalog rematch. Backup bytes use
+`backups/manual/<installation UUID>/<profile ID>/`, outside SQLite; removing a
+registration preserves archives. Recovery snapshots are retained separately from
+ordinary history. Interrupted jobs remain durable and require reconciliation
+against actual archives before success or retry. Older binaries refuse this
+schema; uninstall keeps user data and archives under the existing keep-data policy.
+
+The private helper configuration lives under `private/backups/<installation>/<profile>`
+below the same desktop data directory. It has empty roots and secondary-manifest
+lists, and selects exactly one canonical profile title. The helper never uses a
+standalone Ludusavi configuration or cloud synchronization. The manifest cache is
+`manifest/manifest.yaml` with `metadata.json` for ETag/check time/hash; failed data
+updates retain the validated baseline/cache. Jobs freeze their profile definition.
+
+A profile retarget creates a new profile identity. Profiles load in insertion order,
+so the most recently selected profile is active while older definitions remain for
+history and restore. Old destinations remain in `backup_destinations` and job payloads.
+Before enabling a destination, canonical ancestor checks reject overlap with saves,
+registered installations or watched roots, including destinations not created yet.
+
+Helper mutations use a copied `.staging` namespace, never hard-linked mutable
+mapping files. Successful verified promotion writes a `.journal`, renames active to
+`.previous`, then staging to active. Startup execution reconciles interrupted renames.
+The active `.gamenode-job.json` marker binds a committed operation to its durable job
+id; replay returns that result rather than creating another snapshot. Interrupted
+Running jobs return to Queued and require a fresh stopped observation before execution.
+
+Restore preserves current affected files and registry data in a separate profile
+namespace suffixed `_recovery_<UUID>`. The original namespace records its path and
+preview in `.gamenode-restore-recovery.json`. Ordinary ten-version retention never
+prunes those recovery namespaces. Recovery failure aborts restore; interrupted or
+partial restores retain that record for manual recovery. See [DRM-free games](drm-free-games.md)
+for controls and the same-physical-drive limitation.
+
+## Game tools (migration `0005_game_tools.sql`)
+
+Migration `0005_game_tools.sql` adds Windows-user-owned game tool tables:
+
+- `tool_installations`: installed tool state per `(entry_key, tool_id)`, storing
+  `channel`, `version`, `target_exe`, `proxy_dll`, lifecycle `state`, and timestamps.
+- `tool_files`: deployed file and INI patch ledger per `(entry_key, tool_id, relative_path)`,
+  including `installed_sha256`, `backup_path`, `original_sha256`, `prior_owner_tool_id` for
+  layered companion/swapper ownership, `created_dirs_json`, and INI patch rollback metadata.
+- `tool_releases_cache`: cached release metadata per `(tool_id, channel, version)` fetched from
+  declared repositories.
+
+Downloaded archives are cached under `tools/cache/<tool_id>/<channel>/<version>/` (`DataPaths::tools_cache_dir`),
+and pre-tool file backups live under `private/tool-backups/<entry_key>/<tool_id>/` (`DataPaths::tool_backups_dir`).
+Tool installations belong to the OS user across GameNode account changes, and startup reconciles
+any transient `Installing`, `Updating`, or `Uninstalling` records using the backup ledger.
+

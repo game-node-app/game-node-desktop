@@ -10,13 +10,16 @@ use crate::provider::Record;
 
 use super::layout::LibraryLayout;
 
+use serde::{Deserialize, Serialize};
+
 /// The identity of a library entry: `<provider>:<store id>`.
 pub fn entry_key(provider: &str, store_id: &str) -> String {
     format!("{provider}:{store_id}")
 }
 
 /// A game a provider has detected on this PC.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoredEntry {
     pub key: String,
     pub provider: String,
@@ -42,7 +45,8 @@ impl StoredEntry {
 }
 
 /// The last scan outcome of one provider.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderScanState {
     pub provider: String,
     /// Unix seconds of the last successful scan.
@@ -52,7 +56,8 @@ pub struct ProviderScanState {
 }
 
 /// The GameNode games a store id maps to, as last reported by the server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AutoMatch {
     pub category: u32,
     pub uid: String,
@@ -62,7 +67,8 @@ pub struct AutoMatch {
 }
 
 /// What the user picked for an entry: a game, or `None` for "no GameNode game".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChosenMatch {
     pub entry_key: String,
     pub game_id: Option<u64>,
@@ -70,7 +76,8 @@ pub struct ChosenMatch {
 }
 
 /// GameNode game metadata kept for display.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameRecord {
     pub game_id: u64,
     pub name: String,
@@ -83,7 +90,8 @@ pub struct GameRecord {
 }
 
 /// Everything the library needs at startup, read in one go.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryCache {
     pub entries: Vec<StoredEntry>,
     pub scans: Vec<ProviderScanState>,
@@ -91,10 +99,12 @@ pub struct LibraryCache {
     /// The chosen matches of the account that was asked for; empty when there is none.
     pub chosen_matches: Vec<ChosenMatch>,
     pub games: Vec<GameRecord>,
+    pub excluded: Vec<String>,
 }
 
 /// The last signed-in account, kept so the cached library can open before verification.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LastAccount {
     pub id: String,
     pub name: String,
@@ -136,6 +146,11 @@ pub trait LibraryStore: Send + Sync {
 
     fn load_layout(&self) -> Result<LibraryLayout, StorageError>;
     fn save_layout(&self, layout: &LibraryLayout) -> Result<(), StorageError>;
+
+    fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
+        let _ = excluded;
+        Ok(())
+    }
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError>;
     fn save_last_account(&self, account: &LastAccount) -> Result<(), StorageError>;

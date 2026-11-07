@@ -42,6 +42,11 @@ pub enum Input {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
+    GameStopped {
+        key: String,
+        play_period: String,
+        last_gameplay_exit: i64,
+    },
     Watch(ProcessInfo),
     OpenSession(Session),
     Checkpoint {
@@ -60,12 +65,14 @@ pub enum Effect {
 
 type Identity = (u32, std::time::SystemTime);
 struct Running {
+    play_period: String,
     processes: BTreeMap<Identity, ProcessInfo>,
     session: Option<Session>,
     last_exit: i64,
 }
 /// Matching rules are supplied by the host, allowing both platforms to be tested anywhere.
 pub struct Tracker {
+    policies: BTreeMap<String, crate::drm_free::ProcessPolicy>,
     floor: i64,
     windows: bool,
     account: Option<String>,
@@ -77,10 +84,14 @@ impl Tracker {
         Self {
             windows,
             account: None,
+            policies: BTreeMap::new(),
             floor: i64::MIN,
             entries: BTreeMap::new(),
             active: BTreeMap::new(),
         }
+    }
+    pub fn set_policies(&mut self, policies: BTreeMap<String, crate::drm_free::ProcessPolicy>) {
+        self.policies = policies;
     }
     pub fn set_floor(&mut self, at: i64) {
         self.floor = at;
@@ -133,8 +144,12 @@ impl Tracker {
                 let mut grouped: BTreeMap<String, BTreeMap<Identity, ProcessInfo>> =
                     BTreeMap::new();
                 for process in processes {
-                    if let Some(entry) = match_entry(&self.entries, &process.exe_path, self.windows)
-                    {
+                    if let Some(entry) = match_policy(
+                        &self.entries,
+                        &self.policies,
+                        &process.exe_path,
+                        self.windows,
+                    ) {
                         grouped
                             .entry(entry.key.clone())
                             .or_default()
@@ -155,8 +170,20 @@ impl Tracker {
                         running.processes.remove(&id);
                         running.last_exit = running.last_exit.max(at);
                     }
-                    if running.processes.is_empty() {
-                        self.close(&key, at, &mut effects, &mut next_id);
+                    if running.processes.is_empty() && current.is_none_or(|p| p.is_empty()) {
+                        let manual = self.entries[&key].source == "manual";
+                        if !manual || at >= running.last_exit.saturating_add(10) {
+                            let ended = running.last_exit;
+                            let period = running.play_period.clone();
+                            self.close(&key, ended, &mut effects, &mut next_id);
+                            if manual {
+                                effects.push(Effect::GameStopped {
+                                    key,
+                                    play_period: period,
+                                    last_gameplay_exit: ended,
+                                });
+                            }
+                        }
                     }
                 }
                 for (key, processes) in grouped {
@@ -173,6 +200,11 @@ impl Tracker {
                         self.active.insert(
                             key.clone(),
                             Running {
+                                play_period: if self.entries[&key].source == "manual" {
+                                    next_id()
+                                } else {
+                                    String::new()
+                                },
                                 processes: BTreeMap::new(),
                                 session,
                                 last_exit: i64::MIN,
@@ -201,7 +233,7 @@ impl Tracker {
                     let running = self.active.get_mut(&key).unwrap();
                     running.processes.remove(&id);
                     running.last_exit = running.last_exit.max(at);
-                    if running.processes.is_empty() {
+                    if running.processes.is_empty() && self.entries[&key].source != "manual" {
                         self.close(&key, at, &mut effects, &mut next_id);
                     }
                 }
@@ -209,6 +241,11 @@ impl Tracker {
             Input::Tick { now } => {
                 let keys: Vec<_> = self.active.keys().cloned().collect();
                 for key in keys {
+                    let now = if self.active[&key].processes.is_empty() {
+                        self.active[&key].last_exit
+                    } else {
+                        now
+                    };
                     self.checkpoint(&key, now, &mut effects, &mut next_id);
                 }
             }
@@ -331,5 +368,49 @@ pub fn match_entry<'a>(
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, entry)| entry)
 }
+fn match_policy<'a>(
+    entries: &'a BTreeMap<String, Entry>,
+    policies: &BTreeMap<String, crate::drm_free::ProcessPolicy>,
+    exe: &str,
+    windows: bool,
+) -> Option<&'a Entry> {
+    let compare = |p: &str| {
+        let p = normalize(p);
+        if windows { p.to_lowercase() } else { p }
+    };
+    let executable = compare(exe);
+    entries
+        .values()
+        .filter_map(|entry| {
+            let root = compare(&entry.install_dir);
+            let prefix = format!(
+                "{}{}",
+                root.trim_end_matches(['/', '\\']),
+                if windows { '\\' } else { '/' }
+            );
+            if !executable.starts_with(&prefix) {
+                return None;
+            }
+            let explicit = match policies.get(&entry.key) {
+                Some(crate::drm_free::ProcessPolicy::Ignored) => return None,
+                Some(crate::drm_free::ProcessPolicy::Explicit { gameplay, .. }) => {
+                    if !gameplay.iter().any(|p| compare(p) == executable) {
+                        return None;
+                    }
+                    true
+                }
+                _ if entry.source == "manual" => return None,
+                _ => false,
+            };
+            Some((explicit, root.len(), entry))
+        })
+        .max_by(|a, b| {
+            (a.0, a.1)
+                .cmp(&(b.0, b.1))
+                .then_with(|| b.2.key.cmp(&a.2.key))
+        })
+        .map(|(_, _, e)| e)
+}
+
 #[cfg(test)]
 mod tests;

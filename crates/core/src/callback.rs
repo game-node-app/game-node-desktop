@@ -34,8 +34,11 @@ pub const MAX_CALLBACK_LEN: usize = 8 * 1024;
 const MAX_NONCE_LEN: usize = 128;
 const MAX_CREDENTIAL_LEN: usize = 4 * 1024;
 
+use serde::{Deserialize, Serialize};
+
 /// Identity providers that GameNode's existing sign-in supports.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Provider {
     Google,
     Discord,

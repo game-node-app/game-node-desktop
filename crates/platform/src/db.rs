@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::ports::{SettingsStore, StorageError};
-use gamenode_core::{RendererPreference, Settings, WindowGeometry};
+use gamenode_core::{Settings, WindowGeometry};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// One schema change. Versions start at 1 and increase by exactly one.
@@ -14,6 +14,9 @@ pub struct Migration {
     pub name: &'static str,
     pub sql: &'static str,
 }
+
+/// The latest supported schema version.
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -31,6 +34,16 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "playtime",
         sql: include_str!("../migrations/0003_playtime.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "drm_free_backups",
+        sql: include_str!("../migrations/0004_drm_free_backups.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "game_tools",
+        sql: include_str!("../migrations/0005_game_tools.sql"),
     },
 ];
 
@@ -137,7 +150,8 @@ const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
 
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 12] = [
+pub const SETTING_KEYS: [&str; 14] = [
+    "backup_settings",
     crate::playtime_db::KEY_PLAYTIME_SOURCE,
     crate::playtime_db::KEY_SYNC_ENABLED,
     crate::playtime_db::KEY_SYNC_EXPLAINED,
@@ -148,6 +162,7 @@ pub const SETTING_KEYS: [&str; 12] = [
     KEY_HEIGHT,
     KEY_MAXIMIZED,
     crate::library_db::KEY_LAYOUT,
+    crate::library_db::KEY_EXCLUDED,
     crate::library_db::KEY_ACCOUNT_ID,
     crate::library_db::KEY_ACCOUNT_NAME,
 ];
@@ -172,9 +187,18 @@ impl SqliteSettingsStore {
         crate::library_db::SqliteLibraryStore::new(Arc::clone(&self.conn))
     }
 
+    pub fn local_game_store(&self) -> crate::local_game_db::SqliteLocalGameStore {
+        crate::local_game_db::SqliteLocalGameStore::new(Arc::clone(&self.conn))
+    }
+
     /// The playtime repository on the same serialized connection.
     pub fn playtime_store(&self) -> crate::playtime_db::SqlitePlaytimeStore {
         crate::playtime_db::SqlitePlaytimeStore::new(Arc::clone(&self.conn))
+    }
+
+    /// The game tools repository on the same serialized connection.
+    pub fn tool_store(&self) -> crate::tools_db::SqliteToolStore {
+        crate::tools_db::SqliteToolStore::new(Arc::clone(&self.conn))
     }
 
     /// Opens and migrates the database at `path`.
@@ -202,9 +226,6 @@ impl SettingsStore for SqliteSettingsStore {
     fn load(&self) -> Result<Settings, StorageError> {
         let conn = self.conn();
         let get = |key| read(&conn, key).map_err(failed);
-        let renderer = get(KEY_RENDERER)?
-            .and_then(|v| RendererPreference::parse(&v))
-            .unwrap_or_default();
         let number = |key| -> Result<Option<i64>, StorageError> {
             Ok(get(key)?.and_then(|v| v.parse().ok()))
         };
@@ -218,7 +239,7 @@ impl SettingsStore for SqliteSettingsStore {
             }),
             _ => None,
         };
-        Ok(Settings { renderer, window })
+        Ok(Settings { window })
     }
 
     fn save(&self, settings: &Settings) -> Result<(), StorageError> {
@@ -230,8 +251,6 @@ impl SettingsStore for SqliteSettingsStore {
                 .map_err(failed)?;
             let mut delete = tx
                 .prepare("DELETE FROM settings WHERE key = ?1")
-                .map_err(failed)?;
-            put.execute(params![KEY_RENDERER, settings.renderer.as_str()])
                 .map_err(failed)?;
             match settings.window {
                 Some(w) => {
@@ -298,7 +317,9 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string())
             ]
         );
     }
@@ -307,7 +328,6 @@ mod tests {
     fn reopening_keeps_settings_and_does_not_reapply_migrations() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         {
@@ -337,7 +357,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
         let mut s = Settings {
-            renderer: RendererPreference::Gpu,
             window: Some(geometry()),
         };
         s.window.as_mut().unwrap().x = None;
@@ -369,13 +388,41 @@ mod tests {
         assert_eq!(store.load().unwrap(), Settings::default());
     }
 
-    const V4_OK: Migration = Migration {
-        version: 4,
+    #[test]
+    fn legacy_renderer_row_is_ignored_when_loading_settings() {
+        let dir = TempDir::new().unwrap();
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        let geometry = geometry();
+        store
+            .save(&Settings {
+                window: Some(geometry),
+            })
+            .unwrap();
+
+        for legacy in ["software", "gpu", "turbo", "invalid"] {
+            store
+                .conn()
+                .execute(
+                    "UPDATE settings SET value = ?1 WHERE key = 'renderer'",
+                    [legacy],
+                )
+                .unwrap();
+            assert_eq!(
+                store.load().unwrap(),
+                Settings {
+                    window: Some(geometry),
+                }
+            );
+        }
+    }
+
+    const V6_OK: Migration = Migration {
+        version: 6,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V4_BAD: Migration = Migration {
-        version: 4,
+    const V6_BAD: Migration = Migration {
+        version: 6,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -384,7 +431,6 @@ mod tests {
     fn older_database_is_upgraded_in_order_preserving_settings() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         SqliteSettingsStore::open(&db_path(&dir))
@@ -392,7 +438,14 @@ mod tests {
             .save(&saved)
             .unwrap();
 
-        let all = [MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK];
+        let all = [
+            MIGRATIONS[0],
+            MIGRATIONS[1],
+            MIGRATIONS[2],
+            MIGRATIONS[3],
+            MIGRATIONS[4],
+            V6_OK,
+        ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
             versions(&conn),
@@ -400,7 +453,9 @@ mod tests {
                 (1, "initial_settings".into()),
                 (2, "library".into()),
                 (3, "playtime".into()),
-                (4, "add_notes".into())
+                (4, "drm_free_backups".into()),
+                (5, "game_tools".into()),
+                (6, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -423,10 +478,7 @@ mod tests {
     #[test]
     fn failed_migration_rolls_back_and_keeps_earlier_data() {
         let dir = TempDir::new().unwrap();
-        let saved = Settings {
-            renderer: RendererPreference::Software,
-            window: None,
-        };
+        let saved = Settings { window: None };
         SqliteSettingsStore::open(&db_path(&dir))
             .unwrap()
             .save(&saved)
@@ -434,10 +486,17 @@ mod tests {
 
         let err = open_with(
             &db_path(&dir),
-            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_BAD],
+            &[
+                MIGRATIONS[0],
+                MIGRATIONS[1],
+                MIGRATIONS[2],
+                MIGRATIONS[3],
+                MIGRATIONS[4],
+                V6_BAD,
+            ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 4 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 6 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -445,7 +504,9 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -463,15 +524,28 @@ mod tests {
     fn newer_schema_is_rejected_and_the_file_is_unchanged() {
         let dir = TempDir::new().unwrap();
         let path = db_path(&dir);
-        drop(open_with(&path, &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], V4_OK]).unwrap());
+        drop(
+            open_with(
+                &path,
+                &[
+                    MIGRATIONS[0],
+                    MIGRATIONS[1],
+                    MIGRATIONS[2],
+                    MIGRATIONS[3],
+                    MIGRATIONS[4],
+                    V6_OK,
+                ],
+            )
+            .unwrap(),
+        );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 3
+        let err = open(&path).unwrap_err(); // this build only knows version 5
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 4,
-                supported: 3
+                found: 6,
+                supported: 5
             }
         );
         assert_eq!(
@@ -490,7 +564,6 @@ mod tests {
     fn a_step_one_database_gains_the_library_tables_and_keeps_its_settings() {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
-            renderer: RendererPreference::Software,
             window: Some(geometry()),
         };
         drop(Connection::open(db_path(&dir)).unwrap());
@@ -505,7 +578,9 @@ mod tests {
             vec![
                 (1, "initial_settings".to_string()),
                 (2, "library".to_string()),
-                (3, "playtime".to_string())
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string()),
             ]
         );
         for table in [
@@ -534,7 +609,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 3,
+                found: 5,
                 supported: 1
             }
         );
@@ -558,10 +633,99 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 5,
-            ..V4_OK
+            version: 6,
+            ..V6_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
+    }
+
+    #[test]
+    fn v4_database_is_upgraded_to_v5_creating_tool_tables_and_preserving_prior_data() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        // Build a v4 database with prior data
+        let v4_migrations = &MIGRATIONS[..4];
+        {
+            let conn = open_with(&path, v4_migrations).unwrap();
+            conn.execute(
+                "INSERT INTO manual_registrations (id, file_identity, removed, payload) VALUES ('reg1', 'exe_hash_1', 0, '{\"title\":\"Game 1\"}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('window.width', '1920')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with full migrations (v5)
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+
+        // Check versions
+        assert_eq!(
+            versions(&conn),
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string()),
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string()),
+            ]
+        );
+
+        // Verify tool tables exist and are empty
+        for table in ["tool_installations", "tool_files", "tool_releases_cache"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} starts empty");
+        }
+
+        // Verify prior data preserved
+        let title: String = conn
+            .query_row(
+                "SELECT payload FROM manual_registrations WHERE id = 'reg1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "{\"title\":\"Game 1\"}");
+        let width: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'window.width'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(width, "1920");
+
+        // Verify inserting and querying tool_installations, tool_files, and tool_releases_cache works
+        conn.execute(
+            "INSERT INTO tool_installations (entry_key, tool_id, channel, version, target_exe, proxy_dll, state, installed_at, updated_at) VALUES ('steam:123', 'optiscaler', 'stable', '0.7.9', 'bin/game.exe', 'dxgi.dll', 'installed', 1000, 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_files (entry_key, tool_id, relative_path, installed_sha256, backup_path, original_sha256, prior_owner_tool_id, created_dirs_json, ini_patches_json) VALUES ('steam:123', 'optiscaler', 'dxgi.dll', 'sha256_mock', NULL, NULL, NULL, '[]', '[]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_releases_cache (tool_id, channel, version, tag_name, name, published_at, download_url, asset_name, size_bytes, sha256, cached_path, fetched_at) VALUES ('optiscaler', 'stable', '0.7.9', 'v0.7.9', 'OptiScaler 0.7.9', '2026-01-01', 'https://github.com/...', 'asset.7z', 1024, 'sha', NULL, 1000)",
+            [],
+        )
+        .unwrap();
+
+        let tool_version: String = conn
+            .query_row(
+                "SELECT version FROM tool_installations WHERE entry_key = 'steam:123' AND tool_id = 'optiscaler'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tool_version, "0.7.9");
     }
 
     #[test]
@@ -570,7 +734,6 @@ mod tests {
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
         store
             .save(&Settings {
-                renderer: RendererPreference::Software,
                 window: Some(geometry()),
             })
             .unwrap();
@@ -589,14 +752,24 @@ mod tests {
             sorted,
             [
                 "auto_matches",
+                "backup_destinations",
+                "backup_jobs",
                 "chosen_matches",
+                "discovery_candidates",
+                "discovery_watches",
                 "games",
                 "library_entries",
+                "local_inferences",
+                "manual_registrations",
                 "playtime_sessions",
                 "playtime_totals",
                 "provider_scans",
+                "save_profiles",
                 "schema_migrations",
-                "settings"
+                "settings",
+                "tool_files",
+                "tool_installations",
+                "tool_releases_cache",
             ]
         );
         let schema: String = conn

@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use super::actions::Actions;
 use super::add_dialog::AddDialogView;
 use super::layout::LibraryLayout;
@@ -17,18 +19,31 @@ use super::membership::Membership;
 use super::query::{ProviderCount, Row};
 
 /// The full details of the single selected entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetailView {
     pub running: bool,
     pub row: Arc<Row>,
     pub install_dir: String,
     pub release_year: Option<i32>,
+    pub has_artwork: bool,
+    /// The selected game's downloaded landscape artwork, when GameNode has one.
+    #[serde(skip)]
+    pub artwork: Option<Arc<[u8]>>,
     /// Whether the matched game is in the user's GameNode library (`NotChecked` without a match).
     pub membership: Membership,
 }
 
+impl DetailView {
+    pub fn set_artwork(&mut self, artwork: Option<Arc<[u8]>>) {
+        self.has_artwork = artwork.is_some();
+        self.artwork = artwork;
+    }
+}
+
 /// Why the list is empty, when it is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum EmptyState {
     /// A scan finished and found no installed games. Names the stores looked for.
     NoGames { stores: Vec<String> },
@@ -36,7 +51,8 @@ pub enum EmptyState {
     NothingMatches,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryView {
     /// Changes whenever anything in the view changes, so the UI can skip identical updates.
     pub generation: u64,
@@ -88,25 +104,27 @@ impl LibraryMachine {
     }
 
     fn build_view(&self, previous: Option<&LibraryView>) -> LibraryView {
-        let reusable: BTreeMap<&str, &Arc<Row>> = previous
-            .map(|view| {
-                view.rows
-                    .iter()
-                    .map(|row| (row.key.as_str(), row))
-                    .collect()
-            })
-            .unwrap_or_default();
         let fresh = self.visible_rows(&self.search);
         let rows: Arc<[Arc<Row>]> = match previous {
             // An unchanged list reuses the whole slice.
             Some(prev) if rows_equal(&prev.rows, &fresh) => prev.rows.clone(),
-            _ => fresh
-                .into_iter()
-                .map(|row| match reusable.get(row.key.as_str()) {
-                    Some(old) if ***old == row => Arc::clone(old),
-                    _ => Arc::new(row),
-                })
-                .collect(),
+            _ => {
+                let reusable: BTreeMap<&str, &Arc<Row>> = previous
+                    .map(|view| {
+                        view.rows
+                            .iter()
+                            .map(|row| (row.key.as_str(), row))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                fresh
+                    .into_iter()
+                    .map(|row| match reusable.get(row.key.as_str()) {
+                        Some(old) if ***old == row => Arc::clone(old),
+                        _ => Arc::new(row),
+                    })
+                    .collect()
+            }
         };
 
         let shown: Vec<String> = rows.iter().map(|row| row.key.clone()).collect();
@@ -171,6 +189,10 @@ impl LibraryMachine {
     fn detail(&self, row: &Arc<Row>) -> DetailView {
         let entry = self.entries.get(&row.key);
         let game_id = row.status.game_id();
+        let artwork = game_id
+            .filter(|id| self.artwork_focus == Some(*id))
+            .and_then(|_| self.artwork.clone());
+        let has_artwork = artwork.is_some();
         DetailView {
             running: row.running,
             row: Arc::clone(row),
@@ -178,6 +200,8 @@ impl LibraryMachine {
             release_year: game_id
                 .and_then(|id| self.games.get(&id))
                 .and_then(|game| game.release_year),
+            has_artwork,
+            artwork,
             membership: game_id.map_or(Membership::NotChecked, |id| self.membership(id)),
         }
     }

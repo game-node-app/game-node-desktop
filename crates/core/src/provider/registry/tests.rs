@@ -253,3 +253,37 @@ fn the_example_in_the_providers_doc_loads() {
         assert!(loaded.get("steam").is_some());
     }
 }
+
+#[test]
+fn manual_provider_is_windows_only_and_executable_actions_are_restricted() {
+    let text = include_str!("../../../../../providers/manual.toml");
+    let loaded = load(&[("manual.toml", text)], Platform::Windows);
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let provider = loaded.get("manual").unwrap();
+    assert!(provider.is_manual_executable());
+    assert!(provider.has_launch());
+    assert!(!provider.has_install());
+    assert!(provider.external_category().is_none());
+    assert!(
+        load(&[("manual.toml", text)], Platform::Linux)
+            .providers
+            .is_empty()
+    );
+    let invalid = text.replace("id = \"manual\"", "id = \"other\"");
+    assert!(
+        !load(&[("other.toml", &invalid)], Platform::Windows)
+            .diagnostics
+            .is_empty()
+    );
+}
+
+#[test]
+fn every_documented_provider_manifest_loads() {
+    let doc = include_str!("../../../../../docs/providers.md");
+    for block in doc.split("```toml\n").skip(1) {
+        let example = block.split("```").next().unwrap();
+        let loaded = load(&[("example.toml", example)], Platform::Windows);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(loaded.providers.len(), 1);
+    }
+}

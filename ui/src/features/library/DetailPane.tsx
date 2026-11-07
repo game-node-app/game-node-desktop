@@ -1,0 +1,638 @@
+import React from 'react';
+import {
+  IconDownload,
+  IconPlayerPlay,
+  IconX,
+} from '@tabler/icons-react';
+import {
+  commands,
+  useLibraryView,
+  useSnapshot,
+  useTools,
+  artworkAssetUrl,
+  getMatchedGameId,
+  type Membership,
+} from '../../api';
+import { useUiStore, uiStore } from '../../store/uiStore';
+import { useI18n } from '../../i18n';
+import { CoverImage } from './CoverImage';
+import {
+  formatI18n,
+  formatReason,
+  formatStatus,
+  formatDuration,
+  formatMatchStatus,
+} from './formatters';
+
+const secondaryActionBase =
+  'w-full rounded-xs border border-border-subtle bg-transparent px-2.5 py-compact text-left text-sm text-text-default transition-colors';
+const reasonClass = 'mt-1 text-xs text-warning';
+
+export const DetailPane: React.FC = () => {
+  const library = useLibraryView();
+  const tools = useTools();
+  const { data: launch } = useSnapshot((s) => s.launch);
+  const detailDragWidth = useUiStore((s) => s.detailDragWidth);
+  const { t, locale } = useI18n();
+
+  const layout = library?.layout;
+  const detail = library?.detail;
+  const actions = library?.actions;
+  const selectedCount = library?.selected?.length ?? 0;
+
+  const currentWidth = detailDragWidth ?? layout?.detailWidth ?? 320;
+  const clampedWidth = Math.max(260, Math.min(520, currentWidth));
+
+  // Pointer drag for resizing
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = typeof e.clientX === 'number' && !isNaN(e.clientX) ? e.clientX : 500;
+    const startW = clampedWidth;
+
+    // Coalesce pointermove bursts into at most one store update per frame.
+    let frame = 0;
+    let pendingW = startW;
+
+    const onPointerMove = (ev: MouseEvent | PointerEvent) => {
+      const clientX = typeof ev.clientX === 'number' && !isNaN(ev.clientX) ? ev.clientX : startX;
+      const delta = startX - clientX; // Dragging left expands pane
+      pendingW = Math.max(260, Math.min(520, Math.round(startW + delta)));
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (uiStore.state.detailDragWidth !== pendingW) {
+          uiStore.setState((prev) => ({ ...prev, detailDragWidth: pendingW }));
+        }
+      });
+    };
+
+    const onPointerUp = (ev: MouseEvent | PointerEvent) => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      window.removeEventListener('pointermove', onPointerMove as EventListener);
+      window.removeEventListener('pointerup', onPointerUp as EventListener);
+      window.removeEventListener('mousemove', onPointerMove as EventListener);
+      window.removeEventListener('mouseup', onPointerUp as EventListener);
+      const clientX = typeof ev.clientX === 'number' && !isNaN(ev.clientX) ? ev.clientX : startX;
+      const finalDelta = startX - clientX;
+      const finalW = Math.max(260, Math.min(520, Math.round(startW + finalDelta)));
+      uiStore.setState((prev) => ({ ...prev, detailDragWidth: null }));
+      commands.libraryInput({ setDetailWidth: finalW });
+    };
+
+    window.addEventListener('pointermove', onPointerMove as EventListener);
+    window.addEventListener('pointerup', onPointerUp as EventListener);
+    window.addEventListener('mousemove', onPointerMove as EventListener);
+    window.addEventListener('mouseup', onPointerUp as EventListener);
+  };
+
+  const handleHandleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') {
+      const nextW = Math.min(520, clampedWidth + 16);
+      commands.libraryInput({ setDetailWidth: nextW });
+      e.preventDefault();
+    } else if (e.key === 'ArrowRight') {
+      const nextW = Math.max(260, clampedWidth - 16);
+      commands.libraryInput({ setDetailWidth: nextW });
+      e.preventDefault();
+    }
+  };
+
+  const handleClose = () => {
+    commands.libraryInput({ setDetailOpen: false });
+  };
+
+  const formatMembershipStanding = (membership?: Membership | null): string => {
+    if (!membership || membership === 'notChecked') return '';
+    if (membership === 'checking') {
+      return t('Library::Checking your GameNode library…');
+    }
+    if (membership === 'unavailable') {
+      return t('Library::Could not check your GameNode library');
+    }
+    if (membership === 'notInLibrary') {
+      return t('Library::Not in your GameNode library');
+    }
+    if (typeof membership === 'object' && 'inLibrary' in membership) {
+      if (membership.inLibrary != null) {
+        return formatI18n(
+          t('Library::In your GameNode library as {}'),
+          formatStatus(membership.inLibrary, t),
+        );
+      }
+      return t('Library::In your GameNode library');
+    }
+    return '';
+  };
+
+  const getLaunchMessage = (): string | null => {
+    if (!launch) return null;
+    if (launch.state === 'opening') {
+      return launch.kind === 'play'
+        ? t('Library::Opening the game in its store…')
+        : t('Library::Opening the store to install…');
+    }
+    if (typeof launch.state === 'object' && 'failed' in launch.state) {
+      switch (launch.state.failed) {
+        case 'missingHandler':
+          return t('Library::The store application is not installed or cannot be opened.');
+        case 'unsupported':
+          return t('Library::This store does not support that action.');
+        case 'failed':
+        default:
+          return t('Library::The link could not be opened.');
+      }
+    }
+    return null;
+  };
+
+  const isPlayAvailable = actions?.play === 'available';
+  const isInstallAvailable = actions?.install === 'available';
+  const isRunning = detail?.running || detail?.row.running;
+
+  return (
+    <div data-testid="detail-pane" className="relative flex h-full shrink-0">
+      {/* Resizable Handle on left edge */}
+      <div
+        data-testid="detail-resize-handle"
+        role="slider"
+        aria-label="Resize details pane"
+        aria-valuenow={clampedWidth}
+        aria-valuemin={260}
+        aria-valuemax={520}
+        tabIndex={0}
+        onPointerDown={handlePointerDown}
+        onKeyDown={handleHandleKeyDown}
+        className="group relative flex h-full w-2 cursor-col-resize select-none items-center justify-center bg-transparent outline-none"
+      >
+        <div className="h-full w-px bg-border-subtle transition-colors group-hover:bg-brand group-focus-visible:bg-brand" />
+      </div>
+
+      {/* Pane Content */}
+      <div
+        className="flex h-full flex-col overflow-hidden border-l border-border-subtle bg-secondary"
+        style={{ width: `${clampedWidth}px` }}
+      >
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-md py-sm">
+          <span className="text-lg font-semibold text-text-default">
+            {t('Library::Details')}
+          </span>
+          <button
+            type="button"
+            data-testid="detail-close-btn"
+            aria-label="Close"
+            onClick={handleClose}
+            className="rounded-sm p-1 text-text-default transition-colors hover:bg-surface"
+          >
+            <IconX size={18} stroke={1.75} aria-hidden />
+          </button>
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="flex flex-1 flex-col gap-md overflow-y-auto p-md">
+          {/* Multiple selected state */}
+          {!detail && selectedCount > 1 && (
+            <div data-testid="detail-multiple-selected">
+              <h3 className="mb-sm text-md text-text-default">
+                {formatI18n(t('Library::{} games selected'), selectedCount)}
+              </h3>
+              <div className="rounded-sm bg-raised p-sm">
+                <button
+                  type="button"
+                  data-testid="detail-add-multiple-btn"
+                  disabled={actions?.addToGamenode !== 'available'}
+                  onClick={() => commands.libraryInput('openAdd')}
+                  className={`w-full rounded-sm border-0 bg-brand px-sm py-compact text-on-primary transition-colors ${
+                    actions?.addToGamenode === 'available'
+                      ? 'cursor-pointer opacity-100 hover:bg-brand-6'
+                      : 'cursor-default opacity-50'
+                  }`}
+                >
+                  {t('Library::Add to GameNode…')}
+                </button>
+                {actions?.addToGamenode !== 'available' && (
+                  <div
+                    data-testid="detail-add-multiple-reason"
+                    className={`${reasonClass} mt-1.5`}
+                  >
+                    {formatReason(actions?.addToGamenode.disabled, t)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Nothing selected */}
+          {!detail && selectedCount <= 1 && (
+            <div
+              data-testid="detail-empty-message"
+              className="pt-xl text-center text-sm text-text-dimmed"
+            >
+              {t('Library::Select a game to see its details.')}
+            </div>
+          )}
+
+          {/* Valid detail view */}
+          {detail && (
+            <>
+              {/* Artwork / Hero */}
+              <div
+                data-testid="detail-artwork-container"
+                className="h-[180px] w-full shrink-0 overflow-hidden rounded-sm bg-surface"
+              >
+                {detail.hasArtwork && getMatchedGameId(detail.row.status) != null ? (
+                  <img
+                    data-testid="detail-artwork-img"
+                    src={artworkAssetUrl(getMatchedGameId(detail.row.status))!}
+                    alt={detail.row.title}
+                    loading="lazy"
+                    decoding="async"
+                    className="block h-full w-full object-cover"
+                  />
+                ) : (
+                  <CoverImage
+                    coverFile={detail.row.coverFile}
+                    title={detail.row.title}
+                    detectedName={detail.row.detectedName}
+                  />
+                )}
+              </div>
+
+              {/* Title & Metadata */}
+              <div>
+                {(detail.running || detail.row.running) && (
+                  <div
+                    data-testid="detail-running-badge"
+                    className="mb-1 text-xs font-semibold text-success"
+                  >
+                    {t('Library::Running')}
+                  </div>
+                )}
+                <h2
+                  data-testid="detail-title"
+                  className="text-lg font-semibold leading-[1.3] text-text-default"
+                >
+                  {detail.row.title}
+                </h2>
+                <div className="mt-1 text-xs text-text-dimmed">
+                  {detail.releaseYear ? `${detail.releaseYear} · ` : ''}
+                  {detail.row.providerName}
+                </div>
+              </div>
+
+              {/* Launch Status Banner */}
+              {launch && (
+                <div
+                  data-testid="detail-launch-status"
+                  className={`flex flex-col gap-compact rounded-sm px-sm py-xs ${
+                    launch.state === 'opening' ? 'bg-accent-subtle' : 'bg-danger-subtle'
+                  }`}
+                >
+                  <span className="text-xs text-text-default">
+                    {getLaunchMessage()}
+                  </span>
+                  {launch.state !== 'opening' && (
+                    <button
+                      type="button"
+                      data-testid="detail-dismiss-launch-btn"
+                      onClick={() => commands.dismissLaunch()}
+                      className="self-start rounded-xs border border-border-subtle bg-transparent px-2 py-1 text-xs text-text-default transition-colors hover:bg-surface"
+                    >
+                      {t('Library::Dismiss')}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Primary Actions (Play, Install) */}
+              <div className="flex flex-col gap-compact">
+                {/* Play Button */}
+                <div>
+                  <button
+                    type="button"
+                    data-testid="detail-play-btn"
+                    disabled={!isPlayAvailable}
+                    onClick={() => commands.launchSelected('play')}
+                    className={`flex w-full items-center justify-center gap-1.5 rounded-sm border-0 bg-brand px-md py-xs text-sm font-semibold text-on-primary transition-colors ${
+                      isPlayAvailable
+                        ? 'cursor-pointer opacity-100 hover:bg-brand-6'
+                        : 'cursor-default opacity-45'
+                    }`}
+                  >
+                    <IconPlayerPlay size={16} stroke={1.75} aria-hidden />
+                    {t('Library::Play')}
+                  </button>
+                  {actions?.play !== 'available' && (
+                    <div data-testid="detail-play-reason" className={`${reasonClass} mt-1`}>
+                      {formatReason(actions?.play.disabled, t)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Install Button */}
+                {actions?.install &&
+                  (typeof actions.install !== 'object' ||
+                    actions.install.disabled !== 'noInstallRule') && (
+                    <div>
+                      <button
+                        type="button"
+                        data-testid="detail-install-btn"
+                        disabled={!isInstallAvailable}
+                        onClick={() => commands.launchSelected('install')}
+                        className={`flex w-full items-center justify-center gap-1.5 rounded-sm border border-border-subtle bg-transparent px-md py-xs text-sm font-medium text-text-default transition-colors ${
+                          isInstallAvailable
+                            ? 'cursor-pointer opacity-100 hover:bg-surface'
+                            : 'cursor-default opacity-45'
+                        }`}
+                      >
+                        <IconDownload size={16} stroke={1.75} aria-hidden />
+                        {t('Library::Install')}
+                      </button>
+                      {actions.install !== 'available' && (
+                        <div
+                          data-testid="detail-install-reason"
+                          className={`${reasonClass} mt-1`}
+                        >
+                          {formatReason(actions.install.disabled, t)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+              </div>
+
+              {/* Playtime Row */}
+              <div className="flex items-center justify-between rounded-sm bg-raised px-sm py-compact text-xs">
+                <span className="text-text-dimmed">
+                  {t('Library::Playtime')}
+                </span>
+                <span
+                  data-testid="detail-playtime-val"
+                  className="font-medium text-text-default"
+                >
+                  {formatDuration(detail.row.playtime?.seconds, t)}
+                </span>
+                <span className="text-[11px] text-text-dimmed">
+                  {detail.row.playtime?.source === 'store'
+                    ? formatI18n(t('Library::Imported from {}'), detail.row.providerName)
+                    : t('Library::Internal counter')}
+                </span>
+              </div>
+
+              {/* GameNode Card */}
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-[0.5px] text-text-dimmed">
+                  {t('Library::GameNode')}
+                </span>
+
+                <div className="flex flex-col gap-compact rounded-sm bg-raised px-sm py-compact">
+                  {/* Match / Change Match */}
+                  <div>
+                    <button
+                      type="button"
+                      data-testid="detail-match-btn"
+                      disabled={actions?.matchGame !== 'available'}
+                      onClick={() => commands.libraryInput('openMatch')}
+                      className={`${secondaryActionBase} ${
+                        actions?.matchGame === 'available'
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
+                    >
+                      {actions?.changeMatch
+                        ? t('Library::Change match…')
+                        : t('Library::Match…')}
+                    </button>
+                    {actions?.matchGame !== 'available' && (
+                      <div data-testid="detail-match-reason" className={reasonClass}>
+                        {formatReason(actions?.matchGame.disabled, t)}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Add to GameNode / Edit in GameNode */}
+                  <div>
+                    <button
+                      type="button"
+                      data-testid="detail-add-btn"
+                      disabled={actions?.addToGamenode !== 'available'}
+                      onClick={() => commands.libraryInput('openAdd')}
+                      className={`${secondaryActionBase} ${
+                        actions?.addToGamenode === 'available'
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
+                    >
+                      {typeof detail.membership === 'object' &&
+                      'inLibrary' in detail.membership
+                        ? t('Library::Edit in GameNode…')
+                        : t('Library::Add to GameNode…')}
+                    </button>
+                    {actions?.addToGamenode !== 'available' && (
+                      <div data-testid="detail-add-reason" className={reasonClass}>
+                        {formatReason(actions?.addToGamenode.disabled, t)}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Check again if membership unavailable */}
+                  {actions?.addToGamenode !== 'available' &&
+                    actions?.addToGamenode.disabled === 'membershipUnavailable' && (
+                      <button
+                        type="button"
+                        data-testid="detail-refresh-membership-btn"
+                        onClick={() => commands.libraryInput('refreshMembership')}
+                        className="self-start rounded-xs border border-border-subtle bg-transparent px-2 py-1 text-xs text-text-default transition-colors hover:bg-surface"
+                      >
+                        {t('Library::Check again')}
+                      </button>
+                    )}
+                </div>
+              </div>
+
+              {/* Manage Card */}
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-[0.5px] text-text-dimmed">
+                  {t('Library::Manage')}
+                </span>
+
+                <div className="flex flex-col gap-compact rounded-sm bg-raised px-sm py-compact">
+                  {/* Game Tools */}
+                  <div>
+                    <button
+                      type="button"
+                      data-testid="detail-tools-btn"
+                      disabled={isRunning}
+                      onClick={() => commands.openTools(detail.row.key)}
+                      className={`${secondaryActionBase} ${
+                        !isRunning
+                          ? 'cursor-pointer opacity-100 hover:bg-surface'
+                          : 'cursor-default opacity-45'
+                      }`}
+                    >
+                      {t('Library::Game tools…')}
+                    </button>
+                    {/* Tools installed summary */}
+                    {tools?.installedByEntry?.[detail.row.key]?.length ? (
+                      <div
+                        data-testid="detail-tools-summary"
+                        className="mt-1 text-xs text-text-dimmed"
+                      >
+                        {tools.installedByEntry[detail.row.key]
+                          .map((tItem) => tItem.name)
+                          .join(', ')}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Manual entry actions */}
+                  {detail.row.key.startsWith('manual:') && (
+                    <>
+                      {/* Game settings / Edit game */}
+                      <button
+                        type="button"
+                        data-testid="detail-edit-game-btn"
+                        onClick={() =>
+                          uiStore.setState((prev) => ({
+                            ...prev,
+                            localEditorEntryKey: detail.row.key,
+                          }))
+                        }
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
+                      >
+                        {locale === 'pt-BR'
+                          ? t('DRM-free::Game settings')
+                          : 'Edit game'}
+                      </button>
+
+                      {/* Local save protection */}
+                      <button
+                        type="button"
+                        data-testid="detail-save-protection-btn"
+                        onClick={() => {
+                          uiStore.setState((prev) => ({
+                            ...prev,
+                            saveProtectionEntryKey: detail.row.key,
+                          }));
+                          commands.loadLocalHistory(detail.row.key.replace('manual:', ''));
+                        }}
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
+                      >
+                        {locale === 'pt-BR'
+                          ? t('DRM-free::Local save protection')
+                          : 'Save protection'}
+                      </button>
+
+                      {/* Locate executable */}
+                      <button
+                        type="button"
+                        data-testid="detail-locate-btn"
+                        onClick={() =>
+                          commands.pickLocalExecutable(
+                            detail.row.key.replace('manual:', ''),
+                          )
+                        }
+                        className={`${secondaryActionBase} cursor-pointer hover:bg-surface`}
+                      >
+                        {t('DRM-free::Locate executable')}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Information Card */}
+              <div className="flex flex-col gap-2.5 rounded-sm bg-raised p-sm text-xs">
+                {/* Detected title */}
+                <div>
+                  <div className="text-text-dimmed">
+                    {t('Library::Detected title')}
+                  </div>
+                  <div
+                    data-testid="detail-detected-title"
+                    className="font-medium text-text-default"
+                  >
+                    {detail.row.detectedName}
+                  </div>
+                </div>
+
+                {/* GameNode game */}
+                <div>
+                  <div className="text-text-dimmed">
+                    {t('Library::GameNode game')}
+                  </div>
+                  <div
+                    data-testid="detail-gamenode-title"
+                    className="font-medium text-text-default"
+                  >
+                    {detail.row.matchedName || '—'}
+                  </div>
+                </div>
+
+                {/* Install folder */}
+                <div>
+                  <div className="text-text-dimmed">
+                    {t('Library::Install folder')}
+                  </div>
+                  <div
+                    data-testid="detail-install-dir"
+                    className="break-all text-text-default"
+                  >
+                    {detail.installDir}
+                  </div>
+                </div>
+
+                {/* Match */}
+                <div>
+                  <div className="text-text-dimmed">
+                    {t('Library::Match')}
+                  </div>
+                  <div
+                    data-testid="detail-match-status"
+                    className="text-text-default"
+                  >
+                    {formatMatchStatus(detail.row.status, t)}
+                  </div>
+                </div>
+
+                {/* In your GameNode library */}
+                <div>
+                  <div className="text-text-dimmed">
+                    {t('Library::In your GameNode library')}
+                  </div>
+                  <div
+                    data-testid="detail-membership-standing"
+                    className="text-text-default"
+                  >
+                    {formatMembershipStanding(detail.membership)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Remove from library — available for manual and store entries */}
+              <div className="rounded-sm bg-raised px-sm py-compact">
+                <button
+                  type="button"
+                  data-testid="detail-remove-btn"
+                  onClick={() =>
+                    uiStore.setState((prev) => ({
+                      ...prev,
+                      removeModalEntryKey: detail.row.key,
+                    }))
+                  }
+                  className="w-full rounded-xs border border-danger bg-transparent px-2.5 py-compact text-left text-sm text-danger transition-colors hover:bg-danger-subtle"
+                >
+                  {locale === 'pt-BR'
+                    ? t('DRM-free::Remove from library')
+                    : 'Remove'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

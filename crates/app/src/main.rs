@@ -1,380 +1,57 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::io;
-use std::process::Command;
-#[cfg(target_os = "linux")]
-use std::process::Stdio;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
-use gamenode_app::AppWindow;
+use gamenode_app::commands;
 use gamenode_app::engine::{Engine, Ports};
-use gamenode_core::geometry::{self, Display};
+use gamenode_core::geometry;
 use gamenode_core::library::LibraryStore;
 use gamenode_core::ports::SettingsStore;
-use gamenode_core::{AuthView, Input, RendererPreference, Snapshot, StorageMethod, WindowGeometry};
+use gamenode_core::{Input, WindowGeometry};
 use gamenode_platform::{
     browser::SystemBrowser, credentials, db::SqliteSettingsStore, display, ipc, paths::DataPaths,
     random,
 };
-use slint::ComponentHandle;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-const SOFTWARE_FALLBACK_ARG: &str = "--gamenode-internal-software-fallback";
-const GPU_STARTUP_ERROR_ARG_PREFIX: &str = "--gamenode-internal-gpu-error=";
-const FALLBACK_OWNER_WAIT: Duration = Duration::from_secs(5);
-const BOTH_RENDERERS_ERROR: &str = "GameNode could not initialize either renderer.\nSkia error: {gpu}\nSoftware error: {software}\nYour saved settings and session were preserved. Update your graphics driver or contact support with these details.";
-const SOFTWARE_RENDERER_ERROR: &str = "GameNode could not initialize software rendering.\nError: {software}\nYour saved settings and session were preserved. Update your graphics driver or contact support with these details.";
-const FALLBACK_RESTART_ERROR: &str = "Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver.";
-
-fn render(ui: &AppWindow, snapshot: Snapshot) {
-    ui.set_playtime_error(snapshot.playtime_error);
-    ui.set_sync_enabled(snapshot.sync.enabled);
-    ui.set_store_playtime(
-        snapshot.playtime_source == gamenode_core::playtime::PlaytimeSource::Store,
-    );
-    ui.set_sync_explanation(
-        !snapshot.sync.explained && matches!(snapshot.auth, AuthView::SignedIn { .. }),
-    );
-    ui.set_background_supported(cfg!(windows));
-    gamenode_app::library_ui::render(ui, &snapshot);
-    ui.set_signed_in(matches!(snapshot.auth, AuthView::SignedIn { .. }));
-    ui.set_busy(matches!(
-        snapshot.auth,
-        AuthView::Pending { .. } | AuthView::Verifying | AuthView::Starting | AuthView::SigningOut
-    ));
-    ui.set_can_retry(matches!(snapshot.auth, AuthView::RestoreFailed));
-    ui.set_identity(match &snapshot.auth {
-        AuthView::SignedIn { user } => user.display_name().into(),
-        _ => "".into(),
-    });
-    ui.set_software(snapshot.settings.renderer == RendererPreference::Software);
-    ui.set_storage(
-        match snapshot.storage {
-            StorageMethod::WindowsCredentialManager => {
-                "Session storage: Windows Credential Manager"
-            }
-            StorageMethod::SecretService => "Session storage: Secret Service",
-            StorageMethod::PrivateFile => {
-                "Session storage: a file readable only by your user account"
-            }
-        }
-        .into(),
-    );
-    ui.set_status(if let Some(notice) = snapshot.notice {
-        match notice {
-            gamenode_core::Notice::BrowserLaunchFailed => "Could not open your browser. Please try again.",
-            gamenode_core::Notice::SignInUnavailable => "Could not start sign-in. Please try again.",
-            gamenode_core::Notice::ProviderRejected => "Sign-in was rejected. Please try again.",
-            gamenode_core::Notice::AttemptExpired => "Sign-in expired. Please try again.",
-            gamenode_core::Notice::SignInCancelled => "Sign-in cancelled.",
-            gamenode_core::Notice::SignInRejected => "The session was rejected. Please sign in again.",
-            gamenode_core::Notice::ConnectionProblem => "Could not connect. Your stored session is preserved; retry when online.",
-            gamenode_core::Notice::SessionRejected => "Your stored session expired. Please sign in again.",
-            gamenode_core::Notice::CredentialUnreadable => "Could not read your session from credential storage.",
-            gamenode_core::Notice::PersistFailed => "Could not save your session. Sign-in will not survive restart.",
-            gamenode_core::Notice::SignOutNotConfirmed => "Signed out locally. Server sign-out could not be confirmed.",
-            gamenode_core::Notice::CredentialDeleteFailed => "Could not remove the saved credential. Check credential storage before restarting.",
-        }
-    } else if matches!(snapshot.auth, AuthView::Pending { .. }) { "Complete sign-in in your browser." } else { "" }.into());
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupArguments {
+    pub background: bool,
+    pub incoming: ipc::Message,
 }
 
-fn show_window(
-    ui: &AppWindow,
-    engine: &Engine,
-    errors: &std::sync::Mutex<Option<slint::PlatformError>>,
-) {
-    engine.window_shown();
-    if let Err(error) = ui.show() {
-        *errors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
-        let _ = slint::quit_event_loop();
-    }
-}
-
-fn restart_with_software(
-    owner: ipc::OwnerGuard,
-    runtime: tokio::runtime::Runtime,
-    gpu_error: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let child = std::env::current_exe().and_then(|executable| {
-        Command::new(executable)
-            .args(
-                std::env::args_os()
-                    .skip(1)
-                    .filter(|argument| !is_internal_startup_argument(argument)),
-            )
-            .arg(SOFTWARE_FALLBACK_ARG)
-            .arg(format!("{GPU_STARTUP_ERROR_ARG_PREFIX}{gpu_error}"))
-            .spawn()
-    });
-
-    // The child waits briefly for this process to release single-instance ownership.
-    drop(owner);
-    runtime.shutdown_timeout(Duration::from_secs(1));
-
-    match child {
-        Ok(_child) => Ok(()),
-        Err(error) => {
-            let detail = localized_catalog_message(
-                FALLBACK_RESTART_ERROR,
-                &[("gpu", gpu_error), ("error", &error.to_string())],
-            );
-            show_renderer_error(&detail);
-            Err(io::Error::other(detail).into())
-        }
-    }
-}
-
-fn report_renderer_failure(
-    error: impl std::fmt::Display,
-    gpu_error: Option<&str>,
-    owner: ipc::OwnerGuard,
-    runtime: tokio::runtime::Runtime,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let software_error = error.to_string();
-    let detail = if let Some(gpu_error) = gpu_error {
-        localized_catalog_message(
-            BOTH_RENDERERS_ERROR,
-            &[("gpu", gpu_error), ("software", &software_error)],
-        )
-    } else {
-        localized_catalog_message(SOFTWARE_RENDERER_ERROR, &[("software", &software_error)])
-    };
-    drop(owner);
-    runtime.shutdown_timeout(Duration::from_secs(1));
-    show_renderer_error(&detail);
-    Err(io::Error::other(detail).into())
-}
-
-fn renderer_startup_failure(
-    renderer: &str,
-    fallback_process: bool,
-    error: impl std::fmt::Display,
-    gpu_error: Option<&str>,
-    owner: ipc::OwnerGuard,
-    runtime: tokio::runtime::Runtime,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let error = error.to_string();
-    if should_retry_with_software(renderer, fallback_process) {
-        return restart_with_software(owner, runtime, &error);
-    }
-    report_renderer_failure(error, gpu_error, owner, runtime)
-}
-
-fn renderer_for_startup(preference: RendererPreference, fallback_process: bool) -> &'static str {
-    if preference == RendererPreference::Software || fallback_process {
-        "software"
-    } else {
-        "skia"
-    }
-}
-
-fn automatic_fallback_active(preference: RendererPreference, fallback_process: bool) -> bool {
-    fallback_process && preference != RendererPreference::Software
-}
-
-fn should_retry_with_software(renderer: &str, fallback_process: bool) -> bool {
-    renderer == "skia" && !fallback_process
-}
-
-struct StartupArguments {
-    background: bool,
-    fallback_process: bool,
-    incoming: ipc::Message,
-    gpu_error: Option<String>,
-}
-
-fn parse_startup_arguments(
+pub fn parse_startup_arguments(
     arguments: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> StartupArguments {
     let arguments: Vec<std::ffi::OsString> = arguments.into_iter().collect();
-    let fallback_process = arguments
-        .iter()
-        .any(|argument| argument == std::ffi::OsStr::new(SOFTWARE_FALLBACK_ARG));
-    let gpu_error = arguments.iter().find_map(|argument| {
-        argument
-            .to_str()
-            .and_then(|value| value.strip_prefix(GPU_STARTUP_ERROR_ARG_PREFIX))
-            .map(str::to_owned)
-    });
+    let background = arguments.iter().any(|arg| arg == "--background");
     let incoming = arguments
         .iter()
-        .find(|argument| !is_internal_startup_argument(argument))
-        .and_then(|argument| argument.to_str())
+        .find(|arg| *arg != "--background")
+        .and_then(|arg| arg.to_str())
         .map(|url| ipc::Message::AuthCallback {
             url: url.to_owned(),
         })
         .unwrap_or(ipc::Message::Activate);
     StartupArguments {
-        background: arguments.iter().any(|arg| arg == "--background"),
-        fallback_process,
+        background,
         incoming,
-        gpu_error,
     }
 }
 
-fn is_internal_startup_argument(argument: &std::ffi::OsStr) -> bool {
-    argument == "--background"
-        || argument == SOFTWARE_FALLBACK_ARG
-        || argument
-            .to_str()
-            .is_some_and(|value| value.starts_with(GPU_STARTUP_ERROR_ARG_PREFIX))
-}
-
-fn localized_catalog_message(template: &str, values: &[(&str, &str)]) -> String {
-    catalog_message_for_locale(template, values, &system_locale())
-}
-
-fn catalog_message_for_locale(template: &str, values: &[(&str, &str)], locale: &str) -> String {
-    let catalog = if locale.to_ascii_lowercase().starts_with("pt") {
-        include_str!("../../../i18n/pt_BR/LC_MESSAGES/gamenode-app.po")
+pub fn format_tray_tooltip(running_title: &str) -> String {
+    let trimmed = running_title.trim();
+    if trimmed.is_empty() {
+        "GameNode".to_string()
     } else {
-        include_str!("../../../i18n/en/LC_MESSAGES/gamenode-app.po")
-    };
-    let translated = catalog.split("\n\n").find_map(|entry| {
-        let id = entry
-            .lines()
-            .find_map(|line| line.strip_prefix("msgid "))
-            .and_then(|value| serde_json::from_str::<String>(value).ok());
-        (id.as_deref() == Some(template))
-            .then(|| {
-                entry
-                    .lines()
-                    .find_map(|line| line.strip_prefix("msgstr "))
-                    .and_then(|value| serde_json::from_str::<String>(value).ok())
-            })
-            .flatten()
-    });
-    let mut message = translated.unwrap_or_else(|| template.to_owned());
-    for (key, value) in values {
-        message = message.replace(&format!("{{{key}}}"), value);
+        format!("GameNode — {trimmed}")
     }
-    message
-}
-
-fn system_locale() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Globalization::{GetUserDefaultLocaleName, MAX_LOCALE_NAME};
-        let mut locale = [0u16; MAX_LOCALE_NAME as usize];
-        // The Windows API writes a NUL-terminated locale name to this fixed-size buffer.
-        let written = unsafe { GetUserDefaultLocaleName(locale.as_mut_ptr(), locale.len() as i32) };
-        if written > 0 {
-            return String::from_utf16_lossy(&locale[..written as usize]);
-        }
-        String::new()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        ["LC_ALL", "LC_MESSAGES", "LANG"]
-            .into_iter()
-            .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-            .unwrap_or_default()
-    }
-}
-
-fn capture_window_geometry(
-    window: &slint::Window,
-    mut geometry: WindowGeometry,
-    can_position: bool,
-) -> WindowGeometry {
-    let scale = window.scale_factor().max(f32::EPSILON);
-    geometry.maximized = window.is_maximized();
-    if !geometry.maximized {
-        let size = window.size();
-        geometry.width = (size.width as f32 / scale).round().max(1.0) as u32;
-        geometry.height = (size.height as f32 / scale).round().max(1.0) as u32;
-        if can_position {
-            let position = window.position();
-            geometry.x = Some((position.x as f32 / scale).round() as i32);
-            geometry.y = Some((position.y as f32 / scale).round() as i32);
-        }
-    }
-    geometry
-}
-
-fn logical_displays(physical: Vec<Display>, scale: f32) -> Vec<Display> {
-    let scale = scale.max(f32::EPSILON);
-    physical
-        .into_iter()
-        .map(|display| Display {
-            x: (display.x as f32 / scale).round() as i32,
-            y: (display.y as f32 / scale).round() as i32,
-            width: (display.width as f32 / scale).round().max(1.0) as u32,
-            height: (display.height as f32 / scale).round().max(1.0) as u32,
-        })
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn show_renderer_error(message: &str) {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-
-    let title: Vec<u16> = std::ffi::OsStr::new("GameNode Desktop")
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let text: Vec<u16> = std::ffi::OsStr::new(message)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    // The process is a Windows GUI application, so use a native dialog for startup errors.
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn show_renderer_error(message: &str) {
-    for (program, args) in [
-        (
-            "zenity",
-            vec!["--error", "--title=GameNode Desktop", "--text", message],
-        ),
-        (
-            "kdialog",
-            vec!["--error", message, "--title", "GameNode Desktop"],
-        ),
-        (
-            "xmessage",
-            vec!["-center", "-title", "GameNode Desktop", message],
-        ),
-        (
-            "notify-send",
-            vec!["--urgency=critical", "GameNode Desktop", message],
-        ),
-    ] {
-        if Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return;
-        }
-    }
-    eprintln!("{message}");
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn show_renderer_error(message: &str) {
-    eprintln!("{message}");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Diagnostics (invalid provider manifests, skipped scan files) go to stderr; `RUST_LOG` tunes it.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -382,49 +59,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_writer(std::io::stderr)
         .try_init();
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+
     let startup = parse_startup_arguments(std::env::args_os().skip(1));
-    let fallback_process = startup.fallback_process;
-    let incoming = startup.incoming;
-    let gpu_error = startup.gpu_error;
+    let incoming = startup.incoming.clone();
+
     let endpoint = ipc::Endpoint::for_current_user()?;
     let owner = match ipc::acquire(&endpoint, runtime.handle())? {
         ipc::Instance::Owner(owner) => owner,
         ipc::Instance::Existing(existing) => {
-            let fallback_owner = if fallback_process {
-                let deadline = Instant::now() + FALLBACK_OWNER_WAIT;
-                loop {
-                    match ipc::acquire(&endpoint, runtime.handle())? {
-                        ipc::Instance::Owner(owner) => break Some(owner),
-                        ipc::Instance::Existing(_) if Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        ipc::Instance::Existing(_) => break None,
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(owner) = fallback_owner {
-                owner
-            } else {
-                ipc::forward_launch(&existing, &incoming, startup.background, ipc::FORWARD_WAIT)?;
-                return Ok(());
-            }
+            ipc::forward_launch(&existing, &incoming, startup.background, ipc::FORWARD_WAIT)?;
+            return Ok(());
         }
     };
     let mut owner = owner.serve(runtime.handle());
+
     #[cfg(windows)]
     if let Err(error) = gamenode_platform::autostart::register() {
-        tracing::warn!(%error,"could not register login startup");
+        tracing::warn!(%error, "could not register login startup");
     }
+
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
-    let settings = store.load()?;
-    // Bundled provider manifests are validated once at startup; invalid ones are logged and skipped.
+    let initial_settings = store.load()?;
+
     let platform = gamenode_core::provider::Platform::current()
         .ok_or("GameNode Desktop supports Windows and Linux only")?;
     let providers = gamenode_app::providers::load_bundled(platform).providers;
@@ -434,123 +96,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Default::default()
     });
     let library = gamenode_core::library::LibraryMachine::new(providers, layout);
-    let renderer = renderer_for_startup(settings.renderer, fallback_process);
-    if let Err(error) = slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name(renderer.into())
-        .select()
-    {
-        return renderer_startup_failure(
-            renderer,
-            fallback_process,
-            error,
-            gpu_error.as_deref(),
-            owner,
-            runtime,
-        );
-    }
-    let locale = system_locale();
-    let _ = slint::select_bundled_translation(if locale.to_ascii_lowercase().starts_with("pt") {
-        "pt_BR"
-    } else {
-        ""
-    });
-    let ui = match AppWindow::new() {
-        Ok(ui) => ui,
-        Err(error) => {
-            return renderer_startup_failure(
-                renderer,
-                fallback_process,
-                error,
-                gpu_error.as_deref(),
-                owner,
-                runtime,
-            );
-        }
-    };
-    let show_errors = Arc::new(std::sync::Mutex::new(None));
-    let first_frame_rendered = Arc::new(AtomicBool::new(false));
-    let rendered = first_frame_rendered.clone();
-    if let Err(error) = ui.window().set_rendering_notifier(move |state, _| {
-        if matches!(state, slint::RenderingState::AfterRendering) {
-            rendered.store(true, Ordering::Release);
-        }
-    }) {
-        return renderer_startup_failure(
-            renderer,
-            fallback_process,
-            error,
-            gpu_error.as_deref(),
-            owner,
-            runtime,
-        );
-    }
-    ui.set_version(env!("GAMENODE_BUILD_VERSION").into());
-    // Bound each text layout while retaining every character of the bundled notices.
-    let notices = concat!(
-        include_str!("../../../LICENSE"),
-        "\n\n",
-        include_str!("../../../licenses/README.md"),
-        "\n\n",
-        include_str!("../../../licenses/Roboto-OFL-1.1.txt"),
-        "\n\n",
-        include_str!("../../../licenses/THIRD-PARTY-NOTICES.txt")
-    );
-    let characters: Vec<char> = notices.chars().collect();
-    let pages: Vec<slint::SharedString> = characters
-        .chunks(2400)
-        .map(|chunk| chunk.iter().collect::<String>().into())
-        .collect();
-    ui.set_license_page_count(pages.len() as i32);
-    ui.set_licenses(pages[0].clone());
-    let weak = ui.as_weak();
-    ui.on_license_page_changed(move |page| {
-        if let Some(ui) = weak.upgrade()
-            && let Some(text) = pages.get(page as usize)
-        {
-            ui.set_license_page(page);
-            ui.set_licenses(text.clone());
-        }
-    });
-    ui.set_active_software(renderer == "software");
-    ui.set_fallback_renderer(automatic_fallback_active(
-        settings.renderer,
-        fallback_process,
-    ));
+
+    let displays = display::available_displays();
     let can_position = display::can_position_windows();
-    let displays = logical_displays(display::available_displays(), ui.window().scale_factor());
-    let window_plan = geometry::plan_window(settings.window, &displays, can_position);
-    ui.window().set_size(slint::LogicalSize::new(
-        window_plan.size.0 as f32,
-        window_plan.size.1 as f32,
-    ));
-    if let Some((x, y)) = window_plan.position {
-        ui.window()
-            .set_position(slint::LogicalPosition::new(x as f32, y as f32));
-    }
-    ui.window().set_maximized(window_plan.maximized);
-    let initial_geometry = settings.window.unwrap_or(WindowGeometry {
-        x: window_plan.position.map(|position| position.0),
-        y: window_plan.position.map(|position| position.1),
-        width: window_plan.size.0,
-        height: window_plan.size.1,
-        maximized: window_plan.maximized,
-    });
-    let current_geometry = Arc::new(std::sync::Mutex::new(initial_geometry));
-    let last_saved_geometry = Arc::new(std::sync::Mutex::new(settings.window));
+    let plan = geometry::plan_window(initial_settings.window, &displays, can_position);
+
     let credentials = {
         let paths = paths.clone();
         std::thread::spawn(move || credentials::open_store(&paths))
             .join()
             .map_err(|_| "Credential storage initialization failed")?
     };
-    let weak = ui.as_weak();
+
     let client = Arc::new(gamenode_api::GameNodeClient::new(
         gamenode_api::server_url_from_env()?,
     )?);
+    let processes: Arc<dyn gamenode_core::ports::Processes> =
+        Arc::new(gamenode_platform::processes::HostProcesses::new());
+
+    let app_handle_slot = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
+    let slot_clone = app_handle_slot.clone();
+
+    let publisher = commands::SnapshotPublisher::new(move |snapshot| {
+        if let Some(app) = slot_clone.lock().unwrap().as_ref() {
+            use tauri::Emitter;
+            let _ = app.emit("engine:snapshot", &snapshot);
+        }
+    });
+
+    let pub_clone = publisher.clone();
     let engine = Engine::new(
         Ports {
-            processes: Arc::new(gamenode_platform::processes::HostProcesses::new()),
+            backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
+                paths.data_dir(),
+            )?)),
+            local_games: Some(Arc::new(store.local_game_store())),
+            installations: Some(Arc::new(
+                gamenode_platform::installations::WindowsInstallations,
+            )),
+            tools: Some(Arc::new(store.tool_store())),
+            tool_catalog: Some(Arc::new(
+                gamenode_platform::tools::catalog::GitHubToolCatalog::new(paths.tools_cache_dir())?,
+            )),
+            tool_installer: Some(Arc::new(
+                gamenode_platform::tools::PlatformToolInstaller::new(
+                    paths.tool_backups_dir(),
+                    processes.clone(),
+                ),
+            )),
+            processes,
             playtime: Arc::new(store.playtime_store()),
             playtime_api: client.clone(),
             settings: store,
@@ -566,209 +160,284 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             platform,
         },
         runtime.handle().clone(),
-        settings,
+        initial_settings,
         library,
         Box::new(random::nonce),
         move |snapshot| {
-            let weak = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    render(&ui, snapshot);
-                }
-            });
+            pub_clone.publish(snapshot);
         },
     );
-    gamenode_app::library_ui::install(&ui, &engine, paths.covers_dir());
-    let e = engine.clone();
-    ui.on_sign_in(move |index| {
-        if let Some(provider) = gamenode_core::Provider::ALL.get(index as usize) {
-            e.dispatch(Input::StartSignIn(*provider));
-        }
-    });
-    let e = engine.clone();
-    ui.on_cancel(move || e.dispatch(Input::CancelSignIn));
-    let e = engine.clone();
-    ui.on_retry(move || e.dispatch(Input::RetryRestore));
-    let e = engine.clone();
-    ui.on_sign_out(move || e.dispatch(Input::SignOut));
-    let e = engine.clone();
-    ui.on_renderer_changed(move |software| {
-        e.update_settings(|s| {
-            s.renderer = if software {
-                RendererPreference::Software
-            } else {
-                RendererPreference::Gpu
-            }
-        })
-    });
-    let e = engine.clone();
-    ui.on_sync_changed(move |enabled| e.set_sync(enabled));
-    let e = engine.clone();
-    ui.on_source_changed(move |store| {
-        e.set_playtime_source(if store {
-            gamenode_core::playtime::PlaytimeSource::Store
-        } else {
-            gamenode_core::playtime::PlaytimeSource::Internal
-        })
-    });
-    let e = engine.clone();
-    ui.on_sync_dismissed(move || e.dismiss_sync_explanation());
-    let e = engine.clone();
-    ui.on_quit(move || {
-        e.shutdown();
-        let _ = slint::quit_event_loop();
-    });
-    let weak = ui.as_weak();
-    let e = engine.clone();
+
+    let mut builder = tauri::Builder::default();
+    builder = gamenode_app::protocol::register_asset_protocol(
+        builder,
+        paths.covers_dir(),
+        Some(engine.clone()),
+    );
+
+    builder = builder.manage(engine.clone());
+    builder = builder.invoke_handler(tauri::generate_handler![
+        commands::get_snapshot,
+        commands::get_app_info,
+        commands::get_license_notices,
+        commands::dispatch_auth,
+        commands::set_sync_enabled,
+        commands::set_playtime_source,
+        commands::dismiss_sync_explanation,
+        commands::update_window_geometry,
+        commands::quit_app,
+        commands::library_input,
+        commands::activate_entry,
+        commands::open_entry,
+        commands::launch_selected,
+        commands::dismiss_launch,
+        commands::rescan_library,
+        commands::remove_entry,
+        commands::pick_local_executable,
+        commands::add_local_executable,
+        commands::edit_local_game,
+        commands::repair_local_game,
+        commands::remove_local_game,
+        commands::backup_local_now,
+        commands::set_local_backup_settings,
+        commands::pick_save_destination,
+        commands::set_local_profile_automatic,
+        commands::configure_local_saves,
+        commands::pick_local_saves,
+        commands::choose_local_save_profile,
+        commands::watch_local_folder,
+        commands::pick_local_watch_folder,
+        commands::remove_local_watch,
+        commands::set_local_candidate_executable,
+        commands::rescan_local_folders,
+        commands::select_local_candidate,
+        commands::review_selected_local_candidates,
+        commands::reset_local_ignores,
+        commands::load_local_history,
+        commands::preview_local_restore,
+        commands::confirm_local_restore,
+        commands::cancel_local_restore,
+        commands::resolve_local_claim,
+        commands::cancel_local_claim,
+        commands::dismiss_local_discovered,
+        commands::open_tools_for_selected,
+        commands::open_tools,
+        commands::close_tools,
+        commands::select_tool_channel,
+        commands::refresh_tool_versions,
+        commands::select_tool_version,
+        commands::select_tool_target_exe,
+        commands::select_tool_proxy,
+        commands::set_tool_anticheat_confirmed,
+        commands::set_tool_reset_config,
+        commands::install_or_update_tool,
+        commands::uninstall_tool,
+        commands::open_tool_source,
+        commands::clear_tool_cache,
+    ]);
+
+    let eng_for_setup = engine.clone();
+    let eng_for_events = engine.clone();
+    let setup_startup = startup.clone();
+    let setup_plan = plan;
+    let app_handle_slot_setup = app_handle_slot.clone();
+
     let (placeholder_sender, placeholder_receiver) = tokio::sync::mpsc::channel(1);
     drop(placeholder_sender);
     let mut owner_messages = std::mem::replace(&mut owner.messages, placeholder_receiver);
-    let ipc_errors = show_errors.clone();
-    let ipc_task = runtime.spawn(async move {
-        while let Some(message) = owner_messages.recv().await {
-            if let ipc::Message::AuthCallback { url } = message {
-                e.dispatch(Input::CallbackReceived(url));
-            }
-            // Another launch is the user coming back: pick up games installed meanwhile.
-            let engine = e.clone();
-            let errors = ipc_errors.clone();
-            let weak = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    show_window(&ui, &engine, &errors);
-                }
-            });
+
+    builder = builder.setup(move |app| {
+        *app_handle_slot_setup.lock().unwrap() = Some(app.handle().clone());
+
+        let mut win_builder =
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("GameNode")
+                .inner_size(setup_plan.size.0 as f64, setup_plan.size.1 as f64)
+                .min_inner_size(960.0, 600.0)
+                .maximized(setup_plan.maximized)
+                .visible(!setup_startup.background);
+
+        if let Some((x, y)) = setup_plan.position {
+            win_builder = win_builder.position(x as f64, y as f64);
         }
-    });
-    let e = engine.clone();
-    let timer = slint::Timer::default();
-    let weak = ui.as_weak();
-    let ready = first_frame_rendered.clone();
-    let current = current_geometry.clone();
-    let last_saved = last_saved_geometry.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_secs(1),
-        move || {
-            e.dispatch(Input::Tick);
-            e.maintenance();
-            if !ready.load(Ordering::Acquire) {
-                return;
-            }
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let geometry = {
-                let mut stored = current
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                *stored = capture_window_geometry(ui.window(), *stored, can_position);
-                *stored
-            };
-            let mut last_saved = last_saved
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *last_saved != Some(geometry) {
-                *last_saved = Some(geometry);
-                e.update_settings(|settings| settings.window = Some(geometry));
-            }
-        },
-    );
-    engine.start();
-    if let ipc::Message::AuthCallback { url } = incoming {
-        engine.dispatch(Input::CallbackReceived(url));
-    }
-    #[cfg(windows)]
-    let tray = {
-        let tray = gamenode_app::Tray::new()?;
-        let weak = ui.as_weak();
-        let e = engine.clone();
-        let errors = show_errors.clone();
-        tray.on_open(move || {
-            if let Some(ui) = weak.upgrade() {
-                show_window(&ui, &e, &errors);
-            }
-        });
-        let e = engine.clone();
-        tray.on_quit(move || {
-            e.shutdown();
-            let _ = slint::quit_event_loop();
-        });
-        tray
-    };
-    #[cfg(windows)]
-    {
-        let e = engine.clone();
-        let current = current_geometry.clone();
-        let weak = ui.as_weak();
-        ui.window().on_close_requested(move || {
-            if let Some(ui) = weak.upgrade() {
-                let geometry = capture_window_geometry(
-                    ui.window(),
-                    *current
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    can_position,
-                );
-                e.update_settings(|s| s.window = Some(geometry));
-            }
-            slint::CloseRequestResponse::HideWindow
-        });
-    }
-    #[cfg(windows)]
-    let tray_timer = {
-        let weak = tray.as_weak();
-        let e = engine.clone();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(1),
-            move || {
-                if let Some(tray) = weak.upgrade() {
-                    let snapshot = e.snapshot();
-                    let title = &snapshot.tracking.title;
-                    tray.set_playing_title(title.as_str().into());
-                }
-            },
-        );
-        timer
-    };
-    let result = if cfg!(windows) {
-        if !startup.background {
-            engine.window_shown();
-            ui.show().and_then(|_| slint::run_event_loop_until_quit())
+
+        let window = win_builder.build()?;
+
+        if !setup_startup.background {
+            eng_for_setup.window_shown();
+        }
+
+        // Setup system tray
+        let locale = commands::normalize_locale(&commands::system_locale());
+        let (open_text, quit_text) = if locale == "pt-BR" {
+            ("Abrir o GameNode", "Sair")
         } else {
-            slint::run_event_loop_until_quit()
+            ("Open GameNode", "Quit")
+        };
+
+        let open_item = MenuItem::with_id(app, "open", open_text, true, None::<&str>)?;
+        let quit_item = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)?;
+        let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+
+        let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+            .menu(&tray_menu)
+            .tooltip("GameNode")
+            .show_menu_on_left_click(false);
+
+        if let Some(icon) = app.default_window_icon() {
+            tray_builder = tray_builder.icon(icon.clone());
         }
-    } else {
-        ui.run()
-    };
-    let result = show_errors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-        .map_or(result, Err);
-    engine.shutdown();
-    #[cfg(windows)]
-    {
-        tray_timer.stop();
-        drop(tray);
-    }
-    ipc_task.abort();
-    timer.stop();
-    drop(engine);
-    if let Err(error) = result {
-        if !first_frame_rendered.load(Ordering::Acquire) {
-            if should_retry_with_software(renderer, fallback_process) {
-                return restart_with_software(owner, runtime, &error.to_string());
+
+        let eng_for_tray = eng_for_setup.clone();
+        let tray_icon = tray_builder
+            .on_menu_event(move |app_handle, event| match event.id.as_ref() {
+                "open" => {
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.unminimize();
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                        eng_for_tray.window_shown();
+                    }
+                }
+                "quit" => {
+                    eng_for_tray.shutdown();
+                    app_handle.exit(0);
+                }
+                _ => {}
+            })
+            .on_tray_icon_event(move |tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let app_handle = tray.app_handle();
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.unminimize();
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+            })
+            .build(app)?;
+
+        eng_for_setup.start();
+        if let ipc::Message::AuthCallback { url } = incoming {
+            eng_for_setup.dispatch(Input::CallbackReceived(url));
+        }
+
+        // Single-instance IPC listener
+        let win_for_ipc = window.clone();
+        let eng_for_ipc = eng_for_setup.clone();
+        tauri::async_runtime::spawn(async move {
+            while let Some(msg) = owner_messages.recv().await {
+                if let ipc::Message::AuthCallback { url } = msg {
+                    eng_for_ipc.dispatch(Input::CallbackReceived(url));
+                }
+                let _ = win_for_ipc.unminimize();
+                let _ = win_for_ipc.show();
+                let _ = win_for_ipc.set_focus();
+                eng_for_ipc.window_shown();
             }
-            return report_renderer_failure(error, gpu_error.as_deref(), owner, runtime);
+        });
+
+        // Maintenance ticker (1 sec). `tokio::time::interval` needs a Tokio reactor, which the
+        // setup closure (main thread) does not have, so the interval is created inside the task.
+        let eng_for_ticker = eng_for_setup.clone();
+        let mut last_tooltip = String::new();
+
+        tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                eng_for_ticker.dispatch(Input::Tick);
+                eng_for_ticker.maintenance();
+
+                let title = eng_for_ticker.snapshot().tracking.title;
+                let new_tooltip = format_tray_tooltip(&title);
+                if new_tooltip != last_tooltip {
+                    let _ = tray_icon.set_tooltip(Some(&new_tooltip));
+                    last_tooltip = new_tooltip;
+                }
+            }
+        });
+
+        Ok(())
+    });
+
+    builder = builder.on_window_event(move |window, event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            if let (Ok(is_max), Ok(size)) = (window.is_maximized(), window.inner_size()) {
+                let scale = window.scale_factor().unwrap_or(1.0).max(f64::EPSILON);
+                let width = (size.width as f64 / scale).round().max(1.0) as u32;
+                let height = (size.height as f64 / scale).round().max(1.0) as u32;
+                let (x, y) = if can_position && !is_max {
+                    if let Ok(pos) = window.outer_position() {
+                        (
+                            Some((pos.x as f64 / scale).round() as i32),
+                            Some((pos.y as f64 / scale).round() as i32),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+                let geom = WindowGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                    maximized: is_max,
+                };
+                eng_for_events.update_settings(move |s| s.window = Some(geom));
+            }
         }
-        drop(owner);
-        runtime.shutdown_timeout(Duration::from_secs(1));
-        return Err(error.into());
-    }
-    drop(owner);
+        WindowEvent::CloseRequested { api, .. } => {
+            if let (Ok(is_max), Ok(size)) = (window.is_maximized(), window.inner_size()) {
+                let scale = window.scale_factor().unwrap_or(1.0).max(f64::EPSILON);
+                let width = (size.width as f64 / scale).round().max(1.0) as u32;
+                let height = (size.height as f64 / scale).round().max(1.0) as u32;
+                let (x, y) = if can_position && !is_max {
+                    if let Ok(pos) = window.outer_position() {
+                        (
+                            Some((pos.x as f64 / scale).round() as i32),
+                            Some((pos.y as f64 / scale).round() as i32),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+                let geom = WindowGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                    maximized: is_max,
+                };
+                eng_for_events.update_settings(move |s| s.window = Some(geom));
+            }
+
+            let _ = &api;
+            #[cfg(target_os = "windows")]
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                eng_for_events.shutdown();
+            }
+        }
+        _ => {}
+    });
+
+    let app = builder.build(tauri::generate_context!())?;
+    app.run(|_app_handle, _event| {});
+
     runtime.shutdown_timeout(Duration::from_secs(1));
     Ok(())
 }
@@ -778,97 +447,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gpu_preference_selects_skia_by_default() {
-        assert_eq!(renderer_for_startup(RendererPreference::Gpu, false), "skia");
-        assert!(!automatic_fallback_active(RendererPreference::Gpu, false));
+    fn parse_startup_arguments_defaults_to_foreground_activate() {
+        let args = parse_startup_arguments(Vec::<std::ffi::OsString>::new());
+        assert!(!args.background);
+        assert_eq!(args.incoming, ipc::Message::Activate);
     }
 
     #[test]
-    fn persisted_software_preference_is_applied_on_restart() {
-        assert_eq!(
-            renderer_for_startup(RendererPreference::Software, false),
-            "software"
-        );
-        assert!(!automatic_fallback_active(
-            RendererPreference::Software,
-            false
-        ));
+    fn parse_startup_arguments_recognizes_background_flag() {
+        let args = parse_startup_arguments([std::ffi::OsString::from("--background")]);
+        assert!(args.background);
+        assert_eq!(args.incoming, ipc::Message::Activate);
     }
 
     #[test]
-    fn automatic_fallback_keeps_the_saved_gpu_preference_separate() {
-        let saved_preference = RendererPreference::Gpu;
-        assert_eq!(renderer_for_startup(saved_preference, true), "software");
-        assert!(automatic_fallback_active(saved_preference, true));
-        assert_eq!(saved_preference, RendererPreference::Gpu);
-    }
-
-    #[test]
-    fn renderer_retry_is_bounded_to_one_software_attempt() {
-        assert!(should_retry_with_software("skia", false));
-        assert!(!should_retry_with_software("software", false));
-        assert!(!should_retry_with_software("skia", true));
-    }
-
-    #[test]
-    fn fallback_restart_argument_does_not_replace_or_delay_a_callback() {
-        let startup = parse_startup_arguments([
-            "app.gamenode://home?cookie=one%20two".into(),
-            SOFTWARE_FALLBACK_ARG.into(),
-            format!("{GPU_STARTUP_ERROR_ARG_PREFIX}device unavailable").into(),
+    fn parse_startup_arguments_extracts_auth_callback_url() {
+        let args = parse_startup_arguments([
+            std::ffi::OsString::from("--background"),
+            std::ffi::OsString::from("app.gamenode://auth/callback?code=123"),
         ]);
-        assert!(startup.fallback_process);
-        assert_eq!(startup.gpu_error.as_deref(), Some("device unavailable"));
+        assert!(args.background);
         assert_eq!(
-            startup.incoming,
+            args.incoming,
             ipc::Message::AuthCallback {
-                url: "app.gamenode://home?cookie=one%20two".into()
+                url: "app.gamenode://auth/callback?code=123".to_string(),
             }
         );
     }
 
     #[test]
-    fn background_is_an_internal_argument_and_is_dropped_on_renderer_restart() {
-        let startup = parse_startup_arguments(["--background".into()]);
-        assert!(startup.background);
-        assert_eq!(startup.incoming, ipc::Message::Activate);
-        let args: Vec<std::ffi::OsString> =
-            ["--background", SOFTWARE_FALLBACK_ARG, "app.gamenode://home"]
-                .map(Into::into)
-                .into();
-        let retained: Vec<_> = args
-            .into_iter()
-            .filter(|arg| !is_internal_startup_argument(arg))
-            .collect();
+    fn test_tray_tooltip_formatting() {
+        assert_eq!(format_tray_tooltip(""), "GameNode");
+        assert_eq!(format_tray_tooltip("   "), "GameNode");
+        assert_eq!(format_tray_tooltip("Hades"), "GameNode — Hades");
         assert_eq!(
-            retained,
-            vec![std::ffi::OsString::from("app.gamenode://home")]
+            format_tray_tooltip("Cyberpunk 2077"),
+            "GameNode — Cyberpunk 2077"
         );
     }
 
     #[test]
-    fn fallback_restart_argument_alone_is_only_activation() {
-        let startup = parse_startup_arguments([SOFTWARE_FALLBACK_ARG.into()]);
-        assert!(startup.fallback_process);
-        assert_eq!(startup.incoming, ipc::Message::Activate);
-    }
-
-    #[test]
-    fn startup_error_messages_use_pt_br_and_fall_back_to_english() {
-        let portuguese = catalog_message_for_locale(
-            SOFTWARE_RENDERER_ERROR,
-            &[("software", "initialization failed")],
-            "pt_BR",
-        );
-        assert!(portuguese.contains("renderização por software"));
-        assert!(portuguese.contains("initialization failed"));
-
-        let english = catalog_message_for_locale(
-            SOFTWARE_RENDERER_ERROR,
-            &[("software", "initialization failed")],
-            "fr_FR",
-        );
-        assert!(english.contains("could not initialize software rendering"));
-        assert!(english.contains("initialization failed"));
+    fn test_locale_normalization_in_main() {
+        assert_eq!(commands::normalize_locale("en"), "en");
+        assert_eq!(commands::normalize_locale("en-US"), "en");
+        assert_eq!(commands::normalize_locale("pt"), "pt-BR");
+        assert_eq!(commands::normalize_locale("pt-BR"), "pt-BR");
+        assert_eq!(commands::normalize_locale("pt_BR"), "pt-BR");
+        assert_eq!(commands::normalize_locale("fr"), "en");
     }
 }

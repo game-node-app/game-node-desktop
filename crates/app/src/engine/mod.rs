@@ -27,7 +27,10 @@ use gamenode_core::{
 use gamenode_platform::covers::write_cover;
 use tokio::runtime::Handle;
 
+mod artwork;
+mod drm_free;
 mod playtime;
+mod tools;
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -35,6 +38,12 @@ const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The adapters the engine drives.
 #[derive(Clone)]
 pub struct Ports {
+    pub backups: Option<Arc<dyn gamenode_core::drm_free::BackupEngine>>,
+    pub local_games: Option<Arc<dyn gamenode_core::drm_free::LocalGameStore>>,
+    pub installations: Option<Arc<dyn gamenode_core::drm_free::InstallationHost>>,
+    pub tools: Option<Arc<dyn gamenode_core::tools::ToolStore>>,
+    pub tool_catalog: Option<Arc<dyn gamenode_core::tools::ToolCatalogApi>>,
+    pub tool_installer: Option<Arc<dyn gamenode_core::tools::ToolInstallerHost>>,
     pub processes: Arc<dyn gamenode_core::ports::Processes>,
     pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
     pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
@@ -88,6 +97,21 @@ impl StorageWorker {
 }
 
 struct State {
+    pending_claim: Option<gamenode_core::drm_free::PendingClaim>,
+    local_selection: Option<String>,
+    local_generation: u64,
+    local_backup_busy: bool,
+    local: gamenode_core::drm_free::LocalView,
+    tools: gamenode_core::tools::ToolsView,
+    tool_reset_config: bool,
+    tool_last_fetch: std::collections::HashMap<
+        (
+            gamenode_core::tools::ToolId,
+            gamenode_core::tools::ToolChannel,
+        ),
+        Instant,
+    >,
+    tool_selected_target_exe: Option<String>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
@@ -97,9 +121,15 @@ struct State {
     /// The latest Play or Install; `launch_seq` tells its answer from an older one.
     launch: Option<LaunchStatus>,
     launch_seq: u64,
+    /// The selection the last snapshot showed, to notice when it changes.
+    published_selection: Option<Vec<String>>,
 }
 
 struct Shared {
+    local_catalog: Arc<tokio::sync::Semaphore>,
+    local_cancel: std::sync::atomic::AtomicBool,
+    local_discovering: std::sync::atomic::AtomicBool,
+    local_discovery_again: std::sync::atomic::AtomicBool,
     state: Mutex<State>,
     ports: Ports,
     runtime: Handle,
@@ -115,7 +145,7 @@ pub struct Engine {
 
 impl Engine {
     /// `publish` is called with every new snapshot, from arbitrary threads, while the engine's
-    /// lock is held: it must hand the snapshot off (e.g. `slint::invoke_from_event_loop`) and
+    /// lock is held: it must hand the snapshot off (e.g. emit a Tauri `engine:snapshot` event) and
     /// must not call back into the engine.
     pub fn new(
         ports: Ports,
@@ -127,7 +157,23 @@ impl Engine {
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
+                local_catalog: Arc::new(tokio::sync::Semaphore::new(4)),
+                local_cancel: std::sync::atomic::AtomicBool::new(false),
+                local_discovering: std::sync::atomic::AtomicBool::new(false),
+                local_discovery_again: std::sync::atomic::AtomicBool::new(false),
                 state: Mutex::new(State {
+                    pending_claim: None,
+                    local_selection: None,
+                    local_generation: 0,
+                    local_backup_busy: false,
+                    local: Default::default(),
+                    tools: gamenode_core::tools::ToolsView {
+                        catalog: tools::builtin_catalog_items(),
+                        ..Default::default()
+                    },
+                    tool_reset_config: false,
+                    tool_last_fetch: Default::default(),
+                    tool_selected_target_exe: None,
                     playtime: playtime::Playtime::new(ports.platform),
                     machine: AuthMachine::new(nonce),
                     settings,
@@ -135,6 +181,7 @@ impl Engine {
                     last_account: None,
                     launch: None,
                     launch_seq: 0,
+                    published_selection: None,
                 }),
                 ports,
                 runtime,
@@ -151,14 +198,35 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    pub fn covers_dir(&self) -> &std::path::Path {
+        &self.shared.ports.covers_dir
+    }
+
+    pub fn host_files(&self) -> &Arc<dyn gamenode_core::ports::HostFiles> {
+        &self.shared.ports.files
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.lock();
         self.snapshot_of(&mut state)
     }
 
+    /// The artwork the details panel shows for `game_id`, if any. Takes the engine lock only
+    /// long enough to clone a handle, unlike [`Engine::snapshot`], which rebuilds the view.
+    pub fn artwork(&self, game_id: u64) -> Option<Arc<[u8]>> {
+        self.lock().library.artwork_for(game_id)
+    }
+
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
         self.update_playtime_view(state, unix_now());
         let library = state.library.view();
+        // Details loaded for the previous selection do not belong to the new one.
+        let selection = library.as_ref().map(|view| view.selected.clone());
+        if selection != state.published_selection {
+            state.published_selection = selection;
+            state.local.versions.clear();
+            state.local.restore = None;
+        }
         let mut snapshot = Snapshot::new(
             &state.machine,
             self.shared.ports.credentials.method(),
@@ -166,20 +234,17 @@ impl Engine {
             library,
             state.launch.clone(),
         );
+        snapshot.local_games = state.local.clone();
+        snapshot.local_games.pending_claim = state.pending_claim.clone();
         snapshot.playtime_error = state.playtime.error;
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
         snapshot.tracking = gamenode_core::snapshot::TrackingView {
-            title: state
-                .library
-                .all_rows()
-                .into_iter()
-                .find(|r| r.running)
-                .map(|r| r.title)
-                .unwrap_or_default(),
+            title: state.library.running_title().unwrap_or_default(),
             available: state.playtime.available,
             running: state.playtime.tracker.running(),
         };
+        snapshot.tools = state.tools.clone();
         snapshot
     }
 
@@ -191,6 +256,11 @@ impl Engine {
     /// validates it. The account is read first so the cached library can open while the session
     /// is still being verified.
     pub fn start(&self) {
+        self.recover_local_jobs();
+        self.refresh_local_games();
+        self.start_local_discovery();
+        self.start_local_manifest_updates();
+        self.recover_and_load_tools();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
             if let Err(error) = engine.start_playtime() {
@@ -208,11 +278,22 @@ impl Engine {
     /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
     pub fn dispatch(&self, input: Input) {
         let mut state = self.lock();
+        let is_tick = matches!(&input, Input::Tick);
+        let auth_before = is_tick.then(|| (state.machine.state().clone(), state.machine.notice()));
         if matches!(&input, Input::SignOut | Input::SessionRejected) {
             self.stop_tracking(&mut state);
         }
-        let submit_trigger = !matches!(&input, Input::Tick);
+        let submit_trigger = !is_tick;
         let effects = state.machine.handle(input, Instant::now());
+        if effects.is_empty()
+            && let Some((previous_state, previous_notice)) = auth_before
+            && previous_state == *state.machine.state()
+            && previous_notice == state.machine.notice()
+        {
+            // Tick only expires pending authentication attempts. Avoid rebuilding the library,
+            // tracker input, and full UI snapshot on every idle timer tick.
+            return;
+        }
         // Effects are launched under the lock so storage jobs keep their dispatch order.
         for effect in effects {
             self.execute(effect);
@@ -241,6 +322,21 @@ impl Engine {
                     | LibInput::LookupDone { .. }
             );
         self.run_library(&mut state, input);
+        if let Some(key) = state.local_selection.clone()
+            && state
+                .library
+                .installed_entries()
+                .any(|entry| entry.key == key)
+        {
+            state.local_selection = None;
+            self.run_library(
+                &mut state,
+                LibInput::Select {
+                    key,
+                    mode: gamenode_core::library::SelectMode::Replace,
+                },
+            );
+        }
         self.sync_tracker(&mut state);
         if read_trigger {
             self.read_counters(&mut state);
@@ -256,6 +352,17 @@ impl Engine {
         self.library_input(LibInput::ScanRequested);
     }
 
+    pub fn remove_entry(&self, key: String, allow_rediscovery: bool) {
+        if let Some(id) = key.strip_prefix("manual:") {
+            self.remove_local_game(id.to_owned(), allow_rediscovery);
+        } else {
+            self.library_input(LibInput::RemoveEntry {
+                key,
+                allow_rediscovery,
+            });
+        }
+    }
+
     fn run_library(&self, state: &mut State, input: LibInput) {
         let effects = state.library.handle(input);
         for effect in effects {
@@ -267,6 +374,13 @@ impl Engine {
     /// snapshot's `launch`: "opening" until the operating system accepted the link.
     pub fn open_entry(&self, entry_key: String, kind: LaunchKind) {
         let mut state = self.lock();
+        if state.launch.as_ref().is_some_and(|launch| {
+            launch.entry_key == entry_key
+                && launch.kind == kind
+                && matches!(launch.state, LaunchState::Opening)
+        }) {
+            return;
+        }
         if kind == LaunchKind::Play && state.playtime.tracker.running().contains(&entry_key) {
             return;
         }
@@ -286,7 +400,37 @@ impl Engine {
         self.publish(&mut state);
         let (engine, opener) = (self.clone(), self.shared.ports.uri.clone());
         self.shared.runtime.spawn_blocking(move || {
-            let result = open_action(&*opener, &provider, &entry.record(), kind);
+            let result = if provider.is_manual_executable() {
+                if kind != LaunchKind::Play {
+                    Err(gamenode_core::library::LaunchError::Unsupported)
+                } else {
+                    engine
+                        .shared
+                        .ports
+                        .local_games
+                        .as_ref()
+                        .zip(engine.shared.ports.installations.as_ref())
+                        .ok_or(gamenode_core::library::LaunchError::Unsupported)
+                        .and_then(|(store, host)| {
+                            let registrations = store
+                                .registrations()
+                                .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
+                            let registration = registrations
+                                .iter()
+                                .find(|r| r.key() == entry.key && !r.removed)
+                                .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
+                            gamenode_core::library::launch::launch_manual(
+                                &**host,
+                                &provider,
+                                &entry.record(),
+                                registration,
+                                kind,
+                            )
+                        })
+                }
+            } else {
+                open_action(&*opener, &provider, &entry.record(), kind)
+            };
             let mut state = engine.lock();
             if state.launch_seq == seq {
                 state.launch = result.err().map(|error| LaunchStatus {
@@ -336,7 +480,19 @@ impl Engine {
             }
             _ => {}
         }
+        let catalog_changed =
+            state.library.account() != account.as_ref() || state.library.access() != access;
+        if state.library.account() != account.as_ref() {
+            state.local_generation += 1;
+        }
         self.run_library(state, LibInput::AccountChanged(account));
+        if catalog_changed {
+            let engine = self.clone();
+            self.shared.runtime.spawn_blocking(move || {
+                engine.refresh_local_games();
+                engine.enrich_local_games();
+            });
+        }
         if state.library.access() != access {
             let input = LibInput::SetAccess {
                 access,
@@ -407,9 +563,27 @@ impl Engine {
                     ports.platform,
                 );
                 self.shared.runtime.spawn_blocking(move || {
-                    let result = found
-                        .scan(platform, &*files, &*roots)
-                        .map_err(|error| error.to_string());
+                    let result = if found.id() == "manual" {
+                        engine
+                            .shared
+                            .ports
+                            .local_games
+                            .as_ref()
+                            .ok_or_else(|| "local store unavailable".to_string())
+                            .and_then(|store| {
+                                let mut registrations =
+                                    store.registrations().map_err(|e| e.to_string())?;
+                                for registration in &mut registrations {
+                                    registration.available =
+                                        std::path::Path::new(&registration.executable).is_file();
+                                }
+                                Ok(gamenode_core::drm_free::records(&registrations))
+                            })
+                    } else {
+                        found
+                            .scan(platform, &*files, &*roots)
+                            .map_err(|error| error.to_string())
+                    };
                     engine.library_input(LibInput::ProviderScanned {
                         op,
                         provider,
@@ -428,6 +602,9 @@ impl Engine {
             }),
             LibEffect::PersistLayout(layout) => {
                 self.persist(move |store| store.save_layout(&layout))
+            }
+            LibEffect::PersistExcluded(excluded) => {
+                self.persist(move |store| store.save_excluded(&excluded))
             }
             LibEffect::PersistChoice { account_id, choice } => {
                 self.persist(move |store| store.save_chosen_match(&account_id, &choice));
@@ -501,6 +678,24 @@ impl Engine {
                         result: stored.ok_or(()),
                         now: unix_now(),
                     });
+                });
+            }
+            LibEffect::FetchArtwork { op, game_id } => {
+                let (engine, api, dir) = (
+                    self.clone(),
+                    ports.games.clone(),
+                    ports.covers_dir.join("artworks"),
+                );
+                self.shared.runtime.spawn(async move {
+                    let result =
+                        artwork::load(api.as_ref(), credential.as_ref(), &dir, game_id).await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::ArtworkDone {
+                        op,
+                        game_id,
+                        result,
+                    });
+                    engine.check_rejected(rejected);
                 });
             }
             LibEffect::ReadEntry { op, game_id } => {

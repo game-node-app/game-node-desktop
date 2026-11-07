@@ -4,12 +4,17 @@
 //! work before the session is verified and while GameNode is unreachable. Matching, game search
 //! and Add to GameNode need a verified session and the network.
 
+use serde::{Deserialize, Serialize};
+
 use super::machine::{Access, LibraryMachine};
 use super::matching::MatchStatus;
 use super::membership::{EntryStatus, Membership};
 
+pub type Why = Reason;
+
 /// Why an action is disabled. The UI turns each into a localized sentence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Reason {
     Running,
     NothingSelected,
@@ -34,7 +39,8 @@ pub enum Reason {
     AlreadyInLibrary(Option<EntryStatus>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Availability {
     Available,
     Disabled(Reason),
@@ -54,7 +60,8 @@ impl Availability {
 }
 
 /// The four actions for the current selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Actions {
     /// How many selected entries are shown.
     pub selected: usize,

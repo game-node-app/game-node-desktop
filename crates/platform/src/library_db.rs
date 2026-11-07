@@ -15,6 +15,7 @@ use gamenode_core::provider::Record;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(crate) const KEY_LAYOUT: &str = "library.layout";
+pub(crate) const KEY_EXCLUDED: &str = "library.excluded";
 pub(crate) const KEY_ACCOUNT_ID: &str = "account.last_id";
 pub(crate) const KEY_ACCOUNT_NAME: &str = "account.last_name";
 
@@ -189,12 +190,24 @@ impl LibraryStore for SqliteLibraryStore {
             })
             .collect();
 
+        let excluded = read_setting(&conn, KEY_EXCLUDED)
+            .map_err(failed)?
+            .and_then(|json| {
+                serde_json::from_str(&json)
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "ignored an unreadable excluded list"),
+                    )
+                    .ok()
+            })
+            .unwrap_or_default();
+
         Ok(LibraryCache {
             entries,
             scans,
             auto_matches,
             chosen_matches,
             games,
+            excluded,
         })
     }
 
@@ -374,6 +387,11 @@ impl LibraryStore for SqliteLibraryStore {
     fn save_layout(&self, layout: &LibraryLayout) -> Result<(), StorageError> {
         let json = serde_json::to_string(layout).map_err(failed)?;
         write_setting(&self.conn(), KEY_LAYOUT, &json).map_err(failed)
+    }
+
+    fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
+        let json = serde_json::to_string(excluded).map_err(failed)?;
+        write_setting(&self.conn(), KEY_EXCLUDED, &json).map_err(failed)
     }
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {

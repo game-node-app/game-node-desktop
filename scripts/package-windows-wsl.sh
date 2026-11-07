@@ -17,25 +17,10 @@ with Path("Cargo.toml").open("rb") as manifest_file:
     version = tomllib.load(manifest_file)["workspace"]["package"]["version"]
 archive = Path(f"dist/windows/gamenode-desktop-{version}-windows-x64.zip")
 alias = Path("dist/windows/gamenode-desktop.zip")
-source_files = [
-    "crates/app/Cargo.toml",
-    "crates/app/build.rs",
-    "crates/app/examples/ui-review.rs",
-    "crates/app/src/engine/mod.rs",
-    "crates/app/src/engine/tests.rs",
-    "crates/app/src/lib.rs",
-    "crates/app/src/main.rs",
-    "crates/app/ui/app.slint",
-    "crates/app/ui/controls.slint",
-    "crates/app/ui/fonts/Roboto-Variable.ttf",
-    "crates/app/ui/icons/arrow.svg",
-    "crates/app/ui/icons/gamenode-logo.svg",
-    "crates/app/ui/icons/gamenode.png",
-    "crates/app/ui/icons/library.svg",
-    "crates/app/ui/icons/settings.svg",
-    "crates/app/ui/theme-provenance.json",
-    "crates/app/ui/theme.slint",
-]
+source_files = sorted(str(path) for base in ("crates", "providers", "packaging", "scripts", "ui")
+                      for path in Path(base).rglob("*") if path.is_file()
+                      and not any(part in path.parts for part in ("__pycache__", "node_modules", "dist", ".turbo")))
+
 binary = package / "gamenode.exe"
 revision = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -48,6 +33,7 @@ build_manifest = {
     "baseRevision": revision,
     "dirty": dirty,
     "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    "backupAssets": json.loads((package / "backup-assets/build-inputs.json").read_text()),
     "sourceSha256": {
         name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
         for name in source_files
@@ -67,7 +53,7 @@ temporary = archive.with_suffix(".zip.tmp")
 with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as bundle:
     for path in files:
         bundle.write(path, path.relative_to(package.parent))
-    for path in sorted((package / "licenses").rglob("*")):
+    for path in sorted([*(package / "licenses").rglob("*"), *(package / "backup-assets").rglob("*")]):
         if path.is_file():
             bundle.write(path, path.relative_to(package.parent))
 temporary.replace(archive)

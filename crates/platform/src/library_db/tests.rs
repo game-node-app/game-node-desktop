@@ -1,8 +1,8 @@
 use super::*;
 use crate::db::{SETTING_KEYS, SqliteSettingsStore};
+use gamenode_core::Settings;
 use gamenode_core::library::{SidebarSelection, SortDirection, SortKey, ViewMode};
 use gamenode_core::ports::SettingsStore;
-use gamenode_core::{RendererPreference, Settings};
 use tempfile::TempDir;
 
 fn open(dir: &TempDir) -> SqliteSettingsStore {
@@ -406,10 +406,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
     let dir = TempDir::new().unwrap();
     let settings = open(&dir);
     let store = settings.library_store();
-    let saved = Settings {
-        renderer: RendererPreference::Software,
-        window: None,
-    };
+    let saved = Settings { window: None };
     settings.save(&saved).unwrap();
     store
         .save_layout(&LibraryLayout {
@@ -626,4 +623,25 @@ fn a_chosen_match_can_be_forgotten_for_one_account_only() {
     );
     // Forgetting what is not there is not an error.
     store.delete_chosen_match("alice", "steam:620").unwrap();
+}
+
+#[test]
+fn excluded_entries_round_trip_and_unreadable_json_falls_back() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    assert!(store.load_cache(None).unwrap().excluded.is_empty());
+
+    let excluded = vec!["steam:620".to_owned(), "gog:1".to_owned()];
+    store.save_excluded(&excluded).unwrap();
+    assert_eq!(store.load_cache(None).unwrap().excluded, excluded);
+
+    settings
+        .conn()
+        .execute(
+            "UPDATE settings SET value = 'not json' WHERE key = 'library.excluded'",
+            [],
+        )
+        .unwrap();
+    assert!(store.load_cache(None).unwrap().excluded.is_empty());
 }

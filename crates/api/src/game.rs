@@ -9,7 +9,7 @@ use gamenode_core::game_api::{
     ApiError, Collection, CoverError, ExternalMatch, GameApi, GameSummary, LibraryEntry,
     MAX_COVER_BYTES,
 };
-use gamenode_core::library::cover::CoverUrl;
+use gamenode_core::library::cover::{CoverUrl, artwork_download_url};
 use gamenode_core::library::membership::EntryStatus;
 use reqwest::{RequestBuilder, StatusCode};
 use serde::{Deserialize, Deserializer};
@@ -68,7 +68,7 @@ impl GameNodeClient {
     }
 
     /// Downloads the image at `url`: 200 only, at most [`MAX_COVER_BYTES`], and a JPEG.
-    async fn download_cover(&self, url: &Url) -> Result<Vec<u8>, CoverError> {
+    async fn download_image(&self, url: &Url) -> Result<Vec<u8>, CoverError> {
         let mut response = self
             .http
             .get(url.clone())
@@ -76,7 +76,10 @@ impl GameNodeClient {
             .await
             .map_err(|_| CoverError::Failed)?;
         if response.status() != StatusCode::OK {
-            tracing::warn!(status = response.status().as_u16(), "a cover was refused");
+            tracing::warn!(
+                status = response.status().as_u16(),
+                "a game image was refused"
+            );
             return Err(CoverError::Failed);
         }
         if response
@@ -97,6 +100,52 @@ impl GameNodeClient {
             return Err(CoverError::NotAnImage);
         }
         Ok(body)
+    }
+
+    async fn artwork_for_game(
+        &self,
+        credential: &SessionCredential,
+        game_id: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        let url = self.v1(&format!("game/repository/{game_id}"), |_| {});
+        let response = self
+            .authorized(self.http.post(url), credential)
+            .json(&serde_json::json!({ "relations": { "artworks": true } }))
+            .send()
+            .await
+            .map_err(|_| ApiError::Failed)?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED => return Err(ApiError::Rejected),
+            StatusCode::NOT_FOUND => return Ok(None),
+            status => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "the game artwork lookup was refused"
+                );
+                return Err(ApiError::Failed);
+            }
+        }
+        let game: GameArtworks = response.json().await.map_err(|_| ApiError::Failed)?;
+        let artwork = game
+            .artworks
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                let url = artwork_download_url(item.url.as_deref()?)?;
+                let width = u64::from(item.width.unwrap_or_default());
+                let height = u64::from(item.height.unwrap_or_default());
+                Some(((width > height, width * height, width), url))
+            })
+            .max_by_key(|(quality, _)| *quality)
+            .map(|(_, url)| url);
+        let Some(artwork) = artwork else {
+            return Ok(None);
+        };
+        match self.download_image(artwork.as_url()).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(_) => Ok(None),
+        }
     }
 
     async fn lookup_page(
@@ -174,6 +223,22 @@ struct LookupCover {
     url: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct GameArtworks {
+    #[serde(default)]
+    artworks: Option<Vec<GameArtwork>>,
+}
+
+#[derive(Deserialize)]
+struct GameArtwork {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+}
+
 /// Ids that may arrive as a JSON number or, for 64-bit database columns, as a string.
 fn number_or_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
     #[derive(Deserialize)]
@@ -223,6 +288,10 @@ struct SearchResponse {
 #[derive(Deserialize)]
 struct SearchData {
     items: Vec<SearchItem>,
+    #[serde(default, rename = "hasNextPage")]
+    has_next_page: Option<bool>,
+    #[serde(default)]
+    total: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -310,9 +379,19 @@ impl GameApi for GameNodeClient {
         credential: &SessionCredential,
         query: &str,
     ) -> Result<Vec<GameSummary>, ApiError> {
+        Ok(self.search_page(credential, query).await?.games)
+    }
+    async fn search_page(
+        &self,
+        credential: &SessionCredential,
+        query: &str,
+    ) -> Result<gamenode_core::game_api::SearchPage, ApiError> {
         let query: String = query.trim().chars().take(MAX_QUERY_LEN).collect();
         if query.is_empty() {
-            return Ok(Vec::new());
+            return Ok(gamenode_core::game_api::SearchPage {
+                games: vec![],
+                complete: Some(true),
+            });
         }
         let response = self
             .authorized(self.http.post(self.v1("search/games", |_| {})), credential)
@@ -329,7 +408,16 @@ impl GameApi for GameNodeClient {
             }
         }
         let body: SearchResponse = response.json().await.map_err(|_| ApiError::Failed)?;
-        Ok(body
+        let count = body.data.items.len();
+        let complete = if count >= SEARCH_LIMIT {
+            Some(false)
+        } else {
+            body.data
+                .has_next_page
+                .map(|more| !more)
+                .or_else(|| body.data.total.map(|total| total <= count))
+        };
+        let games = body
             .data
             .items
             .into_iter()
@@ -339,11 +427,20 @@ impl GameApi for GameNodeClient {
                 release_year: item.first_release_date.as_deref().and_then(year_of),
                 cover_url: item.cover_url.filter(|url| !url.is_empty()),
             })
-            .collect())
+            .collect();
+        Ok(gamenode_core::game_api::SearchPage { games, complete })
     }
 
     async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError> {
-        self.download_cover(cover.as_url()).await
+        self.download_image(cover.as_url()).await
+    }
+
+    async fn fetch_artwork(
+        &self,
+        credential: &SessionCredential,
+        game_id: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.artwork_for_game(credential, game_id).await
     }
 
     async fn list_collections(

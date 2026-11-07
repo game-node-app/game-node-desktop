@@ -4,13 +4,16 @@
 
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 use super::layout::{SidebarSelection, Sort, SortDirection, SortKey};
 use super::machine::LibraryMachine;
 use super::matching::{self, MatchStatus};
 use super::store::StoredEntry;
 
 /// One installed game as the view shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Row {
     pub playtime: crate::playtime::PlaytimeView,
     pub running: bool,
@@ -29,9 +32,11 @@ pub struct Row {
 }
 
 /// An installed-game count for a sidebar item.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderCount {
-    pub provider: String,
+    /// The provider id, such as `steam`; the sidebar sends it back as its filter.
+    pub id: String,
     pub name: String,
     pub count: usize,
 }
@@ -39,6 +44,14 @@ pub struct ProviderCount {
 impl LibraryMachine {
     /// How an entry maps to a GameNode game right now.
     pub fn match_status(&self, entry: &StoredEntry) -> MatchStatus {
+        if !self.chosen.contains_key(&entry.key)
+            && let Some(game_id) = self.local_inferences.get(&entry.key)
+        {
+            return MatchStatus::Matched {
+                game_id: *game_id,
+                source: super::matching::MatchSource::Automatic,
+            };
+        }
         let auto = self
             .provider(&entry.provider)
             .and_then(|provider| provider.external_category())
@@ -86,6 +99,13 @@ impl LibraryMachine {
         }
     }
 
+    /// The title of the first installed game that is running, without building every row.
+    pub fn running_title(&self) -> Option<String> {
+        self.installed_entries()
+            .find(|entry| self.running.contains(&entry.key))
+            .map(|entry| self.row(entry).title)
+    }
+
     /// The rows for the current sidebar choice, the given search text and the saved sort.
     pub fn visible_rows(&self, search: &str) -> Vec<Row> {
         let mut rows = filter(&self.all_rows(), &self.effective_sidebar(), search);
@@ -95,12 +115,20 @@ impl LibraryMachine {
 
     /// Installed games per loaded provider, in provider order. Not affected by search.
     pub fn provider_counts(&self) -> Vec<ProviderCount> {
-        counts(
-            &self.all_rows(),
-            self.providers
-                .iter()
-                .map(|provider| (provider.id(), provider.name())),
-        )
+        // Counts need only the provider id; building full rows here duplicates title,
+        // match, and cover resolution every time the view is refreshed.
+        let mut installed = std::collections::HashMap::<&str, usize>::new();
+        for entry in self.installed_entries() {
+            *installed.entry(entry.provider.as_str()).or_default() += 1;
+        }
+        self.providers
+            .iter()
+            .map(|provider| ProviderCount {
+                id: provider.id().to_owned(),
+                name: provider.name().to_owned(),
+                count: installed.get(provider.id()).copied().unwrap_or_default(),
+            })
+            .collect()
     }
 }
 
@@ -132,35 +160,57 @@ fn folded(text: &str) -> String {
     text.to_lowercase()
 }
 
-fn by_title(a: &Row, b: &Row) -> Ordering {
-    folded(&a.title)
-        .cmp(&folded(&b.title))
+/// The lowercased text each row is compared by, computed once per row instead of once per
+/// comparison.
+struct SortKeys {
+    title: String,
+    /// Only filled when sorting by provider.
+    provider: String,
+}
+
+fn by_title(a: &Row, a_keys: &SortKeys, b: &Row, b_keys: &SortKeys) -> Ordering {
+    a_keys
+        .title
+        .cmp(&b_keys.title)
         .then_with(|| a.title.cmp(&b.title))
 }
 
-fn compare(a: &Row, b: &Row, key: SortKey) -> Ordering {
+fn compare(a: (&Row, &SortKeys), b: (&Row, &SortKeys), key: SortKey) -> Ordering {
     match key {
-        SortKey::Title => by_title(a, b),
-        SortKey::Provider => folded(&a.provider_name).cmp(&folded(&b.provider_name)),
-        SortKey::MatchStatus => a.status.rank().cmp(&b.status.rank()),
+        SortKey::Title => by_title(a.0, a.1, b.0, b.1),
+        SortKey::Provider => a.1.provider.cmp(&b.1.provider),
+        SortKey::MatchStatus => a.0.status.rank().cmp(&b.0.status.rank()),
     }
 }
 
 /// Ties are broken the same way in both directions: only the leading key flips.
-fn tie_break(a: &Row, b: &Row, key: SortKey) -> Ordering {
+fn tie_break(a: (&Row, &SortKeys), b: (&Row, &SortKeys), key: SortKey) -> Ordering {
     let order = match key {
         SortKey::Title => Ordering::Equal,
-        SortKey::Provider | SortKey::MatchStatus => by_title(a, b),
+        SortKey::Provider | SortKey::MatchStatus => by_title(a.0, a.1, b.0, b.1),
     };
     order
-        .then_with(|| a.provider.cmp(&b.provider))
-        .then_with(|| a.key.cmp(&b.key))
+        .then_with(|| a.0.provider.cmp(&b.0.provider))
+        .then_with(|| a.0.key.cmp(&b.0.key))
 }
 
 /// Sorts in place. The sort is total (title, then provider, then key break ties), so the order
 /// never depends on the order the rows arrived in.
 pub fn sort(rows: &mut [Row], by: Sort) {
-    rows.sort_by(|a, b| {
+    let keys: Vec<SortKeys> = rows
+        .iter()
+        .map(|row| SortKeys {
+            title: folded(&row.title),
+            provider: if by.key == SortKey::Provider {
+                folded(&row.provider_name)
+            } else {
+                String::new()
+            },
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = ((&rows[a], &keys[a]), (&rows[b], &keys[b]));
         let lead = compare(a, b, by.key);
         let lead = match by.direction {
             SortDirection::Ascending => lead,
@@ -168,6 +218,18 @@ pub fn sort(rows: &mut [Row], by: Sort) {
         };
         lead.then_with(|| tie_break(a, b, by.key))
     });
+    // `target[i]` is where the row now at `i` must end up; follow each cycle with swaps.
+    let mut target = vec![0; rows.len()];
+    for (position, &from) in order.iter().enumerate() {
+        target[from] = position;
+    }
+    for i in 0..rows.len() {
+        while target[i] != i {
+            let t = target[i];
+            rows.swap(i, t);
+            target.swap(i, t);
+        }
+    }
 }
 
 /// Counts rows per provider, in the order `providers` gives them (id, name). Providers with no
@@ -179,7 +241,7 @@ pub fn counts<'a>(
     providers
         .into_iter()
         .map(|(id, name)| ProviderCount {
-            provider: id.to_owned(),
+            id: id.to_owned(),
             name: name.to_owned(),
             count: rows.iter().filter(|row| row.provider == id).count(),
         })

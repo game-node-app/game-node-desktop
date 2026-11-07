@@ -67,6 +67,7 @@ mod tests {
             pid: 9,
             created_at: UNIX_EPOCH,
             exe_path: "/games/a/x".into(),
+            parent: None,
         };
         double.start(first.clone());
         assert_eq!(

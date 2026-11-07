@@ -2,8 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 /// One detected game, as the runtime sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Record {
     /// Provider-local id (for Steam, the app id).
     pub id: String,
@@ -26,7 +29,8 @@ impl Record {
 }
 
 /// What a scanner returns before the runtime checks it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RawRecord {
     pub id: Option<String>,
     pub name: Option<String>,

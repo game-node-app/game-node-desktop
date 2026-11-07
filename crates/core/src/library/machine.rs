@@ -5,7 +5,8 @@
 //! Results carry the operation id of the effect that produced them, so an answer that arrives
 //! after the account changed or a newer load started is ignored.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use crate::game_api::{ApiError, Collection, ExternalMatch, GameSummary, LibraryEntry};
 use crate::provider::{Provider, Record};
@@ -26,9 +27,12 @@ use super::store::{
 };
 use super::view::LibraryView;
 
+use serde::{Deserialize, Serialize};
+
 /// What the application can reach right now. Matching, game search and Add to GameNode need
 /// `Verified`; everything local works in every state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Access {
     /// No verified session yet (still verifying, or GameNode could not be reached at startup).
     #[default]
@@ -39,7 +43,8 @@ pub enum Access {
 }
 
 /// The result of scanning one provider, as it is stored.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ScanOutcome {
     Scanned(Vec<Record>),
     /// The provider's roots could not be read. The message is for the log and the detail view.
@@ -65,6 +70,7 @@ pub enum Effect {
         now: i64,
     },
     PersistLayout(LibraryLayout),
+    PersistExcluded(Vec<String>),
     /// Ask GameNode which games these store ids are (`GameApi::lookup_external`) and report with
     /// [`Input::LookupDone`]. Only sent with a verified session.
     Lookup {
@@ -94,6 +100,11 @@ pub enum Effect {
     FetchCover {
         game_id: u64,
         url: CoverUrl,
+    },
+    /// Fetch the selected game's landscape artwork and report it with [`Input::ArtworkDone`].
+    FetchArtwork {
+        op: u64,
+        game_id: u64,
     },
     /// Read whether the game is in the user's library (`GameApi::library_entry`) and report with
     /// [`Input::EntryRead`]. Only sent with a verified session.
@@ -137,7 +148,8 @@ pub enum Effect {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Input {
     /// The account whose library is shown changed: the last signed-in account when the app
     /// starts, a different one after a sign-in, or none after sign-out or a rejected session.
@@ -186,6 +198,12 @@ pub enum Input {
         game_id: u64,
         result: Result<String, ()>,
         now: i64,
+    },
+    /// The outcome of an [`Effect::FetchArtwork`].
+    ArtworkDone {
+        op: u64,
+        game_id: u64,
+        result: Result<Option<Vec<u8>>, ApiError>,
     },
     /// The answer to an [`Effect::Lookup`]. A failure of any kind changes nothing.
     LookupDone {
@@ -245,6 +263,14 @@ pub enum Input {
         game_id: u64,
         result: Result<(), ApiError>,
     },
+    /// Remove an entry from the library (`allow_rediscovery = true` hides it until the next
+    /// scan; `false` excludes it across future scans and restarts).
+    RemoveEntry {
+        key: String,
+        allow_rediscovery: bool,
+    },
+    /// Clear all permanent entry exclusions so current and future scans show them again.
+    ResetExcluded,
 }
 
 #[derive(Debug)]
@@ -262,6 +288,7 @@ pub(super) struct ScanRun {
 }
 
 pub struct LibraryMachine {
+    pub(super) local_inferences: BTreeMap<String, u64>,
     pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
     pub(super) running: BTreeSet<String>,
     pub(super) providers: Vec<Provider>,
@@ -270,6 +297,7 @@ pub struct LibraryMachine {
     pub(super) access: Access,
     pub(super) op: u64,
     pub(super) entries: BTreeMap<String, StoredEntry>,
+    pub(super) excluded: BTreeSet<String>,
     pub(super) scans: BTreeMap<String, ProviderScanState>,
     pub(super) auto_matches: BTreeMap<(u32, String), AutoMatch>,
     pub(super) chosen: BTreeMap<String, ChosenMatch>,
@@ -295,12 +323,20 @@ pub struct LibraryMachine {
     /// The match dialog, while it is open.
     pub(super) dialog: Option<MatchDialog>,
     pub(super) covers: CoverQueue,
+    /// Artwork is loaded on demand; the engine checks its disk cache before downloading.
+    pub(super) artwork_focus: Option<u64>,
+    pub(super) artwork_requests: BTreeMap<u64, u64>,
+    /// A small recent-image cache makes revisiting a game immediate.
+    pub(super) artwork_cache: VecDeque<(u64, Option<Arc<[u8]>>)>,
+    pub(super) artwork_attempted: bool,
+    pub(super) artwork: Option<Arc<[u8]>>,
     pub(super) view_cache: Option<LibraryView>,
 }
 
 impl LibraryMachine {
     pub fn new(providers: Vec<Provider>, layout: LibraryLayout) -> Self {
         Self {
+            local_inferences: BTreeMap::new(),
             playtime: BTreeMap::new(),
             running: BTreeSet::new(),
             providers,
@@ -309,6 +345,7 @@ impl LibraryMachine {
             access: Access::default(),
             op: 0,
             entries: BTreeMap::new(),
+            excluded: BTreeSet::new(),
             scans: BTreeMap::new(),
             auto_matches: BTreeMap::new(),
             chosen: BTreeMap::new(),
@@ -327,6 +364,11 @@ impl LibraryMachine {
             lookups: BTreeMap::new(),
             dialog: None,
             covers: CoverQueue::default(),
+            artwork_focus: None,
+            artwork_requests: BTreeMap::new(),
+            artwork_cache: VecDeque::new(),
+            artwork_attempted: false,
+            artwork: None,
             view_cache: None,
         }
     }
@@ -379,11 +421,44 @@ impl LibraryMachine {
 
     /// The entries a scan currently finds installed, in key order.
     pub fn installed_entries(&self) -> impl Iterator<Item = &StoredEntry> {
-        self.entries.values().filter(|entry| entry.installed)
+        self.entries
+            .values()
+            .filter(|entry| entry.installed && !self.excluded.contains(&entry.key))
+    }
+
+    pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
+        self.entries.values()
     }
 
     pub fn chosen_match(&self, key: &str) -> Option<&ChosenMatch> {
         self.chosen.get(key)
+    }
+
+    pub fn set_local_inference(
+        &mut self,
+        key: String,
+        game_id: Option<u64>,
+        game: Option<GameRecord>,
+    ) -> Vec<Effect> {
+        if let Some(game_id) = game_id {
+            self.local_inferences.insert(key, game_id);
+        } else {
+            self.local_inferences.remove(&key);
+        }
+        if let Some(game) = game {
+            self.games.insert(game.game_id, game);
+        }
+        self.view_cache = None;
+        self.plan_covers(None)
+    }
+    /// The downloaded landscape artwork of `game_id` while that game is the one whose details
+    /// are shown. Cheap: it only clones a handle.
+    pub fn artwork_for(&self, game_id: u64) -> Option<Arc<[u8]>> {
+        if self.artwork_focus == Some(game_id) {
+            self.artwork.clone()
+        } else {
+            None
+        }
     }
 
     pub fn game(&self, game_id: u64) -> Option<&GameRecord> {
@@ -393,7 +468,67 @@ impl LibraryMachine {
     pub fn handle(&mut self, input: Input) -> Vec<Effect> {
         let mut effects = self.dispatch(input);
         effects.extend(self.plan_membership());
+        effects.extend(self.plan_artwork());
         effects
+    }
+
+    fn plan_artwork(&mut self) -> Vec<Effect> {
+        let game_id = if self.access == Access::Verified && matches!(self.phase, Phase::Ready) {
+            self.selected_game()
+        } else {
+            None
+        };
+        if game_id != self.artwork_focus {
+            self.artwork_focus = game_id;
+            self.artwork_attempted = false;
+            self.artwork = None;
+            if let Some(index) = self
+                .artwork_cache
+                .iter()
+                .position(|(id, _)| Some(*id) == game_id)
+            {
+                let cached = self.artwork_cache.remove(index).unwrap();
+                self.artwork = cached.1.clone();
+                self.artwork_attempted = true;
+                self.artwork_cache.push_back(cached);
+            }
+        }
+        if !self.layout.detail_open || self.artwork_attempted {
+            return vec![];
+        }
+        let Some(game_id) = game_id else {
+            return vec![];
+        };
+        if self.artwork_requests.contains_key(&game_id) {
+            return vec![];
+        }
+        let op = self.next_op();
+        self.artwork_requests.insert(game_id, op);
+        vec![Effect::FetchArtwork { op, game_id }]
+    }
+
+    fn on_artwork_done(
+        &mut self,
+        op: u64,
+        game_id: u64,
+        result: Result<Option<Vec<u8>>, ApiError>,
+    ) {
+        if self.artwork_requests.get(&game_id) != Some(&op) {
+            return;
+        }
+        self.artwork_requests.remove(&game_id);
+        let successful = result.is_ok();
+        let image = result.ok().flatten().map(Arc::<[u8]>::from);
+        if successful {
+            self.artwork_cache.push_back((game_id, image.clone()));
+            if self.artwork_cache.len() > 8 {
+                self.artwork_cache.pop_front();
+            }
+        }
+        if self.artwork_focus == Some(game_id) {
+            self.artwork_attempted = true;
+            self.artwork = image;
+        }
     }
 
     fn dispatch(&mut self, input: Input) -> Vec<Effect> {
@@ -410,7 +545,7 @@ impl LibraryMachine {
             Input::SetAccess { access, now } => {
                 self.access = access;
                 let mut effects = self.plan_lookups(now);
-                effects.extend(self.plan_covers(false));
+                effects.extend(self.plan_covers(None));
                 effects
             }
             Input::CoverDone {
@@ -418,6 +553,14 @@ impl LibraryMachine {
                 result,
                 now,
             } => self.on_cover_done(game_id, result, now),
+            Input::ArtworkDone {
+                op,
+                game_id,
+                result,
+            } => {
+                self.on_artwork_done(op, game_id, result);
+                vec![]
+            }
             Input::LookupDone {
                 op,
                 category,
@@ -514,6 +657,41 @@ impl LibraryMachine {
                 game_id,
                 result,
             } => self.on_entry_created(op, game_id, result),
+            Input::RemoveEntry {
+                key,
+                allow_rediscovery,
+            } => {
+                if self.match_dialog_view().is_some_and(|d| d.entry_key == key) {
+                    self.dialog = None;
+                }
+                if allow_rediscovery {
+                    if let Some(entry) = self.entries.get_mut(&key) {
+                        entry.installed = false;
+                    }
+                    self.prune_selection();
+                    vec![]
+                } else {
+                    let changed = self.excluded.insert(key);
+                    self.prune_selection();
+                    if changed {
+                        vec![Effect::PersistExcluded(
+                            self.excluded.iter().cloned().collect(),
+                        )]
+                    } else {
+                        vec![]
+                    }
+                }
+            }
+            Input::ResetExcluded => {
+                if self.excluded.is_empty() {
+                    return vec![];
+                }
+                self.excluded.clear();
+                let mut effects = vec![Effect::PersistExcluded(Vec::new())];
+                effects.extend(self.plan_lookups(0));
+                effects.extend(self.plan_covers(None));
+                effects
+            }
         }
     }
 
@@ -528,7 +706,9 @@ impl LibraryMachine {
     }
 
     fn reset_data(&mut self) {
+        self.local_inferences.clear();
         self.entries.clear();
+        self.excluded.clear();
         self.scans.clear();
         self.auto_matches.clear();
         self.chosen.clear();
@@ -544,6 +724,11 @@ impl LibraryMachine {
         self.lookups.clear();
         self.dialog = None;
         self.covers.clear();
+        self.artwork_focus = None;
+        self.artwork_requests.clear();
+        self.artwork_cache.clear();
+        self.artwork_attempted = false;
+        self.artwork = None;
     }
 
     fn on_account_changed(&mut self, account: Option<LastAccount>) -> Vec<Effect> {
@@ -607,6 +792,7 @@ impl LibraryMachine {
             .into_iter()
             .map(|game| (game.game_id, game))
             .collect();
+        self.excluded = cache.excluded.into_iter().collect();
     }
 
     fn on_scan_requested(&mut self) -> Vec<Effect> {
@@ -673,7 +859,7 @@ impl LibraryMachine {
                 effects.extend(self.start_scan());
             } else {
                 effects.extend(self.plan_lookups(now));
-                effects.extend(self.plan_covers(true));
+                effects.extend(self.plan_covers(Some(now)));
             }
         }
         effects

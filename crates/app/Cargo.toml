@@ -20,39 +20,31 @@ path = "src/lib.rs"
 name = "gamenode"
 path = "src/main.rs"
 
+[features]
+# Serve the embedded `ui/dist` bundle instead of the Vite dev server (`devUrl`). Tauri treats a
+# build without this feature as a dev build, so it stays on by default; use
+# `--no-default-features` to point the window at `pnpm --dir ui dev` for HMR.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 gamenode-core.workspace = true
 gamenode-platform.workspace = true
 gamenode-api.workspace = true
 async-trait.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 url.workspace = true
 
-# Explicit Slint features: the winit backend with Skia (default renderer) and the software
-# renderer (persisted fallback). No Qt, FemtoVG, LinuxKMS or other backends.
-[dependencies.slint]
-version = "=1.18.1"
-default-features = false
-features = ["std", "backend-winit", "renderer-skia", "renderer-software", "accessibility", "compat-1-2"]
-
-[target.'cfg(target_os = "linux")'.dependencies.slint]
-version = "=1.18.1"
-default-features = false
-features = ["backend-winit-wayland", "backend-winit-x11"]
-
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
 
-[target.'cfg(target_os = "windows")'.dependencies.slint]
-version = "=1.18.1"
-default-features = false
-features = ["system-tray"]
-
 [build-dependencies]
-slint-build = "=1.18.1"
+tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 httpmock = "0.9.0"

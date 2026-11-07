@@ -1,0 +1,95 @@
+name: ✨ Feature Request
+description: Sugira uma melhoria para o GameNode Desktop.
+title: "[Feature]: "
+labels: ["type: enhancement", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por ajudar a melhorar o GameNode Desktop!
+        Este formulário é para o launcher desktop nativo, não para o site ou aplicativo mobile.
+        Descreva primeiro a necessidade: uma solução técnica detalhada não é obrigatória.
+        Consulte o roadmap em docs/mvp-roadmap.md para conhecer os recursos planejados e adiados.
+        O MVP prioriza Windows; Linux tem um marco próprio e macOS não é suportado atualmente.
+        Sugestões para outras plataformas são bem-vindas, mas não implicam compromisso de suporte.
+        Não compartilhe senhas, cookies, tokens, URLs completas de retorno de login ou dados pessoais, inclusive em anexos.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema / Necessidade
+      description: Que dificuldade você encontra? Descreva em que situação acontece e quem se beneficiaria da melhoria.
+      placeholder: "Ex: Ao navegar pela biblioteca só com o teclado, preciso de muitos passos para filtrar os jogos de uma loja."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solução Proposta
+      description: Descreva o comportamento que gostaria de ter e como ele resolveria o problema. Não é necessário conhecer Rust ou Slint.
+      placeholder: "Ex: Oferecer um atalho para focar o filtro de lojas, mantendo o foco visível e permitindo voltar à lista de jogos."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área Relacionada
+      multiple: true
+      options:
+        - Biblioteca, busca, filtros e organização
+        - Lojas, providers, detecção e execução de jogos
+        - Matching e integração com a conta GameNode
+        - Playtime e sincronização
+        - Interface, acessibilidade e navegação por teclado
+        - Login e sessão
+        - Configurações, bandeja e execução em segundo plano
+        - Instalação, atualização e integração com o sistema
+        - Traduções e documentação
+        - Outra / não sei
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Plataformas Relevantes
+      description: Selecione onde a melhoria seria útil. A lista não indica suporte atual.
+      multiple: true
+      options:
+        - Independente de plataforma
+        - Windows
+        - Linux
+        - macOS (não suportado atualmente)
+        - Outra / não sei
+  - type: textarea
+    id: environment
+    attributes:
+      label: Ambiente ou Integração Específica (Opcional)
+      description: |
+        Se a ideia depender de um ambiente, informe sistema e versão, distribuição Linux, desktop/sessão (GNOME, KDE, X11/Wayland), arquitetura (x86_64, ARM64/Apple Silicon etc.) ou hardware relevante.
+        Para integrações, informe a loja/launcher e o fluxo desejado. Para problemas com uma versão existente, informe a versão do GameNode Desktop ou commit.
+      placeholder: "Ex: KDE Plasma em Wayland; ou jogos da loja ... instalados pelo launcher ..."
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas Consideradas
+      description: Como você resolve isso hoje? Há outro comportamento ou ferramenta que atenderia à necessidade?
+  - type: textarea
+    id: success
+    attributes:
+      label: Resultado Esperado (Opcional)
+      description: Dê exemplos concretos de uso ou critérios que mostrariam que a melhoria atende à necessidade.
+      placeholder: "Ex: Conseguir escolher uma loja e iniciar um jogo sem utilizar o mouse."
+  - type: textarea
+    id: references
+    attributes:
+      label: Referências Visuais / Contexto Adicional
+      description: |
+        Anexe imagens, esboços ou vídeos arrastando os arquivos para este campo, ou inclua links públicos para referências.
+        Explique o que devemos observar e como a referência se aplica a um aplicativo desktop nativo.
+        Revise anexos e links para não expor dados pessoais ou de autenticação.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Verificações
+      options:
+        - label: Já procurei por issues existentes e não encontrei uma sugestão semelhante.
+          required: true
+        - label: Revisei o relato e os anexos para não expor dados pessoais ou de autenticação.
+          required: true

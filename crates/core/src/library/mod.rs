@@ -20,15 +20,24 @@ pub mod selection;
 pub mod store;
 pub mod view;
 
-pub use actions::{Actions, Availability, Reason};
-pub use add_dialog::{AddDialogView, AddProgress, AddTarget, CollectionOption, CollectionsView};
-pub use add_run::{AddItem, AddOutcome, AddSummary};
-pub use launch::{LaunchError, LaunchKind, LaunchState, LaunchStatus, open_action};
-pub use layout::{LibraryLayout, SidebarSelection, Sort, SortDirection, SortKey, ViewMode};
+pub use actions::{Actions, Availability, Reason, Why};
+pub use add_dialog::{
+    AddDialogView, AddProgress, AddProgressView, AddTarget, CollectionOption, CollectionsView,
+};
+pub use add_run::{AddItem, AddOutcome, AddOutcomeItem, AddSummary};
+pub use launch::{
+    LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
+};
+pub use layout::{
+    LibraryLayout, ProviderFilter, SidebarSelection, Sort, SortDirection, SortField, SortKey,
+    SortOrder, ViewMode,
+};
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
-pub use match_dialog::{MatchDialogView, MatchOption, SearchFailure};
+pub use match_dialog::{
+    CandidateOption, MatchDialogView, MatchOption, SearchFailure, SearchResultItem,
+};
 pub use matching::{MatchSource, MatchStatus};
-pub use membership::{EntryStatus, Membership};
+pub use membership::{EntryStatus, GameStatus, Membership, StandingView};
 pub use query::{ProviderCount, Row};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{

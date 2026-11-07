@@ -15,16 +15,18 @@ use gamenode_core::ports::{
 };
 use gamenode_core::provider::{Platform, memory::FixedRoots};
 use gamenode_core::{
-    AuthView, Input, Notice, RendererPreference, SessionCredential, SessionError, Settings,
-    SignInFailure, Snapshot, User,
+    AuthView, Input, Notice, SessionCredential, SessionError, Settings, SignInFailure, Snapshot,
+    User, WindowGeometry,
 };
 use tokio::sync::watch;
 use url::Url;
 
 use super::{Engine, Ports};
 
+mod drm_free;
 mod library;
 mod playtime;
+mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
 fn ana() -> User {
@@ -55,6 +57,9 @@ struct FakeApi {
     lookup_result: Mutex<Option<Result<Vec<ExternalMatch>, ApiError>>>,
     lookups: Mutex<Vec<(u32, Vec<String>)>>,
     covers_fetched: Mutex<Vec<String>>,
+    artworks_fetched: Mutex<Vec<u64>>,
+    artwork_result: Mutex<Option<Result<Option<Vec<u8>>, ApiError>>>,
+    search_result: Mutex<Option<Result<gamenode_core::game_api::SearchPage, ApiError>>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     created: Mutex<Vec<u64>>,
     updated: Mutex<Vec<u64>>,
@@ -149,7 +154,24 @@ impl GameApi for FakeApi {
         _query: &str,
     ) -> Result<Vec<GameSummary>, ApiError> {
         self.pause().await;
+        if let Some(result) = self.search_result.lock().unwrap().clone() {
+            return result.map(|p| p.games);
+        }
         Ok(vec![])
+    }
+    async fn search_page(
+        &self,
+        credential: &SessionCredential,
+        query: &str,
+    ) -> Result<gamenode_core::game_api::SearchPage, ApiError> {
+        self.pause().await;
+        if let Some(result) = self.search_result.lock().unwrap().clone() {
+            return result;
+        }
+        Ok(gamenode_core::game_api::SearchPage {
+            games: self.search_games(credential, query).await?,
+            complete: None,
+        })
     }
     async fn fetch_cover(&self, cover: &CoverUrl) -> Result<Vec<u8>, CoverError> {
         self.pause().await;
@@ -158,6 +180,18 @@ impl GameApi for FakeApi {
             .unwrap()
             .push(cover.as_url().to_string());
         Ok(b"jpeg".to_vec())
+    }
+    async fn fetch_artwork(
+        &self,
+        _credential: &SessionCredential,
+        game_id: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.artworks_fetched.lock().unwrap().push(game_id);
+        self.artwork_result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(None))
     }
     async fn list_collections(
         &self,
@@ -311,6 +345,16 @@ fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
     harness_over(api, creds, None)
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_auth_ticks_do_not_publish_rebuilt_snapshots() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let _ = h.snapshots.borrow_and_update().clone();
+
+    h.engine.dispatch(Input::Tick);
+
+    assert!(!h.snapshots.has_changed().unwrap());
+}
+
 /// Like [`harness`], but the GameNode auth and game requests go through `remote` when given.
 fn harness_over(
     api: Arc<FakeApi>,
@@ -328,6 +372,12 @@ fn harness_over(
     );
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let ports = Ports {
+        backups: None,
+        local_games: None,
+        installations: None,
+        tools: None,
+        tool_catalog: None,
+        tool_installer: None,
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -355,6 +405,7 @@ fn harness_over(
         format!("nonce{n}")
     });
     let (tx, rx) = watch::channel(Snapshot {
+        local_games: Default::default(),
         playtime_error: false,
         tracking: Default::default(),
         sync: Default::default(),
@@ -365,6 +416,7 @@ fn harness_over(
         settings: Settings::default(),
         library: None,
         launch: None,
+        tools: Default::default(),
     });
     let providers = crate::providers::load_bundled(Platform::Linux).providers;
     let engine = Engine::new(
@@ -398,7 +450,7 @@ impl Harness {
         what: &str,
         mut predicate: impl FnMut(&Snapshot) -> bool,
     ) -> Snapshot {
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 {
                     let snapshot = self.snapshots.borrow_and_update().clone();
@@ -831,8 +883,15 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 
     let started = Instant::now();
     h.engine.start();
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Software);
+    h.engine.update_settings(|s| {
+        s.window = Some(WindowGeometry {
+            x: Some(10),
+            y: Some(20),
+            width: 800,
+            height: 600,
+            maximized: false,
+        });
+    });
     let _ = h.engine.snapshot();
     h.engine.dispatch(Input::CancelSignIn);
     assert!(
@@ -843,8 +902,14 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 
     // The settings change is visible immediately even though restoration is still running.
     assert_eq!(
-        h.engine.snapshot().settings.renderer,
-        RendererPreference::Software
+        h.engine.snapshot().settings.window,
+        Some(WindowGeometry {
+            x: Some(10),
+            y: Some(20),
+            width: 800,
+            height: 600,
+            maximized: false,
+        })
     );
     assert_eq!(h.engine.snapshot().auth, AuthView::Starting);
     h.until("restored eventually", |s| {
@@ -857,10 +922,22 @@ async fn slow_network_and_keyring_never_block_the_caller() {
 async fn settings_changes_are_persisted_in_order() {
     let mut h = harness(FakeApi::new(), FakeCreds::with(None));
     h.signed_out().await;
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Software);
-    h.engine
-        .update_settings(|s| s.renderer = RendererPreference::Gpu);
+    let geom1 = WindowGeometry {
+        x: Some(1),
+        y: Some(1),
+        width: 800,
+        height: 600,
+        maximized: false,
+    };
+    let geom2 = WindowGeometry {
+        x: Some(2),
+        y: Some(2),
+        width: 1024,
+        height: 768,
+        maximized: true,
+    };
+    h.engine.update_settings(|s| s.window = Some(geom1));
+    h.engine.update_settings(|s| s.window = Some(geom2));
     for _ in 0..50 {
         if h.settings.saved.lock().unwrap().len() == 2 {
             break;
@@ -869,8 +946,8 @@ async fn settings_changes_are_persisted_in_order() {
     }
     let saved = h.settings.saved.lock().unwrap().clone();
     assert_eq!(
-        saved.iter().map(|s| s.renderer).collect::<Vec<_>>(),
-        [RendererPreference::Software, RendererPreference::Gpu]
+        saved.iter().map(|s| s.window).collect::<Vec<_>>(),
+        [Some(geom1), Some(geom2)]
     );
 }
 
@@ -899,4 +976,49 @@ impl gamenode_core::ports::PlaytimeApi for FakeApi {
         tokio::time::sleep(delay).await;
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn artwork_survives_reload_and_is_separate_from_covers() {
+    let api = FakeApi::new();
+    let dir = tempfile::tempdir().unwrap();
+    let artwork_dir = dir.path().join("artworks");
+    let bytes = b"\xff\xd8\xfflandscape".to_vec();
+    *api.artwork_result.lock().unwrap() = Some(Ok(Some(bytes.clone())));
+    std::fs::write(dir.path().join("7.jpg"), b"portrait").unwrap();
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), &artwork_dir, 7).await,
+        Ok(Some(bytes.clone()))
+    );
+    // A fresh API adapter and no session: only the persisted file can provide this image.
+    let fresh_api = FakeApi::new();
+    assert_eq!(
+        super::artwork::load(fresh_api.as_ref(), None, &artwork_dir, 7).await,
+        Ok(Some(bytes))
+    );
+    assert!(fresh_api.artworks_fetched.lock().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(dir.path().join("7.jpg")).unwrap(),
+        b"portrait"
+    );
+    assert_eq!(*api.artworks_fetched.lock().unwrap(), [7]);
+}
+
+#[tokio::test]
+async fn corrupt_artwork_is_replaced_and_failures_can_be_retried() {
+    let api = FakeApi::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("7.jpg"), b"broken").unwrap();
+    *api.artwork_result.lock().unwrap() = Some(Err(ApiError::Failed));
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), dir.path(), 7).await,
+        Err(ApiError::Failed)
+    );
+    let bytes = b"\xff\xd8\xfflandscape".to_vec();
+    *api.artwork_result.lock().unwrap() = Some(Ok(Some(bytes.clone())));
+    assert_eq!(
+        super::artwork::load(api.as_ref(), Some(&cred("test")), dir.path(), 7).await,
+        Ok(Some(bytes.clone()))
+    );
+    assert_eq!(std::fs::read(dir.path().join("7.jpg")).unwrap(), bytes);
 }

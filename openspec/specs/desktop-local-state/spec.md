@@ -61,3 +61,81 @@ The local database SHALL store detected library entries, the last scan result pe
 #### Scenario: Upgrade from the foundation schema
 - **WHEN** a step 1 database is opened by this version
 - **THEN** the library tables are added by a new migration and the existing settings are kept
+
+### Requirement: Persist playtime per account
+The local database SHALL store recorded sessions, open sessions with their last checkpoint, and the last accepted store total per game, each tied to the GameNode account it belongs to. Signing out SHALL keep them for a later sign-in by the same account. The database SHALL NOT store process lists or command lines.
+
+#### Scenario: Restart with queued sessions
+- **WHEN** the application restarts with sessions in the queue
+- **THEN** the same sessions, with the same ids and times, are still queued
+
+#### Scenario: Same account signs in again
+- **WHEN** an account signs out and later signs in again on the same PC
+- **THEN** its queued sessions and accepted totals are available again
+
+#### Scenario: Upgrade from the step 2 schema
+- **WHEN** a step 2 database is opened by this version
+- **THEN** the playtime tables are added by a new migration and the existing settings, library cache and matches are kept
+
+### Requirement: Persist sync preferences
+The local database SHALL keep the "Sync with GameNode" switch and whether its explanation was dismissed. A database without these values SHALL behave as sync on and explanation not yet dismissed. A corrupt sync value SHALL be treated as off, so that a user's opt-out is never lost to corruption.
+
+#### Scenario: Sync setting survives restart
+- **WHEN** the user turns sync off and restarts the application
+- **THEN** sync is off before any playtime could be submitted
+
+#### Scenario: Upgraded database
+- **WHEN** a step 2 database without sync values is opened
+- **THEN** sync is on and the explanation has not been dismissed
+
+#### Scenario: Corrupt value
+- **WHEN** the stored sync value cannot be read
+- **THEN** sync is treated as off and the explanation is shown again
+
+### Requirement: Persist playtime source
+The database SHALL persist the PC-wide `playtime_source` preference across restarts and accounts.
+Missing or invalid values SHALL select Store.
+
+#### Scenario: Internal survives restart
+- **WHEN** the user selects Internal and restarts
+- **THEN** Internal is selected before tracking or submitting starts
+
+#### Scenario: Missing or invalid source
+- **WHEN** the source setting is missing or invalid
+- **THEN** Store is selected
+
+### Requirement: Persist manual installations and discovery decisions
+Local storage SHALL retain stable manual installation ids, approved launch/tracking settings, watched roots, candidates and ignore decisions across restarts. Repair SHALL update an existing registration transactionally. GameNode chosen matches SHALL remain account-specific; local registrations and discovery settings SHALL belong to the Windows user and never contain credentials.
+
+#### Scenario: Restart after add and ignore
+- **WHEN** the user adds one game, ignores another candidate and restarts
+- **THEN** the added entry returns with its settings and the ignored candidate is not suggested again
+
+#### Scenario: Another GameNode account
+- **WHEN** a different GameNode account signs in under the same Windows user
+- **THEN** it sees local installations and OS-local save protection but does not inherit the previous account's catalog choices or playtime
+
+### Requirement: Persist evidence separately from user choices
+The application SHALL cache inferred title evidence, automatic catalog matches, provenance and the evidence revision used to obtain them. User choices SHALL remain separate and authoritative. Executable or installation changes SHALL invalidate stale automatic work without erasing chosen catalog matches.
+
+#### Scenario: Changed executable
+- **WHEN** repair changes an installation's executable
+- **THEN** new evidence can be gathered and obsolete inference responses cannot overwrite its current state
+
+### Requirement: Persist save profiles and backup jobs
+Local storage SHALL retain per-installation save profiles, revisions, automatic-backup preferences, backup destination, jobs and results. Backup bytes SHALL live outside SQLite under a stable installation/profile namespace independent of catalog titles. Interrupted operations SHALL be reconciled against actual archives before success is recorded or retention is applied.
+
+#### Scenario: Crash after writing an archive
+- **WHEN** an archive was committed but GameNode stopped before recording the result
+- **THEN** restart discovers that archive and does not blindly repeat the same completed job
+
+#### Scenario: Change save profile
+- **WHEN** the user selects a different save profile
+- **THEN** prior archives remain attached to their original profile and queued work for the old revision is cancelled
+
+### Requirement: Upgrade preserves existing desktop data
+The new schema SHALL be applied through ordered transactional migrations that preserve Steam entries, settings, matches and playtime. An older application SHALL refuse the newer schema without modifying it. Application uninstall SHALL preserve backups and user data under the existing keep-data policy.
+
+#### Scenario: Upgrade from playtime release
+- **WHEN** an existing step 3 database is upgraded
+- **THEN** all previous Steam and account data remains and the manual registrations, watches and backup history start empty

@@ -15,6 +15,12 @@ pub const COVERS_DIR: &str = "covers";
 pub const PRIVATE_DIR: &str = "private";
 /// File name of the Linux fallback credential file inside [`PRIVATE_DIR`].
 pub const CREDENTIAL_FILE: &str = "session-token";
+/// Directory that holds game tools data and cached downloads.
+pub const TOOLS_DIR: &str = "tools";
+/// Subdirectory inside [`TOOLS_DIR`] for cached release archives.
+pub const TOOLS_CACHE_DIR: &str = "cache";
+/// Directory inside [`PRIVATE_DIR`] for original file backups before tool modifications.
+pub const TOOL_BACKUPS_DIR: &str = "tool-backups";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataPaths {
@@ -64,6 +70,14 @@ impl DataPaths {
         self.private_dir().join(CREDENTIAL_FILE)
     }
 
+    pub fn tools_cache_dir(&self) -> PathBuf {
+        self.data_dir.join(TOOLS_DIR).join(TOOLS_CACHE_DIR)
+    }
+
+    pub fn tool_backups_dir(&self) -> PathBuf {
+        self.private_dir().join(TOOL_BACKUPS_DIR)
+    }
+
     /// Creates the data directory (and parents) if needed.
     pub fn ensure_data_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.data_dir)
@@ -94,5 +108,15 @@ mod tests {
         );
         assert!(paths.credential_file().starts_with(paths.data_dir()));
         assert_eq!(paths.covers_dir(), paths.data_dir().join("covers"));
+        assert_eq!(
+            paths.tools_cache_dir(),
+            paths.data_dir().join("tools").join("cache")
+        );
+        assert_eq!(
+            paths.tool_backups_dir(),
+            paths.private_dir().join("tool-backups")
+        );
+        assert!(paths.tools_cache_dir().starts_with(paths.data_dir()));
+        assert!(paths.tool_backups_dir().starts_with(paths.data_dir()));
     }
 }

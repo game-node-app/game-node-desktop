@@ -79,11 +79,16 @@ impl PlaytimeSource {
 }
 
 /// Display data for one entry. Unknown store data is different from a known zero.
+///
+/// `last_played_at` follows the selected source: the store total's date, or the end of the most
+/// recent measured session. It is `None` when that source has no date, never `0`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaytimeView {
     pub seconds: Option<i64>,
     pub source: PlaytimeSource,
+    #[serde(default)]
+    pub last_played_at: Option<i64>,
 }
 
 /// Select one account's history without adding store totals to measured sessions.
@@ -95,26 +100,45 @@ pub fn view_for_entry(
     sessions: &[Session],
     now: i64,
 ) -> PlaytimeView {
-    let seconds = match source {
-        PlaytimeSource::Store => totals
-            .iter()
-            .find(|t| t.account_id == account && t.entry_key == key)
-            .map(|t| t.total_seconds)
-            .filter(|seconds| *seconds >= 0),
-        PlaytimeSource::Internal => Some(
-            sessions
+    let (seconds, last_played_at) = match source {
+        PlaytimeSource::Store => {
+            let total = totals
                 .iter()
-                .filter(|s| s.account_id == account && s.entry_key == key)
+                .find(|t| t.account_id == account && t.entry_key == key);
+            let seconds = total
+                .map(|t| t.total_seconds)
+                .filter(|seconds| *seconds >= 0);
+            // A negative total is unknown, so its date is unknown too.
+            let last_played_at = if seconds.is_some() {
+                total.and_then(|t| t.last_played_at)
+            } else {
+                None
+            };
+            (seconds, last_played_at)
+        }
+        PlaytimeSource::Internal => {
+            let own = sessions
+                .iter()
+                .filter(|s| s.account_id == account && s.entry_key == key);
+            let seconds = own
+                .clone()
                 .map(|s| {
                     s.ended_at
                         .unwrap_or(now)
                         .saturating_sub(s.started_at)
                         .clamp(0, 86400)
                 })
-                .fold(0i64, i64::saturating_add),
-        ),
+                .fold(0i64, i64::saturating_add);
+            // An open session counts as having been played until now.
+            let last_played_at = own.map(|s| s.ended_at.unwrap_or(now)).max();
+            (Some(seconds), last_played_at)
+        }
     };
-    PlaytimeView { seconds, source }
+    PlaytimeView {
+        seconds,
+        source,
+        last_played_at,
+    }
 }
 
 #[cfg(test)]

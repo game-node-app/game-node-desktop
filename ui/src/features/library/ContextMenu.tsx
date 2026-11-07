@@ -8,10 +8,12 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconShieldCheck,
+  IconStar,
+  IconStarFilled,
   IconTool,
   IconTrash,
 } from '@tabler/icons-react';
-import { commands, useLibraryView } from '../../api';
+import { commands, getMatchedGameId, useLibraryView } from '../../api';
 import { useUiStore, closeContextMenu, uiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
@@ -60,6 +62,11 @@ export const ContextMenu: React.FC = () => {
   const isRunning = row?.running ?? false;
   const canTools = !isRunning;
   const canRemove = row != null;
+  // A favorite belongs to one matched GameNode game: multi-selection and unmatched rows have no
+  // single game to act on, so the action is omitted instead of shown disabled.
+  const selectionCount = library?.selected?.length ?? 0;
+  const favoriteGameId = row ? getMatchedGameId(row.status) : null;
+  const showFavorite = selectionCount === 1 && favoriteGameId != null;
 
   const handlePlay = () => {
     if (!canPlay) return;
@@ -88,6 +95,18 @@ export const ContextMenu: React.FC = () => {
   const handleTools = () => {
     if (!canTools) return;
     commands.openTools(entryKey);
+    closeContextMenu();
+  };
+
+  const handleFavorite = () => {
+    if (!row || favoriteGameId == null) return;
+    commands.libraryInput({
+      setFavorite: {
+        key: row.key,
+        favorite: !row.isFavorite,
+        now: Math.floor(Date.now() / 1000),
+      },
+    });
     closeContextMenu();
   };
 
@@ -188,6 +207,25 @@ export const ContextMenu: React.FC = () => {
           <IconLink size={14} stroke={1.75} aria-hidden />
           {matchLabel}
         </Menu.Item>
+
+        {/* Favorite */}
+        {showFavorite && (
+          <Menu.Item
+            data-testid="context-menu-favorite"
+            aria-pressed={row?.isFavorite ?? false}
+            onClick={handleFavorite}
+            className={itemClass}
+          >
+            {row?.isFavorite ? (
+              <IconStarFilled size={14} aria-hidden className="text-warning" />
+            ) : (
+              <IconStar size={14} stroke={1.75} aria-hidden />
+            )}
+            {row?.isFavorite
+              ? t('Library::Remove from favorites')
+              : t('Library::Add to favorites')}
+          </Menu.Item>
+        )}
 
         {/* Add to GameNode */}
         <Menu.Item

@@ -6,12 +6,16 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use super::layout::{SidebarSelection, Sort, SortDirection, SortKey};
+use super::layout::{
+    AddedFilter, AvailabilityFilter, DAY_SECONDS, FIRST_RELEASE_DECADE, LastPlayedFilter,
+    LibraryFilters, MatchFilter, PlaytimeFilter, ReleaseFilter, SidebarSelection, Sort,
+    SortDirection, SortKey, YEAR_SECONDS,
+};
 use super::machine::LibraryMachine;
 use super::matching::{self, MatchStatus};
 use super::store::StoredEntry;
 
-/// One installed game as the view shows it.
+/// One visible game as the view shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
@@ -26,19 +30,38 @@ pub struct Row {
     pub matched_name: Option<String>,
     pub provider: String,
     pub provider_name: String,
+    /// Found by the installed scan on this PC.
+    pub installed: bool,
+    /// Found in the connected account's owned catalog.
+    pub owned: bool,
+    /// Shared through Steam Family; never true when the same entry is owned.
+    pub family_shared: bool,
     pub status: MatchStatus,
     /// File name of the cached cover under the per-user `covers/` folder.
     pub cover_file: Option<String>,
+    /// The matched game's release year; unknown for unmatched entries and games without one.
+    pub release_year: Option<i32>,
+    /// Unix seconds of the scan that first detected the entry.
+    pub added_at: i64,
+    /// Whether the matched game is a favorite of the signed-in account.
+    pub is_favorite: bool,
 }
 
-/// An installed-game count for a sidebar item.
+/// How many visible games a provider has, and how many of them by fact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCount {
     /// The provider id, such as `steam`; the sidebar sends it back as its filter.
     pub id: String,
     pub name: String,
+    /// Entries the active filters (except the sidebar's provider selection) leave.
     pub count: usize,
+    /// Entries installed on this PC: a raw fact for the sidebar subline and the store card.
+    pub installed_count: usize,
+    /// Entries the connected account owns: a raw fact for the store card.
+    pub owned_count: usize,
+    /// Entries shared through Steam Family and not owned: a raw fact for the store card.
+    pub family_count: usize,
 }
 
 impl LibraryMachine {
@@ -66,6 +89,10 @@ impl LibraryMachine {
         let matched_name = game
             .map(|game| game.name.clone())
             .filter(|name| !name.is_empty());
+        let is_favorite = status
+            .game_id()
+            .and_then(|id| self.favorites.get(&id))
+            .is_some_and(|favorite| favorite.is_favorite);
         Row {
             playtime: self.playtime.get(&entry.key).copied().unwrap_or_default(),
             running: self.running.contains(&entry.key),
@@ -79,14 +106,20 @@ impl LibraryMachine {
             provider_name: self
                 .provider(&entry.provider)
                 .map_or_else(|| entry.provider.clone(), |p| p.name().to_owned()),
+            installed: entry.installed,
+            owned: entry.owned,
+            family_shared: entry.family_shared && !entry.owned,
             status,
             cover_file: game.and_then(|game| game.cover_file.clone()),
+            release_year: game.and_then(|game| game.release_year),
+            added_at: entry.first_seen,
+            is_favorite,
         }
     }
 
-    /// Every installed entry as a row, unsorted.
+    /// Every visible entry as a row, unsorted.
     pub fn all_rows(&self) -> Vec<Row> {
-        self.installed_entries()
+        self.visible_entries()
             .map(|entry| self.row(entry))
             .collect()
     }
@@ -106,29 +139,57 @@ impl LibraryMachine {
             .map(|entry| self.row(entry).title)
     }
 
-    /// The rows for the current sidebar choice, the given search text and the saved sort.
+    /// The rows for the current sidebar choice, filters, search text and saved sort.
     pub fn visible_rows(&self, search: &str) -> Vec<Row> {
-        let mut rows = filter(&self.all_rows(), &self.effective_sidebar(), search);
+        let mut rows = filter(
+            &self.all_rows(),
+            &self.effective_sidebar(),
+            &self.layout.filters,
+            search,
+            self.now,
+        );
         sort(&mut rows, self.layout.sort);
         rows
     }
 
-    /// Installed games per loaded provider, in provider order. Not affected by search.
+    /// Visible games per loaded provider, in provider order. A provider's count reflects every
+    /// active filter except its own selection; the raw installed/owned/family facts stay
+    /// unfiltered for the sidebar subline and the store card.
     pub fn provider_counts(&self) -> Vec<ProviderCount> {
-        // Counts need only the provider id; building full rows here duplicates title,
-        // match, and cover resolution every time the view is refreshed.
-        let mut installed = std::collections::HashMap::<&str, usize>::new();
-        for entry in self.installed_entries() {
-            *installed.entry(entry.provider.as_str()).or_default() += 1;
+        let rows = filter(
+            &self.all_rows(),
+            &SidebarSelection::All,
+            &self.layout.filters,
+            "",
+            self.now,
+        );
+        let mut counts = counts(
+            &rows,
+            self.providers
+                .iter()
+                .map(|provider| (provider.id(), provider.name())),
+        );
+        // Counts need only the provider id here; the facts are independent of the filters.
+        let mut facts = std::collections::HashMap::<&str, (usize, usize, usize)>::new();
+        for entry in self.visible_entries() {
+            let counts = facts.entry(entry.provider.as_str()).or_default();
+            if entry.installed {
+                counts.0 += 1;
+            }
+            if entry.owned {
+                counts.1 += 1;
+            } else if entry.family_shared {
+                counts.2 += 1;
+            }
         }
-        self.providers
-            .iter()
-            .map(|provider| ProviderCount {
-                id: provider.id().to_owned(),
-                name: provider.name().to_owned(),
-                count: installed.get(provider.id()).copied().unwrap_or_default(),
-            })
-            .collect()
+        for count in &mut counts {
+            let (installed, owned, family) =
+                facts.get(count.id.as_str()).copied().unwrap_or_default();
+            count.installed_count = installed;
+            count.owned_count = owned;
+            count.family_count = family;
+        }
+        counts
     }
 }
 
@@ -142,15 +203,96 @@ fn contains(row: &Row, needle: &str) -> bool {
             .is_some_and(|name| name.to_lowercase().contains(needle))
 }
 
-/// Keeps the rows in the sidebar choice whose detected or matched title contains `search`,
-/// ignoring case. Blank search keeps them all. Order is preserved.
-pub fn filter(rows: &[Row], sidebar: &SidebarSelection, search: &str) -> Vec<Row> {
+fn matches_availability(filter: AvailabilityFilter, row: &Row) -> bool {
+    filter.is_any()
+        || (filter.installed && row.installed)
+        || (filter.owned && row.owned)
+        || (filter.family && row.family_shared)
+}
+
+fn matches_match_state(filter: MatchFilter, status: &MatchStatus) -> bool {
+    match filter {
+        MatchFilter::Any => true,
+        MatchFilter::Matched => matches!(status, MatchStatus::Matched { .. }),
+        MatchFilter::Ambiguous => matches!(status, MatchStatus::Ambiguous { .. }),
+        MatchFilter::Unmatched => matches!(status, MatchStatus::Unmatched),
+        MatchFilter::NoGame => matches!(status, MatchStatus::NoGame),
+    }
+}
+
+/// Unknown playtime never satisfies a threshold; only `Any` lets it through.
+fn matches_playtime(filter: PlaytimeFilter, seconds: Option<i64>) -> bool {
+    match filter {
+        PlaytimeFilter::Any => true,
+        PlaytimeFilter::Unplayed => seconds == Some(0),
+        PlaytimeFilter::Played => seconds.is_some_and(|seconds| seconds > 0),
+        PlaytimeFilter::AtLeast10h => seconds.is_some_and(|seconds| seconds >= 10 * 3600),
+        PlaytimeFilter::AtLeast100h => seconds.is_some_and(|seconds| seconds >= 100 * 3600),
+    }
+}
+
+/// Whether a Unix timestamp lies inside the last `window` seconds.
+fn within(at: Option<i64>, now: i64, window: i64) -> bool {
+    at.is_some_and(|at| at >= now.saturating_sub(window))
+}
+
+fn matches_last_played(filter: LastPlayedFilter, at: Option<i64>, now: i64) -> bool {
+    match filter {
+        LastPlayedFilter::Any => true,
+        LastPlayedFilter::Last7Days => within(at, now, 7 * DAY_SECONDS),
+        LastPlayedFilter::Last30Days => within(at, now, 30 * DAY_SECONDS),
+        LastPlayedFilter::LastYear => within(at, now, YEAR_SECONDS),
+    }
+}
+
+fn matches_release(filter: ReleaseFilter, year: Option<i32>) -> bool {
+    match filter {
+        ReleaseFilter::Any => true,
+        ReleaseFilter::Decade(decade) => {
+            let start = i32::from(decade);
+            year.is_some_and(|year| (start..start + 10).contains(&year))
+        }
+        ReleaseFilter::Earlier => year.is_some_and(|year| year < i32::from(FIRST_RELEASE_DECADE)),
+        ReleaseFilter::Unknown => year.is_none(),
+    }
+}
+
+fn matches_added(filter: AddedFilter, at: i64, now: i64) -> bool {
+    match filter {
+        AddedFilter::Any => true,
+        AddedFilter::Last7Days => within(Some(at), now, 7 * DAY_SECONDS),
+        AddedFilter::Last30Days => within(Some(at), now, 30 * DAY_SECONDS),
+        AddedFilter::Last90Days => within(Some(at), now, 90 * DAY_SECONDS),
+        AddedFilter::LastYear => within(Some(at), now, YEAR_SECONDS),
+    }
+}
+
+/// Keeps the rows that the sidebar choice, every active facet and `search` allow, in order.
+///
+/// Facets combine with AND; the availability facts are alternatives within their facet. Unknown
+/// playtime, last played and release never satisfy a threshold or window. Blank search keeps
+/// everything; search is title-only and case-insensitive.
+pub fn filter(
+    rows: &[Row],
+    sidebar: &SidebarSelection,
+    filters: &LibraryFilters,
+    search: &str,
+    now: i64,
+) -> Vec<Row> {
     let needle = search.trim().to_lowercase();
     rows.iter()
         .filter(|row| match sidebar {
             SidebarSelection::All => true,
             SidebarSelection::Provider(id) => &row.provider == id,
         })
+        .filter(|row| matches_availability(filters.availability, row))
+        .filter(|row| !filters.running_only || row.running)
+        .filter(|row| matches_match_state(filters.match_state, &row.status))
+        .filter(|row| matches_playtime(filters.playtime, row.playtime.seconds))
+        .filter(|row| matches_last_played(filters.last_played, row.playtime.last_played_at, now))
+        .filter(|row| matches_release(filters.release, row.release_year))
+        .filter(|row| matches_added(filters.added, row.added_at, now))
+        .filter(|row| !filters.favorites_only || row.is_favorite)
         .filter(|row| needle.is_empty() || contains(row, &needle))
         .cloned()
         .collect()
@@ -160,8 +302,7 @@ fn folded(text: &str) -> String {
     text.to_lowercase()
 }
 
-/// The lowercased text each row is compared by, computed once per row instead of once per
-/// comparison.
+/// The values each row is compared by, computed once per row instead of once per comparison.
 struct SortKeys {
     title: String,
     /// Only filled when sorting by provider.
@@ -175,11 +316,43 @@ fn by_title(a: &Row, a_keys: &SortKeys, b: &Row, b_keys: &SortKeys) -> Ordering 
         .then_with(|| a.title.cmp(&b.title))
 }
 
-fn compare(a: (&Row, &SortKeys), b: (&Row, &SortKeys), key: SortKey) -> Ordering {
-    match key {
-        SortKey::Title => by_title(a.0, a.1, b.0, b.1),
-        SortKey::Provider => a.1.provider.cmp(&b.1.provider),
-        SortKey::MatchStatus => a.0.status.rank().cmp(&b.0.status.rank()),
+/// Compares two optional values so that a known value always comes before an unknown one,
+/// whichever direction the user chose. The direction only orders two known values.
+fn compare_option<T: Ord>(a: Option<T>, b: Option<T>, direction: SortDirection) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => match direction {
+            SortDirection::Ascending => a.cmp(&b),
+            SortDirection::Descending => b.cmp(&a),
+        },
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn directed(order: Ordering, direction: SortDirection) -> Ordering {
+    match direction {
+        SortDirection::Ascending => order,
+        SortDirection::Descending => order.reverse(),
+    }
+}
+
+fn compare(a: (&Row, &SortKeys), b: (&Row, &SortKeys), sort: Sort) -> Ordering {
+    let direction = sort.direction;
+    match sort.key {
+        SortKey::Title => directed(by_title(a.0, a.1, b.0, b.1), direction),
+        SortKey::Provider => directed(a.1.provider.cmp(&b.1.provider), direction),
+        SortKey::MatchStatus => directed(a.0.status.rank().cmp(&b.0.status.rank()), direction),
+        // Unknown-aware keys apply the direction inside `compare_option`, so unknown values stay
+        // last whichever direction the user chose.
+        SortKey::ReleaseYear => compare_option(a.0.release_year, b.0.release_year, direction),
+        SortKey::Playtime => compare_option(a.0.playtime.seconds, b.0.playtime.seconds, direction),
+        SortKey::LastPlayed => compare_option(
+            a.0.playtime.last_played_at,
+            b.0.playtime.last_played_at,
+            direction,
+        ),
+        SortKey::DateAdded => compare_option(Some(a.0.added_at), Some(b.0.added_at), direction),
     }
 }
 
@@ -187,7 +360,7 @@ fn compare(a: (&Row, &SortKeys), b: (&Row, &SortKeys), key: SortKey) -> Ordering
 fn tie_break(a: (&Row, &SortKeys), b: (&Row, &SortKeys), key: SortKey) -> Ordering {
     let order = match key {
         SortKey::Title => Ordering::Equal,
-        SortKey::Provider | SortKey::MatchStatus => by_title(a.0, a.1, b.0, b.1),
+        _ => by_title(a.0, a.1, b.0, b.1),
     };
     order
         .then_with(|| a.0.provider.cmp(&b.0.provider))
@@ -211,12 +384,7 @@ pub fn sort(rows: &mut [Row], by: Sort) {
     let mut order: Vec<usize> = (0..rows.len()).collect();
     order.sort_by(|&a, &b| {
         let (a, b) = ((&rows[a], &keys[a]), (&rows[b], &keys[b]));
-        let lead = compare(a, b, by.key);
-        let lead = match by.direction {
-            SortDirection::Ascending => lead,
-            SortDirection::Descending => lead.reverse(),
-        };
-        lead.then_with(|| tie_break(a, b, by.key))
+        compare(a, b, by).then_with(|| tie_break(a, b, by.key))
     });
     // `target[i]` is where the row now at `i` must end up; follow each cycle with swaps.
     let mut target = vec![0; rows.len()];
@@ -233,7 +401,8 @@ pub fn sort(rows: &mut [Row], by: Sort) {
 }
 
 /// Counts rows per provider, in the order `providers` gives them (id, name). Providers with no
-/// games still appear with a count of zero.
+/// games still appear with a count of zero; the fact counts start at zero and are filled by the
+/// caller when it wants them.
 pub fn counts<'a>(
     rows: &[Row],
     providers: impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -244,6 +413,9 @@ pub fn counts<'a>(
             id: id.to_owned(),
             name: name.to_owned(),
             count: rows.iter().filter(|row| row.provider == id).count(),
+            installed_count: 0,
+            owned_count: 0,
+            family_count: 0,
         })
         .collect()
 }

@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use super::cover::{self, CoverUrl};
 use super::machine::{Access, Effect, LibraryMachine, Phase};
+use super::store::StoredEntry;
 
 /// Covers downloaded at the same time.
 pub const MAX_COVER_DOWNLOADS: usize = 4;
@@ -53,29 +54,44 @@ impl LibraryMachine {
         if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
             return vec![];
         }
-        let wanted: BTreeSet<u64> = self
-            .installed_entries()
-            .filter_map(|entry| self.match_status(entry).game_id())
-            .filter(|game_id| {
-                self.games.get(game_id).is_some_and(|game| {
-                    game.cover_file.is_none()
-                        && game.cover_failed_at.is_none_or(|failed_at| {
-                            retry_failed_at.is_some_and(|now| {
-                                now.saturating_sub(failed_at) >= COVER_RETRY_AFTER_SECS
-                            })
-                        })
-                        && game
-                            .cover_url
-                            .as_deref()
-                            .and_then(cover::download_url)
-                            .is_some()
-                })
-            })
-            .collect();
+        let mut seen = BTreeSet::new();
+        let mut wanted = Vec::new();
+        // Installed entries come first; the rest of the visible library follows.
+        for installed in [true, false] {
+            for entry in self
+                .visible_entries()
+                .filter(|entry| entry.installed == installed)
+            {
+                let Some(game_id) = self.wanted_cover(entry, retry_failed_at) else {
+                    continue;
+                };
+                if seen.insert(game_id) {
+                    wanted.push(game_id);
+                }
+            }
+        }
         for game_id in wanted {
             self.covers.push(game_id);
         }
         self.start_cover_downloads()
+    }
+
+    /// The game whose cover this entry wants, if it is missing and downloadable.
+    fn wanted_cover(&self, entry: &StoredEntry, retry_failed_at: Option<i64>) -> Option<u64> {
+        let game_id = self.match_status(entry).game_id()?;
+        self.games.get(&game_id).and_then(|game| {
+            let wanted = game.cover_file.is_none()
+                && game.cover_failed_at.is_none_or(|failed_at| {
+                    retry_failed_at
+                        .is_some_and(|now| now.saturating_sub(failed_at) >= COVER_RETRY_AFTER_SECS)
+                })
+                && game
+                    .cover_url
+                    .as_deref()
+                    .and_then(cover::download_url)
+                    .is_some();
+            wanted.then_some(game_id)
+        })
     }
 
     /// Queues covers for games the match dialog lists, before any installed entry points at

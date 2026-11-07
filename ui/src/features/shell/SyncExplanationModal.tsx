@@ -60,7 +60,7 @@ function SyncExplanationDialog({
 
         <p className="text-sm leading-[1.5] text-text-dimmed">
           {t(
-            'Sync is on. Store playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library.',
+            'Sync is on. Store playtime totals and favorite changes are sent to your GameNode account. You can turn sync off in Settings and keep using your library.',
           )}
         </p>
 

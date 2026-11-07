@@ -11,6 +11,7 @@ import {
   type Snapshot,
   type MatchDialogView,
   type AddDialogView,
+  createDefaultFilters,
 } from '../../api';
 import { I18nProvider } from '../../i18n';
 import { resetUiStore } from '../../store/uiStore';
@@ -48,6 +49,7 @@ describe('Dialogs Feature Tests', () => {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
           filter: 'all',
+          filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: true,
@@ -55,6 +57,7 @@ describe('Dialogs Feature Tests', () => {
         search: '',
         access: 'verified',
         total: 1,
+        installedTotal: 1,
         providers: [],
         rows: [],
         scanning: false,
@@ -275,6 +278,7 @@ describe('Dialogs Feature Tests', () => {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
           filter: 'all',
+          filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: true,
@@ -282,6 +286,7 @@ describe('Dialogs Feature Tests', () => {
         search: '',
         access: 'verified',
         total: 2,
+        installedTotal: 2,
         providers: [],
         rows: [],
         scanning: false,

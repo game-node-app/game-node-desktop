@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use gamenode_core::callback::Provider;
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, GameApi, GameSummary, LibraryEntry,
+    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
+    LibraryEntry,
 };
 use gamenode_core::library::cover::CoverUrl;
 use gamenode_core::library::{EntryStatus, LibraryMachine};
@@ -24,8 +25,10 @@ use url::Url;
 use super::{Engine, Ports};
 
 mod drm_free;
+mod favorites;
 mod library;
 mod playtime;
+mod steam;
 mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
@@ -63,6 +66,15 @@ struct FakeApi {
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     created: Mutex<Vec<u64>>,
     updated: Mutex<Vec<u64>>,
+    /// The server's favorite games, returned by every read.
+    preferred: Mutex<Vec<u64>>,
+    /// When set, the next favorite read fails instead of returning `preferred`.
+    favorite_read: Mutex<Option<Result<Vec<u64>, ApiError>>>,
+    /// When set, every favorite change answers with this instead of success.
+    favorite_push: Mutex<Option<Result<(), FavoriteError>>>,
+    /// Every favorite change that reached the API, in order.
+    favorite_pushes: Mutex<Vec<(u64, bool)>>,
+    favorite_reads: Mutex<usize>,
 }
 
 impl FakeApi {
@@ -231,6 +243,34 @@ impl GameApi for FakeApi {
         self.created.lock().unwrap().push(game_id);
         Ok(())
     }
+    async fn list_favorites(
+        &self,
+        _credential: &SessionCredential,
+        _user_id: &str,
+    ) -> Result<Vec<u64>, ApiError> {
+        self.pause().await;
+        *self.favorite_reads.lock().unwrap() += 1;
+        if let Some(result) = self.favorite_read.lock().unwrap().clone() {
+            return result;
+        }
+        Ok(self.preferred.lock().unwrap().clone())
+    }
+    async fn set_favorite(
+        &self,
+        _credential: &SessionCredential,
+        game_id: u64,
+        favorite: bool,
+    ) -> Result<(), FavoriteError> {
+        self.pause().await;
+        self.favorite_pushes
+            .lock()
+            .unwrap()
+            .push((game_id, favorite));
+        if let Some(result) = *self.favorite_push.lock().unwrap() {
+            return result;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -361,6 +401,16 @@ fn harness_over(
     creds: Arc<FakeCreds>,
     remote: Option<Arc<gamenode_api::GameNodeClient>>,
 ) -> Harness {
+    harness_with_steam(api, creds, remote, None)
+}
+
+/// Like [`harness_over`], with Steam store-account adapters when given.
+fn harness_with_steam(
+    api: Arc<FakeApi>,
+    creds: Arc<FakeCreds>,
+    remote: Option<Arc<gamenode_api::GameNodeClient>>,
+    steam: Option<super::SteamPorts>,
+) -> Harness {
     let browser = Arc::new(FakeBrowser::default());
     let settings = Arc::new(FakeSettings::default());
     let store = Arc::new(FakeLibrary::default());
@@ -396,6 +446,7 @@ fn harness_over(
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
+        steam,
         covers_dir: covers.path().to_owned(),
         platform: Platform::Linux,
     };
@@ -417,6 +468,7 @@ fn harness_over(
         library: None,
         launch: None,
         tools: Default::default(),
+        store_accounts: Vec::new(),
     });
     let providers = crate::providers::load_bundled(Platform::Linux).providers;
     let engine = Engine::new(

@@ -24,8 +24,10 @@ Each step below is meant to be planned and shipped as one change.
 - **Desktop data only.** Desktop does not use the web connections or the importer (`/v1/connections/*`,
   `/v1/importer/*`). Every game in the desktop library comes from a desktop provider. Two parallel sources of "your
   games" in one UI is the confusion we are avoiding.
-- **Installed games only, for now.** Providers read what is on disk. Logging into stores to list owned-but-not-installed
-  games is a later provider capability (see Later).
+- **Installed and owned games.** Providers read what is on disk. Steam also connects through its own web sign-in, with
+  no API key, and lists every game the account owns plus games shared through Steam Family, installed or not. The
+  library shows the union by default, with an **Installed** filter to narrow it; other stores follow in their own
+  changes (see Later).
 - **Tracking runs in the background.** GameNode starts at login, on by default, and records playtime for every
   detected game, whether it was launched from GameNode, the store's client or a desktop shortcut.
 - **Desktop reports back to GameNode.** Detected games and playtime are sent to the server, on by default with a
@@ -203,7 +205,8 @@ Rules both ways follow:
 - The source is the store that sells the game, not the launcher that runs it. An Epic game run through Heroic is
   `epicgames`.
 - Desktop never sends sessions for a provider that has a store counter.
-- Play from before install is not recovered for measured providers. Store logins (Later) can add counters for them.
+- Play from before install is not recovered for measured providers. Store logins for other stores can later add counters
+  for them.
 
 ### Tracker
 
@@ -449,9 +452,9 @@ AppImage and Flathub builds install, sign in, launch a game and record its playt
 
 - **Background tracking setting.** Turn autostart and background tracking off from Settings. Until then, the OS's
   own startup settings can disable it.
-- **Store logins: owned-but-not-installed games.** A provider capability to list owned games, with a login flow in
-  the system browser where the store allows it. Store APIs here are unofficial and break, so each store is its own
-  change. Ubisoft is the first candidate.
+- **Store logins for more stores.** Steam is the first account provider: an isolated in-app web sign-in with no API key
+  lists owned and Steam Family games, installed or not, and the **Installed** filter narrows the library. Each other
+  store is its own change because the store APIs here are unofficial and break; Ubisoft is the next candidate.
 - **User-installed manifests.** Load TOML manifests from the user's data folder, and show the launch schemes and
   paths a manifest uses before enabling it. This covers small launchers and emulators (playtime source `emulator`
   already exists).

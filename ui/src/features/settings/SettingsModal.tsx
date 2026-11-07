@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconX } from '@tabler/icons-react';
 import { FloatingModal } from '../../components/FloatingModal';
 import {
   closeSettingsModal,
@@ -8,7 +8,7 @@ import {
   useUiStore,
   type SettingsTopic,
 } from '../../store/uiStore';
-import { useAppInfo, useAuth, useLocalGames } from '../../api';
+import { useAppInfo, useAuth, useLocalGames, useSnapshot } from '../../api';
 import { useI18n } from '../../i18n';
 
 import { AccountPanel } from './panels/AccountPanel';
@@ -65,6 +65,10 @@ export const SettingsModal: React.FC = () => {
   const { auth } = useAuth();
   const { data: appInfo } = useAppInfo();
   const localGames = useLocalGames();
+  const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
+  const storesNeedsAttention = (storeAccounts ?? []).some(
+    (account) => account.state === 'expired' || account.state === 'credentialError' || account.persistFailed,
+  );
 
   const contentPaneRef = useRef<HTMLDivElement>(null);
   const showLicenseNoticesButtonRef = useRef<HTMLButtonElement>(null);
@@ -199,11 +203,17 @@ export const SettingsModal: React.FC = () => {
             <nav className="flex flex-col gap-1" aria-label="Settings Topics">
               {TOPICS.map((topic) => {
                 const isSelected = topic.id === settingsTopic;
+                const needsAttention = topic.id === 'stores' && storesNeedsAttention;
                 return (
                   <button
                     key={topic.id}
                     type="button"
                     aria-current={isSelected ? 'page' : undefined}
+                    aria-label={
+                      needsAttention
+                        ? `${t(topic.titleKey) || topic.titleKey}: ${t('settings.storesNeedsAttention')}`
+                        : undefined
+                    }
                     className={`flex w-full items-center gap-[10px] rounded-sm px-sm py-compact text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                       isSelected
                         ? 'active bg-accent-subtle font-semibold text-brand'
@@ -211,7 +221,17 @@ export const SettingsModal: React.FC = () => {
                     }`}
                     onClick={() => handleSelectTopic(topic.id)}
                   >
-                    {t(topic.titleKey) || topic.titleKey}
+                    <span className="min-w-0 flex-1">{t(topic.titleKey) || topic.titleKey}</span>
+                    {needsAttention && (
+                      <span
+                        role="img"
+                        aria-label={t('settings.storesNeedsAttention')}
+                        className="inline-flex shrink-0 items-center gap-[4px] rounded-full bg-warning-subtle px-compact py-[2px] text-[10px] font-semibold uppercase tracking-[0.04em] text-warning"
+                      >
+                        <IconAlertTriangle size={13} stroke={1.75} aria-hidden="true" />
+                        <span>{t('settings.attention')}</span>
+                      </span>
+                    )}
                   </button>
                 );
               })}

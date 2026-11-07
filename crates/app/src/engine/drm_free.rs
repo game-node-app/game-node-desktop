@@ -39,7 +39,7 @@ impl Engine {
                             None,
                         );
                         for effect in effects {
-                            engine.library_effect(&state, effect);
+                            engine.library_effect(&mut state, effect);
                         }
                     }
                 }
@@ -788,7 +788,7 @@ impl Engine {
                                 .library
                                 .set_local_inference(registration.key(), game_id, game);
                         for effect in effects {
-                            e.library_effect(&state, effect);
+                            e.library_effect(&mut state, effect);
                         }
                         e.publish(&mut state);
                         drop(state);

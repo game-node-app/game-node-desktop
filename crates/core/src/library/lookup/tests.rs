@@ -414,3 +414,65 @@ fn a_new_cover_url_drops_the_downloaded_file() {
     done(&mut machine, &ask, Ok(vec![found("620", changed)]), later);
     assert_eq!(machine.games[&7].cover_file, None);
 }
+
+#[test]
+fn owned_only_and_family_shared_games_are_looked_up() {
+    let mut cache = LibraryCache::default();
+    cache
+        .entries
+        .push(crate::library::machine::tests::stored_with(
+            "steam",
+            "70",
+            "Half-Life",
+            false,
+            true,
+            false,
+        ));
+    cache
+        .entries
+        .push(crate::library::machine::tests::stored_with(
+            "steam", "400", "Portal", false, false, true,
+        ));
+    let (mut machine, _) = loaded(false, cache);
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    let op = machine.scan.as_ref().unwrap().op;
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![]),
+        now: NOW,
+    });
+    let asked = lookups(&effects);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].2, ["400", "70"]);
+}
+
+#[test]
+fn a_catalog_sync_looks_up_newly_visible_games() {
+    use crate::library::store::{CatalogError, CatalogRecord};
+
+    let (mut machine, _) = loaded(false, LibraryCache::default());
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    finish_scan(&mut machine, vec![], NOW);
+    let op = match machine.handle(Input::RequestCatalog).as_slice() {
+        [Effect::SyncCatalog { op, provider }] if provider == "steam" => *op,
+        other => panic!("{other:?}"),
+    };
+    let effects = machine.handle(Input::CatalogSynced {
+        op,
+        provider: "steam".to_owned(),
+        owned: Some(Ok(vec![CatalogRecord {
+            id: "70".to_owned(),
+            name: "Half-Life".to_owned(),
+        }])),
+        family: Some(Err(CatalogError::FamilyUnavailable)),
+        now: NOW + 1,
+    });
+    assert_eq!(lookups(&effects)[0].2, ["70"]);
+}

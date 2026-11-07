@@ -20,6 +20,7 @@ name = "Steam"
 platforms = ["windows", "linux"]
 source = "steam"
 scan = { native = "steam" }
+catalog = { native = "steam" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
@@ -42,6 +43,7 @@ path = "~/.local/share/Steam"
 | `platforms` | yes | `windows`, `linux`. A manifest that does not list the current platform is not loaded and is not shown as a filter. |
 | `source` | yes | The store or source name. Kept for later steps. |
 | `scan` | yes | `{ native = "<name>" }`. Only scanners built into the application exist (`steam`). An unknown name rejects the manifest. |
+| `catalog` | no | `{ native = "<name>" }`. A catalog backend built into the application (`steam`). An unknown name rejects the manifest. A provider without a catalog has no account connection and no owned-library import. |
 | `launch`, `install` | no | `{ uri = "<template>" }`. A provider without one has no Play or Install. |
 | `match` | no | `{ external_category = N }`: the GameNode external-game category of the provider's ids. Without it, games are never matched automatically. |
 | `exclude_ids` | no | Provider ids that are never shown: tools, runtimes and redistributables. |
@@ -56,6 +58,23 @@ folder (for example a symbolic link) are scanned once.
 A scan produces records: a provider-local `id`, an optional `name`, an `install_dir`, and further
 named text fields (Steam adds `state_flags`). A record without a usable `id` or `install_dir` is
 dropped and logged, and the rest of the scan continues. Repeated ids keep the first record.
+
+A catalog produces records too: a provider-local `id` and a non-empty `name`. A catalog record
+without a usable id or name is dropped and logged, repeated ids keep the first record, and
+`exclude_ids` applies to catalog records as well. A catalog-only entry is not installed, so its
+install folder is empty; installing the game later makes the same entry installed and keeps its
+match and cover.
+
+## Catalog capability
+
+`catalog = { native = "steam" }` declares that the provider can read games beyond what the
+installed scan finds. The bundled Steam provider uses this to import every game the connected
+account owns plus the games shared with it through Steam Family. Ownership is stored as three
+independent facts per entry: installed on this PC, owned by the account, and shared through
+family. The library shows the union, and an entry that is both owned and shared is treated as
+owned. A failed owned or family sync keeps the previous facts; signing out clears them but keeps
+entries, matches and covers. Only backends compiled into the application are valid, so an unknown
+`native` name rejects the manifest and the other providers still load.
 
 ## Launch and install templates
 
@@ -93,6 +112,12 @@ logged. Its games leave the library view but keep their saved matches.
 
 The bundled Steam Install action opens the game’s Steam library page, where Steam exposes its
 installation controls. This also gives a visible destination for an already-installed game.
+
+The Steam catalog reads owned games through `IPlayerService/GetOwnedGames` and family-shared games
+through the Steam Family endpoints, using the connected account's web session rather than an API
+key. It keeps numeric app ids with non-empty names, removes duplicates, and applies `exclude_ids`.
+A family-shared app that the account also owns is stored as owned only. The catalog never changes
+an installed entry's install folder or name.
 
 ## Playtime counters
 

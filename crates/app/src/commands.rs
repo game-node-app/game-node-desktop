@@ -10,6 +10,8 @@ pub struct AppInfo {
     pub locale: String,
     pub version: String,
     pub background_supported: bool,
+    /// Directory of the rotating log files; shown in Settings > About.
+    pub log_directory: Option<String>,
 }
 
 /// Normalizes raw OS locale strings into supported UI locales ("en" or "pt-BR").
@@ -184,11 +186,14 @@ pub async fn get_snapshot(engine: tauri::State<'_, Engine>) -> Result<Snapshot, 
 }
 
 #[tauri::command]
-pub async fn get_app_info() -> Result<AppInfo, String> {
+pub async fn get_app_info(
+    location: tauri::State<'_, crate::logging::LogLocation>,
+) -> Result<AppInfo, String> {
     Ok(AppInfo {
         locale: normalize_locale(&system_locale()).to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         background_supported: cfg!(windows),
+        log_directory: Some(location.directory.to_string_lossy().into_owned()),
     })
 }
 
@@ -324,6 +329,76 @@ pub async fn remove_entry(
 ) -> Result<(), String> {
     engine.remove_entry(key, allow_rediscovery);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Store Account Commands
+// ---------------------------------------------------------------------------
+
+/// Opens Steam's isolated sign-in window and waits for the attempt to end.
+#[tauri::command]
+pub async fn steam_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.steam_sign_in().await;
+    Ok(())
+}
+
+/// Brings the open Steam sign-in window to the front.
+#[tauri::command]
+pub async fn steam_focus_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.steam_focus_sign_in().await;
+    Ok(())
+}
+
+/// Cancels the open Steam sign-in window without saving a credential.
+#[tauri::command]
+pub async fn steam_cancel_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.steam_cancel_sign_in().await;
+    Ok(())
+}
+
+/// Signs out of Steam, keeping installed games, matches and covers.
+#[tauri::command]
+pub async fn steam_sign_out(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.steam_sign_out().await;
+    Ok(())
+}
+
+/// Validates the Steam session and, with an open library, refreshes the catalog.
+#[tauri::command]
+pub async fn steam_check(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.steam_check().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics Commands
+// ---------------------------------------------------------------------------
+
+/// The tail of the newest log file, for the Settings screen's report view.
+#[tauri::command]
+pub async fn get_recent_logs(
+    location: tauri::State<'_, crate::logging::LogLocation>,
+) -> Result<String, String> {
+    let directory = location.directory.clone();
+    tokio::task::spawn_blocking(move || crate::logging::read_recent(&directory, 256 * 1024))
+        .await
+        .map_err(|_| "the log reader stopped".to_owned())?
+        .map_err(|error| error.to_string())
+}
+
+/// Opens the log directory in the OS file manager.
+#[tauri::command]
+pub async fn open_logs_folder(
+    location: tauri::State<'_, crate::logging::LogLocation>,
+) -> Result<(), String> {
+    let directory = location.directory.clone();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&directory)?;
+        gamenode_platform::browser::open_directory(&directory)
+    })
+    .await
+    .map_err(|_| "opening the log folder stopped".to_owned())?
+    .map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------

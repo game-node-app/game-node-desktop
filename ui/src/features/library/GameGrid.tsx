@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { useVirtualizer, observeElementRect } from '@tanstack/react-virtual';
+import { IconDeviceDesktop, IconStarFilled, IconUsersGroup } from '@tabler/icons-react';
 import { commands, useLibraryView, type Row } from '../../api';
 import { useI18n } from '../../i18n';
 import { CoverImage } from './CoverImage';
@@ -28,6 +29,8 @@ interface GameTileProps extends RowHandlers {
   row: Row;
   isSelected: boolean;
   isFocused: boolean;
+  showInstalled: boolean;
+  showFamily: boolean;
   x: number;
   y: number;
 }
@@ -36,6 +39,8 @@ const GameTile = memo(function GameTile({
   row,
   isSelected,
   isFocused,
+  showInstalled,
+  showFamily,
   x,
   y,
   onClick,
@@ -88,7 +93,7 @@ const GameTile = memo(function GameTile({
         )}
       </div>
 
-      {/* Provider + Match Status */}
+      {/* Provider + Access + Match Status */}
       <div className="mt-0.5 flex h-4 items-center gap-1.5">
         <span
           title={formatMatchStatus(row.status, t)}
@@ -97,6 +102,39 @@ const GameTile = memo(function GameTile({
         />
         <span className="truncate text-xs text-text-dimmed">
           {row.providerName}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-text-dimmed">
+          {row.isFavorite && (
+            <span
+              data-testid={`game-tile-favorite-${row.key}`}
+              role="img"
+              aria-label={t('Library::Favorite')}
+              title={t('Library::Favorite')}
+              className="text-warning"
+            >
+              <IconStarFilled size={12} aria-hidden />
+            </span>
+          )}
+          {showInstalled && row.installed && (
+            <span
+              data-testid={`game-tile-installed-${row.key}`}
+              role="img"
+              aria-label={t('Library::Installed on this PC')}
+              title={t('Library::Installed on this PC')}
+            >
+              <IconDeviceDesktop size={12} stroke={1.75} aria-hidden />
+            </span>
+          )}
+          {showFamily && row.familyShared && !row.owned && (
+            <span
+              data-testid={`game-tile-family-${row.key}`}
+              role="img"
+              aria-label={t('Library::Shared through Steam Family')}
+              title={t('Library::Shared through Steam Family')}
+            >
+              <IconUsersGroup size={12} stroke={1.75} aria-hidden />
+            </span>
+          )}
         </span>
       </div>
 
@@ -115,6 +153,9 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
   const rows: Row[] = library?.rows ?? EMPTY_ROWS;
   const { selectedKeys, handlers } = useLibrarySelection();
   const focusedKey = library?.focused;
+  const filters = library?.layout?.filters;
+  const showInstalled = !(filters?.availability.installed ?? false);
+  const showFamily = !(filters?.availability.family ?? false);
 
   // Track the column count (not the raw width): the ResizeObserver fires every
   // frame while resizing, but React bails out when the count is unchanged.
@@ -212,6 +253,8 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
           row={row}
           isSelected={selectedKeys.has(row.key)}
           isFocused={focusedKey === row.key}
+          showInstalled={showInstalled}
+          showFamily={showFamily}
           x={GAP + col * (TILE_WIDTH + GAP)}
           y={virtualRow.start + ROW_PADDING_Y}
           {...handlers}

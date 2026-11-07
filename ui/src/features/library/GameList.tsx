@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef } from 'react';
 import { useVirtualizer, observeElementRect } from '@tanstack/react-virtual';
+import { IconDeviceDesktop, IconStarFilled, IconUsersGroup } from '@tabler/icons-react';
 import { useLibraryView, type Row } from '../../api';
 import { useI18n } from '../../i18n';
 import { CoverImage } from './CoverImage';
@@ -20,6 +21,8 @@ interface GameListRowProps extends RowHandlers {
   start: number;
   isSelected: boolean;
   isFocused: boolean;
+  showInstalled: boolean;
+  showFamily: boolean;
 }
 
 const GameListRow = memo(function GameListRow({
@@ -29,6 +32,8 @@ const GameListRow = memo(function GameListRow({
   start,
   isSelected,
   isFocused,
+  showInstalled,
+  showFamily,
   onClick,
   onContextMenu,
   onDoubleClick,
@@ -72,6 +77,39 @@ const GameListRow = memo(function GameListRow({
             {t('Library::Running')}
           </span>
         )}
+        {row.isFavorite && (
+          <span
+            data-testid={`game-row-favorite-${row.key}`}
+            role="img"
+            aria-label={t('Library::Favorite')}
+            title={t('Library::Favorite')}
+            className="shrink-0 text-warning"
+          >
+            <IconStarFilled size={13} aria-hidden />
+          </span>
+        )}
+        {showInstalled && row.installed && (
+          <span
+            data-testid={`game-row-installed-${row.key}`}
+            role="img"
+            aria-label={t('Library::Installed on this PC')}
+            title={t('Library::Installed on this PC')}
+            className="shrink-0 text-text-dimmed"
+          >
+            <IconDeviceDesktop size={13} stroke={1.75} aria-hidden />
+          </span>
+        )}
+        {showFamily && row.familyShared && !row.owned && (
+          <span
+            data-testid={`game-row-family-${row.key}`}
+            role="img"
+            aria-label={t('Library::Shared through Steam Family')}
+            title={t('Library::Shared through Steam Family')}
+            className="shrink-0 text-text-dimmed"
+          >
+            <IconUsersGroup size={13} stroke={1.75} aria-hidden />
+          </span>
+        )}
       </div>
 
       {/* Store / Provider */}
@@ -106,6 +144,9 @@ export const GameList: React.FC<GameListProps> = ({ className, style }) => {
   const rows: Row[] = library?.rows ?? EMPTY_ROWS;
   const { selectedKeys, handlers } = useLibrarySelection();
   const focusedKey = library?.focused;
+  const filters = library?.layout?.filters;
+  const showInstalled = !(filters?.availability.installed ?? false);
+  const showFamily = !(filters?.availability.family ?? false);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -178,6 +219,8 @@ export const GameList: React.FC<GameListProps> = ({ className, style }) => {
                 start={virtualRow.start}
                 isSelected={selectedKeys.has(row.key)}
                 isFocused={focusedKey === row.key}
+                showInstalled={showInstalled}
+                showFamily={showFamily}
                 {...handlers}
               />
             );

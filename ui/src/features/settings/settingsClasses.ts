@@ -48,6 +48,13 @@ export const settingsPill =
 export const settingsPillWarning =
   'inline-flex items-center rounded-full bg-warning-subtle px-compact py-[2px] text-xs font-medium text-warning';
 
+export const settingsPillSuccess = `${settingsPill} bg-success-subtle text-success`;
+
+export const settingsPillBrand = `${settingsPill} bg-accent-subtle text-brand`;
+
+export const settingsStat =
+  'flex min-w-[86px] flex-col gap-[2px] rounded-sm bg-[var(--settings-bg-base)] px-sm py-compact';
+
 const settingsInfoBoxBase =
   'flex items-center gap-compact rounded-sm border-l-[3px] bg-secondary px-[14px] py-[10px] text-xs';
 

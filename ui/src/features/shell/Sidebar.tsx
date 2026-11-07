@@ -8,6 +8,7 @@ import type { LibraryView, LocalView } from '../../api/types';
 import { openSettingsModal, uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { IconAlertTriangle, IconPlus, IconSettings } from '@tabler/icons-react';
+import { formatI18n } from '../library/formatters';
 import { ResizeHandle } from './ResizeHandle';
 
 export interface SidebarProps {
@@ -39,12 +40,19 @@ export function Sidebar({
   const clampedWidth = Math.min(360, Math.max(160, Math.round(rawWidth)));
 
   const activeFilter = library?.layout?.filter ?? 'all';
+  const installedFiltered = library?.layout?.filters?.availability.installed ?? false;
   const isAllActive = activeFilter === 'all';
   const isProviderActive = (id: string) =>
     typeof activeFilter === 'object' &&
     activeFilter !== null &&
     'provider' in activeFilter &&
     activeFilter.provider === id;
+  // Provider counts already reflect every active facet except the provider choice, so their sum
+  // is exactly what "All games" would show.
+  const allCount = (library?.providers ?? []).reduce(
+    (sum, provider) => sum + provider.count,
+    0,
+  );
 
   const failedProviders = library?.failedProviders ?? [];
   const isProviderFailed = (id: string, name: string) =>
@@ -105,7 +113,7 @@ export function Sidebar({
                 isAllActive ? 'text-brand' : 'text-text-dimmed'
               }`}
             >
-              {library?.total ?? 0}
+              {allCount}
             </span>
           </button>
 
@@ -118,6 +126,9 @@ export function Sidebar({
               {library.providers.map((provider) => {
                 const active = isProviderActive(provider.id);
                 const failed = isProviderFailed(provider.id, provider.name);
+                const count = provider.count;
+                const showInstalledSubline =
+                  !installedFiltered && provider.count !== provider.installedCount;
 
                 return (
                   <button
@@ -131,25 +142,39 @@ export function Sidebar({
                         : 'border-transparent bg-transparent font-normal text-text-default'
                     }`}
                   >
-                    <div className="flex items-center gap-[6px] overflow-hidden">
-                      <span className="truncate">{provider.name}</span>
-                      {failed && (
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <div className="flex items-center gap-[6px] overflow-hidden">
+                        <span className="truncate">{provider.name}</span>
+                        {failed && (
+                          <span
+                            data-testid={`provider-warning-${provider.id}`}
+                            aria-label="Provider sync failure"
+                            title="Provider sync failure"
+                            className="text-warning"
+                          >
+                            <IconAlertTriangle size={14} stroke={1.75} aria-hidden="true" />
+                          </span>
+                        )}
+                      </div>
+                      {showInstalledSubline && (
                         <span
-                          data-testid={`provider-warning-${provider.id}`}
-                          aria-label="Provider sync failure"
-                          title="Provider sync failure"
-                          className="text-warning"
+                          data-testid={`sidebar-provider-installed-${provider.id}`}
+                          className="text-[11px] font-normal text-text-dimmed"
                         >
-                          <IconAlertTriangle size={14} stroke={1.75} aria-hidden="true" />
+                          {formatI18n(
+                            t('Library::{} installed'),
+                            provider.installedCount,
+                          )}
                         </span>
                       )}
                     </div>
                     <span
+                      data-testid={`sidebar-provider-count-${provider.id}`}
                       className={`ml-compact text-xs ${
                         active ? 'text-brand' : 'text-text-dimmed'
                       }`}
                     >
-                      {provider.count}
+                      {count}
                     </span>
                   </button>
                 );

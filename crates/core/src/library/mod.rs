@@ -8,6 +8,7 @@ mod add_dialog;
 mod add_run;
 pub mod cover;
 mod cover_queue;
+pub mod favorites;
 pub mod launch;
 pub mod layout;
 mod lookup;
@@ -29,8 +30,9 @@ pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
 };
 pub use layout::{
-    LibraryLayout, ProviderFilter, SidebarSelection, Sort, SortDirection, SortField, SortKey,
-    SortOrder, ViewMode,
+    AddedFilter, AvailabilityFilter, DAY_SECONDS, FIRST_RELEASE_DECADE, LastPlayedFilter,
+    LibraryFilters, LibraryLayout, MatchFilter, PlaytimeFilter, ProviderFilter, ReleaseFilter,
+    SidebarSelection, Sort, SortDirection, SortField, SortKey, SortOrder, ViewMode, YEAR_SECONDS,
 };
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
 pub use match_dialog::{
@@ -41,7 +43,8 @@ pub use membership::{EntryStatus, GameStatus, Membership, StandingView};
 pub use query::{ProviderCount, Row};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{
-    AutoMatch, ChosenMatch, GameRecord, LastAccount, LibraryCache, LibraryStore, ProviderScanState,
-    StoredEntry, entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
+    LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount, StoredEntry,
+    entry_key,
 };
 pub use view::{DetailView, EmptyState, LibraryView};

@@ -5,9 +5,11 @@ The platform `DataPaths` adapter resolves these locations for the current user:
 | Platform | Application data | Settings database | Linux-only fallback credential |
 | --- | --- | --- | --- |
 | Windows | `%LOCALAPPDATA%\GameNode\Desktop` | `gamenode.sqlite3` below application data | None; Windows Credential Manager only |
-| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token` below application data |
+| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token` and `private/steam-token` below application data |
 
-The Linux fallback directory has mode `0700` and the credential file `0600`.
+The Linux fallback directory has mode `0700` and the credential files `0600`. The GameNode
+session and the Steam session cookie use separate keyring accounts and separate fallback files;
+deleting one never touches the other.
 Only an absent Secret Service permits fallback; locked or failing services
 produce an error. Credentials are never settings. The keyring/fallback adapter
 handles tokens separately from SQLite.
@@ -25,14 +27,23 @@ token, callback URL, or pending sign-in secret belongs in this database.
 
 | Table | Holds |
 | --- | --- |
-| `library_entries` | Every game a provider has detected, keyed `<provider>:<store id>`, with its install folder, extra scan fields, `installed` flag and first/last seen times. Rows are never deleted: a game a completed scan no longer finds is marked `installed = 0`, so its matches and cover return with it. |
-| `provider_scans` | Per provider, the time of the last successful scan and the last error. A failed scan records the error and keeps the entries. |
+| `library_entries` | Every game a provider has detected, keyed `<provider>:<store id>`, with its install folder, extra scan fields, `installed`, `owned` and `family_shared` flags and first/last seen times. Rows are never deleted: a game a completed scan no longer finds is marked `installed = 0`, so its matches and cover return with it. |
+| `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
+| `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
 | `chosen_matches` | The user's own match per `(account_id, entry_key)`. A null `game_id` means "no GameNode game". Each account keeps its own choices. |
+| `favorites` | Each account's favorite GameNode games per `(account_id, game_id)`, with `is_favorite`, `pending` (a local change GameNode has not confirmed) and `updated_at`. A false, confirmed row is deleted. Favorites survive sign-out and stay hidden from other accounts. |
 | `games` | GameNode game name, release year, cover URL and cover state (`cover_file`, `cover_failed_at`) for display without the network. |
 
 Saving a provider's scan is one transaction: it either fully applies or leaves
-the previous entries as they were.
+the previous entries as they were. Migration `0006_store_accounts_and_catalog.sql`
+adds the independent `owned`/`family_shared` entry facts, the four catalog sync
+columns and `store_accounts`. Existing entries stay installed and start neither
+owned nor shared; an upgraded database keeps matches, covers, playtime and
+settings. A successful owned or family sync replaces only its own fact set, an
+owned game wins over a family-shared one, and clearing the catalog leaves entries,
+matches and covers in place. An unreadable ownership flag is treated as false and
+the installed fact still applies.
 
 `library.layout` is a JSON object with the view mode, sidebar selection, sort,
 sidebar and detail pane widths and whether the detail pane is open. The search

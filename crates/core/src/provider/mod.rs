@@ -14,7 +14,7 @@ pub mod registry;
 pub mod steam;
 pub mod template;
 
-pub use manifest::{Manifest, Platform};
+pub use manifest::{CatalogSpec, Manifest, Platform};
 pub use record::{RawRecord, Record};
 pub use registry::{
     ActionError, Diagnostic, LoadedProviders, Provider, ScanError, ScanInput, load,

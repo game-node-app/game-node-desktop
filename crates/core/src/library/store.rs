@@ -4,6 +4,8 @@
 //! `installed = false`, so its match and cover are still there if it comes back.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
 use crate::ports::StorageError;
 use crate::provider::Record;
@@ -28,6 +30,12 @@ pub struct StoredEntry {
     pub install_dir: String,
     pub fields: BTreeMap<String, String>,
     pub installed: bool,
+    /// Found by the connected store account's owned catalog.
+    #[serde(default)]
+    pub owned: bool,
+    /// Shared with the account through Steam Family (owned wins when both are true).
+    #[serde(default)]
+    pub family_shared: bool,
     pub first_seen: i64,
     pub last_seen: i64,
 }
@@ -42,6 +50,11 @@ impl StoredEntry {
             fields: self.fields.clone(),
         }
     }
+
+    /// Whether the library shows this entry: at least one of installed, owned or family-shared.
+    pub fn is_visible(&self) -> bool {
+        self.installed || self.owned || self.family_shared
+    }
 }
 
 /// The last scan outcome of one provider.
@@ -53,6 +66,105 @@ pub struct ProviderScanState {
     pub last_success_at: Option<i64>,
     /// Set when the latest scan failed; cleared by the next success.
     pub last_error: Option<String>,
+    /// Unix seconds of the last successful owned-catalog sync.
+    #[serde(default)]
+    pub last_catalog_at: Option<i64>,
+    /// Why the latest owned-catalog sync failed; cleared by the next success.
+    #[serde(default)]
+    pub catalog_error: Option<CatalogError>,
+    /// Unix seconds of the last successful family-catalog sync.
+    #[serde(default)]
+    pub last_family_at: Option<i64>,
+    /// Why the latest family-catalog sync failed; cleared by the next success.
+    #[serde(default)]
+    pub family_error: Option<CatalogError>,
+}
+
+/// The categories a catalog sync failure is stored and shown under.
+///
+/// The strings are stable: the database stores them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CatalogError {
+    Unreachable,
+    RateLimited,
+    Server,
+    Expired,
+    Privacy,
+    Changed,
+    InvalidCookies,
+    FamilyUnavailable,
+}
+
+impl CatalogError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::RateLimited => "rateLimited",
+            Self::Server => "server",
+            Self::Expired => "expired",
+            Self::Privacy => "privacy",
+            Self::Changed => "changed",
+            Self::InvalidCookies => "invalidCookies",
+            Self::FamilyUnavailable => "familyUnavailable",
+        }
+    }
+
+    /// The category stored under `value`, if it is one this build knows.
+    pub fn from_category(value: &str) -> Option<Self> {
+        match value {
+            "unreachable" => Some(Self::Unreachable),
+            "rateLimited" => Some(Self::RateLimited),
+            "server" => Some(Self::Server),
+            "expired" => Some(Self::Expired),
+            "privacy" => Some(Self::Privacy),
+            "changed" => Some(Self::Changed),
+            "invalidCookies" => Some(Self::InvalidCookies),
+            "familyUnavailable" => Some(Self::FamilyUnavailable),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CatalogError {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_category(value).ok_or(())
+    }
+}
+
+/// One game from a provider's owned or family-shared catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogRecord {
+    pub id: String,
+    pub name: String,
+}
+
+/// A catalog sync result: `None` means that fact set was not attempted, `Ok` replaces it and
+/// `Err` keeps it and records the failure category.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CatalogUpdate {
+    pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    pub now: i64,
+}
+
+/// The non-secret identity of a connected store account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreAccount {
+    pub provider: String,
+    pub account_id: String,
+    pub account_name: Option<String>,
+    pub last_verified_at: Option<i64>,
 }
 
 /// The GameNode games a store id maps to, as last reported by the server.
@@ -89,6 +201,21 @@ pub struct GameRecord {
     pub cover_failed_at: Option<i64>,
 }
 
+/// The account's favorite state for one GameNode game.
+///
+/// `pending` marks a local change GameNode has not confirmed yet; a false, confirmed row is
+/// deleted instead of stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteRecord {
+    pub account_id: String,
+    pub game_id: u64,
+    pub is_favorite: bool,
+    pub pending: bool,
+    /// Unix seconds of the local change.
+    pub updated_at: i64,
+}
+
 /// Everything the library needs at startup, read in one go.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +225,9 @@ pub struct LibraryCache {
     pub auto_matches: Vec<AutoMatch>,
     /// The chosen matches of the account that was asked for; empty when there is none.
     pub chosen_matches: Vec<ChosenMatch>,
+    /// The favorites of the account that was asked for; empty when there is none.
+    #[serde(default)]
+    pub favorites: Vec<FavoriteRecord>,
     pub games: Vec<GameRecord>,
     pub excluded: Vec<String>,
 }
@@ -124,6 +254,23 @@ pub trait LibraryStore: Send + Sync {
     /// Records that a scan of `provider` failed. Its entries are left as they were.
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError>;
 
+    /// Applies an owned or family catalog result for `provider`, replacing only the fact sets the
+    /// update covers and leaving installed facts, matches and covers untouched.
+    fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError>;
+
+    /// Clears the owned and family facts and catalog sync state of `provider` without deleting
+    /// entries, matches or covers.
+    fn clear_catalog(&self, provider: &str) -> Result<(), StorageError>;
+
+    /// The non-secret identity of every connected store account.
+    fn load_store_accounts(&self) -> Result<Vec<StoreAccount>, StorageError>;
+
+    /// Inserts or replaces one connected store account.
+    fn save_store_account(&self, account: &StoreAccount) -> Result<(), StorageError>;
+
+    /// Forgets one connected store account.
+    fn clear_store_account(&self, provider: &str) -> Result<(), StorageError>;
+
     /// Stores the server's answer for each id (insert or replace).
     fn save_auto_matches(&self, matches: &[AutoMatch]) -> Result<(), StorageError>;
 
@@ -133,6 +280,10 @@ pub trait LibraryStore: Send + Sync {
 
     /// Forgets the account's choice for an entry, so the automatic match (if any) applies again.
     fn delete_chosen_match(&self, account_id: &str, entry_key: &str) -> Result<(), StorageError>;
+
+    /// Inserts or replaces one game's favorite state for the account. A false, confirmed row is
+    /// deleted: absence means "not favorited and nothing to send".
+    fn save_favorite(&self, favorite: &FavoriteRecord) -> Result<(), StorageError>;
 
     /// Inserts or updates game name, year and cover URL. The `cover_file` and `cover_failed_at`
     /// of the input are ignored (use [`save_cover_ready`](Self::save_cover_ready) and

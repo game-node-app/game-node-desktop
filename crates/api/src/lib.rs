@@ -3,7 +3,8 @@
 //! Speaks only endpoints that already exist on the server. The Better Auth ones are described in
 //! `docs/auth-contract.md`: `POST /v1/auth/sign-in/social`, the browser-facing
 //! `GET /v1/auth/capacitor-authorization-proxy`, `GET /v1/auth/get-session` and
-//! `POST /v1/auth/sign-out`. The game endpoints the library calls are in [`game`].
+//! `POST /v1/auth/sign-out`. The game endpoints the library calls are in [`game`]. Steam's store
+//! session and catalog endpoints are unofficial and live in [`steam`].
 
 use std::time::Duration;
 
@@ -45,6 +46,9 @@ pub fn server_url_from_env() -> Result<Url, ClientError> {
 
 mod game;
 mod playtime;
+mod steam;
+
+pub use steam::SteamClient;
 
 #[derive(Clone)]
 pub struct GameNodeClient {

@@ -4,7 +4,7 @@ import { createAppQueryClient } from '../../AppProviders';
 import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { commands } from '../../api/commands';
-import type { LibraryView, LocalView } from '../../api/types';
+import { createDefaultFilters, type LibraryView, type LocalView } from '../../api/types';
 import { I18nProvider } from '../../i18n';
 import { resetUiStore, uiStore } from '../../store/uiStore';
 import { AppMenu } from './AppMenu';
@@ -41,9 +41,10 @@ describe('features/shell', () => {
     search: '',
     access: 'verified',
     total: 42,
+    installedTotal: 42,
     providers: [
-      { id: 'steam', name: 'Steam', count: 30 },
-      { id: 'gog', name: 'GOG', count: 12 },
+      { id: 'steam', name: 'Steam', count: 30, installedCount: 30, ownedCount: 0, familyCount: 0 },
+      { id: 'gog', name: 'GOG', count: 12, installedCount: 12, ownedCount: 0, familyCount: 0 },
     ],
     rows: [],
     scanning: false,
@@ -61,6 +62,7 @@ describe('features/shell', () => {
       view: 'grid',
       sort: { key: 'title', direction: 'ascending' },
       filter: 'all',
+      filters: createDefaultFilters(),
       sidebarWidth: 220,
       detailWidth: 320,
       detailOpen: false,

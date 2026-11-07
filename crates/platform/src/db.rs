@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -44,6 +44,16 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "game_tools",
         sql: include_str!("../migrations/0005_game_tools.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "store_accounts_and_catalog",
+        sql: include_str!("../migrations/0006_store_accounts_and_catalog.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "favorites",
+        sql: include_str!("../migrations/0007_favorites.sql"),
     },
 ];
 
@@ -319,7 +329,9 @@ mod tests {
                 (2, "library".to_string()),
                 (3, "playtime".to_string()),
                 (4, "drm_free_backups".to_string()),
-                (5, "game_tools".to_string())
+                (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string())
             ]
         );
     }
@@ -416,13 +428,13 @@ mod tests {
         }
     }
 
-    const V6_OK: Migration = Migration {
-        version: 6,
+    const V8_OK: Migration = Migration {
+        version: 8,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V6_BAD: Migration = Migration {
-        version: 6,
+    const V8_BAD: Migration = Migration {
+        version: 8,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -444,7 +456,9 @@ mod tests {
             MIGRATIONS[2],
             MIGRATIONS[3],
             MIGRATIONS[4],
-            V6_OK,
+            MIGRATIONS[5],
+            MIGRATIONS[6],
+            V8_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -455,7 +469,9 @@ mod tests {
                 (3, "playtime".into()),
                 (4, "drm_free_backups".into()),
                 (5, "game_tools".into()),
-                (6, "add_notes".into())
+                (6, "store_accounts_and_catalog".into()),
+                (7, "favorites".into()),
+                (8, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -492,11 +508,13 @@ mod tests {
                 MIGRATIONS[2],
                 MIGRATIONS[3],
                 MIGRATIONS[4],
-                V6_BAD,
+                MIGRATIONS[5],
+                MIGRATIONS[6],
+                V8_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 6 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 8 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -507,6 +525,8 @@ mod tests {
                 (3, "playtime".to_string()),
                 (4, "drm_free_backups".to_string()),
                 (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -533,19 +553,21 @@ mod tests {
                     MIGRATIONS[2],
                     MIGRATIONS[3],
                     MIGRATIONS[4],
-                    V6_OK,
+                    MIGRATIONS[5],
+                    MIGRATIONS[6],
+                    V8_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 5
+        let err = open(&path).unwrap_err(); // this build only knows version 7
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 6,
-                supported: 5
+                found: 8,
+                supported: 7
             }
         );
         assert_eq!(
@@ -581,6 +603,8 @@ mod tests {
                 (3, "playtime".to_string()),
                 (4, "drm_free_backups".to_string()),
                 (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string()),
             ]
         );
         for table in [
@@ -589,6 +613,8 @@ mod tests {
             "auto_matches",
             "chosen_matches",
             "games",
+            "store_accounts",
+            "favorites",
         ] {
             let rows: i64 = store
                 .conn()
@@ -609,7 +635,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 5,
+                found: 7,
                 supported: 1
             }
         );
@@ -633,8 +659,8 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 6,
-            ..V6_OK
+            version: 8,
+            ..V8_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -672,6 +698,8 @@ mod tests {
                 (3, "playtime".to_string()),
                 (4, "drm_free_backups".to_string()),
                 (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string()),
             ]
         );
 
@@ -729,6 +757,187 @@ mod tests {
     }
 
     #[test]
+    fn v5_database_is_upgraded_to_v6_preserving_library_matches_covers_and_playtime() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..5]).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('window.width', '1920')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen)
+                 VALUES ('steam:620', 'steam', '620', 'Portal 2', 'C:/Games/Portal 2',
+                         '{\"state_flags\":\"4\"}', 1, 100, 150)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO provider_scans (provider, last_success_at, last_error)
+                 VALUES ('steam', 150, NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO auto_matches (category, uid, game_ids_json, checked_at)
+                 VALUES (1, '620', '[72]', 120)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+                 VALUES ('acct', 'steam:620', 72, 130)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO games (game_id, name, release_year, cover_url, cover_file, cover_failed_at)
+                 VALUES (72, 'Portal 2', 2011, 'https://images.example/co1.jpg', '72.jpg', NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playtime_sessions
+                    (id, account_id, entry_key, game_id, source, platform_id, started_at, checkpoint_at, ended_at)
+                 VALUES ('s1', 'acct', 'steam:620', 72, 'steam', 6, 100, 200, 300)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playtime_totals
+                    (account_id, entry_key, total_seconds, last_played_at, accepted_game_id,
+                     accepted_seconds, rejected_seconds)
+                 VALUES ('acct', 'steam:620', 3600, 300, 72, 3600, NULL)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(
+            versions(&conn),
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string()),
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string()),
+            ]
+        );
+
+        let entry: (String, String, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT name, install_dir, installed, owned, family_shared, first_seen
+                 FROM library_entries WHERE key = 'steam:620'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            entry,
+            ("Portal 2".into(), "C:/Games/Portal 2".into(), 1, 0, 0, 100),
+            "installed entries stay visible and ownership starts false"
+        );
+
+        type StoredScan = (
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+        );
+        let scan: StoredScan = conn
+            .query_row(
+                "SELECT last_success_at, last_error, last_catalog_at, catalog_error, last_family_at
+                 FROM provider_scans WHERE provider = 'steam'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(scan, (Some(150), None, None, None, None));
+        let family_error: Option<String> = conn
+            .query_row(
+                "SELECT family_error FROM provider_scans WHERE provider = 'steam'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(family_error, None, "catalog sync state starts empty");
+
+        assert_eq!(
+            conn.query_row("SELECT checked_at FROM auto_matches", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            120
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT game_id FROM chosen_matches WHERE account_id = 'acct'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            72
+        );
+        assert_eq!(
+            conn.query_row("SELECT cover_file FROM games WHERE game_id = 72", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "72.jpg"
+        );
+        assert_eq!(
+            conn.query_row("SELECT total_seconds FROM playtime_totals", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            3600
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM playtime_sessions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM store_accounts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'window.width'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "1920"
+        );
+    }
+
+    #[test]
     fn database_never_holds_credentials_or_callback_urls() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -757,6 +966,7 @@ mod tests {
                 "chosen_matches",
                 "discovery_candidates",
                 "discovery_watches",
+                "favorites",
                 "games",
                 "library_entries",
                 "local_inferences",
@@ -767,6 +977,7 @@ mod tests {
                 "save_profiles",
                 "schema_migrations",
                 "settings",
+                "store_accounts",
                 "tool_files",
                 "tool_installations",
                 "tool_releases_cache",

@@ -53,6 +53,8 @@ export type PlaytimeSource = 'internal' | 'store';
 export interface PlaytimeView {
   seconds?: number | null;
   source: PlaytimeSource;
+  /** Unix seconds from the selected source; null when that source has no date. */
+  lastPlayedAt?: number | null;
 }
 
 export interface SyncPreferences {
@@ -97,8 +99,17 @@ export interface Row {
   matchedName?: string | null;
   provider: string;
   providerName: string;
+  installed: boolean;
+  owned: boolean;
+  familyShared: boolean;
   status: MatchStatus;
   coverFile?: string | null;
+  /** The matched game's release year; unknown for unmatched entries. */
+  releaseYear?: number | null;
+  /** Unix seconds of the scan that first detected the entry. */
+  addedAt: number;
+  /** Whether the matched game is one of the account's favorites. */
+  isFavorite: boolean;
 }
 
 export interface DetailView {
@@ -112,12 +123,35 @@ export interface DetailView {
 
 export type EmptyState =
   | { noGames: { stores: string[] } }
+  | { noInstalled: { provider: string | null } }
   | 'nothingMatches';
 
 export type ViewMode = 'grid' | 'list';
 
-export type SortKey = 'title' | 'provider' | 'matchStatus';
+export type SortKey =
+  | 'title'
+  | 'provider'
+  | 'matchStatus'
+  | 'releaseYear'
+  | 'playtime'
+  | 'lastPlayed'
+  | 'dateAdded';
 export type SortDirection = 'ascending' | 'descending';
+
+/** The direction that best answers the question each sort key asks. */
+export const DEFAULT_SORT_DIRECTION: Record<SortKey, SortDirection> = {
+  title: 'ascending',
+  provider: 'ascending',
+  matchStatus: 'ascending',
+  releaseYear: 'descending',
+  playtime: 'descending',
+  lastPlayed: 'descending',
+  dateAdded: 'descending',
+};
+
+export function defaultSortDirection(key: SortKey): SortDirection {
+  return DEFAULT_SORT_DIRECTION[key];
+}
 
 export interface Sort {
   key: SortKey;
@@ -126,10 +160,63 @@ export interface Sort {
 
 export type SidebarSelection = 'all' | { provider: string };
 
+export interface AvailabilityFilter {
+  installed: boolean;
+  owned: boolean;
+  family: boolean;
+}
+
+export type MatchFilter = 'any' | 'matched' | 'ambiguous' | 'unmatched' | 'noGame';
+export type PlaytimeFilter = 'any' | 'unplayed' | 'played' | 'atLeast10h' | 'atLeast100h';
+export type LastPlayedFilter = 'any' | 'last7Days' | 'last30Days' | 'lastYear';
+export type ReleaseFilter = 'any' | 'earlier' | 'unknown' | { decade: number };
+export type AddedFilter = 'any' | 'last7Days' | 'last30Days' | 'last90Days' | 'lastYear';
+
+/** Every toolbar facet. Facets combine with AND; availability facts are alternatives. */
+export interface LibraryFilters {
+  availability: AvailabilityFilter;
+  runningOnly: boolean;
+  matchState: MatchFilter;
+  playtime: PlaytimeFilter;
+  lastPlayed: LastPlayedFilter;
+  release: ReleaseFilter;
+  added: AddedFilter;
+  favoritesOnly: boolean;
+}
+
+export function createDefaultFilters(): LibraryFilters {
+  return {
+    availability: { installed: false, owned: false, family: false },
+    runningOnly: false,
+    matchState: 'any',
+    playtime: 'any',
+    lastPlayed: 'any',
+    release: 'any',
+    added: 'any',
+    favoritesOnly: false,
+  };
+}
+
+export function filtersAreDefault(filters: LibraryFilters): boolean {
+  return (
+    !filters.availability.installed &&
+    !filters.availability.owned &&
+    !filters.availability.family &&
+    !filters.runningOnly &&
+    filters.matchState === 'any' &&
+    filters.playtime === 'any' &&
+    filters.lastPlayed === 'any' &&
+    filters.release === 'any' &&
+    filters.added === 'any' &&
+    !filters.favoritesOnly
+  );
+}
+
 export interface LibraryLayout {
   view: ViewMode;
   sort: Sort;
   filter: SidebarSelection;
+  filters: LibraryFilters;
   sidebarWidth: number;
   detailWidth: number;
   detailOpen: boolean;
@@ -141,6 +228,9 @@ export interface ProviderCount {
   id: string;
   name: string;
   count: number;
+  installedCount: number;
+  ownedCount: number;
+  familyCount: number;
 }
 
 export type Reason =
@@ -263,6 +353,7 @@ export interface LibraryView {
   search: string;
   access: Access;
   total: number;
+  installedTotal: number;
   providers: ProviderCount[];
   rows: Row[];
   scanning: boolean;
@@ -551,6 +642,48 @@ export interface ToolsView {
   catalog: ToolCatalogItemView[];
 }
 
+export type CatalogError =
+  | 'unreachable'
+  | 'rateLimited'
+  | 'server'
+  | 'expired'
+  | 'privacy'
+  | 'changed'
+  | 'invalidCookies'
+  | 'familyUnavailable';
+
+export type StoreAccountState =
+  | 'notConnected'
+  | 'checking'
+  | 'signingIn'
+  | 'connected'
+  | 'expired'
+  | 'unreachable'
+  | 'credentialError';
+
+export interface StoreAccountView {
+  provider: string;
+  state: StoreAccountState;
+  accountId: string | null;
+  accountName: string | null;
+  ownedCount: number;
+  familyCount: number;
+  installedCount: number;
+  lastCheckedAt: number | null;
+  /** Last successful catalog sync in this run; the connected toast waits for it. */
+  lastSyncedAt?: number | null;
+  storage: StorageMethod | null;
+  persistFailed: boolean;
+  catalogError: CatalogError | null;
+  familyError: CatalogError | null;
+  canSignIn: boolean;
+  canCancelSignIn: boolean;
+  canFocusSignIn: boolean;
+  canSignOut: boolean;
+  canCheck: boolean;
+  canRemoveCredential: boolean;
+}
+
 export interface Snapshot {
   localGames: LocalView;
   playtimeError: boolean;
@@ -564,12 +697,14 @@ export interface Snapshot {
   library?: LibraryView | null;
   launch?: LaunchStatus | null;
   tools: ToolsView;
+  storeAccounts: StoreAccountView[];
 }
 
 export interface AppInfo {
   locale: string;
   version: string;
   backgroundSupported: boolean;
+  logDirectory?: string | null;
 }
 
 export type AuthInput =
@@ -601,6 +736,8 @@ export type LibraryInput =
   | { setFilter: SidebarSelection }
   | { setSearch: string }
   | { setSort: Sort }
+  | { setFilters: LibraryFilters }
+  | { setFavorite: { key: string; favorite: boolean; now: number } }
   | { setSidebarWidth: number }
   | { setDetailWidth: number }
   | { setDetailOpen: boolean }
@@ -696,5 +833,6 @@ export function createDefaultSnapshot(): Snapshot {
       totalCacheArchives: 0,
       catalog: [],
     },
+    storeAccounts: [],
   };
 }

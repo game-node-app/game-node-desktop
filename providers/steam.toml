@@ -4,6 +4,8 @@ name = "Steam"
 platforms = ["windows", "linux"]
 source = "steam"
 scan = { native = "steam" }
+# Owned and Steam Family games, read with the connected account's web session.
+catalog = { native = "steam" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }

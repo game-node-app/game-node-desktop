@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use gamenode_core::game_api::{ApiError, ExternalMatch, GameSummary};
 use gamenode_core::library::{
-    AutoMatch, ChosenMatch, GameRecord, LastAccount, LaunchError, LaunchKind, LaunchState,
-    LibraryCache, LibraryLayout, LibraryStore, LibraryView, MatchStatus, ProviderScanState,
-    StoredEntry,
+    AutoMatch, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord, LastAccount, LaunchError,
+    LaunchKind, LaunchState, LibraryCache, LibraryLayout, LibraryStore, LibraryView, MatchStatus,
+    ProviderScanState, StoreAccount, StoredEntry,
 };
 use gamenode_core::ports::{HostFiles, StorageError, UriError, UriOpener};
 use gamenode_core::provider::Record;
@@ -127,6 +127,9 @@ pub(super) struct FakeLibrary {
     pub(super) covers_ready: Mutex<Vec<(u64, String)>>,
     pub(super) account: Mutex<Option<LastAccount>>,
     pub(super) excluded: Mutex<Vec<String>>,
+    pub(super) catalogs: Mutex<Vec<(String, CatalogUpdate)>>,
+    pub(super) cleared: Mutex<Vec<String>>,
+    pub(super) favorites: Mutex<Vec<FavoriteRecord>>,
 }
 
 impl FakeLibrary {
@@ -155,6 +158,28 @@ impl LibraryStore for FakeLibrary {
     fn save_scan_failure(&self, _provider: &str, _error: &str) -> Result<(), StorageError> {
         Ok(())
     }
+    fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError> {
+        self.pause();
+        self.catalogs
+            .lock()
+            .unwrap()
+            .push((provider.to_owned(), update.clone()));
+        Ok(())
+    }
+    fn clear_catalog(&self, provider: &str) -> Result<(), StorageError> {
+        self.pause();
+        self.cleared.lock().unwrap().push(provider.to_owned());
+        Ok(())
+    }
+    fn load_store_accounts(&self) -> Result<Vec<StoreAccount>, StorageError> {
+        Ok(Vec::new())
+    }
+    fn save_store_account(&self, _account: &StoreAccount) -> Result<(), StorageError> {
+        Ok(())
+    }
+    fn clear_store_account(&self, _provider: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
     fn save_auto_matches(&self, matches: &[AutoMatch]) -> Result<(), StorageError> {
         self.pause();
         self.matches.lock().unwrap().extend_from_slice(matches);
@@ -178,6 +203,17 @@ impl LibraryStore for FakeLibrary {
         Ok(())
     }
     fn save_cover_failed(&self, _game_id: u64, _at: i64) -> Result<(), StorageError> {
+        Ok(())
+    }
+    fn save_favorite(&self, favorite: &FavoriteRecord) -> Result<(), StorageError> {
+        self.pause();
+        let mut saved = self.favorites.lock().unwrap();
+        saved.retain(|record| {
+            !(record.account_id == favorite.account_id && record.game_id == favorite.game_id)
+        });
+        if favorite.is_favorite || favorite.pending {
+            saved.push(favorite.clone());
+        }
         Ok(())
     }
     fn load_layout(&self) -> Result<LibraryLayout, StorageError> {
@@ -238,6 +274,8 @@ fn cached_portal_2() -> StoredEntry {
         install_dir: "Portal 2".to_owned(),
         fields: Default::default(),
         installed: true,
+        owned: false,
+        family_shared: false,
         first_seen: 1,
         last_seen: 1,
     }
@@ -251,6 +289,7 @@ fn seed_cache(h: &Harness, account: Option<LastAccount>) {
             provider: "steam".to_owned(),
             last_success_at: Some(1),
             last_error: None,
+            ..ProviderScanState::default()
         }],
         ..LibraryCache::default()
     };

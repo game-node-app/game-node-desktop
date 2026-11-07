@@ -24,6 +24,8 @@ fn loads_the_bundled_steam_manifest() {
     assert_eq!(steam.source(), "steam");
     assert_eq!(steam.external_category(), Some(1));
     assert!(steam.has_launch() && steam.has_install());
+    assert!(steam.has_catalog());
+    assert_eq!(steam.catalog_backend(), Some("steam"));
     assert!(steam.manifest().exclude_ids.contains(&"228980".to_owned()));
     assert_eq!(steam.manifest().roots.windows.len(), 1);
     assert_eq!(steam.manifest().roots.linux.len(), 3);
@@ -92,6 +94,11 @@ fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
             "unknown scanner",
             minimal("bad").replace("native = \"steam\"", "native = \"nope\""),
             "unknown native scanner `nope`",
+        ),
+        (
+            "unknown catalog backend",
+            format!("{}\ncatalog = {{ native = \"nope\" }}", minimal("bad")),
+            "unknown catalog backend `nope`",
         ),
         (
             "malformed placeholder",
@@ -228,6 +235,18 @@ fn actions_use_the_manifest_templates() {
     let plain = loaded.get("plain").unwrap();
     assert_eq!(plain.launch_uri(&record), Err(ActionError::Unsupported));
     assert!(!plain.can_launch(&record) && !plain.can_install(&record));
+    assert!(!plain.has_catalog());
+    assert_eq!(plain.catalog_backend(), None);
+}
+
+#[test]
+fn a_known_catalog_backend_is_accepted_and_exposed() {
+    let manifest = format!("{}\ncatalog = {{ native = \"steam\" }}", minimal("shop"));
+    let loaded = load(&[("shop.toml", manifest.as_str())], Platform::Linux);
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let shop = loaded.get("shop").unwrap();
+    assert!(shop.has_catalog());
+    assert_eq!(shop.catalog_backend(), Some("steam"));
 }
 
 #[test]

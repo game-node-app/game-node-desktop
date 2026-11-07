@@ -84,9 +84,12 @@ impl Engine {
         state.playtime.ready = true;
         Ok(())
     }
-    pub(super) fn sync_tracker(&self, state: &mut State) {
+    /// Feeds the tracker the current library and returns whether anything changed: the tracked
+    /// account, the tracker's own output, or the set of running games. The caller decides whether
+    /// that warrants publishing a new snapshot.
+    pub(super) fn sync_tracker(&self, state: &mut State) -> bool {
         if !state.playtime.ready || state.playtime.stopped {
-            return;
+            return false;
         }
         let account = state.library.account().map(|a| a.id.clone());
         let entries = state
@@ -156,18 +159,22 @@ impl Engine {
             },
             gamenode_platform::random::session_id,
         );
-        self.track_effects(state, effects);
+        let tracker_changed = self.track_effects(state, effects);
         state.playtime.owner = account;
         if changed {
             self.refresh_playtime_display(state);
         }
-        state.library.set_running(if state.playtime.available {
+        let running_changed = state.library.set_running(if state.playtime.available {
             state.playtime.tracker.running()
         } else {
             Default::default()
         });
+        changed || tracker_changed || running_changed
     }
-    fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) {
+    /// Runs the tracker effects and returns whether there were any: any effect is a real change
+    /// worth publishing, even when it only writes history in the background.
+    fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
+        let changed = !effects.is_empty();
         let changed_history = effects.iter().any(|e| {
             matches!(
                 e,
@@ -247,6 +254,7 @@ impl Engine {
         if changed_history {
             self.refresh_playtime_display(state);
         }
+        changed
     }
     fn tracker_input(&self, input: TrackInput) {
         let mut state = self.lock();
@@ -273,18 +281,23 @@ impl Engine {
         if !state.playtime.ready || state.playtime.stopped {
             return;
         }
-        self.sync_tracker(&mut state);
+        // Each sub-step reports whether it changed something. An idle tick publishes nothing:
+        // rebuilding the whole library just to refresh the tray tooltip is wasteful, and the UI
+        // already holds the previous snapshot.
+        let mut changed = self.sync_tracker(&mut state);
         if now >= state.playtime.next_checkpoint {
             state.playtime.next_checkpoint = now + 60;
             let effects = state.playtime.tracker.update(
                 TrackInput::Tick { now },
                 gamenode_platform::random::session_id,
             );
-            self.track_effects(&mut state, effects);
+            changed |= self.track_effects(&mut state, effects);
         }
         if now >= state.playtime.next_scan {
             state.playtime.next_scan = now + 1800;
             self.run_library(&mut state, LibInput::ScanRequested);
+            // A scan changes the view (`scanning`) and starts work, even before it finds games.
+            changed = true;
         }
         if state.playtime.available
             && state.library.account().is_some()
@@ -307,6 +320,7 @@ impl Engine {
                 if generation != state.playtime.generation || state.playtime.stopped {
                     return;
                 }
+                let mut changed = false;
                 if !learned.is_empty() {
                     for registration in learned {
                         if let Some(current) =
@@ -318,6 +332,7 @@ impl Engine {
                         }
                     }
                     engine.sync_tracker(&mut state);
+                    changed = true;
                 }
                 match result {
                     Ok(processes) => {
@@ -325,24 +340,39 @@ impl Engine {
                             TrackInput::Listed { at: now, processes },
                             gamenode_platform::random::session_id,
                         );
-                        engine.track_effects(&mut state, effects);
-                        let running = state.playtime.tracker.running();
-                        state.library.set_running(running);
+                        changed |= engine.track_effects(&mut state, effects);
+                        let running = if state.playtime.available {
+                            state.playtime.tracker.running()
+                        } else {
+                            Default::default()
+                        };
+                        changed |= state.library.set_running(running);
                     }
                     Err(ProcessError::Unsupported) => {
                         state.playtime.available = false;
                         state.library.set_running(Default::default());
+                        // The snapshot reports availability, so this is a real change even when
+                        // no game was running.
+                        changed = true;
                     }
                     Err(ProcessError::Failed) => tracing::debug!("process listing failed"),
                 }
-                engine.publish(&mut state);
+                // A running game keeps publishing: its displayed time advances every tick.
+                if changed
+                    || (state.playtime.available && !state.playtime.tracker.running().is_empty())
+                {
+                    engine.publish(&mut state);
+                }
             });
         }
         if state.playtime.retries.iter().any(|at| *at <= now) {
             state.playtime.retries.retain(|at| *at > now);
-            self.read_counters(&mut state);
+            changed |= self.read_counters(&mut state);
         }
-        self.publish(&mut state);
+        // While a game runs its live playtime changes; keep the periodic snapshot then.
+        if changed || (state.playtime.available && !state.playtime.tracker.running().is_empty()) {
+            self.publish(&mut state);
+        }
     }
     pub fn window_shown(&self) {
         self.rescan();
@@ -435,16 +465,18 @@ impl Engine {
             tracing::warn!("playtime storage flush timed out");
         }
     }
-    pub(super) fn read_counters(&self, state: &mut State) {
+    /// Starts a counter read when one is due and none is running. Returns whether a read started;
+    /// its answer later refreshes the playtime display and publishes.
+    pub(super) fn read_counters(&self, state: &mut State) -> bool {
         if !state.playtime.ready
             || state.playtime.stopped
             || state.playtime.reading
             || state.playtime.source != PlaytimeSource::Store
         {
-            return;
+            return false;
         }
         let Some(account) = state.library.account().map(|a| a.id.clone()) else {
-            return;
+            return false;
         };
         state.playtime.reading = true;
         let generation = state.playtime.generation;
@@ -513,6 +545,7 @@ impl Engine {
                 engine2.refresh_playtime_display(&mut state);
             });
         });
+        true
     }
     pub(super) fn submit_totals(&self, state: &mut State) {
         if state.playtime.submitting {

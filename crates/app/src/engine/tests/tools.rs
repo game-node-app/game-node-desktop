@@ -140,6 +140,7 @@ fn tools_harness() -> ToolsHarness {
         processes,
         engine,
         snapshots: rx,
+        publishes: Arc::new(AtomicUsize::new(0)),
         api,
         creds,
         browser: Arc::new(FakeBrowser::default()),

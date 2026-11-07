@@ -16,4 +16,7 @@ export const licenseNoticesQueryOptions = queryOptions({
   queryKey: LICENSE_NOTICES_QUERY_KEY,
   queryFn: () => commands.getLicenseNotices(),
   staleTime: Infinity,
+  // The notices payload is ~4.8 MB. Drop it when the last viewer unmounts instead
+  // of retaining it for the default 5-minute garbage-collection window.
+  gcTime: 0,
 });

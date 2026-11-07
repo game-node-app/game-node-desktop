@@ -59,7 +59,7 @@ const GameListRow = memo(function GameListRow({
       style={{ height: `${size}px`, transform: `translateY(${start}px)` }}
     >
       {/* Thumbnail */}
-      <div className="mr-2 h-[38px] w-[28px] shrink-0 overflow-hidden rounded-xs">
+      <div className="mr-2 h-[40px] w-[30px] shrink-0 overflow-hidden rounded-xs">
         <CoverImage
           coverFile={row.coverFile}
           title={row.title}

@@ -1,8 +1,9 @@
 //! What the window renders for the library: plain data built from the machine.
 //!
-//! The view is rebuilt on demand and compared with the previous one. When nothing a user could
-//! see changed, the old view (and its generation number) is kept; rows that did not change keep
-//! the same `Arc`, so the UI can update only what differs.
+//! The view is rebuilt only after an input or a state change marked it dirty, and then compared
+//! with the previous one. When nothing a user could see changed, the old view (and its generation
+//! number) is kept; rows that did not change keep the same `Arc`, so the UI can update only what
+//! differs.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -85,11 +86,16 @@ pub struct LibraryView {
 
 impl LibraryMachine {
     /// The view to render, or `None` while no account is set. Calling it again without a change
-    /// returns an equal view with the same generation.
+    /// returns the cached view: same generation, same row `Arc`s, and no rebuild.
     pub fn view(&mut self) -> Option<LibraryView> {
         if !self.is_active() {
             self.view_cache = None;
             return None;
+        }
+        if !self.view_dirty
+            && let Some(view) = &self.view_cache
+        {
+            return Some(view.clone());
         }
         let previous = self.view_cache.take();
         let mut next = self.build_view(previous.as_ref());
@@ -105,6 +111,7 @@ impl LibraryMachine {
             }
         };
         self.view_cache = Some(view.clone());
+        self.view_dirty = false;
         Some(view)
     }
 

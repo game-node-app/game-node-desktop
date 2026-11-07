@@ -210,7 +210,10 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
     count: rowCount,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
-    overscan: 6,
+    // A 4-column viewport with overscan 6 kept 63 covers decoded at rest and 112
+    // mid-scroll. Two rows above and below are enough for smooth scrolling and trim
+    // roughly 10-25 MB of decoded cover bitmaps (150x200 RGBA is ~120 KB each).
+    overscan: 2,
     initialRect: { width: INITIAL_WIDTH, height: 600 },
     observeElementRect: (instance, cb) => {
       return observeElementRect(instance, (rect) => {

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -371,6 +372,8 @@ struct Harness {
     processes: Arc<gamenode_core::tracker::scripted::ScriptedProcesses>,
     engine: Engine,
     snapshots: watch::Receiver<Snapshot>,
+    /// How many snapshots the engine published, including ones equal to the previous value.
+    publishes: Arc<AtomicUsize>,
     api: Arc<FakeApi>,
     creds: Arc<FakeCreds>,
     browser: Arc<FakeBrowser>,
@@ -471,6 +474,8 @@ fn harness_with_steam(
         store_accounts: Vec::new(),
     });
     let providers = crate::providers::load_bundled(Platform::Linux).providers;
+    let publishes = Arc::new(AtomicUsize::new(0));
+    let publish_count = publishes.clone();
     let engine = Engine::new(
         ports,
         tokio::runtime::Handle::current(),
@@ -478,6 +483,7 @@ fn harness_with_steam(
         LibraryMachine::new(providers, Default::default()),
         nonce,
         move |s| {
+            publish_count.fetch_add(1, Ordering::SeqCst);
             let _ = tx.send(s);
         },
     );
@@ -485,6 +491,7 @@ fn harness_with_steam(
         processes,
         engine,
         snapshots: rx,
+        publishes,
         api,
         creds,
         browser,
@@ -1034,7 +1041,7 @@ impl gamenode_core::ports::PlaytimeApi for FakeApi {
 async fn artwork_survives_reload_and_is_separate_from_covers() {
     let api = FakeApi::new();
     let dir = tempfile::tempdir().unwrap();
-    let artwork_dir = dir.path().join("artworks");
+    let artwork_dir = gamenode_platform::covers::artwork_dir(dir.path());
     let bytes = b"\xff\xd8\xfflandscape".to_vec();
     *api.artwork_result.lock().unwrap() = Some(Ok(Some(bytes.clone())));
     std::fs::write(dir.path().join("7.jpg"), b"portrait").unwrap();

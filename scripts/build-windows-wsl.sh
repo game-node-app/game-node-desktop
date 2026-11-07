@@ -6,10 +6,10 @@ for tool in cargo clang-cl llvm-lib lld-link llvm-rc cmake ninja pnpm; do
 done
 pnpm --dir ui build
 export XWIN_ARCH=x86_64
-cargo xwin build --workspace --target x86_64-pc-windows-msvc --locked
+cargo xwin build --workspace --release --target x86_64-pc-windows-msvc --locked
 package=dist/windows/gamenode-desktop
 mkdir -p "$package"
-cp target/x86_64-pc-windows-msvc/debug/gamenode.exe "$package/"
+cp target/x86_64-pc-windows-msvc/release/gamenode.exe "$package/"
 cp LICENSE packaging/windows/README.md packaging/windows/*.ps1 "$package/"
 cp -R licenses "$package/"
 python3 scripts/prepare-backup-assets.py "$package/backup-assets"

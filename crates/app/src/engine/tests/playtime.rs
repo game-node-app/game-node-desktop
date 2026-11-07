@@ -14,6 +14,18 @@ async fn eventually(mut predicate: impl FnMut() -> bool) {
     .await
     .unwrap();
 }
+
+/// Waits until no snapshot has been published for a short quiet window, so background work from
+/// an earlier step cannot be mistaken for the step under test.
+async fn settled(h: &mut Harness) {
+    loop {
+        h.snapshots.borrow_and_update();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if !h.snapshots.has_changed().unwrap() {
+            return;
+        }
+    }
+}
 fn set_counter(h: &Harness, minutes: i64) {
     let text = format!(
         r#""UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{ "620" {{ "Playtime" "{minutes}" "LastPlayed" "100" }} }} }} }} }} }}"#
@@ -195,6 +207,38 @@ async fn quit_flushes_a_closed_session_and_signout_preserves_its_account() {
                 .is_empty()
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_maintenance_does_not_publish_but_a_running_change_does() {
+    let mut h = ready().await;
+    let now = super::super::unix_now();
+    // The first tick arms the periodic timers (scan every 30 minutes, process listing every 5
+    // seconds) and starts those sub-steps once.
+    h.engine.maintenance_at(now);
+    eventually(|| !h.engine.snapshot().library.unwrap().scanning).await;
+    settled(&mut h).await;
+
+    let publishes = h.publishes.clone();
+    let before = publishes.load(std::sync::atomic::Ordering::SeqCst);
+
+    // Nothing changed: an idle tick must not publish a rebuilt snapshot.
+    h.engine.maintenance_at(now + 1);
+    assert_eq!(
+        publishes.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "an idle maintenance tick published a snapshot"
+    );
+
+    // A game that starts is a real change: the next listing publishes it.
+    h.processes.start(process());
+    h.engine.maintenance_at(now + 5);
+    h.until("running", |s| s.tracking.running.contains("steam:620"))
+        .await;
+    assert!(
+        publishes.load(std::sync::atomic::Ordering::SeqCst) > before,
+        "a running set change did not publish"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

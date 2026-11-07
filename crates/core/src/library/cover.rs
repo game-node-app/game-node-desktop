@@ -10,8 +10,8 @@ use url::Url;
 const HOST: &str = "images.igdb.com";
 /// The size every download asks for.
 const SIZE: &str = "t_cover_big";
-/// The size used for the wide image in the details pane.
-const ARTWORK_SIZE: &str = "t_1080p";
+/// The size used for the wide image in the details pane (889x500).
+const ARTWORK_SIZE: &str = "t_screenshot_big";
 
 /// A cover URL that passed the check. Only [`download_url`] makes one, so a download can never be
 /// started for a URL that was not checked.
@@ -109,6 +109,16 @@ mod tests {
         assert_eq!(
             rewritten("//images.igdb.com/igdb/image/upload/t_thumb/co1wyy.jpg").as_deref(),
             Some(BIG)
+        );
+    }
+
+    #[test]
+    fn artwork_requests_the_details_pane_size() {
+        assert_eq!(
+            artwork_download_url("//images.igdb.com/igdb/image/upload/t_1080p/ar1wyy.jpg")
+                .map(|artwork| artwork.as_url().to_string())
+                .as_deref(),
+            Some("https://images.igdb.com/igdb/image/upload/t_screenshot_big/ar1wyy.jpg")
         );
     }
 

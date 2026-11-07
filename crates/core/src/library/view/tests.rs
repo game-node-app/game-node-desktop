@@ -150,13 +150,105 @@ fn a_change_bumps_the_generation_and_only_changed_rows_get_new_arcs() {
     assert!(Arc::ptr_eq(&first.rows, &selected.rows));
 
     // A rename of one game changes just that row.
-    machine.entries.get_mut("steam:240").unwrap().name = Some("Counter-Strike 1.6".to_owned());
+    machine.set_local_inference(
+        "steam:240".to_owned(),
+        Some(42),
+        Some(GameRecord {
+            game_id: 42,
+            name: "Counter-Strike 1.6".to_owned(),
+            release_year: None,
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+        }),
+    );
     let renamed = machine.view().unwrap();
     assert!(renamed.generation > selected.generation);
     for (before, after) in selected.rows.iter().zip(renamed.rows.iter()) {
         assert_eq!(
             Arc::ptr_eq(before, after),
             before.key != "steam:240",
+            "{}",
+            before.key
+        );
+    }
+}
+
+#[test]
+fn repeated_views_reuse_the_generation_and_every_row() {
+    let mut machine = library();
+    let first = machine.view().unwrap();
+    let again = machine.view().unwrap();
+    assert_eq!(first.generation, again.generation);
+    assert!(Arc::ptr_eq(&first.rows, &again.rows));
+    assert!(
+        first
+            .rows
+            .iter()
+            .zip(again.rows.iter())
+            .all(|(before, after)| Arc::ptr_eq(before, after))
+    );
+}
+
+#[test]
+fn the_same_running_and_playtime_sets_keep_the_generation() {
+    let mut machine = library();
+    let first = machine.view().unwrap();
+
+    let running = std::collections::BTreeSet::from(["steam:70".to_owned()]);
+    assert!(machine.set_running(running.clone()));
+    let running_view = machine.view().unwrap();
+    assert!(running_view.generation > first.generation);
+    let row = running_view
+        .rows
+        .iter()
+        .find(|row| row.key == "steam:70")
+        .unwrap();
+    assert!(row.running, "the running row is updated");
+
+    assert!(!machine.set_running(running));
+    let unchanged = machine.view().unwrap();
+    assert_eq!(unchanged.generation, running_view.generation);
+    assert!(Arc::ptr_eq(&unchanged.rows, &running_view.rows));
+
+    let playtime = std::collections::BTreeMap::from([(
+        "steam:620".to_owned(),
+        crate::playtime::PlaytimeView {
+            seconds: Some(3600),
+            ..Default::default()
+        },
+    )]);
+    assert!(machine.set_playtime(playtime.clone()));
+    let playtime_view = machine.view().unwrap();
+    assert!(playtime_view.generation > running_view.generation);
+    assert_eq!(
+        playtime_view
+            .rows
+            .iter()
+            .find(|row| row.key == "steam:620")
+            .unwrap()
+            .playtime
+            .seconds,
+        Some(3600),
+        "the playtime row is updated"
+    );
+
+    assert!(!machine.set_playtime(playtime));
+    let unchanged = machine.view().unwrap();
+    assert_eq!(unchanged.generation, playtime_view.generation);
+    assert!(Arc::ptr_eq(&unchanged.rows, &playtime_view.rows));
+}
+
+#[test]
+fn only_the_row_changed_by_a_running_update_gets_a_new_arc() {
+    let mut machine = library();
+    let first = machine.view().unwrap();
+    machine.set_running(["steam:70".to_owned()].into());
+    let updated = machine.view().unwrap();
+    for (before, after) in first.rows.iter().zip(updated.rows.iter()) {
+        assert_eq!(
+            Arc::ptr_eq(before, after),
+            before.key != "steam:70",
             "{}",
             before.key
         );

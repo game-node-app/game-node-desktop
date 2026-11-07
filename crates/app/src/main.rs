@@ -53,6 +53,42 @@ pub fn format_tray_tooltip(running_title: &str) -> String {
     }
 }
 
+/// Shows or hides the WebView2 controller with its window. `window.hide()` alone leaves the
+/// webview rendering in the background; `SetIsVisible(false)` suspends it. On newer runtimes the
+/// memory target follows the visibility, and older runtimes without `ICoreWebView2_19` still get
+/// the visibility change.
+#[cfg(target_os = "windows")]
+fn set_webview_visible(window: &tauri::WebviewWindow, visible: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        ICoreWebView2_19,
+    };
+    use windows_core::Interface;
+
+    let result = window.with_webview(move |webview| {
+        let controller = webview.controller();
+        // SAFETY: `with_webview` runs this closure on the UI thread, as WebView2 requires.
+        unsafe {
+            let _ = controller.SetIsVisible(visible);
+            let Ok(core) = controller.CoreWebView2() else {
+                return;
+            };
+            let Ok(core) = core.cast::<ICoreWebView2_19>() else {
+                return;
+            };
+            let level = if visible {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+            } else {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+            };
+            let _ = core.SetMemoryUsageTargetLevel(level);
+        }
+    });
+    if let Err(error) = result {
+        tracing::warn!(%error, visible, "could not update the webview visibility");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -287,7 +323,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .inner_size(setup_plan.size.0 as f64, setup_plan.size.1 as f64)
                 .min_inner_size(960.0, 600.0)
                 .maximized(setup_plan.maximized)
-                .visible(!setup_startup.background);
+                .visible(!setup_startup.background)
+                .additional_browser_args(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-scaling-clipped-images",
+                );
 
         if let Some((x, y)) = setup_plan.position {
             win_builder = win_builder.position(x as f64, y as f64);
@@ -327,6 +366,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(win) = app_handle.get_webview_window("main") {
                         let _ = win.unminimize();
                         let _ = win.show();
+                        #[cfg(target_os = "windows")]
+                        set_webview_visible(&win, true);
                         let _ = win.set_focus();
                         eng_for_tray.window_shown();
                     }
@@ -348,6 +389,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(win) = app_handle.get_webview_window("main") {
                         let _ = win.unminimize();
                         let _ = win.show();
+                        #[cfg(target_os = "windows")]
+                        set_webview_visible(&win, true);
                         let _ = win.set_focus();
                     }
                 }
@@ -369,6 +412,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let _ = win_for_ipc.unminimize();
                 let _ = win_for_ipc.show();
+                #[cfg(target_os = "windows")]
+                set_webview_visible(&win_for_ipc, true);
                 let _ = win_for_ipc.set_focus();
                 eng_for_ipc.window_shown();
             }
@@ -386,7 +431,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eng_for_ticker.dispatch(Input::Tick);
                 eng_for_ticker.maintenance();
 
-                let title = eng_for_ticker.snapshot().tracking.title;
+                let title = eng_for_ticker.running_title().unwrap_or_default();
                 let new_tooltip = format_tray_tooltip(&title);
                 if new_tooltip != last_tooltip {
                     let _ = tray_icon.set_tooltip(Some(&new_tooltip));
@@ -458,6 +503,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 api.prevent_close();
                 let _ = window.hide();
+                if let Some(win) = window.app_handle().get_webview_window(window.label()) {
+                    set_webview_visible(&win, false);
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {

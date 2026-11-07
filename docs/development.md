@@ -332,11 +332,11 @@ WSL's `http://localhost:4777`; if the check fails, inspect WSL localhost
 forwarding and Windows firewall settings.
 
 For the full local workflow, run `scripts/install-windows-wsl.sh` from WSL. It
-builds the locked Windows MSVC executable, installs it for the current Windows
-user, and launches the installed app. It requires WSL Windows interop plus
+builds the locked release Windows MSVC executable, installs it for the current
+Windows user, and launches the installed app. It requires WSL Windows interop plus
 `powershell.exe` and `wslpath` on `PATH`.
 
-The unsigned development package installs below
+The unsigned package installs below
 `%LOCALAPPDATA%\Programs\GameNode Desktop`, creates a Start Menu shortcut and
 registers a quoted URI command under HKCU. An existing URI handler is exported
 as `previous-uri-handler.reg` and restored by uninstall when this installation

@@ -421,6 +421,8 @@ pub struct LibraryMachine {
     pub(super) artwork_attempted: bool,
     pub(super) artwork: Option<Arc<[u8]>>,
     pub(super) view_cache: Option<LibraryView>,
+    /// Whether something the view shows may have changed since `view_cache` was built.
+    pub(super) view_dirty: bool,
 }
 
 impl LibraryMachine {
@@ -467,6 +469,7 @@ impl LibraryMachine {
             artwork_attempted: false,
             artwork: None,
             view_cache: None,
+            view_dirty: false,
         }
     }
 
@@ -488,12 +491,28 @@ impl LibraryMachine {
         !matches!(self.phase, Phase::Inactive)
     }
 
-    pub fn set_playtime(&mut self, playtime: BTreeMap<String, crate::playtime::PlaytimeView>) {
+    /// Replaces the playtime shown per entry. Returns whether anything changed, so callers that
+    /// publish can skip a no-op update.
+    pub fn set_playtime(
+        &mut self,
+        playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
+    ) -> bool {
+        if self.playtime == playtime {
+            return false;
+        }
         self.playtime = playtime;
+        self.view_dirty = true;
+        true
     }
 
-    pub fn set_running(&mut self, running: BTreeSet<String>) {
+    /// Replaces the running set. Returns whether it changed.
+    pub fn set_running(&mut self, running: BTreeSet<String>) -> bool {
+        if self.running == running {
+            return false;
+        }
         self.running = running;
+        self.view_dirty = true;
+        true
     }
 
     pub fn account(&self) -> Option<&LastAccount> {
@@ -552,7 +571,7 @@ impl LibraryMachine {
         if let Some(game) = game {
             self.games.insert(game.game_id, game);
         }
-        self.view_cache = None;
+        self.view_dirty = true;
         self.plan_covers(None)
     }
     /// The downloaded landscape artwork of `game_id` while that game is the one whose details
@@ -570,6 +589,9 @@ impl LibraryMachine {
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Effect> {
+        // Any input may change what the view shows; `view` rebuilds once and then reuses the
+        // result until the next input.
+        self.view_dirty = true;
         let mut effects = self.dispatch(input);
         effects.extend(self.plan_membership());
         effects.extend(self.plan_artwork());

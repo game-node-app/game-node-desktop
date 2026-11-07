@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use gamenode_platform::covers::{artwork_dir, cover_file_name};
 use tauri::http::{Request, Response, StatusCode, Uri, header};
 
 /// Scheme name used for asset requests.
@@ -323,8 +324,8 @@ where
     }
 
     // 2. Disk cache fallback
-    let artwork_path = covers_dir.join("artworks").join(format!("{game_id}.jpg"));
-    let fallback_path = covers_dir.join(format!("{game_id}.jpg"));
+    let artwork_path = artwork_dir(covers_dir).join(cover_file_name(game_id));
+    let fallback_path = covers_dir.join(cover_file_name(game_id));
 
     let disk_bytes = tokio::task::spawn_blocking(move || {
         if artwork_path.is_file() {
@@ -373,8 +374,8 @@ where
     }
 
     // 2. Disk cache fallback
-    let artwork_path = covers_dir.join("artworks").join(format!("{game_id}.jpg"));
-    let fallback_path = covers_dir.join(format!("{game_id}.jpg"));
+    let artwork_path = artwork_dir(covers_dir).join(cover_file_name(game_id));
+    let fallback_path = covers_dir.join(cover_file_name(game_id));
 
     let disk_bytes = if artwork_path.is_file() {
         std::fs::read(&artwork_path).ok()
@@ -877,11 +878,11 @@ mod tests {
     #[tokio::test]
     async fn serve_disk_cached_artwork_fallback() {
         let dir = tempdir().unwrap();
-        let artwork_dir = dir.path().join("artworks");
+        let artwork_dir = gamenode_platform::covers::artwork_dir(dir.path());
         std::fs::create_dir_all(&artwork_dir).unwrap();
 
         let disk_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x99, 0x88];
-        std::fs::write(artwork_dir.join("777.jpg"), &disk_bytes).unwrap();
+        std::fs::write(artwork_dir.join(cover_file_name(777)), &disk_bytes).unwrap();
 
         // Memory lookup returns None
         let lookup = |_| None;
@@ -899,6 +900,27 @@ mod tests {
             "public, max-age=3600"
         );
         assert_eq!(res.body(), &disk_bytes);
+    }
+
+    #[tokio::test]
+    async fn artwork_from_the_previous_cache_version_is_not_served() {
+        let dir = tempdir().unwrap();
+        // Version 1 stored 1920x1080 images in `<covers>/artworks`; they must not be reused now
+        // that the details pane asks for a different size.
+        let legacy_dir = dir.path().join("artworks");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(
+            legacy_dir.join(cover_file_name(777)),
+            [0xff, 0xd8, 0xff, 0x01],
+        )
+        .unwrap();
+
+        let lookup = |_| None;
+        let uri = "gamenode-asset://localhost/artwork/777";
+        let res = handle_asset_uri_str(uri, dir.path(), &lookup).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = handle_asset_uri_str_sync(uri, dir.path(), &lookup);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

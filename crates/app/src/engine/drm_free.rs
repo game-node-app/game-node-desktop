@@ -619,6 +619,7 @@ impl Engine {
                 .covers_dir
                 .parent()
                 .unwrap_or(std::path::Path::new("."));
+            let _release = gamenode_platform::manifest_cache::release_on_drop();
             let snapshot = gamenode_platform::manifest_cache::ManifestCache::bundled(data)
                 .and_then(|cache| cache.load())
                 .ok();
@@ -1177,6 +1178,8 @@ impl Engine {
             };
             let mut added_titles = Vec::new();
             let result = (|| {
+                // One parse serves every watched root; the scan drops it when it ends.
+                let _release = gamenode_platform::manifest_cache::release_on_drop();
                 let mut watches = store.watches().map_err(local_storage)?;
                 watches.sort_by_key(|w| w.path.len());
                 let enabled_watches: Vec<_> = watches.into_iter().filter(|w| w.enabled).collect();
@@ -1762,6 +1765,7 @@ impl Engine {
     pub fn choose_local_save_profile(&self, id: String, title: String) {
         self.local_work(move |engine| {
             use gamenode_core::drm_free::identity;
+            let _release = gamenode_platform::manifest_cache::release_on_drop();
             let store = engine
                 .shared
                 .ports
@@ -1854,7 +1858,7 @@ impl Engine {
                     };
                     if let Ok(cache) =
                         gamenode_platform::manifest_cache::ManifestCache::bundled(data)
-                        && let Err(error) = cache.update(unix_now())
+                        && let Err(error) = cache.refresh(unix_now())
                     {
                         tracing::debug!(%error, "manifest update unavailable");
                     }

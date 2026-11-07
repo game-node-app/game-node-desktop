@@ -8,7 +8,19 @@
 
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The folder under the covers directory that holds landscape artwork.
+///
+/// The version suffix invalidates the cache when the requested artwork size changes: version 1
+/// stored 1920x1080 (`t_1080p`) images, while the details pane now asks for 889x500
+/// (`t_screenshot_big`). Bump it again if the requested image changes.
+pub const ARTWORK_DIR: &str = "artworks-v2";
+
+/// The directory a game's landscape artwork is stored in under the covers directory.
+pub fn artwork_dir(covers_dir: &Path) -> PathBuf {
+    covers_dir.join(ARTWORK_DIR)
+}
 
 /// The file name a game's cover is stored under.
 pub fn cover_file_name(game_id: u64) -> String {

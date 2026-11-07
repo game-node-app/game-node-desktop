@@ -1,0 +1,12 @@
+syntax = "proto3";
+package gamenode.probe.v1;
+
+// Experimental transport check only. Not a production Client or Plugin API.
+service Probe {
+  rpc Ping(PingRequest) returns (PingReply);
+}
+message PingRequest {}
+message PingReply {
+  string transport = 1;
+  uint32 uid = 2;
+}

@@ -1,0 +1,27 @@
+[package]
+name = "gamenode-ipc-probe"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# Deliberately isolated: this experiment must not change the desktop dependency graph.
+[workspace]
+
+[dependencies]
+getrandom = "0.4"
+hyper-util = { version = "0.1", features = ["tokio"] }
+prost = "0.14"
+rustix = { version = "1.1", features = ["process", "fs"] }
+subtle = "2.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+tower = { version = "0.5", features = ["util"] }
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tempfile = "3"

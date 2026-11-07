@@ -7,8 +7,12 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { shallow } from '@tanstack/react-store';
+import {
+  replaceEqualDeep,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { commands, isTauriRuntime } from './commands';
 import { getMockHost, mockEnabled } from './mock';
@@ -170,8 +174,9 @@ interface AuthSelection {
 /**
  * Snapshot events replace the whole snapshot object, so building this selection
  * fresh would give App, TopBar and Settings a new object (and a re-render) for
- * every unrelated library/tools update. Return the previous object while all
- * fields stay shallow-equal.
+ * every unrelated library/tools update. `replaceEqualDeep` returns the previous
+ * selection while every field is deeply equal, even when the engine serializes
+ * unchanged nested objects as fresh values.
  */
 let lastAuthSelection: AuthSelection | null = null;
 const selectAuth = (s: Snapshot): AuthSelection => {
@@ -183,11 +188,11 @@ const selectAuth = (s: Snapshot): AuthSelection => {
     playtimeSource: s.playtimeSource,
     playtimeError: s.playtimeError,
   };
-  if (lastAuthSelection && shallow(lastAuthSelection, next)) {
-    return lastAuthSelection;
-  }
-  lastAuthSelection = next;
-  return next;
+  const selected = lastAuthSelection
+    ? (replaceEqualDeep(lastAuthSelection, next) as AuthSelection)
+    : next;
+  lastAuthSelection = selected;
+  return selected;
 };
 
 export function useAuth(): AuthSelection {

@@ -26,3 +26,7 @@ obsolete settings during upgrade does not make their retired UI features active.
 
 Archive status and superseded material are recorded in
 [the historical index](changes/archive/README.md).
+
+Future Core/Daemon and plugin architecture decisions, proposals and open questions
+are recorded in [the architecture plan](../docs/plugin-architecture-plan.md).
+That planning record does not replace the stable main specifications.

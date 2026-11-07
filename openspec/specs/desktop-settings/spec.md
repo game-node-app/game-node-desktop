@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Reunir todas as configurações e informações do GameNode Desktop num modal com navegação por tópicos. Cada tópico (Conta, Lojas, Backups, Avançado, Sobre) tem um painel próprio, com aplicação previsível das mudanças, acesso completo por teclado e um sistema visual rastreável ao Figma.
+Reunir todas as configurações e informações do GameNode Desktop num modal com navegação por tópicos. Cada tópico (Conta, Lojas, Backups, Ferramentas, Sobre) tem um painel próprio, com aplicação previsível das mudanças, acesso completo por teclado e um sistema visual rastreável ao Figma.
 
 ## Requirements
 
@@ -34,15 +34,15 @@ O modal SHALL fechar pelo botão de fechar no cabeçalho do painel, pela tecla `
 - **THEN** o modal continua aberto
 
 ### Requirement: Navegação por tópicos
-A navegação lateral do modal SHALL listar, nesta ordem, os tópicos Conta, Lojas, Backups, Avançado e Sobre. Cada tópico tem ícone e rótulo, e exatamente um aparece selecionado. Selecionar um tópico SHALL trocar o painel à direita, mostrando título e descrição do tópico, e levar a rolagem do painel ao topo. O tópico selecionado SHALL ser lembrado enquanto o aplicativo estiver em execução, mas não SHALL ser persistido entre reinícios.
+A navegação lateral do modal SHALL listar, nesta ordem, os tópicos Conta, Lojas, Backups, Ferramentas (`Tools`) e Sobre. Cada tópico tem ícone e rótulo, e exatamente um aparece selecionado. Selecionar um tópico SHALL trocar o painel à direita, mostrando título e descrição do tópico, e levar a rolagem do painel ao topo. O tópico selecionado SHALL ser lembrado enquanto o aplicativo estiver em execução, mas não SHALL ser persistido entre reinícios.
 
 #### Scenario: Trocar de tópico
-- **WHEN** o usuário seleciona Backups na navegação lateral
-- **THEN** Backups aparece selecionado, o painel mostra o título "Backups" com sua descrição, e o conteúdo começa no topo
+- **WHEN** o usuário seleciona Backups ou Ferramentas (`Tools`) na navegação lateral
+- **THEN** o tópico escolhido aparece selecionado, o painel mostra seu título e descrição, e o conteúdo começa no topo
 
 #### Scenario: Reabrir na mesma execução
-- **WHEN** o usuário fecha o modal com Avançado selecionado e o reabre sem reiniciar o aplicativo
-- **THEN** o modal abre em Avançado
+- **WHEN** o usuário fecha o modal com Sobre selecionado e o reabre sem reiniciar o aplicativo
+- **THEN** o modal abre em Sobre
 
 #### Scenario: Abrir num tópico específico
 - **WHEN** a explicação de sincronização da primeira execução é dispensada com a opção de abrir as configurações
@@ -104,23 +104,12 @@ Quando houver suporte a backups locais, o painel Backups SHALL expor os controle
 - **WHEN** o destino informado não pode ser usado
 - **THEN** o campo mostra o erro abaixo dele, o destino anterior continua em uso, e a edição permanece pendente
 
-### Requirement: Painel Avançado
-O painel Avançado SHALL oferecer a renderização por software como um interruptor, informar que a mudança só vale após reiniciar o GameNode e mostrar o renderizador ativo, incluindo quando o fallback automático está em uso. O comportamento de seleção e recuperação SHALL continuar o definido em `desktop-shell`.
-
-#### Scenario: Ativar renderização por software
-- **WHEN** o usuário liga a renderização por software
-- **THEN** a preferência é persistida imediatamente, e o painel indica que ela vale após reiniciar, enquanto o renderizador ativo continua o atual
-
-#### Scenario: Fallback automático ativo
-- **WHEN** o aplicativo iniciou com software porque a GPU falhou
-- **THEN** o painel Avançado informa que o renderizador ativo é Software por fallback automático
-
 ### Requirement: Painel Sobre
-O painel Sobre SHALL mostrar o nome e a versão instalada do aplicativo, a licença GPL-3.0-only, o resumo das licenças de arte, fonte e toolkit, e uma ação para ler os avisos de licença completos, que funciona sem conexão.
+O painel Sobre SHALL mostrar o nome e a versão instalada do aplicativo, a licença GPL-3.0-only, o resumo das licenças de arte, fonte e runtime, e uma ação para ler os avisos de licença completos em visualização rolável nativa sobre o modal, que funciona sem conexão.
 
 #### Scenario: Ler avisos de licença
 - **WHEN** o usuário ativa "Show license notices" no painel Sobre
-- **THEN** os avisos completos abrem num diálogo paginado sobre o modal, e fechá-lo devolve o foco ao painel Sobre
+- **THEN** os avisos completos abrem num diálogo rolável sobre o modal, e fechá-lo devolve o foco ao painel Sobre
 
 ### Requirement: Preferências aplicam imediatamente
 Interruptores, rádios e controles segmentados do modal SHALL aplicar e persistir a mudança no momento da interação, sem botão de salvar. Se a persistência falhar, o controle SHALL voltar ao valor efetivamente salvo e mostrar um erro no próprio painel.
@@ -207,3 +196,14 @@ O modal SHALL usar apenas os tokens de estilo do modal de configurações. Isso 
 #### Scenario: Funcionalidade web ausente
 - **WHEN** o modal é inspecionado
 - **THEN** não há tópicos ou controles de Premium, edição de perfil, notificações, privacidade, aparência ou MCP vindos da referência web
+
+### Requirement: Painel Ferramentas (Tools)
+O painel Ferramentas (`Tools`) SHALL listar o catálogo de ferramentas suportadas (iniciando com OptiScaler), exibindo licença (`GPL-3.0`), link do código-fonte, versões em cache e espaço ocupado em disco, além de ações para buscar atualizações (`Check for updates`) e limpar pacotes em cache (`Clear cache`) sem afetar instalações ativas ou backups de reversão.
+
+#### Scenario: Inspecionar e limpar o cache de ferramentas
+- **WHEN** o usuário abre o tópico Ferramentas em Settings após baixar versões do OptiScaler e ativa `Clear cache`
+- **THEN** os pacotes `.7z` em cache no disco são removidos e o tamanho do cache passa a zero, enquanto as instalações ativas nos jogos e seus backups de reversão (`tool-backups`) permanecem preservados
+
+#### Scenario: Abrir link do repositório oficial e ver licença
+- **WHEN** o usuário visualiza o cartão do OptiScaler no painel Ferramentas ou no modal da ferramenta
+- **THEN** a licença `GPL-3.0` e a ação para abrir o repositório oficial no navegador do sistema estão visíveis e acessíveis

@@ -1,5 +1,8 @@
 # Contributor instructions
 
+Follow [OpenSpec documentation status](openspec/README.md) when interpreting
+current requirements, proposed changes and historical records.
+
 - NEVER block the UI thread. Run blocking I/O, image decoding and resizing,
   expensive computation, and waits on background workers or asynchronous tasks.
   Async tasks must offload blocking work to a worker thread. Keep UI callbacks

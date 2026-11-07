@@ -101,7 +101,7 @@ redirects back to `app.gamenode://` with the session. GameNode registers that sc
 
 ### Security rules
 
-- **No web content.** The app renders no HTML. Its fixed-purpose Ludusavi v0.31.0 helper ships with the Windows package, with pinned release digests and notices; it is never downloaded or updated at runtime.
+- **Bundled application UI.** The Tauri WebView renders the bundled React frontend; authentication opens in the system browser. The fixed-purpose Ludusavi v0.31.0 helper ships with the Windows package, with pinned release digests and notices; it is never downloaded or updated at runtime.
 - **Launch is restricted.** A launch is either a URI whose scheme the provider's manifest declares, or an
   executable inside the game's scanned `installDir`, started with a fixed argument list. No shell strings.
 - **Writes into game folders are task-specific.** OptiScaler install/uninstall writes only its recorded files. Explicit save restore can replace previewed file/registry targets only after confirmation, a fresh stopped check and verified recovery of current targets. Backup never edits live saves.
@@ -115,7 +115,7 @@ described by a manifest; parsing that a manifest cannot describe lives in a nati
 
 ### Manifest
 
-Manifests are TOML: they are written by hand, and will later be written by users (see Later), so comments matter.
+Bundled provider manifests are handwritten TOML, so comments matter.
 Bundled manifests live in `providers/` and are embedded at build time. A manifest lists the platforms it supports;
 the format keeps per-platform roots so Linux entries can be added in the Linux milestone without a format change.
 
@@ -416,8 +416,8 @@ Starts once the Windows MVP ships and a real Linux machine (and ideally a Steam 
 will be planned as its own set of changes; this is the scope carried over from the original roadmap.
 
 - **Foundation on Linux.** Finish step 1's Linux walkthrough: Secret Service present and absent (private-file
-  fallback and its disclosure), X11 and Wayland, sign-in and session restore, URI delivery, renderer selection
-  (including the software fallback on NVIDIA setups), both locales.
+  fallback and its disclosure), X11 and Wayland, sign-in and session restore, URI delivery, WebView startup
+  and both locales.
 - **Steam on Linux.** Native and Flatpak Steam roots in the manifest, with fixtures; Proton, runtime and
   redistributable entries filtered out.
 - **Tracker on Linux.** Process listing through `/proc`, exits through `pidfd`, and Wine/Proton processes matched
@@ -452,12 +452,6 @@ AppImage and Flathub builds install, sign in, launch a game and record its playt
 - **Store logins: owned-but-not-installed games.** A provider capability to list owned games, with a login flow in
   the system browser where the store allows it. Store APIs here are unofficial and break, so each store is its own
   change. Ubisoft is the first candidate.
-- **User-installed manifests.** Load TOML manifests from the user's data folder, and show the launch schemes and
-  paths a manifest uses before enabling it. This covers small launchers and emulators (playtime source `emulator`
-  already exists).
-- **Code plugins.** WebAssembly plugins behind the provider interface, with host access limited to what the plugin's
-  manifest declares (paths to read, schemes to launch). Extract that API only after the bundled providers have
-  settled it.
 - **Heroic on Windows.** Heroic also runs on Windows; its scanner from the Linux milestone can be enabled there if
   testers ask for it.
 

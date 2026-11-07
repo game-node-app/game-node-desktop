@@ -91,8 +91,8 @@ No recorded session SHALL last longer than 24 hours. A session that reaches 24 h
 - **WHEN** a game runs for 30 hours
 - **THEN** the queue holds a 24-hour session followed by a 6-hour session with no gap or overlap
 
-### Requirement: The session queue is not sent in this step
-Recorded sessions SHALL stay in the local queue, in order, until a sessions endpoint exists. This change SHALL NOT send measured sessions to GameNode or remove them from the queue.
+### Requirement: Measured sessions remain local
+Recorded sessions SHALL stay in the local queue, in order. The application SHALL NOT send measured sessions to GameNode or remove them from the queue. Enabling measured-session submission requires a separately specified server integration.
 
 #### Scenario: Sessions after reconnecting
 - **WHEN** sessions are recorded and GameNode becomes reachable

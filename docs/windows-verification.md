@@ -1,5 +1,10 @@
 # Local Windows foundation verification — 2026-11-04
 
+> **Status: historical verification record.** Slint/Skia observations below apply
+> to the discontinued builds that were tested. Historical results and pending
+> checklists do not establish acceptance of the stable Tauri version. See
+> [OpenSpec documentation status](../openspec/README.md).
+
 Version: 0.1.0 development build, from the current working tree based on
 `542d8cd`. This includes uncommitted sources. The local ZIP's
 `build-manifest.json` records source hashes and the binary SHA-256.

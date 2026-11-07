@@ -18,7 +18,8 @@ The database contains `schema_migrations` (version, name and applied time),
 `window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
 `account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
 (the `SETTING_KEYS` list in `db.rs`). A fresh database
-defaults to GPU rendering, the default library layout and no games. No session
+uses the default library layout and starts with no games. The `renderer` key is
+obsolete compatibility data and does not enable a current UI preference. No session
 token, callback URL, or pending sign-in secret belongs in this database.
 
 ## Library cache (migration `0002_library.sql`)

@@ -319,12 +319,16 @@ To uninstall, invoke the installed `uninstall.ps1` with PowerShell's
 setting applies to that PowerShell process; it does not change machine policy.
 Application data is preserved.
 
-## Current verification
+## Historical foundation verification — 2026-11-04
+
+These results describe the discontinued UI baseline tested on that date; they do
+not establish acceptance of the stable Tauri version. Use the required checks
+above for current work and record new native acceptance against the tested build.
 
 On 2026-11-04, 104 Linux tests and 94 actual Windows tests passed. The Linux
 locked check, formatting and Clippy passed; the Windows MSVC-target cross-build
 passed and the installed native app opened in pt-BR. See
 `windows-verification.md` for the local installation evidence and limits.
-This checkout has no configured Git remote. Clean-checkout native CI builds
+At the time of that verification, the checkout had no configured Git remote. Clean-checkout native CI builds
 and uploaded CI artifacts remain pending; WSL cross-compilation and execution
 are recorded separately from native Windows compilation.

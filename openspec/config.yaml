@@ -1,5 +1,8 @@
 schema: spec-driven
 
+context: |
+  Follow the documentation authority and lifecycle policy in openspec/README.md.
+
 # Project context (optional)
 # Add only constraints that should guide OpenSpec artifacts and workflows.
 # Include constraints an agent cannot infer by reading the code.

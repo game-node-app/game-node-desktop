@@ -37,11 +37,11 @@ If database access or a migration fails, the application SHALL report the local-
 - **THEN** it reports that incompatibility and leaves the database unchanged
 
 ### Requirement: Persist foundation preferences without credentials
-The local database SHALL retain renderer preference, window geometry and library layout across restarts. It SHALL NOT contain session tokens, authentication callback URLs, or pending sign-in secrets. It MAY contain the last signed-in account's id and display name, so that the cached library can open before the session is verified.
+The local database SHALL retain window geometry and library layout across restarts and safely ignore obsolete settings from earlier application versions. It SHALL NOT contain session tokens, authentication callback URLs, or pending sign-in secrets. It MAY contain the last signed-in account's id and display name, so that the cached library can open before the session is verified.
 
 #### Scenario: Settings survive restart
-- **WHEN** a renderer preference, window geometry and library layout have been saved and the application restarts
-- **THEN** those saved values are available before window initialization
+- **WHEN** window geometry and library layout have been saved and the application restarts
+- **THEN** those saved values are available before window initialization, even when opening an existing database that still contains obsolete settings
 
 #### Scenario: Authentication changes
 - **WHEN** the user signs in, restores a session, or signs out
@@ -59,7 +59,7 @@ The local database SHALL store detected library entries, the last scan result pe
 - **THEN** the library entries, matches and cover files from that scan are available before the next scan finishes
 
 #### Scenario: Upgrade from the foundation schema
-- **WHEN** a step 1 database is opened by this version
+- **WHEN** a database containing only the foundation migration is opened by this version
 - **THEN** the library tables are added by a new migration and the existing settings are kept
 
 ### Requirement: Persist playtime per account
@@ -73,8 +73,8 @@ The local database SHALL store recorded sessions, open sessions with their last 
 - **WHEN** an account signs out and later signs in again on the same PC
 - **THEN** its queued sessions and accepted totals are available again
 
-#### Scenario: Upgrade from the step 2 schema
-- **WHEN** a step 2 database is opened by this version
+#### Scenario: Upgrade from the library schema
+- **WHEN** a database containing the foundation and library migrations is opened by this version
 - **THEN** the playtime tables are added by a new migration and the existing settings, library cache and matches are kept
 
 ### Requirement: Persist sync preferences
@@ -85,7 +85,7 @@ The local database SHALL keep the "Sync with GameNode" switch and whether its ex
 - **THEN** sync is off before any playtime could be submitted
 
 #### Scenario: Upgraded database
-- **WHEN** a step 2 database without sync values is opened
+- **WHEN** an existing database without sync values is opened
 - **THEN** sync is on and the explanation has not been dismissed
 
 #### Scenario: Corrupt value
@@ -137,5 +137,20 @@ Local storage SHALL retain per-installation save profiles, revisions, automatic-
 The new schema SHALL be applied through ordered transactional migrations that preserve Steam entries, settings, matches and playtime. An older application SHALL refuse the newer schema without modifying it. Application uninstall SHALL preserve backups and user data under the existing keep-data policy.
 
 #### Scenario: Upgrade from playtime release
-- **WHEN** an existing step 3 database is upgraded
+- **WHEN** an existing database containing the playtime migration is upgraded
 - **THEN** all previous Steam and account data remains and the manual registrations, watches and backup history start empty
+
+### Requirement: Persist per-game tool installations, backups and release cache metadata
+The local database SHALL store installed tool records (`tool_installations`), file/backup manifests (`tool_files`), and release cache metadata (`tool_releases_cache`) via migration `0005_game_tools.sql`. Tool installations SHALL belong to the Windows user (`(entry_key, tool_id)`) across GameNode accounts, with backups under `<data_dir>/private/tool-backups/` and archives under `<data_dir>/tools/cache/`.
+
+#### Scenario: Restart with an installed game tool
+- **WHEN** OptiScaler is installed on a game and the application restarts
+- **THEN** the game's installed tool version, channel, target executable, proxy DLL filename, installed file digests, and backed-up original file paths are restored from SQLite before any network request completes
+
+#### Scenario: Switch GameNode account with an installed tool
+- **WHEN** one GameNode account signs out and another signs in on the same PC
+- **THEN** the installed tool state and `Uninstall` capability remain intact for that game installation
+
+#### Scenario: Reconcile interrupted tool operation on startup
+- **WHEN** the application starts and finds a tool installation record left in a transient `Installing`, `Updating`, or `Uninstalling` state due to a prior crash
+- **THEN** startup recovery rolls back the incomplete operation using the recorded backup manifest so the game folder returns to a clean, known state

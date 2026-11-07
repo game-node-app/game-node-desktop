@@ -52,15 +52,19 @@ An entry that a completed store-provider scan no longer finds SHALL leave the li
 - **THEN** its entry stays visible, Play explains why it is unavailable, and Locate executable is offered
 
 ### Requirement: Grid and list views
-The signed-in main view SHALL show the library as a cover grid or a list, which the user can switch between. The list SHALL show at least the title, provider and match status. Each entry SHALL show its GameNode cover when one is cached and a titled placeholder otherwise.
+The signed-in main view SHALL show the library as a cover grid or a list, which the user can switch between. Both the grid view and the list view SHALL virtualize their visible rows using `@tanstack/react-virtual` so that only the entries inside the viewport (plus a bounded overscan) are mounted in the DOM. The list SHALL show at least the title, provider and match status. Each entry SHALL show its GameNode cover when one is cached and a titled placeholder otherwise. Cached covers and detail-pane landscape artwork SHALL be served through the custom `gamenode-asset://` protocol and rendered with asynchronous off-thread decoding (`loading="lazy" decoding="async"`) so image loading never blocks the UI thread or retains unbounded uncompressed bitmaps in Rust memory.
 
 #### Scenario: Switch views
 - **WHEN** the user switches from grid to list
-- **THEN** the same entries, filter, sort and selection are shown as a list
+- **THEN** the same entries, filter, sort and selection are shown as a virtualized list
 
 #### Scenario: No cover available
 - **WHEN** an entry is unmatched or its cover is not cached
 - **THEN** it shows a placeholder with the detected title
+
+#### Scenario: Scroll a large library with cached covers and artwork
+- **WHEN** the user scrolls rapidly through hundreds of games in grid or list view or selects a game with high-resolution landscape artwork
+- **THEN** only viewport-visible rows are mounted, covers and artwork decode off the UI thread via `gamenode-asset://`, and scrolling remains responsive without unbounded memory growth
 
 ### Requirement: Filter, search and sort
 A sidebar SHALL list "All games" and each loaded provider with its count of installed games, and selecting one SHALL filter the view. A search field SHALL filter by title. The user SHALL be able to sort by title, provider or match status, ascending or descending.
@@ -92,34 +96,38 @@ The library SHALL support keyboard navigation in both views, opening the selecte
 - **THEN** several entries are selected and actions that apply to several games are offered for all of them
 
 ### Requirement: Context menus
-Each entry SHALL have a context menu, opened by right-click or the keyboard menu key, with the actions available for that entry: Play, Install (omitted when the provider has no install action, such as DRM-free entries), Match or Change match, and Add to GameNode. With several entries selected, the menu SHALL offer only the actions that work on several games.
+Each entry SHALL have a context menu, opened by right-click or the keyboard menu key, with the actions available for that entry: Play, Install (omitted when the provider has no install action, such as DRM-free entries), Game tools (for installed entries on supported platforms), Match or Change match, and Add to GameNode. With several entries selected, the menu SHALL offer only the actions that work on several games.
 
 #### Scenario: Context menu on one game
 - **WHEN** the user opens the context menu on a matched, installed Steam game
-- **THEN** Play, Change match and Add to GameNode are offered
+- **THEN** Play, Game tools, Change match and Add to GameNode are offered
 
 #### Scenario: Context menu on a DRM-free game
 - **WHEN** the user opens the context menu on a DRM-free game
-- **THEN** Play, Game settings, Locate executable, Remove from library, Local save protection, Match or Change match, and Add to GameNode are offered, and Install is not shown
+- **THEN** Play, Game tools, Game settings, Locate executable, Remove from library, Local save protection, Match or Change match, and Add to GameNode are offered, and Install is not shown
 
 #### Scenario: Context menu on a multi-selection
 - **WHEN** several games are selected
-- **THEN** single-game actions such as Play and Change match are not offered
+- **THEN** single-game actions such as Play, Game tools and Change match are not offered
 
 ### Requirement: Detail pane
-Selecting one entry SHALL show a detail pane with its cover, detected and matched titles, provider, install folder, match status, whether it is running, and the Play, Install, match and Add to GameNode actions. When the entry's provider has no install action (such as DRM-free games), the Install button and its reason SHALL be omitted. Other actions SHALL be disabled with a reason when unavailable, including "Running" for Play.
+Selecting one entry SHALL show a detail pane with its cover, detected and matched titles, provider, install folder, match status, whether it is running, active installed tools summary (when any game tool such as OptiScaler is installed), and the Play, Install, Game tools, match and Add to GameNode actions. When the entry's provider has no install action (such as DRM-free games), the Install button and its reason SHALL be omitted. Other actions SHALL be disabled with a reason when unavailable, including "Running" for Play and for mutating game tools.
 
 #### Scenario: Unmatched game
 - **WHEN** the selected game has no GameNode match
-- **THEN** the pane offers Match, Play stays available, and Add to GameNode is disabled until a match is chosen
+- **THEN** the pane offers Match, Play and Game tools stay available, and Add to GameNode is disabled until a match is chosen
 
 #### Scenario: Running game
 - **WHEN** the selected game is running
-- **THEN** the pane shows Running, and Play is disabled with a reason saying the game is already running
+- **THEN** the pane shows Running, Play is disabled with a reason saying the game is already running, and opening Game tools disables install, update and uninstall actions until the game exits
 
 #### Scenario: DRM-free game details omit Install
 - **WHEN** a DRM-free game is selected
-- **THEN** the detail pane shows Play and DRM-free actions without rendering an Install button or a "no install action" caption
+- **THEN** the detail pane shows Play, Game tools and DRM-free actions without rendering an Install button or a "no install action" caption
+
+#### Scenario: Game with OptiScaler installed
+- **WHEN** the selected game has OptiScaler installed
+- **THEN** the detail pane displays the installed tool summary (such as `OptiScaler v0.7.9 (dxgi.dll)`) and opening `Game tools…` shows the installed state, version switcher, proxy DLL selector, and `Uninstall` action
 
 ### Requirement: Play and Install actions
 Play and Install SHALL use the provider's launch and install rules. Double-clicking an entry or pressing Enter on a focused/selected entry in grid or list view SHALL select it and trigger Play when available, or open its detail pane when Play is unavailable. Play SHALL show progress until the URI is handed to the OS or the executable start request completes, and a failure SHALL show a localized error. Install SHALL open the store client on the game and SHALL be unavailable for manual entries. A game SHALL be tracked the same way whether or not it was started from GameNode; a successful process start alone SHALL not claim that it is running, which SHALL come from tracking.

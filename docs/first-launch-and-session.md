@@ -1,5 +1,10 @@
 # First launch and session basics
 
+> **Status: archived legacy guide.** This describes the discontinued Slint foundation
+> build, not the stable Tauri application. Its renderer controls and empty-library-only
+> behavior are historical. Use the [current OpenSpec baseline](../openspec/README.md)
+> and [development guide](development.md) for current work.
+
 GameNode Desktop opens to the signed-out welcome screen. Choose a provider to
 continue in your default browser. After the provider approves access, the browser
 returns to GameNode Desktop and the account name appears in the top bar. A

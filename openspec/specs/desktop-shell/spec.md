@@ -35,7 +35,7 @@ Every library, detail pane, match and Add to GameNode screen, menu, status and e
 - **THEN** the library toolbar, sidebar, detail pane, dialogs and errors use Brazilian Portuguese, and game titles are unchanged
 
 ### Requirement: GameNode Version 3.0 theme
-The shell SHALL use the Version 3.0 values and source selection recorded in `references/figma-version-3-tokens.json`, bundled Roboto, and GameNode logos. The settings modal SHALL use its own token set, recorded with the source node or variable from Figma section `4987:10202`. Theme values SHALL retain source provenance and documented desktop adaptations. Figma layouts SHALL guide visual treatment without adding features beyond roadmap step 1.
+The shell SHALL use the Version 3.0 values and source selection recorded in `ui/src/assets/theme-provenance.json`, bundled Roboto, and GameNode logos, structured through standardized Tailwind utility tokens and Mantine theme configurations shared with `game-node-clients`. The settings modal and shell dialogs SHALL use their own token sets, recorded with the source node or variable from Figma section `4987:10202`. Theme values SHALL retain source provenance and documented desktop adaptations. Figma layouts SHALL guide visual treatment without introducing features outside the current main specifications.
 
 #### Scenario: Review the theme against its source
 - **WHEN** the sign-in shell, empty library, menus, and Settings/About are reviewed
@@ -58,18 +58,6 @@ The application SHALL restore the saved normal window size, maximized state, and
 #### Scenario: Saved display is unavailable
 - **WHEN** a saved position is outside the available displays or the compositor controls positioning
 - **THEN** the application opens a reachable window without failing startup
-
-### Requirement: Renderer selection and recovery
-The application SHALL default to GPU rendering and offer a persisted software-rendering setting that takes effect on restart. If the default renderer cannot initialize, the application SHALL attempt software rendering so the user can reach that setting.
-
-#### Scenario: Select software rendering
-- **WHEN** the user enables software rendering in Settings and restarts
-- **THEN** the window uses software rendering and Settings retains the selection
-
-#### Scenario: GPU initialization fails
-- **WHEN** the default renderer cannot initialize on a supported machine
-- **THEN** startup attempts software rendering and reports the fallback in Settings
-- **AND** if neither renderer initializes, startup reports an actionable error without deleting persisted state
 
 ### Requirement: English and Brazilian Portuguese
 The application SHALL provide English and Brazilian Portuguese translations for every foundation screen, app menu, and user-facing status or error. It SHALL select the OS language when supported and otherwise use English.
@@ -121,3 +109,27 @@ immediate application and explanatory text that games without store counters use
 #### Scenario: Select Internal with keyboard
 - **WHEN** the user focuses the source choice and selects Internal by keyboard
 - **THEN** the preference is applied and persisted immediately
+
+### Requirement: Non-blocking asynchronous IPC between UI and Engine
+The application shell SHALL execute all backend commands (`#[tauri::command]`) asynchronously on background worker threads and SHALL push state updates to the frontend through coalesced backend events (`engine:snapshot`) synchronized with `@tanstack/react-query`. No file I/O, SQLite access, process inspection, network request, or image decoding SHALL run on the UI/main thread.
+
+#### Scenario: Rapid state updates while interacting with the shell
+- **WHEN** the backend engine emits several snapshot updates during a library scan or authentication verification
+- **THEN** the UI receives coalesced snapshot updates without blocking user input, menu navigation, or window resizing
+
+### Requirement: Standardized styling tokens and utility classes
+The application shell and feature views SHALL define and apply visual presentation using Tailwind CSS utility classes synchronized with the design token configurations of `game-node-clients` (including brand palette, surface/paper tones, font scale, and border radii). Components SHALL NOT rely on ad-hoc inline `style` objects for structural layout, colors, or interactive states, except for dynamic runtime values such as virtualized list offsets and drag handle positions.
+
+#### Scenario: Utility class styling verification
+- **WHEN** inspecting the markup of shell, settings, and library components
+- **THEN** structural layout and visual styling are applied through standardized utility classes rather than arbitrary inline styles
+- **AND** interactive states (`hover`, `active`, `focus-visible`) respond immediately without custom script listeners
+
+### Requirement: Accessible overlay dialogs and primitives
+All modal windows, dialogs, and popup overlays (including settings, match confirmation, game tools, local game management, and sync explanations) SHALL use accessible overlay primitives that enforce portal mounting, keyboard focus trapping, and backdrop escape dismissal without obstructing the underlying desktop shell. Bespoke icon assets SHALL use standardized Tabler icon components.
+
+#### Scenario: Opening and navigating overlay dialogs
+- **WHEN** an overlay dialog or modal is opened via keyboard or mouse
+- **THEN** keyboard focus is trapped within the dialog container
+- **AND** pressing Escape dismisses the dialog and restores focus to the triggering element
+- **AND** icons within the dialog render consistently with standard vector icon components

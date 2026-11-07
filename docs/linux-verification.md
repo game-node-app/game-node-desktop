@@ -1,5 +1,9 @@
 # Local Linux foundation verification — 2026-11-04
 
+> **Status: historical verification record.** Slint/Skia observations below apply
+> to the discontinued build that was tested. They do not establish acceptance of
+> the stable Tauri version. See [OpenSpec documentation status](../openspec/README.md).
+
 Build host: Ubuntu 26.04 under WSLg, x86-64. Rust 1.99.1, Slint 1.18.1.
 The user installed `libxkbcommon-x11-0`, `xdg-utils`, and
 `x11-xserver-utils` before these checks. X11 reports one connected 3440×1440

@@ -44,7 +44,7 @@ The registered Windows and Linux URI handlers SHALL deliver the complete GameNod
 - **THEN** the application rejects unsupported data without executing it or modifying the active session
 
 ### Requirement: Close returns to the background
-On Windows, closing the window SHALL hide it and keep the application running with tracking and the tray icon. It SHALL save window geometry and layout as closing did before. On other platforms in the MVP, closing the window SHALL stop the application as in step 1.
+On Windows, closing the window SHALL hide it and keep the application running with tracking and the tray icon. It SHALL save window geometry and layout. On Linux, closing the window SHALL stop the application and release single-instance resources.
 
 #### Scenario: Close the window during play
 - **WHEN** the user closes the window while a game is running

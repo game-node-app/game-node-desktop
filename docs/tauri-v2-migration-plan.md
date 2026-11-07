@@ -1,5 +1,10 @@
 # GameNode Desktop: Tauri v2 + React + TanStack migration plan
 
+> **Status: archived, implemented transition plan.** Tauri is the stable baseline;
+> Slint is discontinued. The instructions below record the completed migration and
+> must not be treated as pending tasks or current architecture guarantees. Current
+> requirements are maintained in [OpenSpec](../openspec/README.md).
+
 Started 2026-11-06. This plan replaces the Slint UI layer, its Rust glue, and the Slint headless studio with a
 **Tauri v2** shell and a **React + TypeScript + TanStack** frontend, while preserving the Rust domain and OS crates
 (`gamenode-core`, `gamenode-platform`, `gamenode-api`) and the engine orchestration (`crates/app/src/engine`).

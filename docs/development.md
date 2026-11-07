@@ -183,6 +183,41 @@ Without that feature Tauri treats the build as a dev build and loads `devUrl`
 server is running. For native HMR, start `pnpm --dir ui dev` and run
 `cargo run -p gamenode-app --no-default-features`.
 
+### CLI and local daemon (Linux first milestone)
+
+The workspace builds `gamenode-daemon` and `gamenode-cli`. The daemon uses the
+same Engine, database and credential store as the Tauri host, and both hosts share
+the per-user instance lock. Do not run them against the same profile at once.
+Functional CLI commands start the daemon on demand; `daemon status` only checks it:
+
+```sh
+cargo run -p gamenode-app --bin gamenode-cli -- daemon status
+cargo run -p gamenode-app --bin gamenode-cli -- auth status
+# On a new profile, sign in once before loading the local library:
+cargo run -p gamenode-app --bin gamenode-cli -- auth login --provider google
+cargo run -p gamenode-app --bin gamenode-cli -- games scan
+cargo run -p gamenode-app --bin gamenode-cli -- games list
+```
+
+`games scan` waits for provider scans and their storage writes; pass `--no-wait`
+to return an operation ID, then query it with `operations status <operation-id>`.
+`auth login <provider>` opens the browser and waits for verified sign-in; use
+`--no-wait` to return after starting the flow. Commands accept `--json` for a
+versioned JSON envelope. Listing or scanning requires a restored account session;
+the CLI reports that requirement instead of presenting an unloaded library as empty.
+The CLI also supports logout, `settings sync on|off`,
+`settings playtime-source store|internal`, play/install/remove by an entry key
+from `games list`, and `games search <entry-key> <query>` followed by
+`games match <entry-key> <game-id>`, with `no-match` and `clear-match`.
+`games status <entry-key> --status <status>` changes the status of a game already
+in the account while keeping its existing collections. `games add <entry-key>
+[status]` adds a matched game to the account; repeated `--collection <id>` sets
+the selected collections and `--no-collections` clears them. Its local API
+currently uses a private Unix socket. `daemon stop` waits for queued storage writes
+and refuses to interrupt an active scan; Windows transport remains future work.
+Set `GAMENODE_DATA_DIR` to a disposable directory when exercising the daemon
+locally; omit it to use the existing per-user desktop profile.
+
 ### Driving and previewing from T3 Code Preview
 
 - **Browser / T3 Code Preview**: open `http://localhost:4777` via `preview_open`

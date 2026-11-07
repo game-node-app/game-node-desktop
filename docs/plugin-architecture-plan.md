@@ -262,8 +262,9 @@ encerra a espera da CLI, sem cancelar o scan no daemon. O schema JSON e o detalh
 das mensagens ainda serão formalizados.
 
 A tabela abaixo reúne o comportamento dos comandos iniciais e propostas para
-incrementos posteriores. Os comandos adicionais não foram aprovados por esta
-confirmação do conjunto inicial e ainda não existem como executáveis funcionais.
+incrementos posteriores. A CLI atual já implementa também `games status`, com a
+mesma seleção de status e coleções do fluxo de edição existente. Descoberta e saves
+continuam como propostas de incrementos posteriores.
 
 | Comando inicial ou proposto para incremento posterior | Comportamento |
 | --- | --- |
@@ -279,7 +280,7 @@ confirmação do conjunto inicial e ainda não existem como executáveis funcion
 | `gamenode-cli games search <texto>` | Pesquisar o catálogo para associação de entradas locais. |
 | `gamenode-cli games match <entry-key> <game-id>` | Registrar a escolha de catálogo por conta, preservando o mecanismo atual. |
 | `gamenode-cli games add <entry-key> --status playing` | Adicionar o jogo detectado à conta; usar somente status aceitos pelo contrato atual. |
-| `gamenode-cli games status <entry-key> --status finished` | Editar o status da associação existente, preservando coleções e plataformas como hoje. |
+| `gamenode-cli games status <entry-key> --status finished` | Implementado: editar o status da associação existente, preservando coleções como hoje. |
 | `gamenode-cli discovery ...` | Expor adicionar executável, diretórios monitorados, candidatos e aprovação; detalhar os subcomandos após mapear o fluxo atual. |
 | `gamenode-cli saves ...` | Expor configuração, backup, histórico, preview e confirmação de restore do mecanismo atual. |
 
@@ -630,6 +631,11 @@ implementar o runtime de plugins antecipadamente.
 
 ## Pendências após a prova de IPC — 2026-11-07
 
+O checklist desta seção registra o estado do planejamento antes da implementação
+dos executáveis. Para o estado atual da CLI, consulte “Implementação Core/Daemon +
+CLI” no fim deste documento; as decisões de arquitetura abaixo continuam como
+referência para o trabalho que ainda falta.
+
 ### Decisões que bloqueiam o primeiro fluxo Core/Daemon + CLI
 
 1. **Lifecycle operacional — decisão principal concluída:** o daemon permanece após
@@ -742,3 +748,29 @@ contadores a partir dos itens. A suíte de frontend passou com 178 testes, usand
 `NODE_OPTIONS=--no-experimental-webstorage` para compatibilidade do Node 26 com
 o ambiente de testes. O usuário confirmou adicionar três jogos e receber sucesso.
 Essa correção preserva a operação existente; não é parte da extração do daemon.
+
+## Implementação Core/Daemon + CLI — 2026-11-07
+
+- O bootstrap do Engine é compartilhado pelo host Tauri e pelo daemon. O daemon
+  inicializa o Core sem abrir uma janela, usa a exclusão de instância por usuário
+  existente e encaminha callbacks de autenticação recebidos pelo IPC local.
+- Linux tem `gamenode-daemon` e `gamenode-cli` sobre gRPC/UDS. O socket fica em
+  diretório privado, usa modo `0600` e valida UID nas duas pontas. Transporte
+  Windows e credencial aleatória por execução ainda não foram implementados.
+- A CLI oferece lifecycle do daemon, autenticação, configurações, listagem/scan,
+  ações de jogo, busca e escolha de match, adicionar à conta e alterar status.
+  `games scan` aguarda o Engine e as gravações do storage worker; `--no-wait`
+  retorna um ID consultável por `operations status`. Falhas de provider ou escrita
+  aparecem como resultado parcial e código de saída 1. A parada recusa um scan ativo
+  e aguarda a fila de gravações terminar.
+- `--json` usa envelope versionado; erros de argumento retornam 2, falhas
+  operacionais retornam 1. Comandos funcionais iniciam o daemon sob demanda.
+- Build e smoke tests em perfis temporários cobrem lifecycle, comandos sem sessão,
+  códigos de saída, formato JSON e configurações. Um servidor HTTP local validou
+  o login OAuth simulado, o callback `app.gamenode://`, a verificação da sessão,
+  scan/listagem Steam, busca, match, inclusão na conta e atualização de status
+  preservando coleções. Não foram usados provedor OAuth nem conta reais. Resultados
+  parciais ainda precisam de uma validação dedicada.
+- Descoberta monitorada, gerenciamento de saves/backup e a migração do Tauri para
+  consumir esta Client API seguem fora da CLI básica atual; Windows permanece marco
+  posterior, conforme a decisão Linux-first.

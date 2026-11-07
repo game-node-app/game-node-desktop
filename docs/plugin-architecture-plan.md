@@ -69,6 +69,11 @@ de transporte. Levantar decisões apenas para lacunas reais introduzidas pela se
 
 ### Escopo funcional e decisões operacionais — 2026-11-07
 
+A primeira plataforma de implementação e validação será Linux. Windows fica para
+um marco posterior. O usuário usará sua própria conta GameNode nos testes; isso
+define a conta de autenticação, sem decidir automaticamente o reaproveitamento
+direto dos arquivos locais ou autorizar alterações remotas por testes automatizados.
+
 O primeiro conjunto Core/Daemon + CLI deverá disponibilizar as funções já presentes
 no Tauri: login e restauração pelo navegador, listagem das instalações locais,
 pesquisa/associação ao catálogo, adição dos jogos detectados à conta, alteração de
@@ -83,45 +88,206 @@ Depois da validação da CLI, o Tauri será o próximo cliente da mesma Client A
 Decisões aceitas pelo usuário:
 
 - Uma instância de daemon por usuário do SO, iniciada sob demanda pela CLI.
-  Política exata de encerramento e autostart ainda precisa ser detalhada.
+  O daemon permanece ativo após o encerramento da CLI; não haverá configuração de
+  inicialização automática com o sistema na primeira entrega.
 - Login continua no navegador e preserva o contrato existente do servidor.
   A entrega do callback ao daemon deve ser resolvida localmente, sem novo fluxo REST.
-- Durante a transição, Tauri legado e daemon devem disputar um lock comum, adquirido
-  antes de abrir os dados ou iniciar serviços. Se um for owner, o outro deve recusar
-  a inicialização com mensagem clara, sem abrir outro coordenador.
+- O daemon deve manter exclusão de instância por usuário antes de abrir os dados ou
+  iniciar serviços. Não adaptar agora o Tauri monolítico para disputar esse lock:
+  o usuário não pretende executá-lo durante o desenvolvimento do Core + CLI.
+  Se a coexistência dos hosts voltar ao escopo, o lock comum e a recusa do segundo
+  coordenador continuam sendo a abordagem aceita, a implementar antes desse uso.
 - A CLI pode conectar-se ao daemon já ativo; não é outro escritor independente.
   O Tauri migrado posteriormente será cliente do daemon, não um segundo Core.
+- A GUI volta à validação na fase de conexão com o daemon. Quando o conjunto
+  daemon + GUI Tauri alcançar equivalência funcional com o cliente monolítico,
+  o monólito será descontinuado; não se planeja manter os dois hosts em paralelo.
 - O primeiro plugin deve reproduzir a funcionalidade já implementada no Tauri,
-  sem criar novas regras de descoberta. Steam é o candidato recomendado para esse
-  recorte; a seleção final da integração e os contratos ainda não foram fechados.
+  sem criar novas regras de descoberta. A descoberta Steam foi escolhida para esse
+  recorte; os contratos e o runtime ainda precisam ser formalizados.
 - Implementar uma prova de transporte/autenticação local antes de adotar o mecanismo
   como infraestrutura de produção. O resultado está registrado abaixo.
 
-### Proposta da estrutura de comandos da CLI
+### Ciclo de vida operacional confirmado
 
-Os nomes abaixo são proposta, ainda não contratos aprovados nem comandos existentes.
-`gamenode` é o nome ilustrativo da CLI; a convivência com o executável gráfico atual
-deve ser tratada no empacotamento.
+Encerrar a CLI ou fechar seu terminal não encerra o daemon nem interrompe
+monitoramento, sincronização ou backups. O daemon permanece disponível para os
+próximos clientes.
 
-| Comando proposto | Comportamento |
+A solicitação de parada inicia um encerramento organizado: impede novas operações,
+interrompe tarefas recorrentes, conclui gravações em andamento e libera o lock
+somente ao terminar. Se houver uma operação que não possa ser interrompida com
+segurança, a parada é recusada com o motivo e o daemon permanece ativo. A primeira
+entrega não oferecerá encerramento forçado pelo comando da CLI.
+
+O tratamento de sinais do SO, a classificação das tarefas que impedem a parada e
+a recuperação após falha ainda precisam ser detalhados na implementação. Essas
+regras são da arquitetura futura, não do host Tauri estável.
+
+### Conexão local confirmada para Linux
+
+A Client API usará gRPC sobre UDS em diretório privado dentro de
+`$XDG_RUNTIME_DIR`, separado dos dados persistentes. A credencial será aleatória
+por execução do daemon, guardada nesse diretório com acesso exclusivo ao usuário.
+As duas pontas verificarão o usuário do processo conectado, conforme o mecanismo
+validado no experimento.
+
+Após reiniciar o daemon, a CLI deverá reler a credencial e reconectar. Somente o
+processo que adquirir o lock poderá remover arquivos de conexão obsoletos e iniciar
+uma nova instância. `daemon status` apenas consulta; comandos funcionais podem
+iniciar o daemon sob demanda.
+
+Essa autenticação autoriza acesso local do usuário, sem distinguir aplicativos
+confiáveis e sem impor restrições aos plugins. O transporte no Windows permanece
+pendente de validação. A implementação ainda deverá definir os nomes dos caminhos,
+o comportamento quando `$XDG_RUNTIME_DIR` estiver ausente ou inválido e os detalhes
+de prontidão, timeouts e reconexão; esta decisão não aprova fallback automático.
+
+### Retorno do login confirmado
+
+Um pequeno handler registrado no SO receberá as URIs `app.gamenode://` sem abrir
+a GUI e encaminhará o callback ao daemon pela conexão local autenticada. O daemon
+validará e concluirá o fluxo existente; a CLI apresentará o resultado ao usuário.
+O navegador e o contrato do servidor permanecem os mesmos.
+
+O callback não deverá aparecer em logs, pois pode conter credenciais. A instalação
+e a remoção deverão registrar e remover corretamente o handler. O nome e a forma
+do executável, o tratamento de daemon indisponível e a apresentação de cancelamento
+ou timeout ainda serão detalhados; não há implementação desse handler novo.
+
+### Recorte inicial confirmado da Client API
+
+A primeira entrega da Client API deverá permitir consultar estado e versão do
+daemon e solicitar sua parada; consultar autenticação, iniciar login e receber o
+resultado; listar instalações locais com as informações existentes no Tauri; e
+solicitar uma varredura e acompanhar sua conclusão. As demais funções do escopo
+serão expostas em incrementos posteriores.
+
+Ao aceitar um scan, o daemon devolverá um identificador de operação. A CLI poderá
+acompanhar essa operação por streaming e consultar seu resultado após reconectar
+à mesma instância do daemon. O contrato distinguirá solicitação aceita, varredura
+em execução e resultado persistido, incluindo eventuais falhas por provider. A
+CLI só anunciará sucesso após confirmação da persistência, preservando a semântica
+atual de resultados parciais e erros, sem apresentar falhas como sucesso completo.
+
+Uma desconexão da CLI não cancela o scan. Não será exigida persistência do histórico
+dessas operações entre reinicializações nesta primeira entrega; a recuperação dos
+dados e trabalhos já persistidos pelo produto continua sendo preservada. Retenção
+em memória e resposta para identificadores desconhecidos ainda serão detalhadas.
+
+Os contratos Protobuf permanecerão separados dos modelos internos. Nomes de RPCs,
+mensagens, erros, deadlines e regras de compatibilidade ainda precisam ser
+formalizados; o recorte aceito não define um schema nem altera regras de negócio.
+A [proposta técnica do primeiro marco](core-cli-contract-proposal.md) reúne esses
+detalhes para revisão, incluindo mensagens, erros, JSON e critérios de aceitação.
+Seu conteúdo permanece proposto até aprovação, sem modificar as specs estáveis.
+
+### Primeiro plugin confirmado: descoberta Steam
+
+O primeiro plugin oficial reproduzirá a descoberta Steam existente: lerá os dados
+locais da Steam e informará as instalações encontradas ao Core. Associação ao
+catálogo, conciliação, persistência e vínculo com a conta permanecerão no Core.
+
+Uma falha do plugin deverá preservar os dados anteriores, conforme o comportamento
+atual. A extração também deverá preservar a distinção existente entre falha e scan
+concluído com resultados parciais ou vazios, sem redefinir as regras de descoberta.
+O recorte não acrescenta instalação de jogos nem novas regras de identificação.
+
+O plugin Steam será iniciado sob demanda para uma varredura. Após conectar e
+informar prontidão, executará o scan; após entregar o resultado completo, poderá
+encerrar. Pedidos simultâneos preservarão a coordenação atual do scanner, sem
+iniciar vários processos desse plugin. Uma falha será registrada pelo Core e
+preservará os dados anteriores, distinguindo-a de um scan concluído com resultado
+parcial ou vazio conforme as regras existentes.
+
+O plugin de descoberta não precisa permanecer ocioso entre varreduras. Monitorar
+jogos em execução continua sendo responsabilidade separada. Esta decisão vale
+para o plugin Steam; não estabelece execução curta para todas as capacidades.
+
+Na primeira entrega, falha de inicialização, crash ou perda de conexão do plugin
+Steam encerrará a operação com erro explícito. Resultados incompletos dessa
+execução não serão aplicados como scan concluído; os dados anteriores serão
+preservados. Isso não altera os resultados parciais que o scanner atual considera
+válidos quando conclui normalmente.
+
+Não haverá reinício automático imediato após falha. Uma nova solicitação de scan
+poderá iniciar outra instância normalmente. O diagnóstico identificará plugin,
+etapa e motivo, sem expor credenciais. Timeouts e detecção de processo conectado
+mas sem resposta ainda precisam ser definidos.
+
+Esse fluxo validará processo independente, comunicação gRPC e entrega de
+descobertas. O runtime e os contratos serão implementados após validar a separação
+Core/Daemon + CLI; a escolha da integração não antecipa essa etapa.
+
+### Handshake de plugins confirmado
+
+O daemon iniciará o processo com uma credencial temporária exclusiva daquela
+execução. O plugin se conectará à Plugin API e apresentará essa credencial. No
+handshake, ambos verificarão compatibilidade de protocolo e o plugin informará
+suas capacidades; o daemon conferirá essas informações com o manifesto antes de
+aceitar a instância como pronta. Ao encerrar ou falhar, a credencial será invalidada.
+
+O mecanismo vincula a conexão à instância iniciada mediante posse da credencial;
+não entrega credenciais REST ao plugin, não comprova procedência oficial e não
+oferece sandbox. O canal de entrega da credencial e a política concreta de versões
+ainda precisam ser definidos. Não pressupor proteção contra outros processos do
+mesmo usuário com acesso aos recursos da instância.
+
+### Comandos e interação confirmados da CLI inicial
+
+Os executáveis serão `gamenode-cli` para a CLI e `gamenode-daemon` para o serviço.
+O nome do executável gráfico será tratado na integração da GUI. Os comandos
+iniciais aprovados são:
+
+```bash
+gamenode-cli daemon status
+gamenode-cli daemon start
+gamenode-cli daemon stop
+gamenode-cli auth status
+gamenode-cli auth login
+gamenode-cli games list
+gamenode-cli games scan
+gamenode-cli operations status <id>
+```
+
+`games scan` acompanha a operação até terminar; `--no-wait` apenas solicita e
+retorna o identificador. `operations status <id>` consulta o estado ou resultado
+posteriormente, respeitando a retenção da instância do daemon.
+
+A saída será texto legível por padrão, com `--json` para automação. Resultados vão
+para `stdout`; progresso e diagnósticos para `stderr`. Códigos de saída: `0` para
+sucesso, `1` para falha operacional e `2` para argumentos inválidos. Scan parcial
+informa as falhas e retorna `1`, preservando os resultados válidos. `Ctrl+C`
+encerra a espera da CLI, sem cancelar o scan no daemon. O schema JSON e o detalhe
+das mensagens ainda serão formalizados.
+
+A tabela abaixo reúne o comportamento dos comandos iniciais e propostas para
+incrementos posteriores. Os comandos adicionais não foram aprovados por esta
+confirmação do conjunto inicial e ainda não existem como executáveis funcionais.
+
+| Comando inicial ou proposto para incremento posterior | Comportamento |
 | --- | --- |
-| `gamenode daemon status` | Informar daemon ativo, versão e endpoint, sem expor segredos. |
-| `gamenode daemon start` | Iniciar sob demanda respeitando o lock; operações funcionais também podem solicitar essa inicialização. |
-| `gamenode daemon stop` | Pedir encerramento ordenado; definir comportamento com tracking e backups ativos antes de implementar. |
-| `gamenode auth login` | Abrir o navegador e aguardar o callback do fluxo existente. |
-| `gamenode auth status` | Informar sessão verificada, em verificação, indisponível ou ausente. |
-| `gamenode auth logout` | Usar o sign-out existente, preservando os dados não secretos conforme as regras atuais. |
-| `gamenode games list` | Listar instalações locais, com chave, provider, título e match; não importar a biblioteca remota. |
-| `gamenode games scan` | Solicitar e acompanhar o scan existente; distinguir aceitação, resultado e erro de persistência. |
-| `gamenode games search <texto>` | Pesquisar o catálogo para associação de entradas locais. |
-| `gamenode games match <entry-key> <game-id>` | Registrar a escolha de catálogo por conta, preservando o mecanismo atual. |
-| `gamenode games add <entry-key> --status playing` | Adicionar o jogo detectado à conta; usar somente status aceitos pelo contrato atual. |
-| `gamenode games status <entry-key> --status finished` | Editar o status da associação existente, preservando coleções e plataformas como hoje. |
-| `gamenode discovery ...` | Expor adicionar executável, diretórios monitorados, candidatos e aprovação; detalhar os subcomandos após mapear o fluxo atual. |
-| `gamenode saves ...` | Expor configuração, backup, histórico, preview e confirmação de restore do mecanismo atual. |
+| `gamenode-cli daemon status` | Informar daemon ativo, versão e endpoint, sem expor segredos. |
+| `gamenode-cli daemon start` | Iniciar sob demanda respeitando o lock; operações funcionais também podem solicitar essa inicialização. |
+| `gamenode-cli daemon stop` | Solicitar encerramento organizado; recusar com motivo se houver operação que não possa ser interrompida com segurança. |
+| `gamenode-cli auth login` | Abrir o navegador e aguardar o callback do fluxo existente. |
+| `gamenode-cli auth status` | Informar sessão verificada, em verificação, indisponível ou ausente. |
+| `gamenode-cli auth logout` | Usar o sign-out existente, preservando os dados não secretos conforme as regras atuais. |
+| `gamenode-cli games list` | Listar instalações locais, com chave, provider, título e match; não importar a biblioteca remota. |
+| `gamenode-cli games scan` | Acompanhar scan até terminar; `--no-wait` devolve o identificador sem aguardar. Distinguir aceitação, resultado e erro de persistência. |
+| `gamenode-cli operations status <id>` | Consultar estado ou resultado da operação na instância do daemon. |
+| `gamenode-cli games search <texto>` | Pesquisar o catálogo para associação de entradas locais. |
+| `gamenode-cli games match <entry-key> <game-id>` | Registrar a escolha de catálogo por conta, preservando o mecanismo atual. |
+| `gamenode-cli games add <entry-key> --status playing` | Adicionar o jogo detectado à conta; usar somente status aceitos pelo contrato atual. |
+| `gamenode-cli games status <entry-key> --status finished` | Editar o status da associação existente, preservando coleções e plataformas como hoje. |
+| `gamenode-cli discovery ...` | Expor adicionar executável, diretórios monitorados, candidatos e aprovação; detalhar os subcomandos após mapear o fluxo atual. |
+| `gamenode-cli saves ...` | Expor configuração, backup, histórico, preview e confirmação de restore do mecanismo atual. |
 
-A primeira fatia verificável proposta é `daemon status`, `auth status/login`,
-`games list` e `games scan`. As demais operações completam o escopo em incrementos.
+A primeira fatia verificável inclui estado/versão e parada do daemon, estado/login
+de autenticação, listagem local e scan acompanhado, conforme o recorte confirmado
+da Client API, além do início explícito e da consulta de operações aprovados acima.
+As demais operações completam o escopo em incrementos e seus comandos ainda são
+propostas.
 A CLI precisa reportar limitações do SO e falhas reais, sem confundi-las com ausência
 de jogos. Restore continua exigindo preview e confirmação; não reduzir a proteção
 existente para acomodar uma interface de terminal.
@@ -135,14 +301,14 @@ instância em arquivo privado, sem usar banco ou token REST do produto.
 Quatro testes e uma execução entre processos separados passaram em Linux x86-64;
 Clippy também passou. Credenciais ausentes/incorretas foram recusadas, assim como
 um segundo owner; restart invalida a credencial anterior. O mecanismo é viável
-nessa combinação Rust/Tonic, mas não foi aprovado automaticamente como contrato
-definitivo nem validado em Windows, outros SDKs, streaming ou carga. Os limites e
+nessa combinação Rust/Tonic. O mecanismo foi escolhido para a Client API no Linux,
+conforme a decisão acima; não foi validado em Windows, outros SDKs, streaming ou carga. Os limites e
 comandos de reprodução estão no README do experimento.
 
 A exclusão do protótipo usa caminhos próprios. Ela não implementa ainda o lock
-compartilhado com o Tauri. O IPC desktop existente pode ser aproveitado nessa
-extração, mas seu comportamento de encaminhar ativação não substitui a recusa de
-inicialização exigida entre hosts diferentes.
+de produção do daemon. O IPC desktop existente pode ser aproveitado nessa extração.
+Um lock compartilhado com o Tauri monolítico só será necessário se a coexistência
+dos hosts voltar ao escopo; encaminhar ativação, sozinho, não excluiria dois hosts.
 
 ### 1. Daemon independente como núcleo
 
@@ -276,10 +442,12 @@ de vida, mas também adiciona overhead; não há redução de consumo garantida.
 - Serviços gRPC para lifecycle, scan em stream, biblioteca e operações de instalação.
   Exemplos anteriores não fixam métodos nem mensagens.
 - Sincronização de clientes por snapshot mais cursor e stream incremental.
-- Estados de plugin instalado, iniciando, pronto, falhou, parando e parado;
-  ativação sob demanda e credencial temporária por instância.
-- CLI com comandos para status, autenticação, biblioteca, scans, execução e plugins.
-  `clap` e Ratatui foram sugestões, sem escolha obrigatória.
+- Estados de plugin instalado, iniciando, pronto, falhou, parando e parado e política
+  de ativação para outras capacidades. A execução sob demanda da descoberta Steam
+  e o handshake com credencial temporária por instância já estão confirmados acima.
+- Ampliação da CLI para funções posteriores ao conjunto inicial confirmado,
+  incluindo execução e plugins. `clap` e Ratatui foram sugestões, sem escolha
+  obrigatória.
 
 ## Questões pendentes de decisão
 
@@ -290,7 +458,7 @@ As prioridades abaixo são uma recomendação de sequência, não decisões adic
 | 1 | Domínio e conciliação existentes | Como o código atual representa identidade, instalações, evidências, conflitos e indisponibilidade? O que precisa atravessar a Client API sem mudar essa semântica? | Mapeamento dos modelos e cenários existentes, com apenas as lacunas de extração. |
 | 2 | Propriedade e persistência | Quem possui cada estado? O que é cache, observação, estado durável ou estado da interface? Quais dados são da conta ou do usuário do SO? | Mapa de propriedade e escrita, incluindo recuperação e migração dos dados atuais. |
 | 3 | Fronteira inicial de extração | Que dependências unem Engine, Tauri, frontend, REST e adaptadores? Como preservar tracking, matching, ferramentas e backups? | Inventário do código e primeiro fluxo vertical com critérios de aceitação. |
-| 4 | Instância e inicialização | Instância por usuário e início sob demanda estão aceitos. Como encerrar com tarefas ativas, tratar autostart e implementar o lock comum com o host Tauri? | Detalhamento do lifecycle, exclusão entre hosts e descoberta do endpoint. |
+| 4 | Instância e inicialização | Instância por usuário, início sob demanda, permanência após a CLI e parada organizada estão aceitos; sem autostart na primeira entrega. Como mapear tarefas que impedem parada, sinais e falha de inicialização? Lock do daemon é necessário; adaptação do monólito fica fora desta etapa. | Detalhamento operacional, exclusão de instância do daemon e descoberta do endpoint. |
 | 5 | IPC e identidade | Rust/Tonic + UDS foi validado no Linux. Como adotar e endurecer o mecanismo, suportar Windows/outros SDKs e definir autenticação dos plugins, revogação e versões? | Contrato de conexão de produção e matriz de compatibilidade. |
 | 6 | Permissões e isolamento | Haverá plugins nativos confiáveis, restritos ou ambos? Quais restrições são realmente aplicadas em cada SO? Como elevar uma operação específica? | Modelo de autorização com garantias e limitações explícitas, incluindo acesso à API social. |
 | 7 | Lifecycle de plugins | Como iniciar, verificar prontidão, detectar falha, reiniciar, encerrar e atualizar? O que acontece com tarefas em execução? | Máquina de estados, timeouts e política de recuperação. |
@@ -464,32 +632,44 @@ implementar o runtime de plugins antecipadamente.
 
 ### Decisões que bloqueiam o primeiro fluxo Core/Daemon + CLI
 
-1. **Lifecycle operacional:** o início sob demanda está aceito; falta definir se o
-   daemon permanece após a CLI terminar, encerramento com tracking/backup ativo,
-   sinal de parada e tratamento de falha de inicialização. Autostart não está decidido.
-2. **Conexão de produção:** escolher descoberta e localização do endpoint, publicação
-   da credencial e tratamento de conexão obsoleta. UDS com token foi validado em
-   Linux; Windows, outros SDKs e endurecimento continuam pendentes.
-3. **Lock entre hosts:** a exclusão está decidida; falta definir o recurso comum e a
-   distinção entre repetição de abertura da mesma GUI e tentativa de iniciar outro
-   host. Preservar o encaminhamento legítimo de callbacks e impedir acesso concorrente
-   aos dados antes de iniciar qualquer serviço.
-4. **Callback do login:** o navegador e o contrato do servidor estão decididos.
-   Falta definir o executável responsável pelo handler `app.gamenode://`, seu
-   encaminhamento ao daemon e o resultado exibido pela CLI em cancelamento/timeout.
-5. **Client API mínima:** fechar operações, mensagens, estados de autenticação,
-   erros, deadlines e compatibilidade inicial. Definir como a CLI acompanha o scan
-   sem confundir pedido aceito, processamento concluído e persistência confirmada.
-6. **Comandos e interação:** aprovar nomes e argumentos propostos, formato textual e
-   JSON, códigos de saída e confirmações para ações sensíveis. Definir o nome do
-   binário sem colidir com o executável gráfico atual.
+1. **Lifecycle operacional — decisão principal concluída:** o daemon permanece após
+   a CLI terminar, com parada organizada, recusa de parada insegura e sem autostart
+   na primeira entrega. Restam o mapeamento das tarefas que impedem parada, sinais
+   do SO e tratamento de falha de inicialização/recuperação.
+2. **Conexão de produção — mecanismo Linux decidido:** UDS em diretório privado
+   dentro de `$XDG_RUNTIME_DIR`, credencial por execução e verificação de usuário
+   nas duas pontas; somente o owner do lock limpa conexões obsoletas. Restam nomes
+   dos caminhos, runtime dir ausente/inválido, prontidão, timeouts e reconexão.
+   Windows, outros SDKs e endurecimento continuam pendentes.
+3. **Exclusão de instância:** implementar o lock de produção do daemon antes de
+   acessar dados ou iniciar serviços. Salvaguardas no Tauri monolítico ficam fora
+   desta etapa, pois ele não será executado durante o desenvolvimento do Core + CLI.
+   A abordagem de lock comum está aceita caso a coexistência volte ao escopo.
+   O encaminhamento do callback de login continua necessário independentemente disso.
+4. **Callback do login — abordagem decidida:** handler de `app.gamenode://` sem GUI,
+   encaminhamento autenticado ao daemon, validação no daemon e resultado na CLI;
+   sem registrar o callback em logs. Restam forma do executável, registro/remoção
+   pelo instalador, daemon indisponível e apresentação de cancelamento/timeout.
+5. **Client API mínima — recorte decidido:** estado/versão e parada do daemon,
+   estado/login de autenticação, instalações locais e scan. Scan terá identificador,
+   streaming e consulta após reconexão à mesma instância; sucesso depende de
+   persistência confirmada. Não se exige histórico entre reinicializações. Restam
+   RPCs e mensagens, estados de autenticação, erros, deadlines, compatibilidade,
+   retenção em memória e resposta a identificadores desconhecidos.
+6. **Comandos e interação — conjunto inicial decidido:** `gamenode-cli` e
+   `gamenode-daemon`, comandos iniciais, espera do scan/`--no-wait`, consulta de
+   operações, texto/`--json`, separação stdout/stderr e códigos 0/1/2 estão aceitos.
+   Restam schema JSON, mensagens e confirmações das futuras ações sensíveis;
+   comandos posteriores e nome do executável gráfico serão detalhados depois.
 
 ### Trabalho já orientado, ainda não executado
 
 - Extrair o Engine e seu bootstrap sem Tauri, levando os testes existentes e a
   geração dos manifests; fazer primeiro o host atual consumir essa extração.
-- Implementar a exclusão entre hosts antes de compartilhar o perfil real e preservar
-  dados, credenciais e recuperação de trabalhos. O lock da prova não realiza isso.
+- Implementar a exclusão de instância do daemon e preservar dados, credenciais e
+  recuperação de trabalhos. O lock da prova não é a implementação de produção.
+  Não adaptar a exclusão do Tauri monolítico nesta etapa; não executar os dois hosts
+  sobre o mesmo perfil. Descontinuar o monólito após equivalência do daemon + GUI.
 - Criar daemon e CLI reais e testar equivalência da biblioteca, login, scan e efeitos
   associados, usando perfil isolado. Não há tais executáveis funcionais ainda.
 - Detalhar a exposição incremental de associação ao catálogo, adição à conta,
@@ -500,14 +680,59 @@ implementar o runtime de plugins antecipadamente.
 
 ### Decisões posteriores para plugins
 
-- Confirmar qual integração existente será o primeiro plugin; Steam é recomendação.
-- Fechar manifesto mínimo, handshake, identidade por instância, registro de
-  capacidades, encerramento e recuperação de falhas, com versões compatíveis.
+- A descoberta Steam está confirmada como primeiro plugin. Falta formalizar seu
+  contrato de observações e conclusão/falha, preservando o scanner existente.
+- Sua execução será sob demanda, com prontidão antes do scan e possibilidade de
+  encerramento após entregar o resultado completo. Preservar a coordenação atual
+  de pedidos simultâneos, sem multiplicar processos desse plugin.
+- A política inicial de falha está confirmada: erro explícito, preservação dos
+  dados anteriores e nenhum reinício automático imediato; nova solicitação pode
+  iniciar outra instância. Restam timeouts e detecção de ausência de resposta.
+- O handshake com credencial por execução, conferência de capacidades com manifesto,
+  compatibilidade de protocolo e invalidação ao encerrar/falhar está confirmado.
+  Restam manifesto mínimo, entrega da credencial, política concreta de versões e
+  detalhamento dos estados e limites operacionais.
 - Definir permissões da API social, comunicação mediada e limites realmente impostos
   aos processos. Não considerar o token da prova um modelo de autorização por plugin.
 - Definir resolução entre providers, tarefas duráveis, eventos e ressincronização
   conforme os fluxos concretos exigirem; não construir toda a abstração antecipadamente.
 - Definir distribuição, procedência oficial, atualização e eventual sandbox.
+
+### Pendências consolidadas após a revisão das decisões
+
+Para organizar a discussão, restam oito frentes de planejamento, não oito perguntas
+atômicas. A divisão abaixo é uma recomendação de sequência; não são novas decisões.
+Os detalhes técnicos podem ser propostos nos artefatos de implementação, sem exigir
+uma rodada de confirmação para cada campo, caminho ou timeout.
+
+Antes da primeira implementação, fechar três frentes:
+
+1. Plataformas da primeira entrega — decidido: Linux inicialmente, Windows depois.
+   A proposta técnica recomenda erro explícito sem runtime dir válido, pendente
+   de aprovação junto aos demais contratos.
+2. Dados e credenciais — parcialmente decidido: testes com a conta real do usuário.
+   Perfil separado e cópia dos dados existentes são propostas, não decisões;
+   reaproveitamento/migração local e mapa de propriedade ainda precisam ser fechados.
+3. Contratos e compatibilidade — proposta disponível: revisar em conjunto a
+   [proposta técnica](core-cli-contract-proposal.md), que reúne RPCs, estados, erros,
+   JSON, limites operacionais e critérios de aceitação. A maior parte é trabalho
+   de especificação técnica, não uma nova escolha de comportamento do produto.
+
+Antes das etapas posteriores, detalhar cinco frentes:
+
+4. Manifesto e runtime de plugins: schema mínimo, entrega da credencial, versões,
+   estados e timeouts, a partir do handshake e das políticas Steam já aceitos.
+5. Autorizações, isolamento e elevação: o que será controlado pela API e o que será
+   efetivamente restringido pelo SO, sem atribuir garantias indevidas ao manifesto.
+6. Resolução entre providers quando houver mais de um para a mesma capacidade.
+7. Eventos e operações ampliados: sincronização da GUI, múltiplos clientes,
+   recuperação, retenção e cancelamento conforme os fluxos posteriores exigirem.
+8. Distribuição e operação: procedência oficial, atualização, empacotamento,
+   diagnóstico e critérios de medição de recursos.
+
+Essas frentes consolidam a tabela geral e os detalhes restantes acima; não os
+substituem nem reabrem decisões já confirmadas. Não é necessário concluir as cinco
+frentes posteriores para iniciar a extração Core/Daemon + CLI.
 
 ### Evidência adicional do cliente estável
 

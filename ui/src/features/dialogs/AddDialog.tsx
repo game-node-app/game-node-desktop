@@ -1,6 +1,6 @@
 import React from 'react';
 import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useLibraryView, type EntryStatus } from '../../api';
+import { commands, useLibraryView, type AddOutcome, type EntryStatus } from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason, formatStatus } from '../library/formatters';
 
@@ -40,18 +40,24 @@ export const AddDialog: React.FC = () => {
     commands.libraryInput('closeAdd');
   };
 
-  const renderOutcomeText = (outcome: string, itemStatus: EntryStatus) => {
-    switch (outcome) {
-      case 'added':
-        return formatI18n(t('Library::Saved as {}'), formatStatus(itemStatus, t));
-      case 'alreadyPresent':
-        return t('Library::Already in your library');
-      case 'skipped':
-        return t('Library::Skipped: no GameNode match');
-      case 'failed':
-      default:
-        return t('Library::Failed');
+  // Rust serializes AddSummary as items only, with externally tagged outcomes.
+  const counts = { added: 0, alreadyPresent: 0, skipped: 0, failed: 0 };
+  for (const { outcome } of dialog.summary?.items ?? []) {
+    if (outcome === 'skippedUnmatched') counts.skipped++;
+    else if ('added' in outcome) counts.added++;
+    else if ('alreadyPresent' in outcome) counts.alreadyPresent++;
+    else counts.failed++;
+  }
+
+  const renderOutcomeText = (outcome: AddOutcome) => {
+    if (outcome === 'skippedUnmatched') {
+      return t('Library::Skipped: no GameNode match');
     }
+    if ('added' in outcome) {
+      return formatI18n(t('Library::Saved as {}'), formatStatus(outcome.added, t));
+    }
+    if ('alreadyPresent' in outcome) return t('Library::Already in your library');
+    return t('Library::Failed');
   };
 
   return (
@@ -95,10 +101,10 @@ export const AddDialog: React.FC = () => {
               >
                 {formatI18n(
                   t('Library::Saved {} · already in your library {} · skipped {} · failed {}'),
-                  dialog.summary.added,
-                  dialog.summary.alreadyPresent,
-                  dialog.summary.skipped,
-                  dialog.summary.failed,
+                  counts.added,
+                  counts.alreadyPresent,
+                  counts.skipped,
+                  counts.failed,
                 )}
               </div>
 
@@ -117,7 +123,7 @@ export const AddDialog: React.FC = () => {
                       {item.title}
                     </span>
                     <span className="mt-0.5 text-xs text-text-dimmed">
-                      {renderOutcomeText(item.outcome, dialog.status)}
+                      {renderOutcomeText(item.outcome)}
                     </span>
                   </div>
                 ))}

@@ -224,10 +224,10 @@ export interface AddProgress {
 }
 
 export type AddOutcome =
-  | 'added'
-  | 'alreadyPresent'
-  | 'skipped'
-  | 'failed';
+  | { added: EntryStatus }
+  | { alreadyPresent: EntryStatus | null }
+  | 'skippedUnmatched'
+  | { failed: 'rejected' | 'failed' };
 
 export interface AddItem {
   entryKey: string;
@@ -237,10 +237,6 @@ export interface AddItem {
 
 export interface AddSummary {
   items: AddItem[];
-  added: number;
-  alreadyPresent: number;
-  skipped: number;
-  failed: number;
 }
 
 export interface AddDialogView {

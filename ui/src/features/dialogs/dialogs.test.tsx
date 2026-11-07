@@ -404,13 +404,9 @@ describe('Dialogs Feature Tests', () => {
         appliedStatus: 'planned',
         appliedFrom: 'Backlog',
         summary: {
-          added: 1,
-          alreadyPresent: 1,
-          skipped: 0,
-          failed: 0,
           items: [
-            { entryKey: 'entry-1', title: 'Hades', outcome: 'added' },
-            { entryKey: 'entry-2', title: 'Dead Cells', outcome: 'alreadyPresent' },
+            { entryKey: 'entry-1', title: 'Hades', outcome: { added: 'planned' } },
+            { entryKey: 'entry-2', title: 'Dead Cells', outcome: { alreadyPresent: null } },
           ],
         },
       });
@@ -422,7 +418,7 @@ describe('Dialogs Feature Tests', () => {
         'Saved 1 · already in your library 1 · skipped 0 · failed 0',
       );
       expect(screen.getByTestId('add-summary-item-entry-1')).toHaveTextContent(
-        'Saved as Playing',
+        'Saved as Planned',
       );
       expect(screen.getByTestId('add-summary-item-entry-2')).toHaveTextContent(
         'Already in your library',
@@ -441,12 +437,34 @@ describe('Dialogs Feature Tests', () => {
         'Salvos 1 · já na sua biblioteca 1 · ignorados 0 · com falha 0',
       );
       expect(screen.getByTestId('add-summary-item-entry-1')).toHaveTextContent(
-        'Salvo como Jogando',
+        'Salvo como Planejado',
       );
       expect(screen.getByTestId('add-summary-item-entry-2')).toHaveTextContent(
         'Já está na sua biblioteca',
       );
       expect(screen.getByTestId('add-dialog-close-btn')).toHaveTextContent('Fechar');
+    });
+
+    it('counts native item outcomes without counters and distinguishes real failures', () => {
+      const snapshot = makeAddSnapshot({
+        summary: {
+          items: [
+            { entryKey: 'steam:1', title: 'Saved game', outcome: { added: 'finished' } },
+            { entryKey: 'steam:2', title: 'Existing game', outcome: { alreadyPresent: 'playing' } },
+            { entryKey: 'steam:3', title: 'Unmatched game', outcome: 'skippedUnmatched' },
+            { entryKey: 'steam:4', title: 'Failed game', outcome: { failed: 'failed' } },
+          ],
+        },
+      });
+      renderWithProviders(<AddDialog />, snapshot);
+      expect(screen.getByTestId('add-summary-headline')).toHaveTextContent(
+        'Saved 1 · already in your library 1 · skipped 1 · failed 1',
+      );
+      expect(screen.getByTestId('add-summary-item-steam:1')).toHaveTextContent('Saved as Finished');
+      expect(screen.getByTestId('add-summary-item-steam:2')).toHaveTextContent('Already in your library');
+      expect(screen.getByTestId('add-summary-item-steam:3')).toHaveTextContent('Skipped: no GameNode match');
+      expect(screen.getByTestId('add-summary-item-steam:4')).toHaveTextContent('Failed');
+      expect(screen.getByTestId('add-dialog-summary')).not.toHaveTextContent('undefined');
     });
 
     it('renders unauthorized/failed error notices and blocked notices in en and pt-BR', () => {

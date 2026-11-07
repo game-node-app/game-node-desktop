@@ -44,8 +44,14 @@ An entry that a completed store-provider scan no longer finds SHALL leave the li
 - **THEN** it reappears with its previous match and cover
 
 #### Scenario: Scan fails for one provider
-- **WHEN** a provider's roots cannot be read during a scan
+- **WHEN** a provider returns a scan-level error rather than a completed record set
 - **THEN** that provider's entries from the last successful scan remain, and the library shows that its scan failed
+
+#### Scenario: Steam scan completes with inaccessible locations
+- **WHEN** Steam skips unavailable roots, library folders or unreadable manifests and returns its completed record set
+- **THEN** the returned entries replace the provider's visible set, including when that set is empty
+- **AND** previously detected entries omitted from the result leave the view but retain their saved matches and covers
+- **AND** a skipped location alone is not treated as a scan-level error
 
 #### Scenario: Manual executable missing
 - **WHEN** a manually registered executable is unavailable during a scan
@@ -89,7 +95,8 @@ The library SHALL support keyboard navigation in both views, opening the selecte
 
 #### Scenario: Browse by keyboard
 - **WHEN** the user moves through the grid with the arrow keys and presses Enter
-- **THEN** the focused game is selected and its detail pane shows it
+- **THEN** the focused game is selected and launched when Play is available
+- **AND** otherwise its detail pane opens showing why Play is unavailable
 
 #### Scenario: Select several games
 - **WHEN** the user extends the selection with Shift or Ctrl

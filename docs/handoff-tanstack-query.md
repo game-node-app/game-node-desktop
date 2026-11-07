@@ -1,12 +1,25 @@
 # Hand-off: TanStack Query hardening
 
-**Status:** ready to implement
+**Status:** archived implementation handoff
 **Date:** 2026-11-06
 **Area:** `ui/` (React + TanStack Query) and `crates/app` (Tauri commands)
-**Owner:** next agent, follow the tasks in order
 
-This document turns the TanStack Query review into concrete, reviewable changes. It
-covers six items. Tasks are ordered by priority; each one is independently shippable.
+The instructions and observations below record the pre-hardening review. They are
+historical, not a pending task list or current architecture requirements. Work was
+delivered in `c54d080` and `ce8db10`, integrated through `23aeff7`.
+
+Current implementation evidence:
+
+- `ui/src/AppProviders.tsx`: desktop-safe query defaults.
+- `ui/src/api/useSnapshot.ts`: unused mutation facade removed, subscription-before-fetch,
+  event-authoritative cache updates and development error reporting.
+- `crates/app/src/commands.rs`: separate app-info and on-demand license commands.
+- `ui/src/api/queries.ts`: shared query keys/options; query and component tests use
+  the production query client.
+
+The six original review items are represented in the implementation. This status
+records code inspection, not a claim that native OS acceptance was rerun.
+Current product requirements remain in the main OpenSpec specs.
 
 ## Scope
 
@@ -37,7 +50,7 @@ Ground rules from [`AGENTS.md`](../AGENTS.md) and [`CONTRIBUTING.md`](../CONTRIB
 - Prefer `pnpm --dir ui test --run`, `cargo test --locked -p gamenode-app`, and the
   Vite preview over cross-building to Windows.
 
-## Evidence: current state
+## Historical evidence: state before hardening
 
 Line numbers were accurate when this document was written; re-locate by symbol if
 they have drifted.
@@ -55,7 +68,7 @@ they have drifted.
 | Snapshot events are coalesced/throttled and de-duplicated at 100 ms | `crates/app/src/commands.rs:49, 60-140` |
 | License modal is mounted only while open | `ui/src/features/settings/SettingsModal.tsx:304-306` |
 
-Current startup cost: two IPC calls (`get_snapshot`, `get_bootstrap_state`), and one
+Pre-hardening startup cost: two IPC calls (`get_snapshot`, `get_bootstrap_state`), and one
 of them serializes ~4.8 MB of notice text that the shell does not use.
 
 ---

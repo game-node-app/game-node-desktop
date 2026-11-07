@@ -83,7 +83,7 @@ However, it **does not** replace native OS acceptance for:
 - Real OS window-manager chrome, DPI scaling, multi-monitor positioning, or native
   Windows system-tray behavior.
 - Real browser OAuth sign-in, single-instance IPC forwarding, and custom URI
-  scheme (`gamenode://`) activation.
+  scheme (`app.gamenode://`) activation.
 - OS-specific adapters in `gamenode-platform`: Windows Credential Manager /
   Linux Secret Service, native file/folder pickers, Windows PE header and
   process/parent tracking, directory-watch notifications, or Ludusavi subprocess

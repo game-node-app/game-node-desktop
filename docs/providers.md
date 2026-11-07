@@ -1,6 +1,6 @@
 # Providers
 
-A provider is a game source: a store, a launcher or, later, manual adds. Each one is a TOML
+A provider is a game source: a store, a launcher or approved manual registrations. Each one is a TOML
 manifest in `providers/` at the repository root. Manifests are embedded in the application at
 build time by `crates/app/build.rs`. The application never reads a manifest from disk at run time
 and never loads one from a user-writable location.
@@ -11,7 +11,7 @@ providers still load. Set `RUST_LOG=info` to see more detail from scans.
 
 ## Schema
 
-Unknown fields are rejected. This is the whole schema for this step, using the bundled Steam
+Unknown fields are rejected. The URI-provider fields are illustrated below using the bundled Steam
 manifest as the example:
 
 ```toml
@@ -40,10 +40,10 @@ path = "~/.local/share/Steam"
 | `id` | yes | Stable id: lowercase letters, digits, `-`, `_`. Used in stored entry keys. Must be unique. |
 | `name` | yes | Name shown in the sidebar and in error messages. |
 | `platforms` | yes | `windows`, `linux`. A manifest that does not list the current platform is not loaded and is not shown as a filter. |
-| `source` | yes | The store or source name. Kept for later steps. |
-| `scan` | yes | `{ native = "<name>" }`. Only scanners built into the application exist (`steam`). An unknown name rejects the manifest. |
-| `launch`, `install` | no | `{ uri = "<template>" }`. A provider without one has no Play or Install. |
-| `match` | no | `{ external_category = N }`: the GameNode external-game category of the provider's ids. Without it, games are never matched automatically. |
+| `source` | yes | The store or source name, including the playtime source. |
+| `scan` | yes | `{ native = "<name>" }`. Only scanners built into the application exist (`steam` and `manual`). An unknown name rejects the manifest. |
+| `launch`, `install` | no | URI providers use `{ uri = "<template>" }`. The bundled manual provider additionally supports `launch = { executable = "manual" }`; it has no Install action. |
+| `match` | no | `{ external_category = N }`: the GameNode external-game category of the provider's ids. This enables store-id lookup. DRM-free entries instead support automatic matching from conservative local evidence; see `desktop-game-matching` in the main specs. |
 | `exclude_ids` | no | Provider ids that are never shown: tools, runtimes and redistributables. |
 | `roots.windows`, `roots.linux` | no | Where to look. `path` (a leading `~` is the home folder) or `registry` plus `value`. |
 
@@ -59,7 +59,7 @@ dropped and logged, and the rest of the scan continues. Repeated ids keep the fi
 
 ## Launch and install templates
 
-Play and Install open a URI built from the template, never an executable.
+For URI providers, Play and Install open a URI built from the template. The bundled manual provider instead launches an approved executable as described below; it has no Install action.
 
 - Only `{name}` placeholders with names made of lowercase letters and `_` are allowed. Placeholders
   can refer to `id`, `name`, `install_dir` or any other field of the record.

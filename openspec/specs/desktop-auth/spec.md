@@ -7,11 +7,11 @@ Authenticate GameNode Desktop users through the existing GameNode browser flow w
 ## Requirements
 
 ### Requirement: Sign-in through the system browser
-The application SHALL start sign-in using the existing GameNode mobile authentication contract and open the system browser. It SHALL accept success or failure through `app.gamenode://` without rendering web content in the application.
+The application SHALL start sign-in using the existing GameNode mobile authentication contract and open the system browser. It SHALL accept success or failure through `app.gamenode://` without rendering remote authentication pages in the application. The bundled React frontend remains hosted in the Tauri WebView.
 
 #### Scenario: Successful sign-in
 - **WHEN** the user starts sign-in and completes an existing GameNode provider flow in the browser
-- **THEN** the matching callback authenticates the application, persists its session credential, and shows the signed-in user above the empty library
+- **THEN** the matching callback authenticates the application, persists its session credential, and shows the signed-in user above the locally available library, which is empty only when no entries are available
 
 #### Scenario: Sign-in cannot complete
 - **WHEN** opening the browser fails, the provider rejects sign-in, the attempt expires, or the user cancels

@@ -110,7 +110,8 @@ The Steam scanner SHALL read every library folder that `libraryfolders.vdf` list
 
 #### Scenario: Unreadable or malformed file
 - **WHEN** a library folder is offline or one app manifest is malformed
-- **THEN** that folder or game is skipped and logged, and the other games still appear
+- **THEN** that folder or game is skipped and logged, and the scanner completes with the remaining records rather than returning a scan-level error
+- **AND** omitted entries leave the library view under `desktop-library`, with their saved matches and covers retained
 
 #### Scenario: Steam tools are hidden
 - **WHEN** Steam Linux Runtime, Proton or Steamworks Common Redistributables are installed

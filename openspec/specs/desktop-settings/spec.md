@@ -130,7 +130,7 @@ Campos de texto do modal SHALL manter a edição como pendente até o usuário s
 - **THEN** o campo volta ao valor salvo e o rodapé de ações desaparece
 
 ### Requirement: Confirmação de descarte
-Fechar o modal ou trocar de tópico com edições pendentes SHALL abrir um diálogo de alerta sobre o modal. O diálogo pergunta se as alterações devem ser descartadas e oferece Cancelar e Descartar. Cancelar SHALL manter o modal e a edição. Descartar SHALL desfazer a edição e concluir a ação pedida. Enquanto o alerta estiver aberto, o modal atrás dele SHALL ficar inerte.
+Fechar o modal ou trocar de tópico com edições pendentes SHALL abrir um diálogo de alerta sobre o modal. O diálogo pergunta se as alterações devem ser descartadas e oferece Cancelar e Descartar. Cancelar SHALL manter o modal e a edição. Fechar o alerta por `Esc` ou clique no overlay SHALL equivaler a Cancelar, sem descartar a edição nem concluir a ação pendente. Descartar SHALL desfazer a edição e concluir a ação pedida. Enquanto o alerta estiver aberto, o modal atrás dele SHALL ficar inerte.
 
 #### Scenario: Fechar com edição pendente
 - **WHEN** a pasta de destino tem edição pendente e o usuário pressiona `Esc`

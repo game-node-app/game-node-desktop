@@ -16,7 +16,7 @@ The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
 `window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
-`account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
+`account.last_name`, `sync_enabled`, `sync_explained`, `playtime_source` and `backup_settings`
 (the `SETTING_KEYS` list in `db.rs`). A fresh database
 uses the default library layout and starts with no games. The `renderer` key is
 obsolete compatibility data and does not enable a current UI preference. No session

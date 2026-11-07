@@ -40,7 +40,7 @@ Before installing any tool into a game, the application SHALL inspect the game's
 - **THEN** installation proceeds without an anti-cheat warning dialog
 
 ### Requirement: Release channel fetching and content-addressed archive caching
-The application SHALL fetch available `Stable` and `Nightly` releases over HTTPS exclusively from the fixed GitHub repositories declared in the tool descriptor. Downloaded `.7z` or `.zip` archives SHALL be cached under `<data_dir>/tools/cache/<tool_id>/<channel>/<version>/`, verified against SHA-256 digests, and extracted in pure Rust for reuse across games and offline installs.
+The application SHALL fetch `Stable` and `Nightly` releases over HTTPS only from the descriptor's fixed GitHub repositories. Archives SHALL be cached under `<data_dir>/tools/cache/<tool_id>/<channel>/<version>/`, checked against published SHA-256 digests when available, and extracted in pure Rust for reuse and offline installs. Without a published digest, it SHALL check archive integrity and record a local SHA-256 without claiming publisher verification.
 
 #### Scenario: Select Stable or Nightly version and cache archive
 - **WHEN** the user selects `Stable` or `Nightly` for OptiScaler and installs version `v0.7.9`
@@ -49,6 +49,11 @@ The application SHALL fetch available `Stable` and `Nightly` releases over HTTPS
 #### Scenario: Install an already-cached version on a second game or offline
 - **WHEN** a tool version's archive is already present in the local cache and matches its recorded SHA-256 digest
 - **THEN** installing that version on another game uses the cached archive immediately without a network download
+
+#### Scenario: Release has no published digest
+- **WHEN** the declared release source provides no SHA-256 digest for the archive
+- **THEN** the application checks archive integrity and records its computed SHA-256 for cache reuse
+- **AND** this local digest does not establish publisher authenticity
 
 #### Scenario: Corrupted or mismatched download is rejected
 - **WHEN** a downloaded archive fails SHA-256 verification (when a release digest is published) or fails archive integrity checks

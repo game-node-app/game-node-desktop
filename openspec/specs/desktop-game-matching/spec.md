@@ -55,11 +55,11 @@ A match or no-match chosen by the user SHALL NOT be replaced by a later automati
 - **THEN** existing matches are kept and the next scan tries again
 
 ### Requirement: Matches belong to the account
-Matches chosen by the user SHALL be stored per GameNode account. Another account signed in on the same PC SHALL NOT see or use them, and SHALL get its own automatic matches.
+Matches chosen by the user SHALL be stored per GameNode account. Another account signed in on the same PC SHALL NOT see or use those choices. Automatic store-id lookup results SHALL be cached per PC by external category and provider-local id, independently of account-specific overrides. DRM-free local-evidence inference SHALL remain account-scoped.
 
 #### Scenario: Another account signs in
 - **WHEN** user A picked matches, signs out, and user B signs in on the same PC
-- **THEN** B's library has none of A's chosen matches
+- **THEN** B's library has none of A's chosen matches or account-scoped local inferences, but may use the shared automatic store-id cache
 
 #### Scenario: Same account signs in again
 - **WHEN** user A signs out and later signs in again on the same PC

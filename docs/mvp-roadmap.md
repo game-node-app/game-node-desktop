@@ -12,7 +12,10 @@ Development happens in WSL, which can build and unit-test Linux code but cannot 
 Wayland session, no Secret Service, no tray host, no Steam or Proton. Windows builds, by contrast, run and can be
 tested on the same PC. Linux work resumes when a real Linux setup is available.
 
-Each step below is meant to be planned and shipped as one change.
+Each step below records the delivery sequence. Completed capabilities are described by
+the main OpenSpec specs; remaining roadmap steps are future work and do not override
+that baseline. In particular, Steam discovery on Windows/Linux, its store counter,
+and DRM-free registrations with local backups on Windows have already shipped.
 
 ## Direction
 
@@ -115,31 +118,36 @@ described by a manifest; parsing that a manifest cannot describe lives in a nati
 
 ### Manifest
 
+The Steam example reflects the bundled provider. The Ubisoft example and generic
+scanner rules below are future proposals, not fields accepted by the current schema.
+See [the provider guide](providers.md) for the current supported declarations.
+
 Bundled provider manifests are handwritten TOML, so comments matter.
 Bundled manifests live in `providers/` and are embedded at build time. A manifest lists the platforms it supports;
-the format keeps per-platform roots so Linux entries can be added in the Linux milestone without a format change.
+the format supports per-platform roots, including the native Linux and Flatpak Steam roots already shipped.
 
 ```toml
 # providers/steam.toml: data in the manifest, parsing in a native scanner
 id = "steam"
 name = "Steam"
-platforms = ["windows"]                            # "linux" added in the Linux milestone
+platforms = ["windows", "linux"]                   # current bundled Steam support
 source = "steam"                                   # GameNode playtime source
 scan = { native = "steam" }                        # libraryfolders.vdf + appmanifest_*.acf
-playtime = { counter = "steam" }                   # Steam's own total, if step 3's spike proves it readable
+playtime = { counter = "steam" }                   # implemented Steam store counter
 launch = { uri = "steam://rungameid/{id}" }
-install = { uri = "steam://install/{id}" }
+install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }                  # GET /v1/game/external
 
 [[roots.windows]]
 registry = 'HKCU\Software\Valve\Steam'
 value = "SteamPath"
 
-# Linux milestone:
-# [[roots.linux]]
-# path = "~/.steam/steam"
-# [[roots.linux]]
-# path = "~/.var/app/com.valvesoftware.Steam/.steam/steam"   # Flatpak Steam
+[[roots.linux]]
+path = "~/.steam/steam"
+[[roots.linux]]
+path = "~/.local/share/Steam"
+[[roots.linux]]
+path = "~/.var/app/com.valvesoftware.Steam/.local/share/Steam"   # Flatpak Steam
 ```
 
 ```toml
@@ -270,8 +278,8 @@ a real Secret Service, sign-in and session restore) move to the Linux milestone.
 
 - Provider runtime in `core`: manifest loading and validation, the scanner registry, placeholder filling, launch rules.
 - Steam: manifest plus native scanner for `libraryfolders.vdf` and `appmanifest_*.acf`, with fixture tests. Windows
-  roots only; the scanner itself is OS-neutral, so Linux and Flatpak roots are a manifest change later. Play uses
-  `steam://rungameid`; Install opens `steam://install`.
+  roots; the delivered manifest also includes native Linux and Flatpak roots. Play uses
+  `steam://rungameid`; Install opens `steam://nav/games/details/{id}`.
 - Matching through `GET /v1/game/external` (category 1), with the prefilled search for unmatched games.
 - Covers from GameNode, cached on disk.
 - Library UI: grid and list, sidebar with provider filters, search, sort, keyboard navigation, multi-select, context

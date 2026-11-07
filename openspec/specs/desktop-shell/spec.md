@@ -45,7 +45,7 @@ The shell SHALL use the Version 3.0 values and source selection recorded in `ui/
 #### Scenario: Reference screens show later or excluded features
 - **WHEN** a Version 3.0 or settings-modal reference includes social content, premium plans, profile editing, or populated game controls
 - **THEN** only its applicable visual treatment is used in the desktop shell
-- **AND** those features are absent from the application
+- **AND** social content, premium plans and profile editing remain excluded; game controls specified in `desktop-library` remain available
 
 ### Requirement: Remember window geometry
 The application SHALL restore the saved normal window size, maximized state, and position where the window system permits positioning. Invalid or unavailable geometry SHALL fall back to usable geometry on an available display.
@@ -126,10 +126,18 @@ The application shell and feature views SHALL define and apply visual presentati
 - **AND** interactive states (`hover`, `active`, `focus-visible`) respond immediately without custom script listeners
 
 ### Requirement: Accessible overlay dialogs and primitives
-All modal windows, dialogs, and popup overlays (including settings, match confirmation, game tools, local game management, and sync explanations) SHALL use accessible overlay primitives that enforce portal mounting, keyboard focus trapping, and backdrop escape dismissal without obstructing the underlying desktop shell. Bespoke icon assets SHALL use standardized Tabler icon components.
+All modal windows, dialogs, and popup overlays (including settings, match confirmation, game tools, local game management, and sync explanations) SHALL use accessible overlay primitives that enforce portal mounting, keyboard focus trapping, and backdrop/Escape close requests that respect unsaved-change confirmation without obstructing the underlying desktop shell. Bespoke icon assets SHALL use standardized Tabler icon components.
 
 #### Scenario: Opening and navigating overlay dialogs
 - **WHEN** an overlay dialog or modal is opened via keyboard or mouse
 - **THEN** keyboard focus is trapped within the dialog container
-- **AND** pressing Escape dismisses the dialog and restores focus to the triggering element
+- **AND** pressing Escape requests closure of only the topmost dialog
+- **AND** when closure completes, focus returns to the triggering element
 - **AND** icons within the dialog render consistently with standard vector icon components
+
+#### Scenario: Settings has unsaved edits
+- **WHEN** the backup destination has unsaved edits and the user requests closing Settings by Escape, the close button or the backdrop
+- **THEN** Settings remains open and a discard confirmation opens above it with initial focus on Cancel
+- **AND** Cancel, Escape or backdrop dismissal of the confirmation preserves the draft and keeps Settings open
+- **AND** Discard clears the draft and completes the requested close
+- **AND** switching Settings topics with unsaved edits uses the same confirmation before changing topics

@@ -19,6 +19,7 @@ pub mod ports;
 pub mod provider;
 pub mod settings;
 pub mod snapshot;
+pub mod steam;
 pub mod sync;
 pub mod tools;
 pub mod tracker;
@@ -32,6 +33,7 @@ pub use credential::{SessionCredential, StorageMethod};
 pub use notice::{Notice, NoticeKind};
 pub use settings::{Settings, WindowGeometry};
 pub use snapshot::{AuthView, Snapshot};
+pub use steam::{SteamError, SteamFamily, SteamOwnedGame, SteamSession, SteamWebApi};
 pub use tools::{
     AntiCheatReport, AntiCheatSystem, AntiCheatWarningView, ArchiveFormat, InstallStrategy,
     ProxyDllName, TargetCandidate, TargetInspection, ToolCardView, ToolChannel, ToolDescriptor,

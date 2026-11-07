@@ -12,6 +12,7 @@ import {
   commands,
   type Snapshot,
   type AppInfo,
+  createDefaultFilters,
 } from '../../api';
 import {
   uiStore,
@@ -496,6 +497,7 @@ describe('SettingsModal Feature Suite', () => {
             view: 'grid',
             sort: { key: 'title', direction: 'ascending' },
             filter: 'all',
+            filters: createDefaultFilters(),
             sidebarWidth: 200,
             detailWidth: 300,
             detailOpen: false,
@@ -503,7 +505,8 @@ describe('SettingsModal Feature Suite', () => {
           search: '',
           access: 'verified',
           total: 10,
-          providers: [{ id: 'steam', name: 'Steam', count: 5 }],
+          installedTotal: 5,
+          providers: [{ id: 'steam', name: 'Steam', count: 5, installedCount: 5, ownedCount: 0, familyCount: 0 }],
           rows: [],
           scanning: false,
           failedProviders: [],
@@ -519,14 +522,15 @@ describe('SettingsModal Feature Suite', () => {
         },
       });
 
-      expect(screen.getByText('Steam')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Steam account' })).toBeInTheDocument();
       expect(screen.getByText('5 installed games')).toBeInTheDocument();
 
       const resetBtn = screen.getByRole('button', { name: /Reset hidden games/i });
       fireEvent.click(resetBtn);
 
       expect(libraryInputSpy).toHaveBeenCalledWith('resetExcluded');
-      expect(screen.getByRole('status')).toHaveTextContent(/Reset hidden games/i);
+      const notifications = screen.getByRole('region', { name: 'Notifications' });
+      expect(within(notifications).getByRole('status')).toHaveTextContent(/Reset hidden games/i);
     });
   });
 

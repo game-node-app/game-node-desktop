@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamenode_app::commands;
-use gamenode_app::engine::{Engine, Ports};
+use gamenode_app::engine::steam_account::{LibraryStoreAccounts, SystemClock};
+use gamenode_app::engine::steam_login::TauriSteamLoginWindow;
+use gamenode_app::engine::{Engine, Ports, SteamPorts};
 use gamenode_core::geometry;
 use gamenode_core::library::LibraryStore;
 use gamenode_core::ports::SettingsStore;
@@ -52,14 +54,6 @@ pub fn format_tray_tooltip(running_title: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .try_init();
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -84,6 +78,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
+    let logging = gamenode_app::logging::init(&paths);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        data_dir = %paths.data_dir().display(),
+        logs_dir = %logging.location().directory.display(),
+        "GameNode Desktop starting"
+    );
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
     let initial_settings = store.load()?;
 
@@ -101,16 +104,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let can_position = display::can_position_windows();
     let plan = geometry::plan_window(initial_settings.window, &displays, can_position);
 
-    let credentials = {
+    let (credentials, steam_credentials) = {
         let paths = paths.clone();
-        std::thread::spawn(move || credentials::open_store(&paths))
-            .join()
-            .map_err(|_| "Credential storage initialization failed")?
+        std::thread::spawn(move || {
+            (
+                credentials::open_store(&paths, credentials::CredentialSlot::Session),
+                credentials::open_store(&paths, credentials::CredentialSlot::Steam),
+            )
+        })
+        .join()
+        .map_err(|_| "Credential storage initialization failed")?
     };
 
     let client = Arc::new(gamenode_api::GameNodeClient::new(
         gamenode_api::server_url_from_env()?,
     )?);
+    let steam_client: Arc<dyn gamenode_core::steam::SteamWebApi> =
+        Arc::new(gamenode_api::SteamClient::new()?);
+    // The engine holds the window as a port; the concrete handle stays available so the Tauri
+    // application handle can be attached once `setup` runs.
+    let steam_login_window = Arc::new(TauriSteamLoginWindow::without_app(
+        paths.clone(),
+        Arc::new(SystemBrowser),
+    ));
     let processes: Arc<dyn gamenode_core::ports::Processes> =
         Arc::new(gamenode_platform::processes::HostProcesses::new());
 
@@ -151,11 +167,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             credentials,
             api: client.clone(),
             browser: Arc::new(SystemBrowser),
-            library: library_store,
+            library: library_store.clone(),
             games: client,
             files: Arc::new(gamenode_platform::host::StdHostFiles),
             roots: Arc::new(gamenode_platform::host::SystemRoots::new()),
             uri: Arc::new(gamenode_platform::uri::SystemUriOpener),
+            steam: Some(SteamPorts {
+                credentials: steam_credentials,
+                accounts: Arc::new(LibraryStoreAccounts::new(library_store)),
+                client: steam_client,
+                login: steam_login_window.clone(),
+                clock: Arc::new(SystemClock),
+            }),
             covers_dir: paths.covers_dir(),
             platform,
         },
@@ -176,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     builder = builder.manage(engine.clone());
+    builder = builder.manage(logging.location().clone());
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
         commands::get_app_info,
@@ -234,6 +258,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::uninstall_tool,
         commands::open_tool_source,
         commands::clear_tool_cache,
+        commands::steam_sign_in,
+        commands::steam_focus_sign_in,
+        commands::steam_cancel_sign_in,
+        commands::steam_sign_out,
+        commands::steam_check,
+        commands::get_recent_logs,
+        commands::open_logs_folder,
     ]);
 
     let eng_for_setup = engine.clone();
@@ -248,6 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder = builder.setup(move |app| {
         *app_handle_slot_setup.lock().unwrap() = Some(app.handle().clone());
+        steam_login_window.attach(app.handle().clone());
 
         let mut win_builder =
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

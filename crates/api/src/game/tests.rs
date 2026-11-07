@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gamenode_core::SessionCredential;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, GameApi, GameSummary, LibraryEntry,
-    MAX_COVER_BYTES,
+    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
+    LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::membership::EntryStatus;
 use httpmock::HttpMockRequest;
@@ -899,5 +899,131 @@ async fn search_retains_unknown_truncated_and_complete_page_evidence() {
         assert_eq!(page.complete, complete);
         assert_eq!(page.games.len(), count as usize);
         mock.assert_async().await;
+    }
+}
+
+#[tokio::test]
+async fn favorites_are_read_across_every_page() {
+    let server = MockServer::start_async().await;
+    let first = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1/favorites")
+            .query_param("offset", "0")
+            .query_param("limit", "100")
+            .header("authorization", "Bearer tok");
+        then.status(200).json_body(json!({
+            "data": [{ "gameId": 7 }, { "gameId": "8" }],
+            "pagination": { "hasNextPage": true }
+        }));
+    });
+    let second = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1/favorites")
+            .query_param("offset", "100")
+            .query_param("limit", "100");
+        then.status(200).json_body(json!({
+            "data": [{ "gameId": 9 }],
+            "pagination": { "hasNextPage": false }
+        }));
+    });
+
+    let found = client(&server)
+        .list_favorites(&cred(), "user-1")
+        .await
+        .unwrap();
+    assert_eq!(found, [7, 8, 9]);
+    first.assert_async().await;
+    second.assert_async().await;
+}
+
+#[tokio::test]
+async fn a_failed_favorite_page_is_never_treated_as_a_complete_list() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/u/favorites")
+            .query_param("offset", "0");
+        then.status(200).json_body(json!({
+            "data": [{ "gameId": 7 }],
+            "pagination": { "hasNextPage": true }
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/u/favorites")
+            .query_param("offset", "100");
+        then.status(500);
+    });
+    assert_eq!(
+        client(&server).list_favorites(&cred(), "u").await,
+        Err(ApiError::Failed)
+    );
+}
+
+#[tokio::test]
+async fn favorite_list_errors_are_classified_and_ids_are_checked() {
+    let server = MockServer::start_async().await;
+    let unauthorized = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/u/favorites");
+        then.status(401);
+    });
+    assert_eq!(
+        client(&server).list_favorites(&cred(), "u").await,
+        Err(ApiError::Rejected)
+    );
+    unauthorized.delete_async().await;
+
+    let any = server.mock(|when, then| {
+        when.any_request();
+        then.status(200).json_body(json!([]));
+    });
+    for bad in ["", "../x", "a/b", "a?b", "a b"] {
+        assert_eq!(
+            client(&server).list_favorites(&cred(), bad).await,
+            Err(ApiError::Failed),
+            "{bad:?}"
+        );
+    }
+    any.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn setting_a_favorite_sends_the_flag_and_classifies_the_answer() {
+    let server = MockServer::start_async().await;
+    let sent = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/collections-entries/game/7/favorite")
+            .header("authorization", "Bearer tok")
+            .json_body(json!({ "isFavorite": true }));
+        then.status(204);
+    });
+    client(&server)
+        .set_favorite(&cred(), 7, true)
+        .await
+        .unwrap();
+    sent.assert_async().await;
+}
+
+#[tokio::test]
+async fn a_missing_entry_is_not_in_library_and_other_errors_are_transient() {
+    let server = MockServer::start_async().await;
+    for (status, expected) in [
+        (404, FavoriteError::NotInLibrary),
+        (401, FavoriteError::Rejected),
+        (403, FavoriteError::Failed),
+        (500, FavoriteError::Failed),
+    ] {
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/collections-entries/game/7/favorite");
+            then.status(status);
+        });
+        assert_eq!(
+            client(&server).set_favorite(&cred(), 7, false).await,
+            Err(expected),
+            "{status}"
+        );
+        mock.delete_async().await;
     }
 }

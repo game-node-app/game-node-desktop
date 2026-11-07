@@ -92,7 +92,7 @@ export const AccountPanel: React.FC = () => {
             <div className={settingsRowInfo}>
               <span className={settingsRowTitle}>{t('Sync with GameNode')}</span>
               <span className={settingsRowDescription}>
-                {t('Playtime totals are sent to your GameNode account. You can turn sync off in Settings and keep using your library.')}
+                {t('Playtime totals and favorite changes are sent to your GameNode account. You can turn sync off in Settings and keep using your library.')}
               </span>
             </div>
             <Switch

@@ -43,7 +43,14 @@ export const commands = {
       locale: 'en',
       version: '0.1.0',
       backgroundSupported: false,
+      logDirectory: null,
     })),
+
+  getRecentLogs: () =>
+    safeInvoke<string>('get_recent_logs', undefined, () => '(no log available in the web preview)'),
+
+  openLogsFolder: () =>
+    safeInvoke<void>('open_logs_folder', undefined, () => undefined),
 
   getLicenseNotices: () =>
     safeInvoke<string>(
@@ -87,6 +94,22 @@ export const commands = {
 
   rescanLibrary: () =>
     safeInvoke<void>('rescan_library', undefined, () => undefined),
+
+  // Store accounts (Steam)
+  steamSignIn: () =>
+    safeInvoke<void>('steam_sign_in', undefined, () => undefined),
+
+  steamCancelSignIn: () =>
+    safeInvoke<void>('steam_cancel_sign_in', undefined, () => undefined),
+
+  steamFocusSignIn: () =>
+    safeInvoke<void>('steam_focus_sign_in', undefined, () => undefined),
+
+  steamSignOut: () =>
+    safeInvoke<void>('steam_sign_out', undefined, () => undefined),
+
+  steamCheck: () =>
+    safeInvoke<void>('steam_check', undefined, () => undefined),
 
   removeEntry: (key: string, allowRediscovery: boolean) =>
     safeInvoke<void>('remove_entry', { key, allowRediscovery }, () => undefined),

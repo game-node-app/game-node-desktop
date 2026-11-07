@@ -64,7 +64,11 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
         [ProviderScanState {
             provider: "steam".into(),
             last_success_at: Some(100),
-            last_error: None
+            last_error: None,
+            last_catalog_at: None,
+            catalog_error: None,
+            last_family_at: None,
+            family_error: None,
         }]
     );
 }
@@ -358,9 +362,17 @@ fn the_layout_survives_reopening() {
             key: SortKey::Provider,
             direction: SortDirection::Descending,
         },
+        filters: gamenode_core::library::LibraryFilters {
+            availability: gamenode_core::library::AvailabilityFilter {
+                installed: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         sidebar_width: 180,
         detail_width: 420,
         detail_open: false,
+        ..LibraryLayout::default()
     };
     open(&dir).library_store().save_layout(&layout).unwrap();
     assert_eq!(open(&dir).library_store().load_layout().unwrap(), layout);
@@ -564,6 +576,574 @@ fn nothing_stored_is_a_credential_or_a_callback_url() {
     }
 }
 
+fn catalog(id: &str, name: &str) -> CatalogRecord {
+    CatalogRecord {
+        id: id.into(),
+        name: name.into(),
+    }
+}
+
+fn catalog_update(
+    owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    now: i64,
+) -> CatalogUpdate {
+    CatalogUpdate { owned, family, now }
+}
+
+#[test]
+fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2"), record("570", "Dota 2")],
+            100,
+        )
+        .unwrap();
+
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![
+                    catalog("620", "Portal 2 from Steam"),
+                    catalog("730", "Counter-Strike 2"),
+                ])),
+                None,
+                200,
+            ),
+        )
+        .unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert_eq!(
+        (
+            portal.installed,
+            portal.owned,
+            portal.family_shared,
+            portal.name.as_deref(),
+            portal.first_seen,
+            portal.last_seen,
+        ),
+        (true, true, false, Some("Portal 2"), 100, 200),
+        "the installed name and first-seen time survive"
+    );
+    let cs = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
+    assert_eq!(
+        (
+            cs.installed,
+            cs.owned,
+            cs.family_shared,
+            cs.install_dir.as_str(),
+            cs.first_seen,
+        ),
+        (false, true, false, "", 200)
+    );
+    let dota = cache.entries.iter().find(|e| e.key == "steam:570").unwrap();
+    assert!(!dota.owned, "the owned set is replaced, not merged");
+    assert_eq!(cache.scans[0].last_catalog_at, Some(200));
+    assert_eq!(cache.scans[0].catalog_error, None);
+
+    // A family sync after owned marks only games that are not owned, and a catalog-only name is
+    // kept once it is non-empty.
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                None,
+                Some(Ok(vec![
+                    catalog("620", "Portal 2 family"),
+                    catalog("730", "Counter-Strike 2 family"),
+                    catalog("400", "Family Game"),
+                ])),
+                300,
+            ),
+        )
+        .unwrap();
+    let cache = store.load_cache(None).unwrap();
+    let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert_eq!(
+        (portal.owned, portal.family_shared),
+        (true, false),
+        "owned wins over family"
+    );
+    let cs = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
+    assert_eq!(
+        (cs.owned, cs.family_shared, cs.name.as_deref()),
+        (true, false, Some("Counter-Strike 2")),
+        "an existing non-empty catalog name is not replaced"
+    );
+    let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
+    assert_eq!(
+        (shared.installed, shared.owned, shared.family_shared),
+        (false, false, true)
+    );
+    assert_eq!(shared.name.as_deref(), Some("Family Game"));
+    assert_eq!(cache.scans[0].last_family_at, Some(300));
+    assert_eq!(cache.scans[0].family_error, None);
+}
+
+#[test]
+fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("620", "Portal 2")])),
+                Some(Ok(vec![catalog("400", "Family Game")])),
+                100,
+            ),
+        )
+        .unwrap();
+
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Err(CatalogError::Expired)),
+                Some(Err(CatalogError::FamilyUnavailable)),
+                200,
+            ),
+        )
+        .unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    let owned = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert!(
+        owned.owned,
+        "a failed owned sync keeps the previous owned set"
+    );
+    let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
+    assert!(
+        shared.family_shared,
+        "a failed family sync keeps the previous family set"
+    );
+    assert_eq!(
+        (
+            cache.scans[0].last_catalog_at,
+            cache.scans[0].catalog_error,
+            cache.scans[0].last_family_at,
+            cache.scans[0].family_error,
+        ),
+        (
+            Some(100),
+            Some(CatalogError::Expired),
+            Some(100),
+            Some(CatalogError::FamilyUnavailable)
+        ),
+        "a failure neither advances its last-success time nor touches the other phase"
+    );
+
+    // A later owned success replaces owned facts, clears its own error and leaves family alone.
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(Some(Ok(vec![catalog("400", "Now owned")])), None, 300),
+        )
+        .unwrap();
+    let cache = store.load_cache(None).unwrap();
+    assert!(
+        !cache
+            .entries
+            .iter()
+            .find(|e| e.key == "steam:620")
+            .unwrap()
+            .owned
+    );
+    let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
+    assert_eq!((shared.owned, shared.family_shared), (true, true));
+    assert_eq!(
+        (
+            cache.scans[0].last_catalog_at,
+            cache.scans[0].catalog_error,
+            cache.scans[0].last_family_at,
+            cache.scans[0].family_error,
+        ),
+        (
+            Some(300),
+            None,
+            Some(100),
+            Some(CatalogError::FamilyUnavailable)
+        )
+    );
+
+    // A family success then clears the family error and applies owned-wins again.
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                None,
+                Some(Ok(vec![
+                    catalog("400", "Now owned"),
+                    catalog("730", "Shared"),
+                ])),
+                400,
+            ),
+        )
+        .unwrap();
+    let cache = store.load_cache(None).unwrap();
+    let owned = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
+    assert_eq!((owned.owned, owned.family_shared), (true, false));
+    let shared = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
+    assert_eq!((shared.owned, shared.family_shared), (false, true));
+    assert_eq!(
+        (cache.scans[0].last_family_at, cache.scans[0].family_error,),
+        (Some(400), None)
+    );
+}
+
+#[test]
+fn catalog_names_follow_installed_then_existing_then_catalog_precedence() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("730", "First catalog name")])),
+                None,
+                100,
+            ),
+        )
+        .unwrap();
+    let name = |store: &crate::library_db::SqliteLibraryStore| {
+        store
+            .load_cache(None)
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|e| e.key == "steam:730")
+            .and_then(|e| e.name)
+    };
+    assert_eq!(name(&store).as_deref(), Some("First catalog name"));
+
+    // An existing non-empty name is kept even when the catalog renames the app.
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("730", "Second catalog name")])),
+                None,
+                200,
+            ),
+        )
+        .unwrap();
+    assert_eq!(name(&store).as_deref(), Some("First catalog name"));
+
+    // An empty existing name is replaced by the catalog name.
+    store
+        .conn()
+        .execute(
+            "UPDATE library_entries SET name = NULL WHERE key = 'steam:730'",
+            [],
+        )
+        .unwrap();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("730", "Third catalog name")])),
+                None,
+                300,
+            ),
+        )
+        .unwrap();
+    assert_eq!(name(&store).as_deref(), Some("Third catalog name"));
+
+    // Once installed, the installed scan's name wins over a catalog name.
+    store
+        .save_scan("steam", &[record("730", "Installed name")], 400)
+        .unwrap();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("730", "Fourth catalog name")])),
+                None,
+                500,
+            ),
+        )
+        .unwrap();
+    assert_eq!(name(&store).as_deref(), Some("Installed name"));
+}
+
+#[test]
+fn save_scan_never_changes_owned_or_family_facts() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("620", "Portal 2")])),
+                Some(Ok(vec![catalog("400", "Family Game")])),
+                100,
+            ),
+        )
+        .unwrap();
+
+    store
+        .save_scan("steam", &[record("620", "Portal 2")], 200)
+        .unwrap();
+    let cache = store.load_cache(None).unwrap();
+    let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert_eq!(
+        (portal.installed, portal.owned, portal.family_shared),
+        (true, true, false)
+    );
+    assert!(
+        cache
+            .entries
+            .iter()
+            .find(|e| e.key == "steam:400")
+            .unwrap()
+            .family_shared,
+        "a scan for another entry-set does not clear sharing"
+    );
+
+    // A scan that no longer finds an entry only clears installed.
+    store.save_scan("steam", &[], 300).unwrap();
+    let cache = store.load_cache(None).unwrap();
+    let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert_eq!(
+        (portal.installed, portal.owned, portal.family_shared),
+        (false, true, false)
+    );
+    assert!(
+        cache
+            .entries
+            .iter()
+            .find(|e| e.key == "steam:400")
+            .unwrap()
+            .family_shared
+    );
+}
+
+#[test]
+fn clear_catalog_keeps_entries_matches_and_covers() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .unwrap();
+    store
+        .save_auto_matches(&[AutoMatch {
+            category: 1,
+            uid: "620".into(),
+            game_ids: vec![72],
+            checked_at: 100,
+        }])
+        .unwrap();
+    store
+        .save_chosen_match(
+            "acct",
+            &ChosenMatch {
+                entry_key: "steam:620".into(),
+                game_id: Some(72),
+                chosen_at: 110,
+            },
+        )
+        .unwrap();
+    store
+        .save_games(&[game(72, Some("https://images.example/co1.jpg"))])
+        .unwrap();
+    store.save_cover_ready(72, "72.jpg").unwrap();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("620", "Portal 2")])),
+                Some(Ok(vec![catalog("400", "Family Game")])),
+                200,
+            ),
+        )
+        .unwrap();
+
+    store.clear_catalog("steam").unwrap();
+    let cache = store.load_cache(Some("acct")).unwrap();
+    assert_eq!(
+        cache
+            .entries
+            .iter()
+            .map(|e| (e.key.as_str(), e.owned, e.family_shared))
+            .collect::<Vec<_>>(),
+        [("steam:400", false, false), ("steam:620", false, false)]
+    );
+    assert_eq!(cache.auto_matches.len(), 1);
+    assert_eq!(cache.chosen_matches.len(), 1);
+    assert_eq!(cache.games[0].cover_file.as_deref(), Some("72.jpg"));
+    assert_eq!(
+        (
+            cache.scans[0].last_catalog_at,
+            cache.scans[0].catalog_error,
+            cache.scans[0].last_family_at,
+            cache.scans[0].family_error,
+        ),
+        (None, None, None, None)
+    );
+    assert_eq!(cache.scans[0].last_success_at, Some(100));
+}
+
+#[test]
+fn store_accounts_are_upserted_and_cleared_per_provider() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    assert!(store.load_store_accounts().unwrap().is_empty());
+
+    let steam = StoreAccount {
+        provider: "steam".into(),
+        account_id: "7656119".into(),
+        account_name: Some("Ada".into()),
+        last_verified_at: Some(100),
+    };
+    let gog = StoreAccount {
+        provider: "gog".into(),
+        account_id: "g-1".into(),
+        account_name: None,
+        last_verified_at: None,
+    };
+    store.save_store_account(&steam).unwrap();
+    store.save_store_account(&gog).unwrap();
+    assert_eq!(
+        store.load_store_accounts().unwrap(),
+        [gog.clone(), steam.clone()],
+        "accounts are ordered by provider"
+    );
+
+    let renamed = StoreAccount {
+        account_id: "7656120".into(),
+        account_name: Some("Ada L.".into()),
+        last_verified_at: Some(200),
+        ..steam
+    };
+    store.save_store_account(&renamed).unwrap();
+    assert_eq!(
+        store.load_store_accounts().unwrap(),
+        [gog.clone(), renamed.clone()]
+    );
+
+    store.clear_store_account("steam").unwrap();
+    assert_eq!(store.load_store_accounts().unwrap(), [gog]);
+    store.clear_store_account("steam").unwrap(); // already gone
+}
+
+fn all_database_text(conn: &Connection) -> String {
+    use rusqlite::types::ValueRef;
+
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut text = String::new();
+    let schema: String = conn
+        .query_row(
+            "SELECT group_concat(sql, ' ') FROM sqlite_master",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    text.push_str(&schema);
+    for table in tables {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for index in 0..columns {
+                match row.get_ref(index).unwrap() {
+                    ValueRef::Text(value) | ValueRef::Blob(value) => {
+                        text.push_str(&String::from_utf8_lossy(value));
+                    }
+                    ValueRef::Integer(value) => text.push_str(&value.to_string()),
+                    ValueRef::Real(value) => text.push_str(&value.to_string()),
+                    ValueRef::Null => {}
+                }
+                text.push(' ');
+            }
+        }
+    }
+    text
+}
+
+#[test]
+fn catalog_and_account_persistence_never_writes_a_cookie_or_token() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    store
+        .save_store_account(&StoreAccount {
+            provider: "steam".into(),
+            account_id: "7656119".into(),
+            account_name: Some("Ada".into()),
+            last_verified_at: Some(100),
+        })
+        .unwrap();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(
+                Some(Ok(vec![catalog("620", "Portal 2")])),
+                Some(Ok(vec![catalog("400", "Family Game")])),
+                100,
+            ),
+        )
+        .unwrap();
+
+    let text = all_database_text(&settings.conn());
+    for secret in [
+        "steamLoginSecure",
+        "sessionid",
+        "webapi_token",
+        "access_token",
+        "Bearer ",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "the database contains a credential marker: {secret}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_flags_and_error_categories_degrade_without_hiding_installed_games() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .unwrap();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(Some(Ok(vec![catalog("620", "Portal 2")])), None, 200),
+        )
+        .unwrap();
+    store
+        .conn()
+        .execute_batch(
+            "PRAGMA ignore_check_constraints = ON;
+             UPDATE library_entries SET owned = 7, family_shared = -1 WHERE key = 'steam:620';
+             UPDATE provider_scans SET catalog_error = 'a raw error message' WHERE provider = 'steam';",
+        )
+        .unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    let entry = &cache.entries[0];
+    assert!(
+        entry.installed,
+        "the installed fact still makes the game visible"
+    );
+    assert!(!entry.owned && !entry.family_shared);
+    assert_eq!(cache.scans[0].catalog_error, None);
+}
+
 #[test]
 fn the_local_state_doc_names_every_table_setting_and_folder() {
     const DOC: &str = include_str!("../../../../docs/local-state.md");
@@ -644,4 +1224,113 @@ fn excluded_entries_round_trip_and_unreadable_json_falls_back() {
         )
         .unwrap();
     assert!(store.load_cache(None).unwrap().excluded.is_empty());
+}
+
+fn favorite(account: &str, game_id: u64, is_favorite: bool, pending: bool) -> FavoriteRecord {
+    FavoriteRecord {
+        account_id: account.to_owned(),
+        game_id,
+        is_favorite,
+        pending,
+        updated_at: 100,
+    }
+}
+
+#[test]
+fn favorites_round_trip_per_account_with_their_pending_flag() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_favorite(&favorite("ana", 7, true, false))
+        .unwrap();
+    store
+        .save_favorite(&favorite("ana", 8, true, true))
+        .unwrap();
+    store
+        .save_favorite(&favorite("bo", 9, true, false))
+        .unwrap();
+
+    let ana = store.load_cache(Some("ana")).unwrap().favorites;
+    assert_eq!(
+        ana,
+        [
+            favorite("ana", 7, true, false),
+            FavoriteRecord {
+                updated_at: 100,
+                pending: true,
+                ..favorite("ana", 8, true, false)
+            }
+        ]
+    );
+    // Signing out (no account) exposes nothing; another account sees only its own set.
+    assert!(store.load_cache(None).unwrap().favorites.is_empty());
+    assert_eq!(store.load_cache(Some("bo")).unwrap().favorites.len(), 1);
+}
+
+#[test]
+fn a_confirmed_removal_deletes_the_row_instead_of_storing_it() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_favorite(&favorite("ana", 7, true, true))
+        .unwrap();
+    // Still pending: kept so the change is not forgotten.
+    store
+        .save_favorite(&favorite("ana", 7, false, true))
+        .unwrap();
+    assert_eq!(store.load_cache(Some("ana")).unwrap().favorites.len(), 1);
+    // Confirmed: absence means "not a favorite and nothing to send".
+    store
+        .save_favorite(&favorite("ana", 7, false, false))
+        .unwrap();
+    assert!(store.load_cache(Some("ana")).unwrap().favorites.is_empty());
+}
+
+#[test]
+fn a_confirmed_favorite_upserts_over_the_pending_change() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_favorite(&favorite("ana", 7, true, true))
+        .unwrap();
+    store
+        .save_favorite(&favorite("ana", 7, true, false))
+        .unwrap();
+    let favorites = store.load_cache(Some("ana")).unwrap().favorites;
+    assert_eq!(favorites.len(), 1);
+    assert!(!favorites[0].pending && favorites[0].is_favorite);
+}
+
+#[test]
+fn the_favorites_migration_adds_the_table_and_keeps_existing_data() {
+    use crate::db::{MIGRATIONS, SqliteSettingsStore, open_with};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    {
+        let conn = open_with(&path, &MIGRATIONS[..6]).unwrap();
+        conn.execute(
+            "INSERT INTO library_entries
+                (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen)
+             VALUES ('steam:1', 'steam', '1', 'Old', '/old', '{}', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'favorites'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    let store = SqliteSettingsStore::open(&path).unwrap().library_store();
+    store
+        .save_favorite(&favorite("ana", 7, true, true))
+        .unwrap();
+    assert_eq!(store.load_cache(Some("ana")).unwrap().entries.len(), 1);
+    assert_eq!(store.load_cache(Some("ana")).unwrap().favorites.len(), 1);
 }

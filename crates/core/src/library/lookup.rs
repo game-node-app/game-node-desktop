@@ -36,7 +36,7 @@ impl LibraryMachine {
         }
 
         let mut wanted: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-        for entry in self.installed_entries() {
+        for entry in self.visible_entries() {
             let Some(category) = self
                 .provider(&entry.provider)
                 .and_then(|provider| provider.external_category())

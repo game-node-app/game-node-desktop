@@ -358,6 +358,7 @@ impl Engine {
                 tracing::warn!(%error,"could not save sync preference");
             }
         });
+        self.apply_favorites_gate(&mut state);
         self.submit_totals(&mut state);
         self.publish(&mut state);
     }
@@ -371,6 +372,7 @@ impl Engine {
                 tracing::warn!(%error,"could not save sync explanation");
             }
         });
+        self.apply_favorites_gate(&mut state);
         self.submit_totals(&mut state);
         self.publish(&mut state);
     }
@@ -660,6 +662,7 @@ impl Engine {
                     gamenode_core::playtime::PlaytimeView {
                         seconds: None,
                         source,
+                        last_played_at: None,
                     }
                 };
                 (entry.key.clone(), view)

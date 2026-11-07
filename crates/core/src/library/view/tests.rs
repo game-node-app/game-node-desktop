@@ -1,9 +1,21 @@
 use super::*;
-use crate::library::layout::{SidebarSelection, Sort, SortDirection, SortKey, ViewMode};
-use crate::library::machine::tests::{finish_scan, loaded, record, stored};
+use crate::library::layout::{
+    AvailabilityFilter, LibraryFilters, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
+};
+use crate::library::machine::tests::{finish_scan, loaded, record, stored, stored_with};
 use crate::library::machine::{Effect, Input};
 use crate::library::selection::{Direction, SelectMode};
 use crate::library::store::{AutoMatch, GameRecord, LibraryCache};
+
+fn installed_filter() -> LibraryFilters {
+    LibraryFilters {
+        availability: AvailabilityFilter {
+            installed: true,
+            ..AvailabilityFilter::default()
+        },
+        ..LibraryFilters::default()
+    }
+}
 
 fn library() -> LibraryMachine {
     let cache = LibraryCache {
@@ -292,4 +304,175 @@ fn keyboard_movement_and_enter_open_the_details() {
     assert_eq!(view.selected, ["steam:70"]);
     assert!(view.layout.detail_open);
     assert_eq!(view.detail.unwrap().row.title, "Half-Life");
+}
+
+#[test]
+fn the_view_separates_the_visible_total_from_the_installed_total() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored("steam", "620", "Portal 2", true),
+            stored_with("steam", "70", "Half-Life", false, true, false),
+            stored_with("steam", "400", "Portal", false, false, true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![record("620", "Portal 2", "/p")], 5);
+
+    let view = machine.view().unwrap();
+    assert_eq!(view.total, 3);
+    assert_eq!(view.installed_total, 1);
+    let count = &view.providers[0];
+    assert_eq!(
+        (
+            count.count,
+            count.installed_count,
+            count.owned_count,
+            count.family_count
+        ),
+        (3, 1, 1, 1)
+    );
+}
+
+#[test]
+fn the_installed_filter_is_persisted_and_saved_before_this_field_existed() {
+    let mut machine = library();
+    assert!(machine.view().unwrap().layout.filters.is_default());
+
+    let effects = machine.handle(Input::SetFilters(installed_filter()));
+    let [Effect::PersistLayout(layout)] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    assert!(layout.filters.availability.installed);
+    let view = machine.view().unwrap();
+    assert!(view.layout.filters.availability.installed);
+    assert_eq!(view.rows.len(), 3);
+    assert!(
+        machine
+            .handle(Input::SetFilters(installed_filter()))
+            .is_empty()
+    );
+}
+
+#[test]
+fn no_installed_is_its_own_empty_state_and_names_the_selected_provider() {
+    let cache = LibraryCache {
+        entries: vec![stored_with("steam", "70", "Half-Life", false, true, false)],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![], 5);
+    machine.handle(Input::SetFilters(installed_filter()));
+
+    let view = machine.view().unwrap();
+    assert_eq!(view.total, 1);
+    assert_eq!(view.installed_total, 0);
+    assert!(view.rows.is_empty());
+    assert_eq!(view.empty, Some(EmptyState::NoInstalled { provider: None }));
+    assert_eq!(
+        serde_json::to_value(&view.empty).unwrap(),
+        serde_json::json!({ "noInstalled": { "provider": null } })
+    );
+
+    machine.handle(Input::SetFilter(SidebarSelection::Provider(
+        "steam".to_owned(),
+    )));
+    assert_eq!(
+        machine.view().unwrap().empty,
+        Some(EmptyState::NoInstalled {
+            provider: Some("steam".to_owned())
+        })
+    );
+
+    // Once something is installed the state disappears; with the filter off it never appears.
+    machine.handle(Input::ScanRequested);
+    finish_scan(&mut machine, vec![record("70", "Half-Life", "/h")], 6);
+    machine.handle(Input::SetFilters(LibraryFilters::default()));
+    let view = machine.view().unwrap();
+    assert_eq!(view.installed_total, 1);
+    assert_eq!(view.empty, None);
+}
+
+#[test]
+fn no_games_still_wins_over_the_installed_filter() {
+    let (mut machine, _) = loaded(false, LibraryCache::default());
+    finish_scan(&mut machine, vec![], 5);
+    machine.handle(Input::SetFilters(installed_filter()));
+    assert_eq!(
+        machine.view().unwrap().empty,
+        Some(EmptyState::NoGames {
+            stores: vec!["Steam".to_owned()]
+        })
+    );
+}
+
+#[test]
+fn no_installed_is_scoped_to_the_selected_provider() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored_with("steam", "1", "Owned", false, true, false),
+            stored_with("shop", "2", "Installed", false, false, false),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, effects) = loaded(true, cache);
+    for (op, provider) in crate::library::machine::tests::scan_ops(&effects) {
+        let records = if provider == "shop" {
+            vec![record("2", "Installed", "/i")]
+        } else {
+            vec![]
+        };
+        crate::library::machine::tests::scanned(&mut machine, op, &provider, Ok(records), 5);
+    }
+
+    machine.handle(Input::SetFilters(installed_filter()));
+    machine.handle(Input::SetFilter(SidebarSelection::Provider(
+        "steam".to_owned(),
+    )));
+    let view = machine.view().unwrap();
+    assert_eq!(view.total, 2);
+    assert_eq!(
+        view.empty,
+        Some(EmptyState::NoInstalled {
+            provider: Some("steam".to_owned())
+        }),
+        "another provider has an installed game, but not the selected one"
+    );
+    let steam = view
+        .providers
+        .iter()
+        .find(|count| count.id == "steam")
+        .unwrap();
+    assert_eq!((steam.count, steam.installed_count), (0, 0));
+    let shop = view
+        .providers
+        .iter()
+        .find(|count| count.id == "shop")
+        .unwrap();
+    assert_eq!((shop.count, shop.installed_count), (1, 1));
+
+    // Without the provider selection the installed game keeps the view out of that state.
+    machine.handle(Input::SetFilter(SidebarSelection::All));
+    assert_eq!(machine.view().unwrap().empty, None);
+}
+
+#[test]
+fn filters_that_hide_every_row_show_nothing_matches() {
+    let mut machine = library();
+    machine.handle(Input::SetFilters(LibraryFilters {
+        favorites_only: true,
+        ..LibraryFilters::default()
+    }));
+    let view = machine.view().unwrap();
+    assert_eq!(view.total, 3);
+    assert!(view.rows.is_empty());
+    assert_eq!(view.empty, Some(EmptyState::NothingMatches));
+    // The sidebar count follows the facet even though the view is empty.
+    assert_eq!(
+        view.providers
+            .iter()
+            .map(|count| count.count)
+            .sum::<usize>(),
+        0
+    );
 }

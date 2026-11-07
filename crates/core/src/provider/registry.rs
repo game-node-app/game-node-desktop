@@ -124,6 +124,19 @@ impl Provider {
         self.manifest.matching.as_ref().map(|m| m.external_category)
     }
 
+    /// Whether the provider can read an owned/family catalog beyond installed games.
+    pub fn has_catalog(&self) -> bool {
+        self.manifest.catalog.is_some()
+    }
+
+    /// The built-in catalog backend the manifest names, if any.
+    pub fn catalog_backend(&self) -> Option<&str> {
+        self.manifest
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.native.as_str())
+    }
+
     pub fn is_manual_executable(&self) -> bool {
         self.id() == "manual"
             && matches!(&self.manifest.launch, Some(super::manifest::UriAction::Executable { executable }) if executable == "manual")
@@ -276,6 +289,11 @@ fn validate(manifest: Manifest) -> Result<Provider, String> {
     }
     let scanner = native_scanner(&manifest.scan.native)
         .ok_or_else(|| format!("unknown native scanner `{}`", manifest.scan.native))?;
+    if let Some(catalog) = &manifest.catalog
+        && catalog.native != "steam"
+    {
+        return Err(format!("unknown catalog backend `{}`", catalog.native));
+    }
     if let Some(playtime) = &manifest.playtime
         && counter(&playtime.counter).is_none()
     {

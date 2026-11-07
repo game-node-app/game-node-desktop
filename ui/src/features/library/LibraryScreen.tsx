@@ -1,5 +1,5 @@
 import React from 'react';
-import { commands, useLibraryView } from '../../api';
+import { commands, useLibraryView, createDefaultFilters, filtersAreDefault } from '../../api';
 import { openContextMenu } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { LibraryToolbar } from './LibraryToolbar';
@@ -15,7 +15,24 @@ export const LibraryScreen: React.FC = () => {
 
   const viewMode = library?.layout?.view ?? 'grid';
   const detailOpen = library?.layout?.detailOpen ?? false;
+  const filters = library?.layout?.filters ?? createDefaultFilters();
+  const hasSearch = (library?.search ?? '').length > 0;
   const empty = library?.empty;
+  const onWindows =
+    typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+
+  const handleClearFilters = () => {
+    commands.libraryInput({ setFilters: createDefaultFilters() });
+  };
+
+  const handleClearInstalled = () => {
+    commands.libraryInput({
+      setFilters: {
+        ...filters,
+        availability: { ...filters.availability, installed: false },
+      },
+    });
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
@@ -73,7 +90,7 @@ export const LibraryScreen: React.FC = () => {
     >
       <LibraryToolbar />
 
-      <div className="relative flex h-[calc(100%-54px)] w-full flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 w-full flex-1 overflow-hidden">
         {/* Empty States */}
         {empty && (
           <div
@@ -83,7 +100,7 @@ export const LibraryScreen: React.FC = () => {
             {typeof empty === 'object' && 'noGames' in empty && (
               <>
                 <h2 className="text-xl text-text-default">
-                  {t('Library::No installed games found.')}
+                  {t('Library::No games found.')}
                 </h2>
                 <div className="text-text-dimmed">
                   {formatI18n(
@@ -94,6 +111,54 @@ export const LibraryScreen: React.FC = () => {
                 <div className="text-text-dimmed">
                   {t('Library::Install a game, then choose Rescan.')}
                 </div>
+                <div className="flex flex-wrap items-center justify-center gap-compact">
+                  <button
+                    type="button"
+                    data-testid="library-empty-rescan-btn"
+                    onClick={() => commands.rescanLibrary()}
+                    className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
+                  >
+                    {t('Library::Rescan')}
+                  </button>
+                  {onWindows && (
+                    <button
+                      type="button"
+                      data-testid="library-empty-add-game-btn"
+                      onClick={() => commands.pickLocalExecutable(null)}
+                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
+                    >
+                      {t('Add a game')}
+                    </button>
+                  )}
+                </div>
+                {onWindows && (
+                  <div className="max-w-[520px] text-text-dimmed">
+                    {t(
+                      'Library::Add a DRM-free game from its executable without choosing a GameNode match first.',
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {typeof empty === 'object' && 'noInstalled' in empty && (
+              <>
+                <h2 className="text-xl text-text-default">
+                  {t('Library::Nothing is installed on this PC.')}
+                </h2>
+                <div className="max-w-[520px] text-text-dimmed">
+                  {t(
+                    'Library::Games you own or share are hidden by the Installed filter.',
+                  )}
+                </div>
+                <button
+                  type="button"
+                  data-testid="library-empty-show-all-btn"
+                  onClick={handleClearInstalled}
+                  className="rounded-sm border border-brand bg-transparent px-md py-compact font-medium text-brand transition-colors hover:bg-accent-subtle"
+                >
+                  {t('Library::Show all games')}
+                </button>
               </>
             )}
 
@@ -103,16 +168,30 @@ export const LibraryScreen: React.FC = () => {
                   {t('Library::No games match.')}
                 </h2>
                 <div className="text-text-dimmed">
-                  {t('Library::Nothing in this view matches your search.')}
+                  {t('Library::Nothing in this view matches your search or filters.')}
                 </div>
-                <button
-                  type="button"
-                  data-testid="library-empty-clear-search-btn"
-                  onClick={() => commands.libraryInput({ setSearch: '' })}
-                  className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
-                >
-                  {t('Library::Clear search')}
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-compact">
+                  {hasSearch && (
+                    <button
+                      type="button"
+                      data-testid="library-empty-clear-search-btn"
+                      onClick={() => commands.libraryInput({ setSearch: '' })}
+                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
+                    >
+                      {t('Library::Clear search')}
+                    </button>
+                  )}
+                  {!filtersAreDefault(filters) && (
+                    <button
+                      type="button"
+                      data-testid="library-empty-clear-filters-btn"
+                      onClick={handleClearFilters}
+                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
+                    >
+                      {t('Library::Clear all filters')}
+                    </button>
+                  )}
+                </div>
               </>
             )}
           </div>

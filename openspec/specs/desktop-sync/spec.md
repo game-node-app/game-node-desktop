@@ -18,7 +18,7 @@ Settings SHALL offer a "Sync with GameNode" switch. It SHALL be on by default, S
 - **THEN** the switch is still off and no playtime is sent
 
 ### Requirement: What leaves the PC while sync is off
-While sync is off, the application SHALL NOT send playtime totals, sessions or detected games to GameNode. It SHALL still send the requests that sign-in, matching, game search, covers and Add to GameNode need. Playtime SHALL keep being recorded locally.
+While sync is off, the application SHALL NOT send playtime totals, sessions, detected games or favorite changes to GameNode. It SHALL still send the requests that sign-in, matching, game search, covers and Add to GameNode need. Playtime SHALL keep being recorded locally and favorites SHALL keep being stored locally.
 
 #### Scenario: Play with sync off
 - **WHEN** the user plays a matched Steam game while sync is off
@@ -32,8 +32,16 @@ While sync is off, the application SHALL NOT send playtime totals, sessions or d
 - **WHEN** the user turns sync on after playing with it off
 - **THEN** totals that changed meanwhile are submitted
 
+#### Scenario: Favorite with sync off
+- **WHEN** the user favorites a game while sync is off
+- **THEN** no favorite request is sent and the star stays filled locally
+
+#### Scenario: Turn sync on after favoriting
+- **WHEN** the user turns sync on after favoriting games with it off
+- **THEN** the pending favorite changes are sent
+
 ### Requirement: Sync is explained on first use
-After the first successful sign-in on this PC, the application SHALL show once what "Sync with GameNode" sends, that it is on, and where to turn it off. Until the user dismisses it, it SHALL be shown again the next time the window opens, and no playtime SHALL be sent before it is dismissed.
+After the first successful sign-in on this PC, the application SHALL show once what "Sync with GameNode" sends, including playtime and favorites, that it is on, and where to turn it off. Until the user dismisses it, it SHALL be shown again the next time the window opens, and neither playtime nor favorites SHALL be sent before it is dismissed.
 
 #### Scenario: First sign-in
 - **WHEN** a user signs in for the first time on this PC
@@ -46,3 +54,7 @@ After the first successful sign-in on this PC, the application SHALL show once w
 #### Scenario: Already explained
 - **WHEN** the user dismissed the explanation and signs in again later, as the same or another account
 - **THEN** the explanation is not shown again
+
+#### Scenario: Favorite before the explanation
+- **WHEN** the user favorites a game before dismissing the explanation
+- **THEN** the favorite is kept locally and sent after the explanation is dismissed

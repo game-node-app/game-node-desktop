@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use gamenode_core::SessionCredential;
 use gamenode_core::callback::NATIVE_ORIGIN;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, GameApi, GameSummary, LibraryEntry,
-    MAX_COVER_BYTES,
+    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
+    LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::cover::{CoverUrl, artwork_download_url};
 use gamenode_core::library::membership::EntryStatus;
@@ -28,6 +28,10 @@ const MAX_PAGES: usize = 50;
 const MAX_QUERY_LEN: usize = 256;
 /// Enough for the match dialog to list; the server allows up to 100.
 const SEARCH_LIMIT: usize = 20;
+/// One page of favorite games; the server allows up to 100.
+const FAVORITES_PAGE_SIZE: usize = 100;
+/// A favorite list that keeps claiming "more" stops here instead of looping forever.
+const MAX_FAVORITE_PAGES: usize = 1000;
 /// GameNode's platform id for PC.
 const PLATFORM_PC: u32 = 6;
 /// User ids are UUID-like; anything longer is not a user id and is never put in a URL.
@@ -193,6 +197,19 @@ struct LookupPage {
 struct Pagination {
     #[serde(rename = "hasNextPage", default)]
     has_next_page: bool,
+}
+
+#[derive(Deserialize)]
+struct FavoritesPage {
+    data: Vec<FavoriteRow>,
+    #[serde(default)]
+    pagination: Option<Pagination>,
+}
+
+#[derive(Deserialize)]
+struct FavoriteRow {
+    #[serde(rename = "gameId", deserialize_with = "number_or_string")]
+    game_id: u64,
 }
 
 #[derive(Deserialize)]
@@ -582,6 +599,83 @@ impl GameApi for GameNodeClient {
             status => {
                 tracing::warn!(status = status.as_u16(), "adding the game was refused");
                 Err(ApiError::Failed)
+            }
+        }
+    }
+
+    async fn list_favorites(
+        &self,
+        credential: &SessionCredential,
+        user_id: &str,
+    ) -> Result<Vec<u64>, ApiError> {
+        if !is_path_safe_id(user_id) {
+            return Err(ApiError::Failed);
+        }
+        let mut found = Vec::new();
+        let mut offset = 0usize;
+        for _ in 0..MAX_FAVORITE_PAGES {
+            let url = self.v1(
+                &format!("collections-entries/library/{user_id}/favorites"),
+                |query| {
+                    query.append_pair("offset", &offset.to_string());
+                    query.append_pair("limit", &FAVORITES_PAGE_SIZE.to_string());
+                },
+            );
+            let response = self
+                .authorized(self.http.get(url), credential)
+                .send()
+                .await
+                .map_err(|_| ApiError::Failed)?;
+            match response.status() {
+                StatusCode::OK => {}
+                StatusCode::UNAUTHORIZED => return Err(ApiError::Rejected),
+                status => {
+                    tracing::warn!(status = status.as_u16(), "the favorite list was refused");
+                    return Err(ApiError::Failed);
+                }
+            }
+            let page: FavoritesPage = response.json().await.map_err(|_| ApiError::Failed)?;
+            let empty = page.data.is_empty();
+            found.extend(page.data.into_iter().map(|row| row.game_id));
+            if empty
+                || !page
+                    .pagination
+                    .is_some_and(|pagination| pagination.has_next_page)
+            {
+                return Ok(found);
+            }
+            offset += FAVORITES_PAGE_SIZE;
+        }
+        // A server that never stops claiming more is not a complete list.
+        Err(ApiError::Failed)
+    }
+
+    async fn set_favorite(
+        &self,
+        credential: &SessionCredential,
+        game_id: u64,
+        favorite: bool,
+    ) -> Result<(), FavoriteError> {
+        let response = self
+            .authorized(
+                self.http.post(self.v1(
+                    &format!("collections-entries/game/{game_id}/favorite"),
+                    |_| {},
+                )),
+                credential,
+            )
+            .json(&serde_json::json!({ "isFavorite": favorite }))
+            .send()
+            .await
+            .map_err(|_| FavoriteError::Failed)?;
+        match response.status() {
+            StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(FavoriteError::Rejected),
+            // The game has no entry to carry the flag; the change stays local and pending.
+            StatusCode::NOT_FOUND => Err(FavoriteError::NotInLibrary),
+            status => {
+                tracing::warn!(status = status.as_u16(), "the favorite change was refused");
+                Err(FavoriteError::Failed)
             }
         }
     }

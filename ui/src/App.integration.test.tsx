@@ -4,6 +4,7 @@ import { AppProviders } from './AppProviders';
 import { App } from './App';
 import { resetUiStore } from './store/uiStore';
 import {
+  createDefaultFilters,
   createDefaultSnapshot,
   type AppInfo,
   type LibraryView,
@@ -63,10 +64,16 @@ function rows(count: number): Row[] {
     matchedName: `Game ${i}`,
     provider: 'steam',
     providerName: 'Steam',
+    installed: true,
+    owned: true,
+    familyShared: false,
     running: false,
     status: { matched: { gameId: 100 + i, source: 'automatic' as const } },
     coverFile: `cover-${i}.jpg`,
-    playtime: { seconds: 3600, source: 'store' as const },
+    playtime: { seconds: 3600, source: 'store' as const, lastPlayedAt: 1_700_000_000 },
+    releaseYear: 2011,
+    addedAt: 1_700_000_000,
+    isFavorite: false,
   }));
 }
 
@@ -77,6 +84,7 @@ function libraryView(count = 200, overrides: Partial<LibraryView> = {}): Library
       view: 'grid',
       sort: { key: 'title', direction: 'ascending' },
       filter: 'all',
+      filters: createDefaultFilters(),
       sidebarWidth: 216,
       detailWidth: 320,
       detailOpen: false,
@@ -84,7 +92,8 @@ function libraryView(count = 200, overrides: Partial<LibraryView> = {}): Library
     search: '',
     access: 'verified',
     total: count,
-    providers: [{ id: 'steam', name: 'Steam', count }],
+    installedTotal: count,
+    providers: [{ id: 'steam', name: 'Steam', count, installedCount: count, ownedCount: count, familyCount: 0 }],
     rows: rows(count),
     scanning: false,
     failedProviders: [],

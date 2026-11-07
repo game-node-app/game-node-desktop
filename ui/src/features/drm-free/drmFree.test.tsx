@@ -13,6 +13,7 @@ import {
   type Registration,
   type SaveProfile,
   type Snapshot,
+  createDefaultFilters,
 } from '../../api';
 import { uiStore, resetUiStore } from '../../store/uiStore';
 import { I18nProvider } from '../../i18n';
@@ -375,6 +376,7 @@ describe('DRM-Free Modals', () => {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
           filter: 'all',
+          filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: false,
@@ -382,7 +384,8 @@ describe('DRM-Free Modals', () => {
         search: '',
         access: 'verified',
         total: 1,
-        providers: [{ id: 'steam', name: 'Steam', count: 1 }],
+        installedTotal: 1,
+        providers: [{ id: 'steam', name: 'Steam', count: 1, installedCount: 1, ownedCount: 1, familyCount: 0 }],
         rows: [
           {
             key: 'steam:620',
@@ -391,10 +394,16 @@ describe('DRM-Free Modals', () => {
             matchedName: 'Portal 2',
             provider: 'steam',
             providerName: 'Steam',
+            installed: true,
+            owned: true,
+            familyShared: false,
             running: false,
             status: { matched: { gameId: 7, source: 'automatic' } },
             coverFile: null,
-            playtime: { seconds: 0, source: 'store' },
+            playtime: { seconds: 0, source: 'store', lastPlayedAt: null },
+            releaseYear: 2011,
+            addedAt: 0,
+            isFavorite: false,
           },
         ],
         scanning: false,

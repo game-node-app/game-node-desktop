@@ -97,6 +97,7 @@ fn tools_harness() -> ToolsHarness {
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
+        steam: None,
         covers_dir: covers.path().to_owned(),
         platform: Platform::Linux,
     };
@@ -120,6 +121,7 @@ fn tools_harness() -> ToolsHarness {
         library: None,
         launch: None,
         tools: Default::default(),
+        store_accounts: Vec::new(),
     });
 
     let providers = crate::providers::load_bundled(Platform::Linux).providers;

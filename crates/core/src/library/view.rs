@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::actions::Actions;
 use super::add_dialog::AddDialogView;
-use super::layout::LibraryLayout;
+use super::layout::{LibraryLayout, SidebarSelection};
 use super::machine::{Access, LibraryMachine};
 use super::match_dialog::MatchDialogView;
 use super::matching::MatchStatus;
@@ -45,9 +45,12 @@ impl DetailView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum EmptyState {
-    /// A scan finished and found no installed games. Names the stores looked for.
+    /// A scan finished and found no games. Names the stores looked for.
     NoGames { stores: Vec<String> },
-    /// There are games, but the sidebar choice and search hide all of them.
+    /// The installed filter hides every entry while the library has games. `provider` names the
+    /// sidebar's provider when one is selected.
+    NoInstalled { provider: Option<String> },
+    /// There are games, but the sidebar choice, installed filter and search hide all of them.
     NothingMatches,
 }
 
@@ -59,8 +62,10 @@ pub struct LibraryView {
     pub layout: LibraryLayout,
     pub search: String,
     pub access: Access,
-    /// Installed games across all providers.
+    /// Visible games across all providers.
     pub total: usize,
+    /// Visible games installed on this PC.
+    pub installed_total: usize,
     pub providers: Vec<ProviderCount>,
     pub rows: Arc<[Arc<Row>]>,
     pub scanning: bool,
@@ -137,8 +142,19 @@ impl LibraryMachine {
                 .map(|row| self.detail(row)),
             _ => None,
         };
-        let total = self.installed_entries().count();
+        let total = self.visible_entries().count();
+        let installed_total = self
+            .visible_entries()
+            .filter(|entry| entry.installed)
+            .count();
         let providers = self.provider_counts();
+        let installed_in_view = match self.effective_sidebar() {
+            SidebarSelection::All => installed_total,
+            SidebarSelection::Provider(id) => providers
+                .iter()
+                .find(|count| count.id == id)
+                .map_or(0, |count| count.installed_count),
+        };
 
         let empty = if total == 0 {
             let scanned_everywhere = self
@@ -147,6 +163,13 @@ impl LibraryMachine {
                 .all(|provider| self.scans.contains_key(provider.id()));
             (!self.scan_running() && scanned_everywhere).then(|| EmptyState::NoGames {
                 stores: self.providers.iter().map(|p| p.name().to_owned()).collect(),
+            })
+        } else if self.layout.filters.availability.is_installed_only() && installed_in_view == 0 {
+            Some(EmptyState::NoInstalled {
+                provider: match self.effective_sidebar() {
+                    SidebarSelection::All => None,
+                    SidebarSelection::Provider(id) => Some(id),
+                },
             })
         } else if rows.is_empty() {
             Some(EmptyState::NothingMatches)
@@ -163,6 +186,7 @@ impl LibraryMachine {
             search: self.search.clone(),
             access: self.access,
             total,
+            installed_total,
             providers,
             rows,
             scanning: self.scan_running(),

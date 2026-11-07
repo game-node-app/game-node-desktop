@@ -1,7 +1,15 @@
-import React, { useState } from 'react';
-import { commands, useLibraryView, useLocalGames } from '../../../api';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  commands,
+  useLibraryView,
+  useLocalGames,
+  useSnapshot,
+  type StorageMethod,
+  type StoreAccountView,
+} from '../../../api';
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
+import { SteamAccountCard } from '../SteamAccountCard';
 import {
   settingsButtonGhost,
   settingsButtonSecondary,
@@ -17,12 +25,43 @@ import {
   settingsSectionTitle,
 } from '../settingsClasses';
 
+function fallbackSteamAccount(
+  installedCount: number,
+  storage: StorageMethod | null,
+): StoreAccountView {
+  return {
+    provider: 'steam',
+    state: 'notConnected',
+    accountId: null,
+    accountName: null,
+    ownedCount: 0,
+    familyCount: 0,
+    installedCount,
+    lastCheckedAt: null,
+    storage,
+    persistFailed: false,
+    catalogError: null,
+    familyError: null,
+    canSignIn: true,
+    canCancelSignIn: false,
+    canFocusSignIn: false,
+    canSignOut: false,
+    canCheck: false,
+    canRemoveCredential: false,
+  };
+}
+
 export const StoresPanel: React.FC = () => {
   const { t, locale } = useI18n();
   const library = useLibraryView();
   const localGames = useLocalGames();
+  const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
+  const { data: sessionStorage } = useSnapshot((s) => s.storage);
 
   const [newFolderInput, setNewFolderInput] = useState('');
+  const signInPending = useRef(false);
+  const lastSyncedAt = useRef<number | null>(null);
+  const autoCheckedFor = useRef<number | null>(null);
 
   const providers = library?.providers ?? [];
   const failedProviders = library?.failedProviders ?? [];
@@ -36,6 +75,66 @@ export const StoresPanel: React.FC = () => {
   const discoveryIncomplete = localGames?.discoveryIncomplete ?? [];
   const discoveryCompleted = localGames?.discoveryCompleted ?? false;
 
+  const steamProvider = providers.find((provider) => provider.id === 'steam');
+  const account = (storeAccounts ?? []).find((item) => item.provider === 'steam');
+  const steamAccount: StoreAccountView = account
+    ? { ...account, storage: account.storage ?? sessionStorage }
+    : fallbackSteamAccount(
+        steamProvider?.installedCount ?? steamProvider?.count ?? 0,
+        sessionStorage,
+      );
+  const otherProviders = providers.filter((provider) => provider.id !== 'steam');
+  const steamScanFailed = failedProviders.includes('steam');
+
+  // The card is opened from Settings; a connected session older than the freshness interval is
+  // validated (and its catalog refreshed) once, without a second request while it runs.
+  useEffect(() => {
+    if (steamAccount.state !== 'connected') {
+      return;
+    }
+    const lastChecked = steamAccount.lastCheckedAt ?? 0;
+    const stale = Math.floor(Date.now() / 1000) - lastChecked > 5 * 60;
+    if (stale && autoCheckedFor.current !== lastChecked) {
+      autoCheckedFor.current = lastChecked;
+      void commands.steamCheck();
+    }
+  }, [steamAccount.state, steamAccount.lastCheckedAt]);
+
+  useEffect(() => {
+    if (steamAccount.state === 'signingIn') {
+      signInPending.current = true;
+      lastSyncedAt.current = null;
+      return;
+    }
+    if (steamAccount.state === 'connected') {
+      // A sign-in validates the session before the catalog is fetched, so the first connected
+      // snapshot still has the previous (usually zero) counts. Announce the import only once a
+      // catalog sync has completed; the service sets lastSyncedAt on success.
+      const syncedAt = steamAccount.lastSyncedAt ?? null;
+      if (
+        signInPending.current
+        && syncedAt !== null
+        && syncedAt !== lastSyncedAt.current
+      ) {
+        signInPending.current = false;
+        const imported = steamAccount.ownedCount + steamAccount.familyCount;
+        pushToast('success', t('settings.steamConnectedToast', { count: imported }));
+      }
+      lastSyncedAt.current = syncedAt;
+      return;
+    }
+    if (steamAccount.state !== 'checking') {
+      signInPending.current = false;
+      lastSyncedAt.current = null;
+    }
+  }, [
+    steamAccount.state,
+    steamAccount.ownedCount,
+    steamAccount.familyCount,
+    steamAccount.lastSyncedAt,
+    t,
+  ]);
+
   const handleRescan = () => {
     commands.rescanLibrary();
   };
@@ -47,6 +146,10 @@ export const StoresPanel: React.FC = () => {
         ? 'Descobertas ignoradas redefinidas'
         : 'Reset hidden games';
     pushToast('success', t('Reset hidden games') !== 'Reset hidden games' ? t('Reset hidden games') : toastMsg);
+  };
+
+  const handleSteamSignOut = () => {
+    pushToast('success', t('settings.steamSignedOutToast'));
   };
 
   const handleAddWatchFolder = () => {
@@ -73,6 +176,12 @@ export const StoresPanel: React.FC = () => {
 
   return (
     <div className={settingsSection}>
+      <SteamAccountCard
+        account={steamAccount}
+        scanFailed={steamScanFailed}
+        onSignOut={handleSteamSignOut}
+      />
+
       <div className={settingsSection}>
         <h3 className={settingsSectionTitle}>{t('Detected stores') || 'Detected stores'}</h3>
         <span className={settingsSectionDescription}>
@@ -84,8 +193,12 @@ export const StoresPanel: React.FC = () => {
             <div className={settingsRowDescription}>
               {t('No installed games found') || 'No installed games found'}
             </div>
+          ) : otherProviders.length === 0 ? (
+            <div className={settingsRowDescription}>
+              {t('settings.steamNoOtherStores')}
+            </div>
           ) : (
-            providers.map((provider) => {
+            otherProviders.map((provider) => {
               const hasFailed = failedProviders.includes(provider.id);
               let description = '';
               if (hasFailed) {

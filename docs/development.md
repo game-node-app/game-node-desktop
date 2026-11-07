@@ -153,11 +153,16 @@ VITE_UI_MOCK=1 pnpm --dir ui dev
 
 Restart an already running Vite server with the variable set; the mode is selected
 at startup. Open `http://localhost:4777/`. It starts with a fictional signed-in account and
-12 fictional games, local cover images, and a verified library. Search, filter,
-sort, grid/list view, selection, details, basic matching, the add dialog and
-sign-out/sign-in update the in-memory snapshot. Reload to reset it. Use
-`http://localhost:4777/?scenario=signed-out` to start signed out, and add
-`&locale=pt-BR` (or `?locale=pt-BR` on its own) for Portuguese.
+12 fictional games, local cover images, and a verified library. Search, the filter panel
+(availability, running, match state, play history, last played, release decade, date
+added and favorites), active-filter chips, sorting by title, store, match status, release
+year, playtime, last played or date added, grid/list view, selection, details, favorites
+(the star in the grid, list, detail pane and context menu), basic matching, the add
+dialog and sign-out/sign-in update the in-memory snapshot. Reload to reset it. Use
+`http://localhost:4777/?scenario=signed-out` to start signed out, add `&library=large`
+for 328 owned Steam games (18 installed, a few family-shared), and add
+`&steam=expired` (or any store scenario) plus `&locale=pt-BR` (or `?locale=pt-BR` on
+its own) for Portuguese.
 
 The mock replaces the Tauri command and snapshot-event bridge, including when
 Vite is displayed inside a native dev window. Unsupported commands produce a
@@ -182,6 +187,28 @@ Without that feature Tauri treats the build as a dev build and loads `devUrl`
 (`http://localhost:4777`), which shows a blank "Operation was cancelled" window when no Vite
 server is running. For native HMR, start `pnpm --dir ui dev` and run
 `cargo run -p gamenode-app --no-default-features`.
+
+### Application logs
+
+The desktop host writes a rotating log file under the data directory, alongside the database:
+
+| OS | Log directory |
+| --- | --- |
+| Linux | `~/.local/share/gamenode-desktop/logs/` |
+| Windows | `%LOCALAPPDATA%\GameNode\Desktop\logs\` |
+
+One file per UTC day (`gamenode.YYYY-MM-DD.log`); the newest ten are kept. The default filter logs
+`info` for GameNode crates and `warn` for third-party crates, and writes happen on a dedicated
+worker thread. Set `GAMENODE_LOG` (or `RUST_LOG`) to change it for a run, for example:
+
+```sh
+GAMENODE_LOG="debug,gamenode_api=trace" cargo run -p gamenode-app
+```
+
+Settings → About shows the current path and offers **Show recent log** (with a copy button) and
+**Open log folder**. Steam diagnostics log the request endpoint, HTTP status, and a failure
+category such as `timeout` or `connect`; the cookie, the Web API token, and full URLs are never
+written.
 
 ### Driving and previewing from T3 Code Preview
 

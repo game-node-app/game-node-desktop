@@ -32,7 +32,9 @@ mod tests {
         for platform in [Platform::Windows, Platform::Linux] {
             let loaded = load_bundled(platform);
             assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
-            assert!(loaded.get("steam").is_some());
+            let steam = loaded.get("steam").expect("steam loads");
+            assert!(steam.has_catalog());
+            assert_eq!(steam.catalog_backend(), Some("steam"));
         }
     }
 }

@@ -342,3 +342,35 @@ fn losing_the_account_drops_pending_downloads() {
     machine.handle(Input::AccountChanged(None));
     assert!(done(&mut machine, 1100, true, NOW).is_empty());
 }
+
+#[test]
+fn installed_covers_are_queued_before_owned_and_family_covers() {
+    use crate::library::machine::tests::stored_with;
+
+    let mut cache = LibraryCache::default();
+    // Key order would start with the owned entry; installed still comes first.
+    cache
+        .entries
+        .push(stored_with("steam", "1", "Owned", false, true, false));
+    cache
+        .entries
+        .push(stored_with("steam", "2", "Installed", true, false, false));
+    cache
+        .entries
+        .push(stored_with("steam", "3", "Shared", false, false, true));
+    for (uid, id) in [("1", 11), ("2", 12), ("3", 13)] {
+        cache.auto_matches.push(AutoMatch {
+            category: 1,
+            uid: uid.to_owned(),
+            game_ids: vec![id],
+            checked_at: NOW,
+        });
+    }
+    cache.games = vec![
+        game(11, good_url(11)),
+        game(12, good_url(12)),
+        game(13, good_url(13)),
+    ];
+    let (mut machine, _) = loaded(false, cache);
+    assert_eq!(fetches(&verify(&mut machine)), [12, 11, 13]);
+}

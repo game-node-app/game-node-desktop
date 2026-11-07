@@ -14,16 +14,18 @@ use crate::provider::{Provider, Record};
 use super::add_dialog::AddDialog;
 use super::cover::CoverUrl;
 use super::cover_queue::CoverQueue;
+use super::favorites::FavoriteState;
 use super::layout::{
-    DETAIL_WIDTH_RANGE, LibraryLayout, SIDEBAR_WIDTH_RANGE, SidebarSelection, Sort, ViewMode,
+    DETAIL_WIDTH_RANGE, LibraryFilters, LibraryLayout, SIDEBAR_WIDTH_RANGE, SidebarSelection, Sort,
+    ViewMode,
 };
 use super::lookup::LookupRun;
 use super::match_dialog::MatchDialog;
 use super::membership::{EntryStatus, Membership};
 use super::selection::{Direction, SelectMode, Selection};
 use super::store::{
-    AutoMatch, ChosenMatch, GameRecord, LastAccount, LibraryCache, ProviderScanState, StoredEntry,
-    entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
+    LastAccount, LibraryCache, ProviderScanState, StoredEntry, entry_key,
 };
 use super::view::LibraryView;
 
@@ -69,8 +71,31 @@ pub enum Effect {
         outcome: ScanOutcome,
         now: i64,
     },
+    /// Fetch the owned and family catalog of one provider and report with
+    /// [`Input::CatalogSynced`]. Emitted for every scan of a catalog provider and when the
+    /// account connects; the engine decides whether a credential exists.
+    SyncCatalog {
+        op: u64,
+        provider: String,
+    },
     PersistLayout(LibraryLayout),
     PersistExcluded(Vec<String>),
+    /// Store one favorite change for the account, so it survives restart and stays pending until
+    /// GameNode confirms it.
+    PersistFavorite(FavoriteRecord),
+    /// Read the account's favorite games (`GameApi::list_favorites`) and report with
+    /// [`Input::FavoritesSynced`]. Only sent while favorites sync is active.
+    SyncFavorites {
+        op: u64,
+        user_id: String,
+    },
+    /// Send one favorite change (`GameApi::set_favorite`) and report with
+    /// [`Input::FavoritePushed`]. At most one is outstanding per game.
+    PushFavorite {
+        op: u64,
+        game_id: u64,
+        favorite: bool,
+    },
     /// Ask GameNode which games these store ids are (`GameApi::lookup_external`) and report with
     /// [`Input::LookupDone`]. Only sent with a verified session.
     Lookup {
@@ -167,6 +192,49 @@ pub enum Input {
         /// Unix seconds.
         now: i64,
     },
+    /// The answer to an [`Effect::SyncCatalog`]. `owned`/`family` are `None` when that fact set
+    /// was not attempted; `Err` keeps the previous set and records the category.
+    CatalogSynced {
+        op: u64,
+        provider: String,
+        owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        /// Unix seconds.
+        now: i64,
+    },
+    /// The connected store account changed or signed out: drop its owned and family facts but
+    /// keep entries, matches and covers.
+    CatalogCleared {
+        provider: String,
+    },
+    /// Ask every provider with a catalog to sync now.
+    RequestCatalog,
+    /// Replace the toolbar filters.
+    SetFilters(LibraryFilters),
+    /// Mark or unmark the entry's matched game as a favorite. `now` is unix seconds.
+    SetFavorite {
+        key: String,
+        favorite: bool,
+        now: i64,
+    },
+    /// The answer to an [`Effect::SyncFavorites`]: the complete server favorite game ids.
+    FavoritesSynced {
+        op: u64,
+        result: Result<Vec<u64>, ApiError>,
+        now: i64,
+    },
+    /// The answer to an [`Effect::PushFavorite`].
+    FavoritePushed {
+        op: u64,
+        game_id: u64,
+        favorite: bool,
+        result: Result<(), crate::game_api::FavoriteError>,
+        now: i64,
+    },
+    /// Whether favorites may leave this PC: sync is on, explained and the session is verified.
+    SetSyncActive(bool),
+    /// Retry a favorite read and every pending push at the next opportunity.
+    SyncFavoritesRequested,
     /// What the application can reach now. `now` is unix seconds.
     SetAccess {
         access: Access,
@@ -287,6 +355,13 @@ pub(super) struct ScanRun {
     pub(super) waiting: BTreeSet<String>,
 }
 
+/// Which independent fact set a catalog update covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogFact {
+    Owned,
+    Family,
+}
+
 pub struct LibraryMachine {
     pub(super) local_inferences: BTreeMap<String, u64>,
     pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
@@ -299,12 +374,27 @@ pub struct LibraryMachine {
     pub(super) entries: BTreeMap<String, StoredEntry>,
     pub(super) excluded: BTreeSet<String>,
     pub(super) scans: BTreeMap<String, ProviderScanState>,
+    /// The catalog sync op in flight for each provider; older answers are ignored.
+    pub(super) catalog_ops: BTreeMap<String, u64>,
     pub(super) auto_matches: BTreeMap<(u32, String), AutoMatch>,
     pub(super) chosen: BTreeMap<String, ChosenMatch>,
     pub(super) games: BTreeMap<u64, GameRecord>,
     pub(super) scan: Option<ScanRun>,
     pub(super) rescan_pending: bool,
     pub(super) layout: LibraryLayout,
+    /// Unix seconds used by the relative filters and windows. The engine refreshes it before
+    /// every library input; tests set it explicitly.
+    pub(super) now: i64,
+    /// The account's favorite state per GameNode game. Pending changes are local wins.
+    pub(super) favorites: std::collections::BTreeMap<u64, FavoriteState>,
+    /// Whether favorites may leave this PC (`enabled && explained && verified`).
+    pub(super) favorites_sync_active: bool,
+    /// A read has been requested and not started yet.
+    pub(super) favorites_sync_pending: bool,
+    /// The favorite read in flight; stale answers are ignored.
+    pub(super) favorites_sync_op: Option<u64>,
+    /// The favorite push in flight per game; at most one per game.
+    pub(super) favorite_pushes: std::collections::BTreeMap<u64, u64>,
     /// The search box text. Not part of the layout: it starts empty on every launch.
     pub(super) search: String,
     pub(super) selection: Selection,
@@ -347,12 +437,19 @@ impl LibraryMachine {
             entries: BTreeMap::new(),
             excluded: BTreeSet::new(),
             scans: BTreeMap::new(),
+            catalog_ops: BTreeMap::new(),
             auto_matches: BTreeMap::new(),
             chosen: BTreeMap::new(),
             games: BTreeMap::new(),
             scan: None,
             rescan_pending: false,
-            layout,
+            layout: layout.normalized(),
+            now: 0,
+            favorites: BTreeMap::new(),
+            favorites_sync_active: false,
+            favorites_sync_pending: false,
+            favorites_sync_op: None,
+            favorite_pushes: BTreeMap::new(),
             search: String::new(),
             selection: Selection::default(),
             grid_columns: 1,
@@ -424,6 +521,13 @@ impl LibraryMachine {
         self.entries
             .values()
             .filter(|entry| entry.installed && !self.excluded.contains(&entry.key))
+    }
+
+    /// Every entry the library shows: installed, owned or family-shared, minus exclusions.
+    pub fn visible_entries(&self) -> impl Iterator<Item = &StoredEntry> {
+        self.entries
+            .values()
+            .filter(|entry| entry.is_visible() && !self.excluded.contains(&entry.key))
     }
 
     pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
@@ -542,6 +646,30 @@ impl LibraryMachine {
                 result,
                 now,
             } => self.on_provider_scanned(op, provider, result, now),
+            Input::CatalogSynced {
+                op,
+                provider,
+                owned,
+                family,
+                now,
+            } => self.on_catalog_synced(op, provider, owned, family, now),
+            Input::CatalogCleared { provider } => {
+                self.clear_catalog(&provider);
+                vec![]
+            }
+            Input::RequestCatalog => self.request_catalog(),
+            Input::SetFilters(filters) => self.update_layout(|layout| layout.filters = filters),
+            Input::SetFavorite { key, favorite, now } => self.on_set_favorite(key, favorite, now),
+            Input::FavoritesSynced { op, result, now } => self.on_favorites_synced(op, result, now),
+            Input::FavoritePushed {
+                op,
+                game_id,
+                favorite,
+                result,
+                now,
+            } => self.on_favorite_pushed(op, game_id, favorite, result, now),
+            Input::SetSyncActive(active) => self.set_sync_active(active),
+            Input::SyncFavoritesRequested => self.request_favorites_sync(),
             Input::SetAccess { access, now } => {
                 self.access = access;
                 let mut effects = self.plan_lookups(now);
@@ -710,6 +838,7 @@ impl LibraryMachine {
         self.entries.clear();
         self.excluded.clear();
         self.scans.clear();
+        self.catalog_ops.clear();
         self.auto_matches.clear();
         self.chosen.clear();
         self.games.clear();
@@ -723,6 +852,10 @@ impl LibraryMachine {
         self.add = None;
         self.lookups.clear();
         self.dialog = None;
+        self.favorites.clear();
+        self.favorites_sync_pending = false;
+        self.favorites_sync_op = None;
+        self.favorite_pushes.clear();
         self.covers.clear();
         self.artwork_focus = None;
         self.artwork_requests.clear();
@@ -763,7 +896,10 @@ impl LibraryMachine {
             Err(()) => tracing::warn!("the library cache could not be read; starting empty"),
         }
         self.phase = Phase::Ready;
-        self.start_scan()
+        let mut effects = self.start_scan();
+        // A sync activation that happened while the cache loaded had no account to read yet.
+        effects.extend(super::favorites::plan(self));
+        effects
     }
 
     fn install_cache(&mut self, cache: LibraryCache) {
@@ -793,6 +929,19 @@ impl LibraryMachine {
             .map(|game| (game.game_id, game))
             .collect();
         self.excluded = cache.excluded.into_iter().collect();
+        self.favorites = cache
+            .favorites
+            .into_iter()
+            .map(|favorite| {
+                (
+                    favorite.game_id,
+                    FavoriteState {
+                        is_favorite: favorite.is_favorite,
+                        pending: favorite.pending,
+                    },
+                )
+            })
+            .collect();
     }
 
     fn on_scan_requested(&mut self) -> Vec<Effect> {
@@ -815,15 +964,220 @@ impl LibraryMachine {
             .iter()
             .map(|provider| provider.id().to_owned())
             .collect();
-        let effects = waiting
+        let mut effects: Vec<Effect> = waiting
             .iter()
             .map(|provider| Effect::RunScan {
                 op,
                 provider: provider.clone(),
             })
             .collect();
+        // The installed scan is never gated by the catalog: both start together.
+        effects.extend(self.catalog_sync_effects());
         self.scan = (!waiting.is_empty()).then_some(ScanRun { op, waiting });
         effects
+    }
+
+    /// Emits a catalog sync for every provider that declares one and records its op.
+    fn catalog_sync_effects(&mut self) -> Vec<Effect> {
+        let providers: Vec<String> = self
+            .providers
+            .iter()
+            .filter(|provider| provider.has_catalog())
+            .map(|provider| provider.id().to_owned())
+            .collect();
+        providers
+            .into_iter()
+            .map(|provider| {
+                let op = self.next_op();
+                self.catalog_ops.insert(provider.clone(), op);
+                Effect::SyncCatalog { op, provider }
+            })
+            .collect()
+    }
+
+    fn request_catalog(&mut self) -> Vec<Effect> {
+        if !matches!(self.phase, Phase::Ready) {
+            return vec![];
+        }
+        self.catalog_sync_effects()
+    }
+
+    fn on_catalog_synced(
+        &mut self,
+        op: u64,
+        provider: String,
+        owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        now: i64,
+    ) -> Vec<Effect> {
+        if self.catalog_ops.get(&provider) != Some(&op) {
+            return vec![];
+        }
+        self.catalog_ops.remove(&provider);
+        self.merge_catalog(&provider, &CatalogUpdate { owned, family, now });
+        self.prune_selection();
+        let mut effects = self.plan_lookups(now);
+        effects.extend(self.plan_covers(None));
+        effects
+    }
+
+    /// Applies a catalog update exactly as `LibraryStore::save_catalog` applies it on disk.
+    /// Owned is applied before family, so an owned app never keeps the family flag.
+    fn merge_catalog(&mut self, provider: &str, update: &CatalogUpdate) {
+        if let Some(owned) = &update.owned {
+            self.apply_catalog_fact(provider, owned, update.now, CatalogFact::Owned);
+        }
+        if let Some(family) = &update.family {
+            self.apply_catalog_fact(provider, family, update.now, CatalogFact::Family);
+        }
+    }
+
+    fn apply_catalog_fact(
+        &mut self,
+        provider: &str,
+        result: &Result<Vec<CatalogRecord>, CatalogError>,
+        now: i64,
+        fact: CatalogFact,
+    ) {
+        let records = match result {
+            Err(error) => {
+                let state = self.scan_state_mut(provider);
+                match fact {
+                    CatalogFact::Owned => state.catalog_error = Some(*error),
+                    CatalogFact::Family => state.family_error = Some(*error),
+                }
+                return;
+            }
+            Ok(records) => records,
+        };
+
+        let excluded: BTreeSet<&str> = self
+            .provider(provider)
+            .map(|provider| {
+                provider
+                    .manifest()
+                    .exclude_ids
+                    .iter()
+                    .map(String::as_str)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut seen = BTreeSet::new();
+        let mut dropped = 0usize;
+        let usable: Vec<&CatalogRecord> = records
+            .iter()
+            .filter(|record| {
+                let id = record.id.trim();
+                let name = record.name.trim();
+                if id.is_empty() || name.is_empty() || excluded.contains(id) {
+                    dropped += 1;
+                    false
+                } else {
+                    seen.insert(id.to_owned())
+                }
+            })
+            .collect();
+        if dropped > 0 {
+            tracing::info!(
+                provider,
+                dropped,
+                "ignored unusable catalog records (empty id/name, duplicate or excluded)"
+            );
+        }
+
+        for entry in self
+            .entries
+            .values_mut()
+            .filter(|entry| entry.provider == provider)
+        {
+            match fact {
+                CatalogFact::Owned => entry.owned = false,
+                CatalogFact::Family => entry.family_shared = false,
+            }
+        }
+        for record in usable {
+            let store_id = record.id.trim().to_owned();
+            let catalog_name = record.name.trim();
+            let key = entry_key(provider, &store_id);
+            match self.entries.get_mut(&key) {
+                Some(entry) => {
+                    match fact {
+                        CatalogFact::Owned => entry.owned = true,
+                        // An entry the owned sync just claimed wins over family sharing.
+                        CatalogFact::Family => entry.family_shared = !entry.owned,
+                    }
+                    // An installed entry keeps the name the installed scan gave it.
+                    let name_is_empty = entry
+                        .name
+                        .as_deref()
+                        .is_none_or(|name| name.trim().is_empty());
+                    if !entry.installed && name_is_empty {
+                        entry.name = Some(catalog_name.to_owned());
+                    }
+                    entry.last_seen = now;
+                }
+                None => {
+                    self.entries.insert(
+                        key.clone(),
+                        StoredEntry {
+                            key,
+                            provider: provider.to_owned(),
+                            store_id,
+                            name: Some(catalog_name.to_owned()),
+                            // Catalog-only entries are not installed anywhere.
+                            install_dir: String::new(),
+                            fields: BTreeMap::new(),
+                            installed: false,
+                            owned: fact == CatalogFact::Owned,
+                            family_shared: fact == CatalogFact::Family,
+                            first_seen: now,
+                            last_seen: now,
+                        },
+                    );
+                }
+            }
+        }
+
+        let state = self.scan_state_mut(provider);
+        match fact {
+            CatalogFact::Owned => {
+                state.last_catalog_at = Some(now);
+                state.catalog_error = None;
+            }
+            CatalogFact::Family => {
+                state.last_family_at = Some(now);
+                state.family_error = None;
+            }
+        }
+    }
+
+    fn scan_state_mut(&mut self, provider: &str) -> &mut ProviderScanState {
+        self.scans
+            .entry(provider.to_owned())
+            .or_insert_with(|| ProviderScanState {
+                provider: provider.to_owned(),
+                ..ProviderScanState::default()
+            })
+    }
+
+    /// Drops the account's ownership facts without deleting entries, matches or covers.
+    fn clear_catalog(&mut self, provider: &str) {
+        for entry in self
+            .entries
+            .values_mut()
+            .filter(|entry| entry.provider == provider)
+        {
+            entry.owned = false;
+            entry.family_shared = false;
+        }
+        if let Some(state) = self.scans.get_mut(provider) {
+            state.last_catalog_at = None;
+            state.catalog_error = None;
+            state.last_family_at = None;
+            state.family_error = None;
+        }
+        self.catalog_ops.remove(provider);
+        self.prune_selection();
     }
 
     fn on_provider_scanned(
@@ -870,13 +1224,7 @@ impl LibraryMachine {
     /// other entries are marked uninstalled (never deleted), and a failure changes nothing but the
     /// provider's recorded error.
     fn merge_scan(&mut self, provider: &str, outcome: &ScanOutcome, now: i64) {
-        let state = self
-            .scans
-            .entry(provider.to_owned())
-            .or_insert_with(|| ProviderScanState {
-                provider: provider.to_owned(),
-                ..ProviderScanState::default()
-            });
+        let state = self.scan_state_mut(provider);
         match outcome {
             ScanOutcome::Failed(message) => {
                 state.last_error = Some(message.clone());
@@ -893,7 +1241,11 @@ impl LibraryMachine {
                 }
                 for record in records {
                     let key = entry_key(provider, &record.id);
-                    let first_seen = self.entries.get(&key).map_or(now, |entry| entry.first_seen);
+                    let existing = self.entries.get(&key);
+                    let first_seen = existing.map_or(now, |entry| entry.first_seen);
+                    let (owned, family_shared) = existing
+                        .map(|entry| (entry.owned, entry.family_shared))
+                        .unwrap_or_default();
                     self.entries.insert(
                         key.clone(),
                         StoredEntry {
@@ -904,6 +1256,8 @@ impl LibraryMachine {
                             install_dir: record.install_dir.clone(),
                             fields: record.fields.clone(),
                             installed: true,
+                            owned,
+                            family_shared,
                             first_seen,
                             last_seen: now,
                         },

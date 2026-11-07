@@ -23,6 +23,14 @@ fn is_web_url(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https") && url.host().is_some()
 }
 
+/// Shows a directory in the OS file manager. Used by Settings to open the log folder.
+pub fn open_directory(path: &std::path::Path) -> Result<(), std::io::Error> {
+    open::that_detached(path).map_err(|error| {
+        tracing::warn!(kind = ?error.kind(), "could not open a directory");
+        error
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

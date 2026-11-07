@@ -37,6 +37,9 @@ pub struct Manifest {
     /// Which store or source the games come from. Kept for later steps.
     pub source: String,
     pub scan: ScanSpec,
+    /// A catalog the provider can read beyond what is installed (owned/family games).
+    #[serde(default)]
+    pub catalog: Option<CatalogSpec>,
     #[serde(default)]
     pub playtime: Option<PlaytimeSpec>,
     #[serde(default)]
@@ -56,6 +59,13 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct ScanSpec {
     /// Name of a scanner built into the application.
+    pub native: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogSpec {
+    /// Name of a catalog backend built into the application.
     pub native: String,
 }
 

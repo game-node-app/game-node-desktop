@@ -2,6 +2,9 @@ import React from 'react';
 import {
   IconDownload,
   IconPlayerPlay,
+  IconStar,
+  IconStarFilled,
+  IconUsersGroup,
   IconX,
 } from '@tabler/icons-react';
 import {
@@ -151,6 +154,7 @@ export const DetailPane: React.FC = () => {
   const isPlayAvailable = actions?.play === 'available';
   const isInstallAvailable = actions?.install === 'available';
   const isRunning = detail?.running || detail?.row.running;
+  const favoriteGameId = detail ? getMatchedGameId(detail.row.status) : null;
 
   return (
     <div data-testid="detail-pane" className="relative flex h-full shrink-0">
@@ -277,10 +281,64 @@ export const DetailPane: React.FC = () => {
                 >
                   {detail.row.title}
                 </h2>
-                <div className="mt-1 text-xs text-text-dimmed">
-                  {detail.releaseYear ? `${detail.releaseYear} · ` : ''}
-                  {detail.row.providerName}
+                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-dimmed">
+                  <span>
+                    {detail.releaseYear ? `${detail.releaseYear} · ` : ''}
+                    {detail.row.providerName}
+                  </span>
+                  {detail.row.familyShared && !detail.row.owned && (
+                    <span
+                      data-testid="detail-family-label"
+                      className="inline-flex items-center gap-1 rounded-xs bg-accent-subtle px-1.5 py-px text-[11px] font-medium text-brand"
+                    >
+                      <IconUsersGroup size={12} stroke={1.75} aria-hidden />
+                      {t('Library::Steam Family')}
+                    </span>
+                  )}
                 </div>
+              </div>
+
+              {/* Favorite */}
+              <div>
+                <button
+                  type="button"
+                  data-testid="detail-favorite-btn"
+                  aria-pressed={detail.row.isFavorite}
+                  disabled={favoriteGameId == null}
+                  onClick={() =>
+                    commands.libraryInput({
+                      setFavorite: {
+                        key: detail.row.key,
+                        favorite: !detail.row.isFavorite,
+                        now: Math.floor(Date.now() / 1000),
+                      },
+                    })
+                  }
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-sm border border-border-subtle bg-transparent px-md py-compact text-sm font-medium transition-colors ${
+                    favoriteGameId == null
+                      ? 'cursor-default text-text-dimmed opacity-45'
+                      : detail.row.isFavorite
+                        ? 'cursor-pointer text-warning hover:bg-surface'
+                        : 'cursor-pointer text-text-default hover:bg-surface'
+                  }`}
+                >
+                  {detail.row.isFavorite ? (
+                    <IconStarFilled size={16} aria-hidden />
+                  ) : (
+                    <IconStar size={16} stroke={1.75} aria-hidden />
+                  )}
+                  {detail.row.isFavorite
+                    ? t('Library::Remove from favorites')
+                    : t('Library::Add to favorites')}
+                </button>
+                {favoriteGameId == null && (
+                  <div
+                    data-testid="detail-favorite-reason"
+                    className={`${reasonClass} mt-1`}
+                  >
+                    {t('Library::Match the game first to use favorites.')}
+                  </div>
+                )}
               </div>
 
               {/* Launch Status Banner */}
@@ -571,18 +629,27 @@ export const DetailPane: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Install folder */}
-                <div>
-                  <div className="text-text-dimmed">
-                    {t('Library::Install folder')}
+                {/* Install folder, or the not-installed statement for catalog-only games */}
+                {detail.row.installed ? (
+                  <div>
+                    <div className="text-text-dimmed">
+                      {t('Library::Install folder')}
+                    </div>
+                    <div
+                      data-testid="detail-install-dir"
+                      className="break-all text-text-default"
+                    >
+                      {detail.installDir}
+                    </div>
                   </div>
+                ) : (
                   <div
-                    data-testid="detail-install-dir"
-                    className="break-all text-text-default"
+                    data-testid="detail-not-installed"
+                    className="text-text-default"
                   >
-                    {detail.installDir}
+                    {t('Library::Not installed on this PC')}
                   </div>
-                </div>
+                )}
 
                 {/* Match */}
                 <div>

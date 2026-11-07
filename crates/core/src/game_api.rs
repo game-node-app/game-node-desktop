@@ -39,6 +39,23 @@ pub enum ApiError {
     Failed,
 }
 
+/// Why a favorite change was not confirmed by GameNode. `NotInLibrary` is meaningful (the game
+/// has no collection entry yet) and keeps the change pending instead of retrying tightly; a
+/// separate type keeps that case out of the widely matched [`ApiError`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FavoriteError {
+    /// The game is not in the user's GameNode library (`404`).
+    #[error("the game is not in the GameNode library")]
+    NotInLibrary,
+    /// The server refused the session (`401`).
+    #[error("GameNode rejected the session")]
+    Rejected,
+    /// The request could not be completed or its answer could not be used.
+    #[error("the favorite change failed")]
+    Failed,
+}
+
 /// A GameNode game as the library shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,4 +191,30 @@ pub trait GameApi: Send + Sync {
         status: EntryStatus,
         collection_ids: &[String],
     ) -> Result<(), ApiError>;
+
+    /// The game ids the user has marked as favorite
+    /// (`GET /v1/collections-entries/library/:userId/favorites`), following every page.
+    ///
+    /// Any failed page returns an error, so an incomplete list is never applied as a complete one.
+    /// The default fails rather than claiming an empty set, which would clear local favorites.
+    async fn list_favorites(
+        &self,
+        _credential: &SessionCredential,
+        _user_id: &str,
+    ) -> Result<Vec<u64>, ApiError> {
+        Err(ApiError::Failed)
+    }
+
+    /// Sets one game's favorite flag (`POST /v1/collections-entries/game/:id/favorite`).
+    ///
+    /// A `404` means the game is not in the user's GameNode library and is reported as
+    /// [`FavoriteError::NotInLibrary`]. The default leaves the change pending.
+    async fn set_favorite(
+        &self,
+        _credential: &SessionCredential,
+        _game_id: u64,
+        _favorite: bool,
+    ) -> Result<(), FavoriteError> {
+        Err(FavoriteError::Failed)
+    }
 }

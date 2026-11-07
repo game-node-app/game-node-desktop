@@ -8,15 +8,17 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconShieldCheck,
+  IconStar,
+  IconStarFilled,
   IconTool,
   IconTrash,
 } from '@tabler/icons-react';
-import { commands, useLibraryView } from '../../api';
+import { commands, getMatchedGameId, useLibraryView } from '../../api';
 import { useUiStore, closeContextMenu, uiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
 const itemBase =
-  'flex w-full items-center gap-2 rounded-xs px-3.5 py-compact text-left text-sm transition-colors data-[disabled]:cursor-default data-[disabled]:text-text-dimmed data-[disabled]:opacity-50 data-[disabled]:hover:bg-transparent';
+  'flex w-full items-center rounded-xs px-3.5 py-compact text-left text-sm transition-colors data-[disabled]:cursor-default data-[disabled]:text-text-dimmed data-[disabled]:opacity-50 data-[disabled]:hover:bg-transparent';
 const itemClass = `${itemBase} text-text-default hover:bg-surface`;
 const dangerItem = `${itemBase} text-danger hover:bg-danger-subtle`;
 
@@ -60,6 +62,11 @@ export const ContextMenu: React.FC = () => {
   const isRunning = row?.running ?? false;
   const canTools = !isRunning;
   const canRemove = row != null;
+  // A favorite belongs to one matched GameNode game: multi-selection and unmatched rows have no
+  // single game to act on, so the action is omitted instead of shown disabled.
+  const selectionCount = library?.selected?.length ?? 0;
+  const favoriteGameId = row ? getMatchedGameId(row.status) : null;
+  const showFavorite = selectionCount === 1 && favoriteGameId != null;
 
   const handlePlay = () => {
     if (!canPlay) return;
@@ -88,6 +95,18 @@ export const ContextMenu: React.FC = () => {
   const handleTools = () => {
     if (!canTools) return;
     commands.openTools(entryKey);
+    closeContextMenu();
+  };
+
+  const handleFavorite = () => {
+    if (!row || favoriteGameId == null) return;
+    commands.libraryInput({
+      setFavorite: {
+        key: row.key,
+        favorite: !row.isFavorite,
+        now: Math.floor(Date.now() / 1000),
+      },
+    });
     closeContextMenu();
   };
 
@@ -159,8 +178,8 @@ export const ContextMenu: React.FC = () => {
           disabled={!canPlay}
           onClick={handlePlay}
           className={itemClass}
+          leftSection={<IconPlayerPlay size={14} stroke={1.75} aria-hidden />}
         >
-          <IconPlayerPlay size={14} stroke={1.75} aria-hidden />
           {t('Library::Play')}
         </Menu.Item>
 
@@ -171,8 +190,8 @@ export const ContextMenu: React.FC = () => {
             disabled={!canInstall}
             onClick={handleInstall}
             className={itemClass}
+            leftSection={<IconDownload size={14} stroke={1.75} aria-hidden />}
           >
-            <IconDownload size={14} stroke={1.75} aria-hidden />
             {t('Library::Install')}
           </Menu.Item>
         )}
@@ -184,10 +203,31 @@ export const ContextMenu: React.FC = () => {
           disabled={!canMatch}
           onClick={handleMatch}
           className={itemClass}
+          leftSection={<IconLink size={14} stroke={1.75} aria-hidden />}
         >
-          <IconLink size={14} stroke={1.75} aria-hidden />
           {matchLabel}
         </Menu.Item>
+
+        {/* Favorite */}
+        {showFavorite && (
+          <Menu.Item
+            data-testid="context-menu-favorite"
+            aria-pressed={row?.isFavorite ?? false}
+            onClick={handleFavorite}
+            className={itemClass}
+            leftSection={
+              row?.isFavorite ? (
+                <IconStarFilled size={14} aria-hidden className="text-warning" />
+              ) : (
+                <IconStar size={14} stroke={1.75} aria-hidden />
+              )
+            }
+          >
+            {row?.isFavorite
+              ? t('Library::Remove from favorites')
+              : t('Library::Add to favorites')}
+          </Menu.Item>
+        )}
 
         {/* Add to GameNode */}
         <Menu.Item
@@ -196,8 +236,8 @@ export const ContextMenu: React.FC = () => {
           disabled={!canAdd}
           onClick={handleAdd}
           className={itemClass}
+          leftSection={<IconPlus size={14} stroke={1.75} aria-hidden />}
         >
-          <IconPlus size={14} stroke={1.75} aria-hidden />
           {t('Library::Add to GameNode…')}
         </Menu.Item>
 
@@ -208,8 +248,8 @@ export const ContextMenu: React.FC = () => {
           disabled={!canTools}
           onClick={handleTools}
           className={itemClass}
+          leftSection={<IconTool size={14} stroke={1.75} aria-hidden />}
         >
-          <IconTool size={14} stroke={1.75} aria-hidden />
           {t('Library::Game tools…')}
         </Menu.Item>
 
@@ -225,8 +265,8 @@ export const ContextMenu: React.FC = () => {
               aria-label="Edit game"
               onClick={handleEditGame}
               className={itemClass}
+              leftSection={<IconPencil size={14} stroke={1.75} aria-hidden />}
             >
-              <IconPencil size={14} stroke={1.75} aria-hidden />
               {editLabel}
             </Menu.Item>
 
@@ -235,8 +275,8 @@ export const ContextMenu: React.FC = () => {
               aria-label="Save protection"
               onClick={handleSaveProtection}
               className={itemClass}
+              leftSection={<IconShieldCheck size={14} stroke={1.75} aria-hidden />}
             >
-              <IconShieldCheck size={14} stroke={1.75} aria-hidden />
               {saveLabel}
             </Menu.Item>
           </>
@@ -249,8 +289,8 @@ export const ContextMenu: React.FC = () => {
             aria-label="Remove"
             onClick={handleRemove}
             className={dangerItem}
+            leftSection={<IconTrash size={14} stroke={1.75} aria-hidden />}
           >
-            <IconTrash size={14} stroke={1.75} aria-hidden />
             {removeLabel}
           </Menu.Item>
         )}

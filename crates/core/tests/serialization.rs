@@ -4,8 +4,8 @@ use gamenode_core::Provider;
 use gamenode_core::auth::{AuthMachine, Input};
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::library::{
-    DetailView, EntryStatus, Input as LibraryInput, MatchSource, MatchStatus, Membership, Row,
-    SelectMode, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
+    DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource, MatchStatus,
+    Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
 };
 use gamenode_core::notice::Notice;
 use gamenode_core::playtime::{PlaytimeSource, PlaytimeView};
@@ -63,6 +63,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
         playtime: PlaytimeView {
             seconds: Some(3600),
             source: PlaytimeSource::Store,
+            last_played_at: Some(1_700_000_000),
         },
         running: false,
         key: "steam:1091500".into(),
@@ -71,11 +72,17 @@ fn test_detail_view_serialization_and_artwork_omission() {
         matched_name: Some("Cyberpunk 2077".into()),
         provider: "steam".into(),
         provider_name: "Steam".into(),
+        installed: true,
+        owned: true,
+        family_shared: false,
         status: MatchStatus::Matched {
             game_id: 1091500,
             source: MatchSource::Chosen,
         },
         cover_file: Some("1091500.jpg".into()),
+        release_year: Some(2020),
+        added_at: 1_700_000_000,
+        is_favorite: false,
     });
 
     let raw_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -179,6 +186,8 @@ fn test_library_input_serialization() {
         LibraryInput::OpenMatch,
         LibraryInput::CloseMatch,
         LibraryInput::ScanRequested,
+        LibraryInput::RequestCatalog,
+        LibraryInput::SetFilters(LibraryFilters::default()),
     ];
 
     for input in &inputs {
@@ -195,6 +204,25 @@ fn test_library_input_serialization() {
         json_val.get("setSearch"),
         Some(&serde_json::json!("cyberpunk"))
     );
+    let filters =
+        serde_json::to_value(LibraryInput::SetFilters(LibraryFilters::default())).unwrap();
+    assert_eq!(
+        filters.get("setFilters"),
+        Some(&serde_json::json!({
+            "availability": { "installed": false, "owned": false, "family": false },
+            "runningOnly": false,
+            "matchState": "any",
+            "playtime": "any",
+            "lastPlayed": "any",
+            "release": "any",
+            "added": "any",
+            "favoritesOnly": false
+        }))
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::RequestCatalog).unwrap(),
+        serde_json::json!("requestCatalog")
+    );
 }
 
 #[test]
@@ -208,4 +236,93 @@ fn sidebar_filter_payloads_from_the_webview_parse() {
         steam,
         LibraryInput::SetFilter(SidebarSelection::Provider("steam".into()))
     );
+}
+
+#[test]
+fn catalog_errors_keep_their_stored_categories() {
+    use gamenode_core::library::{CatalogError, EmptyState, LibraryLayout, SidebarSelection};
+
+    for (error, category) in [
+        (CatalogError::Unreachable, "unreachable"),
+        (CatalogError::RateLimited, "rateLimited"),
+        (CatalogError::Server, "server"),
+        (CatalogError::Expired, "expired"),
+        (CatalogError::Privacy, "privacy"),
+        (CatalogError::Changed, "changed"),
+        (CatalogError::InvalidCookies, "invalidCookies"),
+        (CatalogError::FamilyUnavailable, "familyUnavailable"),
+    ] {
+        assert_eq!(error.to_string(), category);
+        assert_eq!(error.as_str(), category);
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::Value::String(category.to_owned())
+        );
+        assert_eq!(category.parse::<CatalogError>(), Ok(error));
+    }
+    assert_eq!("not-a-category".parse::<CatalogError>(), Err(()));
+
+    let empty = EmptyState::NoInstalled {
+        provider: Some("steam".into()),
+    };
+    assert_eq!(
+        serde_json::to_value(empty).unwrap(),
+        serde_json::json!({ "noInstalled": { "provider": "steam" } })
+    );
+
+    let layout: LibraryLayout =
+        serde_json::from_str(r#"{"filter":{"provider":"steam"},"installedOnly":true}"#).unwrap();
+    assert_eq!(layout.sidebar, SidebarSelection::Provider("steam".into()));
+    assert!(layout.effective_filters().availability.installed);
+    let json = serde_json::to_value(&layout.normalized()).unwrap();
+    assert_eq!(
+        json.get("filter"),
+        Some(&serde_json::json!({ "provider": "steam" }))
+    );
+    assert!(json.get("sidebar").is_none());
+    assert!(json.get("installedOnly").is_none());
+    assert_eq!(
+        json.get("filters").and_then(|f| f.get("availability")),
+        Some(&serde_json::json!({
+            "installed": true,
+            "owned": false,
+            "family": false
+        }))
+    );
+}
+
+#[test]
+fn stored_entries_and_scan_states_saved_before_the_catalog_still_load() {
+    use gamenode_core::library::{ProviderScanState, StoredEntry};
+
+    let entry: StoredEntry = serde_json::from_str(
+        r#"{
+            "key": "steam:620",
+            "provider": "steam",
+            "storeId": "620",
+            "name": "Portal 2",
+            "installDir": "/p",
+            "fields": {},
+            "installed": true,
+            "firstSeen": 1,
+            "lastSeen": 2
+        }"#,
+    )
+    .unwrap();
+    assert!(!entry.owned && !entry.family_shared);
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap().get("owned"),
+        Some(&serde_json::json!(false))
+    );
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap().get("familyShared"),
+        Some(&serde_json::json!(false))
+    );
+
+    let state: ProviderScanState =
+        serde_json::from_str(r#"{"provider":"steam","lastSuccessAt":1,"lastError":null}"#).unwrap();
+    assert_eq!(state.last_catalog_at, None);
+    assert_eq!(state.catalog_error, None);
+    assert_eq!(state.last_family_at, None);
+    assert_eq!(state.family_error, None);
 }

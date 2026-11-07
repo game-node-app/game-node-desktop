@@ -130,9 +130,14 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
       </QueryClientProvider>,
     );
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    // Let the mount-time subscription and getSnapshot settle, cancel any late
+    // fetch, then control the cache from the snapshot events below.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(SNAPSHOT_QUERY_KEY)).toBeDefined(),
+    );
+    await queryClient.cancelQueries({ queryKey: SNAPSHOT_QUERY_KEY });
+    queryClient.setQueryData(SNAPSHOT_QUERY_KEY, createDefaultSnapshot());
+    seen.length = 0;
 
     const signedInSnapshot = createDefaultSnapshot();
     signedInSnapshot.auth = {
@@ -151,8 +156,8 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
     const afterSignIn = seen.at(-1)!;
     const rendersAfterSignIn = seen.length;
 
-    // A local-games-only update leaves every auth field untouched. The query cache
-    // structurally shares unchanged nested objects, so their references stay equal.
+    // A local-games-only update leaves every auth field untouched. The selector
+    // deep-compares the selection, so the same object comes back.
     const unrelated = createDefaultSnapshot();
     unrelated.auth = signedInSnapshot.auth;
     unrelated.localGames = { ...unrelated.localGames, busy: true };

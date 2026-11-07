@@ -50,6 +50,7 @@ if [[ "$source_dir" != "$integration_dir" ]]; then
     done
 fi
 chmod 755 "$integration_dir/libexec/gamenode" "$integration_dir/gamenode.sh" \
+    "$integration_dir/libexec/gamenode-daemon" "$integration_dir/libexec/gamenode-cli" \
     "$integration_dir/install.sh" "$integration_dir/uninstall.sh"
 integration_register
 # Retire the managed flat-layout binary when upgrading an owned installation.

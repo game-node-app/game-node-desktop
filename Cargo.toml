@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/platform", "crates/api", "crates/app"]
+members = ["crates/core", "crates/platform", "crates/api", "crates/plugin-protocol", "crates/plugin-sdk", "crates/plugin-steam", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -38,6 +38,7 @@ unimplemented = "deny"
 gamenode-core = { path = "crates/core" }
 gamenode-platform = { path = "crates/platform" }
 gamenode-api = { path = "crates/api" }
+gamenode-plugin-protocol = { path = "crates/plugin-protocol" }
 
 async-trait = "0.1.92"
 getrandom = "0.4.3"
@@ -49,5 +50,6 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 toml = { version = "1.2.0", default-features = false, features = ["parse", "serde"] }
 tokio = { version = "1.54.1", default-features = false }
+rustix = "1.1.6"
 tracing = "0.1.44"
 url = "2.5.8"

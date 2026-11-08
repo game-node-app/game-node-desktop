@@ -1,0 +1,40 @@
+[package]
+name = "gamenode-plugin-steam"
+description = "Official Steam provider plugin for GameNode Desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+dirs = "7.0.0"
+percent-encoding.workspace = true
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "system-proxy", "charset", "gzip", "deflate", "brotli", "zstd"] }
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+gamenode-plugin-protocol = { path = "../plugin-protocol" }
+gamenode-plugin-sdk = { path = "../plugin-sdk" }
+serde.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+tonic = { version = "0.14", features = ["transport"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+flate2 = "1.1"
+httpmock = "0.9.0"
+tempfile.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry"] }

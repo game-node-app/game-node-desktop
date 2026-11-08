@@ -125,6 +125,12 @@ Present the Linux candidate and results and obtain explicit confirmation before 
 
 Cross-target compilation can establish build evidence; test binaries linked with `--no-run` are not executed tests. No Windows test, VM session or browser is started by this planning change. Final readiness requires both native gates and a Steam-independent ports regression pass.
 
+### 9. Parallelize independent implementation work
+
+Once the mainline branch and shared-file ownership are established, run independent workstreams concurrently where they do not edit the same files or depend on unfinished contracts. For example, protocol/SDK work, Steam-owned implementation and its fixtures, and plugin documentation can proceed in parallel after task 1.1. Host transport, brokers and packaging can proceed as their public interfaces stabilize. Engine composition, GUI adapters and ports-coexistence checks can then proceed in parallel behind those interfaces. Keep one integrator responsible for shared files, API decisions, lockfile/build-script conflicts and combining results. Rebase or integrate each stream before running cross-cutting checks; do not parallelize native Linux/Windows acceptance or declare a task done before its dependencies and verification complete.
+
+Prefer parallel execution for independent modules, platform-independent fixture work and documentation. Serialize edits to shared files such as workspace manifests/lockfile, protocol definitions, `engine/mod.rs`, `main.rs`, provider descriptors, snapshots, UI API exports and generated bundles. Parallelism is an implementation scheduling choice; it does not change task dependencies, evidence requirements, or the Linux-confirmation-before-Windows-acceptance gate.
+
 ## Risks / Trade-offs
 
 - [Donor file replacement overwrites newer ports composition] -> Apply selective edits and inspect the diff against pinned mainline, especially launch, shutdown, snapshots and mock defaults.

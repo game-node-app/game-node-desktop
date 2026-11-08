@@ -22,6 +22,8 @@ pub use protocol::{ACK, MAX_FRAME, Message, NACK, ProtocolError};
 #[cfg(unix)]
 pub use unix::{Endpoint, Existing, Owner, OwnerGuard};
 #[cfg(windows)]
+pub use windows::PrivatePipeListener;
+#[cfg(windows)]
 pub use windows::{Endpoint, Existing, Owner, OwnerGuard};
 
 /// How long a secondary launch waits for an owner that is still starting.

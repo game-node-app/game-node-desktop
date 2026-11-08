@@ -1,0 +1,26 @@
+name: Plugin boundaries
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Validate locked dependency graph
+        run: cargo metadata --format-version 1 --locked > /dev/null
+      - name: Check plugin crate boundaries
+        run: python3 scripts/check-plugin-boundaries.py
+      - name: Test boundary checker fixtures
+        run: python3 -m unittest scripts/tests/test_plugin_boundaries.py
+      - name: Test public plugin crates
+        run: cargo test --locked -p gamenode-plugin-protocol -p gamenode-plugin-sdk -p gamenode-plugin-steam

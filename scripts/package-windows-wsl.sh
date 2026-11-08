@@ -22,6 +22,9 @@ source_files = sorted(str(path) for base in ("crates", "providers", "packaging",
                       and not any(part in path.parts for part in ("__pycache__", "node_modules", "dist", ".turbo")))
 
 binary = package / "gamenode.exe"
+steam_plugin = package / "gamenode-plugin-steam.exe"
+if not binary.is_file() or not steam_plugin.is_file():
+    raise SystemExit("Windows package is incomplete; build both host and Steam plugin before creating the ZIP")
 revision = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -33,6 +36,7 @@ build_manifest = {
     "baseRevision": revision,
     "dirty": dirty,
     "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    "steamPluginSha256": hashlib.sha256(steam_plugin.read_bytes()).hexdigest(),
     "backupAssets": json.loads((package / "backup-assets/build-inputs.json").read_text()),
     "sourceSha256": {
         name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
@@ -43,11 +47,15 @@ build_manifest = {
     json.dumps(build_manifest, indent=2) + "\n", encoding="utf-8"
 )
 files = [package / name for name in (
-    "build-manifest.json", "gamenode.exe", "LICENSE", "README.md",
+    "build-manifest.json", "gamenode.exe", "gamenode-plugin-steam.exe", "LICENSE", "README.md",
     "install.ps1", "uninstall.ps1",
 )]
 if any(not path.is_file() for path in files) or not (package / "licenses").is_dir():
     raise SystemExit("Windows package is incomplete; build it before creating the ZIP")
+subprocess.run(
+    ["python3", "scripts/verify-plugin-package.py", "--platform", "windows", str(package)],
+    check=True,
+)
 archive.parent.mkdir(parents=True, exist_ok=True)
 temporary = archive.with_suffix(".zip.tmp")
 with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as bundle:

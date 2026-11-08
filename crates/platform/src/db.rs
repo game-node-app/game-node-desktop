@@ -1293,6 +1293,187 @@ mod tests {
     }
 
     #[test]
+    fn v6_database_upgrades_through_favorites_to_schema8_without_losing_steam_data() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..6]).unwrap();
+            conn.execute_batch(
+                r#"
+                INSERT INTO settings (key, value) VALUES ('window.width', '1600');
+                INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed,
+                     first_seen, last_seen, owned, family_shared)
+                VALUES ('steam:620', 'steam', '620', 'Portal 2', 'D:/Steam/Portal 2',
+                        '{"state_flags":"4"}', 1, 100, 200, 1, 1);
+                INSERT INTO provider_scans (provider, last_success_at, last_catalog_at)
+                VALUES ('steam', 200, 190);
+                INSERT INTO store_accounts (provider, account_id, account_name, last_verified_at)
+                VALUES ('steam', '76561198000000000', 'Ana', 210);
+                "#,
+            )
+            .unwrap();
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+        assert_eq!(versions(&conn).last(), Some(&(8, "ports".to_owned())));
+        let steam: (String, String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT name, install_dir, installed, owned, family_shared
+                 FROM library_entries WHERE key = 'steam:620'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            steam,
+            ("Portal 2".into(), "D:/Steam/Portal 2".into(), 1, 1, 1)
+        );
+        let account: (String, String, i64) = conn
+            .query_row(
+                "SELECT account_id, account_name, last_verified_at
+                 FROM store_accounts WHERE provider = 'steam'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(account, ("76561198000000000".into(), "Ana".into(), 210));
+        assert_eq!(
+            conn.query_row(
+                "SELECT last_success_at FROM provider_scans WHERE provider='steam'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            200
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM favorites", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "the intervening v7 migration creates the favorites table"
+        );
+        for table in [
+            "port_catalog_snapshot",
+            "port_overlay",
+            "port_install_jobs",
+            "port_installations",
+            "port_preferences",
+        ] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "new ports table {table} starts empty"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_a_populated_schema8_profile_preserves_steam_and_ports_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let store = SqliteSettingsStore::open(&path).unwrap();
+            let conn = store.conn();
+            conn.execute_batch(
+                r#"
+                INSERT INTO settings (key, value) VALUES ('window.width', '1440');
+                INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed,
+                     first_seen, last_seen, owned, family_shared)
+                VALUES ('steam:570', 'steam', '570', 'Dota 2', 'E:/Steam/Dota 2',
+                        '{"state_flags":"5"}', 1, 300, 400, 1, 0);
+                INSERT INTO store_accounts (provider, account_id, account_name, last_verified_at)
+                VALUES ('steam', '76561198000000001', 'Bia', 410);
+                INSERT INTO port_catalog_snapshot (id, payload, fetched_at, entry_count)
+                VALUES (1, '{"apps":["qcat_1"]}', 420, 1);
+                INSERT INTO port_overlay (id, version, etag, payload)
+                VALUES (1, 1, 'etag-v1', 'schema_version = 1');
+                INSERT INTO port_install_jobs
+                    (id, catalog_id, slug, port_name, release_version, state, phase,
+                     install_folder, created_paths, registration_id, result_seen,
+                     plan_json, release_json, created_at, updated_at, finished_at)
+                VALUES ('job-v8', 'qcat_1', 'elden-ring', 'Elden Ring', 'v1', 'completed',
+                        '"completed"', 'E:/Ports/Elden Ring', '["E:/Ports/Elden Ring"]',
+                        'port-reg-1', 1, '{}', '{}', 430, 440, 440);
+                INSERT INTO port_installations
+                    (registration_id, catalog_id, slug, port_name, installed_version,
+                     install_folder, environment_json, job_id)
+                VALUES ('port-reg-1', 'qcat_1', 'elden-ring', 'Elden Ring PC', 'v1',
+                        'E:/Ports/Elden Ring', '{"ROLE":"gameplay"}', 'job-v8');
+                INSERT INTO port_preferences (id, view_mode, filters_json, install_parent)
+                VALUES (1, 'list', '{"installed":true}', 'E:/Ports');
+                "#,
+            )
+            .unwrap();
+            assert_eq!(versions(&conn).last(), Some(&(8, "ports".to_owned())));
+        }
+
+        let reopened = SqliteSettingsStore::open(&path).unwrap();
+        let conn = reopened.conn();
+        assert_eq!(versions(&conn).last(), Some(&(8, "ports".to_owned())));
+        assert_eq!(
+            conn.query_row(
+                "SELECT name FROM library_entries WHERE key='steam:570'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "Dota 2"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT account_name FROM store_accounts WHERE provider='steam'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "Bia"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT payload FROM port_catalog_snapshot WHERE id=1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "{\"apps\":[\"qcat_1\"]}"
+        );
+        assert_eq!(
+            conn.query_row("SELECT payload FROM port_overlay WHERE id=1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "schema_version = 1"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT created_paths FROM port_install_jobs WHERE id='job-v8'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "[\"E:/Ports/Elden Ring\"]"
+        );
+        assert_eq!(
+            conn.query_row("SELECT environment_json FROM port_installations WHERE registration_id='port-reg-1'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "{\"ROLE\":\"gameplay\"}"
+        );
+        let preferences: (String, String) = conn
+            .query_row(
+                "SELECT view_mode, install_parent FROM port_preferences WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preferences, ("list".into(), "E:/Ports".into()));
+    }
+
+    #[test]
     fn database_never_holds_credentials_or_callback_urls() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();

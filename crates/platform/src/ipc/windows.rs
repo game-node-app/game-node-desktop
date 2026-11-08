@@ -156,6 +156,52 @@ fn current_user_sid() -> std::io::Result<String> {
     }
 }
 
+/// A separate authenticated-service transport using the same user/SYSTEM DACL
+/// as single-instance IPC. Each accepted connection receives a fresh instance.
+pub struct PrivatePipeListener {
+    server: NamedPipeServer,
+    path: String,
+    sddl: String,
+}
+
+impl PrivatePipeListener {
+    /// Call with the Tokio reactor entered. The supplied instance suffix is
+    /// host-generated, never an arbitrary path from a plugin.
+    pub fn bind(instance: &str) -> std::io::Result<Self> {
+        if instance.is_empty()
+            || instance.len() > 96
+            || !instance
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid pipe instance",
+            ));
+        }
+        let sid = current_user_sid()?;
+        let endpoint = Endpoint::build(format!("gamenode-plugins-{sid}-{instance}"), &sid);
+        let server = create_instance(&endpoint.path, &endpoint.sddl, true)?;
+        Ok(Self {
+            server,
+            path: endpoint.path,
+            sddl: endpoint.sddl,
+        })
+    }
+
+    pub fn pipe_path(&self) -> &str {
+        &self.path
+    }
+
+    pub async fn accept(&mut self) -> std::io::Result<NamedPipeServer> {
+        self.server.connect().await?;
+        // Keep ownership continuously: create the next listening instance
+        // before the accepted instance can be dropped by its connection owner.
+        let next = create_instance(&self.path, &self.sddl, false)?;
+        Ok(std::mem::replace(&mut self.server, next))
+    }
+}
+
 pub struct Owner {
     server: NamedPipeServer,
     endpoint: Endpoint,
@@ -273,5 +319,29 @@ impl Existing {
             .await
             .map_err(|_| IpcError::Unreachable)?
         })
+    }
+}
+
+#[cfg(test)]
+mod plugin_pipe_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn private_listener_owns_the_name_and_accepts_repeated_connections() {
+        let name = format!("test-{}", std::process::id());
+        let mut listener = PrivatePipeListener::bind(&name).unwrap();
+        assert!(listener.path.contains(&current_user_sid().unwrap()));
+        assert!(PrivatePipeListener::bind(&name).is_err());
+        for _ in 0..2 {
+            let mut client = ClientOptions::new().open(listener.pipe_path()).unwrap();
+            let mut accepted = listener.accept().await.unwrap();
+            client.write_all(b"test").await.unwrap();
+            let mut data = [0; 4];
+            accepted.read_exact(&mut data).await.unwrap();
+            assert_eq!(&data, b"test");
+        }
+        assert!(PrivatePipeListener::bind(&name).is_err());
+        drop(listener);
+        assert!(PrivatePipeListener::bind(&name).is_ok());
     }
 }

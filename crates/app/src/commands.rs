@@ -341,35 +341,35 @@ pub async fn remove_entry(
 /// Opens Steam's isolated sign-in window and waits for the attempt to end.
 #[tauri::command]
 pub async fn steam_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.steam_sign_in().await;
+    engine.provider_sign_in("steam").await;
     Ok(())
 }
 
 /// Brings the open Steam sign-in window to the front.
 #[tauri::command]
 pub async fn steam_focus_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.steam_focus_sign_in().await;
+    engine.provider_focus_sign_in("steam").await;
     Ok(())
 }
 
 /// Cancels the open Steam sign-in window without saving a credential.
 #[tauri::command]
 pub async fn steam_cancel_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.steam_cancel_sign_in().await;
+    engine.provider_cancel_sign_in("steam").await;
     Ok(())
 }
 
 /// Signs out of Steam, keeping installed games, matches and covers.
 #[tauri::command]
 pub async fn steam_sign_out(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.steam_sign_out().await;
+    engine.provider_sign_out("steam").await;
     Ok(())
 }
 
 /// Validates the Steam session and, with an open library, refreshes the catalog.
 #[tauri::command]
 pub async fn steam_check(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.steam_check().await;
+    engine.provider_check("steam").await;
     Ok(())
 }
 

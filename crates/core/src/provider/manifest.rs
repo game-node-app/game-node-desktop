@@ -59,14 +59,20 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct ScanSpec {
     /// Name of a scanner built into the application.
+    #[serde(default)]
     pub native: String,
+    #[serde(default)]
+    pub plugin: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogSpec {
     /// Name of a catalog backend built into the application.
+    #[serde(default)]
     pub native: String,
+    #[serde(default)]
+    pub plugin: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -113,5 +119,8 @@ pub struct RootSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaytimeSpec {
+    #[serde(default)]
     pub counter: String,
+    #[serde(default)]
+    pub plugin: Option<String>,
 }

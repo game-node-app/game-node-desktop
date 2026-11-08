@@ -1,0 +1,19 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"/home/me/.local/share/Steam"
+		"label"		""
+		"apps"
+		{
+			"620"		"12345678"
+		}
+	}
+	"1"
+	{
+		"path"		"/mnt/games/SteamLibrary"
+		"apps"
+		{
+		}
+	}
+}

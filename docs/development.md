@@ -6,7 +6,10 @@ by developers and AI agents.
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
 rustfmt and Clippy. Install Rust using rustup, then let rustup install the toolchain
 when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has
-exactly four packages: core, platform, api and app. Core has no Tauri or OS adapter dependency.
+seven packages: Core, platform, API, app, the public plugin protocol, the public
+plugin SDK and the Steam plugin. Core has no Tauri or OS adapter dependency.
+Protobuf generation uses the build-host compiler selected from the pinned
+vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Linux (Ubuntu/Debian, native x86-64)
@@ -200,18 +203,27 @@ grid/list view and filters all round-trip through the mock host. Reload to reset
 
 ### Running the native app
 
-The Tauri host embeds the built UI (`ui/dist`) through the default `custom-protocol` cargo
-feature, so build the frontend first and run the host:
+The Tauri host embeds the built UI (`ui/dist`) through the default `custom-protocol`
+Cargo feature. The desktop resolves the bundled Steam provider beside its own
+executable and never searches `PATH`; the development launcher builds both into
+the same Cargo profile before starting the app:
 
 ```sh
 pnpm --dir ui build
-cargo run -p gamenode-app
+scripts/run-desktop.sh
 ```
 
 Without that feature Tauri treats the build as a dev build and loads `devUrl`
 (`http://localhost:4777`), which shows a blank "Operation was cancelled" window when no Vite
 server is running. For native HMR, start `pnpm --dir ui dev` and run
-`cargo run -p gamenode-app --no-default-features`.
+`scripts/run-desktop.sh --no-default-features`. Pass Cargo flags before `--`
+and application arguments after it; for example,
+`scripts/run-desktop.sh --release -- --background`. On native Windows PowerShell use
+`scripts/run-desktop.ps1`; pass flags with `-CargoArguments @('--release')`
+and app arguments with `-AppArguments @('--background')`. Both launchers check
+that `gamenode-plugin-steam` is present beside the desktop before running it.
+Plain `cargo run -p gamenode-app` builds only the host and may leave the Steam
+plugin missing or stale.
 
 ### Application logs
 
@@ -227,7 +239,7 @@ One file per UTC day (`gamenode.YYYY-MM-DD.log`); the newest ten are kept. The d
 worker thread. Set `GAMENODE_LOG` (or `RUST_LOG`) to change it for a run, for example:
 
 ```sh
-GAMENODE_LOG="debug,gamenode_api=trace" cargo run -p gamenode-app
+GAMENODE_LOG="debug,gamenode_api=trace" scripts/run-desktop.sh
 ```
 
 Settings → About shows the current path and offers **Show recent log** (with a copy button) and
@@ -331,9 +343,9 @@ process), then run from WSL:
 scripts/dev-windows-wsl.sh
 ```
 
-The launcher builds the Windows development executable under
-`target/windows-hmr`, prepares its backup assets, starts a local Vite server,
-and opens the Windows app. It forces the real Tauri bridge rather than the UI
+The launcher builds the Windows desktop and Steam plugin under
+`target/windows-hmr`, verifies the plugin sits beside the host, prepares its
+backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes
 made during testing affect that data and account. If sign-in is needed, the

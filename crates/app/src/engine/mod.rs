@@ -22,7 +22,8 @@ use gamenode_core::ports::{
     UriOpener,
 };
 use gamenode_core::provider::Platform;
-use gamenode_core::snapshot::{StoreAccountState, StoreAccountView};
+use gamenode_core::snapshot::StoreAccountView;
+#[cfg(test)]
 use gamenode_core::steam::SteamWebApi;
 use gamenode_core::{
     AuthMachine, Effect, Input, SessionCredential, Settings, SignInFailure, Snapshot,
@@ -34,15 +35,18 @@ mod artwork;
 mod drm_free;
 pub mod pc_ports;
 mod playtime;
+mod providers;
+#[cfg(test)]
 pub mod steam_account;
+#[cfg(test)]
 pub mod steam_login;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
 
-use steam_account::{
-    Clock, SteamAccount, SteamAccountPorts, SteamAccountState, SteamSignInResult, StoreAccountStore,
-};
+#[cfg(test)]
+use steam_account::{Clock, SteamAccountPorts, StoreAccountStore};
+#[cfg(test)]
 use steam_login::SteamLoginWindow;
 
 /// Longest the app waits for the server to confirm a sign-out.
@@ -72,7 +76,9 @@ pub struct Ports {
     pub files: Arc<dyn HostFiles>,
     pub roots: Arc<dyn RootResolver>,
     pub uri: Arc<dyn UriOpener>,
-    /// The Steam store-account adapters; `None` in tests that do not exercise Steam.
+    /// Test-only adapter used by legacy Engine regression fixtures. Production Steam access is
+    /// provided by `ProviderRuntime` and never links the in-process Steam implementation.
+    #[cfg(test)]
     pub steam: Option<SteamPorts>,
     /// The PC ports service; `None` on builds without port installs and in tests that do not
     /// exercise PC ports.
@@ -88,6 +94,7 @@ pub struct Ports {
 
 /// The Steam store-account adapters: a credential slot separate from the GameNode session, the
 /// non-secret account row, the web client and the isolated sign-in window.
+#[cfg(test)]
 #[derive(Clone)]
 pub struct SteamPorts {
     pub credentials: Arc<dyn CredentialStore>,
@@ -97,6 +104,7 @@ pub struct SteamPorts {
     pub clock: Arc<dyn Clock>,
 }
 
+#[cfg(test)]
 impl SteamPorts {
     fn into_account_ports(self) -> SteamAccountPorts {
         SteamAccountPorts {
@@ -172,7 +180,7 @@ struct State {
     /// A catalog was requested while the library could not start one yet.
     catalog_request_pending: bool,
     /// A catalog clear is waiting for a cache load to finish so it cannot be undone.
-    catalog_clear_pending: bool,
+    catalog_clear_pending: std::collections::BTreeSet<String>,
     /// Whether the library is installing its cache after an account change.
     library_loading: bool,
     /// The selection the last snapshot showed, to notice when it changes.
@@ -190,8 +198,7 @@ struct Shared {
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
-    /// The Steam account service when this build has Steam adapters.
-    steam: Option<Arc<SteamAccount>>,
+    providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
     /// A cover completion is waiting for the coalescing flush task to publish it.
@@ -227,10 +234,8 @@ impl Engine {
         nonce: NonceSource,
         publish: impl Fn(Snapshot) + Send + Sync + 'static,
     ) -> Self {
-        let steam = ports
-            .steam
-            .clone()
-            .map(|steam| Arc::new(SteamAccount::without_observer(steam.into_account_ports())));
+        #[cfg(test)]
+        let test_runtime = Arc::new(tests::provider_runtime::Runtime::new(&ports));
         let shared = Arc::new(Shared {
             local_catalog: Arc::new(tokio::sync::Semaphore::new(4)),
             local_cancel: std::sync::atomic::AtomicBool::new(false),
@@ -257,7 +262,7 @@ impl Engine {
                 launch: None,
                 launch_seq: 0,
                 catalog_request_pending: false,
-                catalog_clear_pending: false,
+                catalog_clear_pending: Default::default(),
                 library_loading: false,
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
@@ -265,22 +270,12 @@ impl Engine {
             ports,
             runtime,
             storage: StorageWorker::new(),
-            steam: steam.clone(),
+            providers: Mutex::new(None),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
             cover_flush_pending: AtomicBool::new(false),
             cover_flush_scheduled: AtomicBool::new(false),
             publish: Box::new(publish),
         });
-        // The service publishes every transition; a weak reference keeps the engine droppable
-        // and avoids an `Arc` cycle between the observer and `Shared`.
-        if let Some(steam) = &steam {
-            let weak = Arc::downgrade(&shared);
-            steam.set_observer(move |_| {
-                if let Some(shared) = weak.upgrade() {
-                    Engine { shared }.publish_current();
-                }
-            });
-        }
         if let Some(service) = &shared.ports.pc_ports {
             let weak = Arc::downgrade(&shared);
             service.set_observer(Arc::new(move |event| {
@@ -289,7 +284,10 @@ impl Engine {
                 }
             }));
         }
-        Self { shared }
+        let engine = Self { shared };
+        #[cfg(test)]
+        engine.set_provider_runtime(test_runtime);
+        engine
     }
 
     /// Handles one PC ports worker event. A changed projection is stored and published once;
@@ -315,7 +313,7 @@ impl Engine {
         }
     }
 
-    /// Publishes the current state without holding any adapter lock. Used by the Steam status
+    /// Publishes the current state without holding any adapter lock. Used by the provider status
     /// observer, which runs from whichever background thread changed the account.
     fn publish_current(&self) {
         let mut state = self.lock();
@@ -389,52 +387,13 @@ impl Engine {
         snapshot
     }
 
-    /// The Steam card state, with the library's live counts. Counts are zero while no GameNode
+    /// Provider account states, with the library's live counts. Counts are zero while no GameNode
     /// account's library is open; the card itself still renders.
     fn store_accounts(
         &self,
         library: Option<&gamenode_core::library::LibraryView>,
     ) -> Vec<StoreAccountView> {
-        let Some(steam) = &self.shared.steam else {
-            return Vec::new();
-        };
-        let status = steam.status();
-        let count = library.and_then(|view| {
-            view.providers
-                .iter()
-                .find(|count| count.id == steam_account::PROVIDER)
-        });
-        let account_id = status.account_id.clone();
-        let account_name = status.account_name.clone();
-        Vec::from([StoreAccountView {
-            provider: steam_account::PROVIDER.to_owned(),
-            state: match status.state {
-                SteamAccountState::NotConnected => StoreAccountState::NotConnected,
-                SteamAccountState::Checking => StoreAccountState::Checking,
-                SteamAccountState::SigningIn => StoreAccountState::SigningIn,
-                SteamAccountState::Connected => StoreAccountState::Connected,
-                SteamAccountState::Expired => StoreAccountState::Expired,
-                SteamAccountState::Unreachable => StoreAccountState::Unreachable,
-                SteamAccountState::CredentialError => StoreAccountState::CredentialError,
-            },
-            account_id,
-            account_name,
-            owned_count: count.map_or(0, |count| count.owned_count),
-            family_count: count.map_or(0, |count| count.family_count),
-            installed_count: count.map_or(0, |count| count.installed_count),
-            last_checked_at: status.last_checked_at,
-            last_synced_at: status.last_synced_at,
-            storage: Some(status.storage),
-            persist_failed: status.persist_failed,
-            catalog_error: status.catalog_error,
-            family_error: status.family_error,
-            can_sign_in: status.can_sign_in(),
-            can_cancel_sign_in: status.can_cancel_sign_in(),
-            can_focus_sign_in: status.can_focus_sign_in(),
-            can_sign_out: status.can_sign_out(),
-            can_check: status.can_check(),
-            can_remove_credential: status.can_remove_credential(),
-        }])
+        self.provider_account_views(library)
     }
 
     fn publish(&self, state: &mut State) {
@@ -445,6 +404,7 @@ impl Engine {
     /// validates it. The account is read first so the cached library can open while the session
     /// is still being verified.
     pub fn start(&self) {
+        self.start_providers();
         self.recover_local_jobs();
         self.refresh_local_games();
         self.start_local_discovery();
@@ -462,100 +422,33 @@ impl Engine {
             engine.lock().last_account = account;
             engine.dispatch(Input::Start);
         });
-        // Steam starts on its own, off the UI thread: restore the credential and account row,
-        // then validate the session. A catalog sync is requested by the library's scan or by the
-        // account commands, so this never blocks the library.
-        if let Some(steam) = self.shared.steam.clone() {
-            let engine = self.clone();
-            self.shared.runtime.spawn(async move {
-                steam.startup().await;
-                let outcome = steam.check().await;
-                if outcome.superseded {
-                    return;
-                }
-                if outcome.account_changed {
-                    engine.clear_store_catalog(steam_account::PROVIDER);
-                    if outcome.status.state == SteamAccountState::Connected {
-                        // Queue even while the library is still loading; a request made before
-                        // the cache is ready is applied once it is, instead of being lost.
-                        engine.request_catalog();
-                    }
-                }
-            });
-        }
     }
 
-    /// Starts the isolated Steam sign-in window. The command returns when the attempt ends; the
-    /// window and every request run off the UI thread.
+    /// Test-only compatibility wrappers preserve the Steam regression suite while production
+    /// commands use the provider-neutral operations below.
+    #[cfg(test)]
     pub async fn steam_sign_in(&self) {
-        let Some(steam) = self.shared.steam.clone() else {
-            return;
-        };
-        let outcome = steam.sign_in().await;
-        // The result is authoritative: a concurrent startup check can move the live state to
-        // Checking before the outcome is built, even though this attempt did connect. Using the
-        // live status here would skip the first catalog import for that account.
-        if outcome.result != SteamSignInResult::Connected {
-            return;
-        }
-        if outcome.account_changed {
-            self.clear_store_catalog(steam_account::PROVIDER);
-        }
-        // Queue the import even if the library is still opening: library_input applies the
-        // pending request after the cache loads, so a fast sign-in cannot lose its first sync.
-        self.request_catalog();
+        self.provider_sign_in("steam").await;
     }
 
-    /// Focuses the open Steam sign-in window. No window is a no-op.
+    #[cfg(test)]
     pub async fn steam_focus_sign_in(&self) {
-        if let Some(steam) = self.shared.steam.clone() {
-            let _ = tokio::task::spawn_blocking(move || {
-                steam.focus_sign_in();
-            })
-            .await;
-        }
+        self.provider_focus_sign_in("steam").await;
     }
 
-    /// Cancels the open Steam sign-in window and returns to the state before the attempt.
+    #[cfg(test)]
     pub async fn steam_cancel_sign_in(&self) {
-        if let Some(steam) = self.shared.steam.clone() {
-            let _ = tokio::task::spawn_blocking(move || {
-                steam.cancel_sign_in();
-            })
-            .await;
-        }
+        self.provider_cancel_sign_in("steam").await;
     }
 
-    /// Signs out of Steam: the credential and the account row are removed and the owned and
-    /// family facts leave the library. Installed entries, matches and covers stay.
+    #[cfg(test)]
     pub async fn steam_sign_out(&self) {
-        let Some(steam) = self.shared.steam.clone() else {
-            return;
-        };
-        let outcome = steam.sign_out().await;
-        if outcome.signed_out {
-            self.clear_store_catalog(steam_account::PROVIDER);
-        }
+        self.provider_sign_out("steam").await;
     }
 
-    /// Validates the session ("Sync now", "Try again", "Retry"). With an open library this
-    /// requests a catalog sync, which validates before fetching; without one it only checks the
-    /// card state. Never blocks the caller on the network.
+    #[cfg(test)]
     pub async fn steam_check(&self) {
-        let Some(steam) = self.shared.steam.clone() else {
-            return;
-        };
-        if self.library_is_active() {
-            self.request_catalog();
-            return;
-        }
-        let outcome = steam.check().await;
-        if outcome.superseded {
-            return;
-        }
-        if outcome.account_changed {
-            self.clear_store_catalog(steam_account::PROVIDER);
-        }
+        self.provider_check("steam").await;
     }
 
     fn library_is_active(&self) -> bool {
@@ -577,10 +470,15 @@ impl Engine {
     fn clear_store_catalog(&self, provider: &str) {
         let stored = provider.to_owned();
         self.persist(move |store| store.clear_catalog(&stored));
+        self.clear_store_catalog_memory(provider);
+    }
+
+    /// Applies a catalog clear already persisted by a provider-owned account operation.
+    fn clear_store_catalog_memory(&self, provider: &str) {
         let mut state = self.lock();
         state.catalog_request_pending = false;
         if state.library_loading {
-            state.catalog_clear_pending = true;
+            state.catalog_clear_pending.insert(provider.to_owned());
         } else {
             self.run_library(
                 &mut state,
@@ -599,8 +497,11 @@ impl Engine {
     /// Runs at most one catalog sync per provider. A request that arrives while one runs is
     /// remembered and starts one more afterwards, so the newest core op is the one reported.
     fn sync_catalog(&self, op: u64, provider: String) {
-        if self.shared.steam.is_none() || provider != steam_account::PROVIDER {
-            // Complete the core op even without a Steam adapter: nothing was attempted.
+        if !self
+            .provider_runtime()
+            .is_some_and(|runtime| runtime.has_provider(&provider))
+        {
+            // Complete the core op even without a registered runtime: nothing was attempted.
             self.later(LibInput::CatalogSynced {
                 op,
                 provider,
@@ -657,80 +558,7 @@ impl Engine {
     }
 
     async fn run_catalog_sync(&self, provider: &str, op: u64) {
-        let Some(steam) = self.shared.steam.clone() else {
-            return;
-        };
-        let mut outcome = steam.sync().await;
-        if outcome.superseded {
-            // The sync may have joined a check that a concurrent sign-in superseded. A sign-in
-            // requests the catalog after validation, but that request can arrive while the
-            // library is still loading, so retry here while the account is genuinely connected.
-            // A sign-out leaves NotConnected and is never retried.
-            if steam.status().state == SteamAccountState::Connected {
-                outcome = steam.sync().await;
-            }
-            if outcome.superseded {
-                self.library_input(LibInput::CatalogSynced {
-                    op,
-                    provider: provider.to_owned(),
-                    owned: None,
-                    family: None,
-                    now: unix_now(),
-                });
-                return;
-            }
-        }
-        if outcome.account_changed {
-            // The previous account's games must never stay visible as owned. The new account's
-            // catalog is requested afterwards, so a failed fetch still leaves no old facts.
-            self.clear_store_catalog(provider);
-            if outcome.status.state == SteamAccountState::Connected {
-                self.request_catalog();
-            }
-            return;
-        }
-        // A sync that joined an in-flight check has no catalog; retry once now that the check is
-        // done. A second None means another operation was running, so complete the op anyway.
-        if outcome.owned.is_none()
-            && outcome.family.is_none()
-            && outcome.status.state == SteamAccountState::Connected
-        {
-            outcome = steam.sync().await;
-            if outcome.superseded {
-                self.library_input(LibInput::CatalogSynced {
-                    op,
-                    provider: provider.to_owned(),
-                    owned: None,
-                    family: None,
-                    now: unix_now(),
-                });
-                return;
-            }
-            if outcome.account_changed {
-                self.clear_store_catalog(provider);
-                if outcome.status.state == SteamAccountState::Connected {
-                    self.request_catalog();
-                }
-                return;
-            }
-        }
-        if outcome.owned.is_some() || outcome.family.is_some() {
-            self.persist_catalog(
-                provider.to_owned(),
-                CatalogUpdate {
-                    owned: outcome.owned.clone(),
-                    family: outcome.family.clone(),
-                    now: outcome.now,
-                },
-            );
-        }
-        self.library_input(LibInput::CatalogSynced {
-            op,
-            provider: provider.to_owned(),
-            owned: outcome.owned,
-            family: outcome.family,
-            now: outcome.now,
-        });
+        self.sync_provider_catalog(op, provider.to_owned()).await;
     }
 
     /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
@@ -804,14 +632,11 @@ impl Engine {
             // Cached ownership facts were just installed. A clear requested while loading lands
             // now, and the dropped scan op is replaced by a fresh catalog request.
             state.library_loading = false;
-            if state.catalog_clear_pending {
-                state.catalog_clear_pending = false;
-                self.run_library(
-                    &mut state,
-                    LibInput::CatalogCleared {
-                        provider: steam_account::PROVIDER.to_owned(),
-                    },
-                );
+            if !state.catalog_clear_pending.is_empty() {
+                let providers = std::mem::take(&mut state.catalog_clear_pending);
+                for provider in providers {
+                    self.run_library(&mut state, LibInput::CatalogCleared { provider });
+                }
                 state.catalog_request_pending = true;
             }
         }
@@ -1145,6 +970,22 @@ impl Engine {
                     });
                     return;
                 };
+                if found.discovery_plugin().is_some() {
+                    if let Some(runtime) = self
+                        .provider_runtime()
+                        .filter(|runtime| runtime.has_provider(&provider))
+                    {
+                        self.scan_provider(runtime, found, op, provider);
+                    } else {
+                        self.later(LibInput::ProviderScanned {
+                            op,
+                            provider,
+                            result: Err("provider plugin is unavailable".to_owned()),
+                            now: unix_now(),
+                        });
+                    }
+                    return;
+                }
                 let (engine, files, roots, platform) = (
                     self.clone(),
                     ports.files.clone(),

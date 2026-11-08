@@ -476,23 +476,37 @@ impl Engine {
         let providers = state.library.providers().to_vec();
         let engine = self.clone();
         let ports = self.shared.ports.clone();
-        self.shared.runtime.spawn_blocking(move || {
+        self.shared.runtime.spawn(async move {
             let mut values = Vec::new();
             for provider in providers {
-                let Some(counter) = provider
-                    .manifest()
-                    .playtime
-                    .as_ref()
-                    .and_then(|p| gamenode_core::provider::registry::counter(&p.counter))
+                if provider.counter_plugin().is_none() {
+                    continue;
+                }
+                let Some(runtime) = engine.provider_runtime() else {
+                    continue;
+                };
+                if !runtime.has_provider(provider.id()) {
+                    continue;
+                }
+                let Ok(completion) = runtime
+                    .execute(
+                        provider.id(),
+                        gamenode_plugin_protocol::proto::ProviderOperation::ReadCounter,
+                    )
+                    .await
                 else {
                     continue;
                 };
-                let roots = provider.resolve_roots(ports.platform, &*ports.roots);
-                for (id, value) in counter(&gamenode_core::provider::registry::ScanInput {
-                    files: &*ports.files,
-                    roots: &roots,
-                }) {
-                    values.push((format!("{}:{id}", provider.id()), value));
+                if let Ok(counters) = completion.commit(|result, _| result.counters).await {
+                    values.extend(counters.into_iter().map(|value| {
+                        (
+                            format!("{}:{}", provider.id(), value.id),
+                            gamenode_core::provider::registry::CounterValue {
+                                seconds: value.seconds,
+                                last_played: value.last_played,
+                            },
+                        )
+                    }));
                 }
             }
             let mut state = engine.lock();

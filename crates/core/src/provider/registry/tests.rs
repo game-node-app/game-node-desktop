@@ -3,16 +3,106 @@ use crate::provider::memory::{FixedRoots, MemoryFiles};
 
 pub(crate) const STEAM_MANIFEST: &str = include_str!("../../../../../providers/steam.toml");
 
+// The application supplies this registry from trusted distribution metadata.
+pub(crate) fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProviders {
+    super::load_with_plugins(
+        sources,
+        platform,
+        &[PluginBackend {
+            plugin_id: "org.gamenode.plugin.steam-discovery".into(),
+            provider_id: "steam".into(),
+            discovery: true,
+            catalog: true,
+            counter: true,
+            actions: true,
+        }],
+    )
+}
+
 const MINIMAL: &str = r#"
 id = "{id}"
 name = "Test"
 platforms = ["windows", "linux"]
 source = "test"
-scan = { native = "steam" }
+scan = { native = "manual" }
 "#;
 
 fn minimal(id: &str) -> String {
     MINIMAL.replace("{id}", id)
+}
+
+#[test]
+fn plugin_backends_are_provider_scoped_and_do_not_run_native_fallbacks() {
+    let text = r#"
+id = "example"
+name = "Example store"
+platforms = ["windows", "linux"]
+source = "example"
+scan = { plugin = "org.example.provider" }
+catalog = { plugin = "org.example.provider" }
+playtime = { plugin = "org.example.provider" }
+launch = { uri = "example://run/{id}" }
+"#;
+    let approved = PluginBackend {
+        plugin_id: "org.example.provider".into(),
+        provider_id: "example".into(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text)],
+        Platform::Windows,
+        std::slice::from_ref(&approved),
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let provider = loaded.get("example").unwrap();
+    assert_eq!(provider.discovery_plugin(), Some("org.example.provider"));
+    assert_eq!(provider.counter_plugin(), Some("org.example.provider"));
+    assert_eq!(provider.catalog_backend(), Some("org.example.provider"));
+    assert!(
+        provider
+            .scan(
+                Platform::Windows,
+                &MemoryFiles::new(),
+                &FixedRoots::with_home("C:\\Users\\test")
+            )
+            .is_err()
+    );
+    for denied in [
+        PluginBackend {
+            provider_id: "other".into(),
+            ..approved.clone()
+        },
+        PluginBackend {
+            catalog: false,
+            ..approved.clone()
+        },
+        PluginBackend {
+            counter: false,
+            ..approved.clone()
+        },
+        PluginBackend {
+            actions: false,
+            ..approved.clone()
+        },
+    ] {
+        let loaded = load_with_plugins(&[("example.toml", text)], Platform::Windows, &[denied]);
+        assert!(loaded.providers.is_empty());
+        assert_eq!(loaded.diagnostics.len(), 1);
+    }
+    assert!(
+        load(&[("example.toml", text)], Platform::Windows)
+            .providers
+            .is_empty()
+    );
+    let mixed = text.replace("scan = { plugin", "scan = { native = \"manual\", plugin");
+    assert!(
+        load_with_plugins(&[("mixed.toml", &mixed)], Platform::Windows, &[approved])
+            .providers
+            .is_empty()
+    );
 }
 
 #[test]
@@ -25,7 +115,10 @@ fn loads_the_bundled_steam_manifest() {
     assert_eq!(steam.external_category(), Some(1));
     assert!(steam.has_launch() && steam.has_install());
     assert!(steam.has_catalog());
-    assert_eq!(steam.catalog_backend(), Some("steam"));
+    assert_eq!(
+        steam.catalog_backend(),
+        Some("org.gamenode.plugin.steam-discovery")
+    );
     assert!(steam.manifest().exclude_ids.contains(&"228980".to_owned()));
     assert_eq!(steam.manifest().roots.windows.len(), 1);
     assert_eq!(steam.manifest().roots.linux.len(), 3);
@@ -92,7 +185,7 @@ fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
         ),
         (
             "unknown scanner",
-            minimal("bad").replace("native = \"steam\"", "native = \"nope\""),
+            minimal("bad").replace("native = \"manual\"", "native = \"nope\""),
             "unknown native scanner `nope`",
         ),
         (
@@ -183,7 +276,7 @@ fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
 
 #[test]
 fn diagnostics_name_the_provider_when_it_can_be_read() {
-    let text = minimal("shop").replace("native = \"steam\"", "native = \"nope\"");
+    let text = minimal("shop").replace("native = \"manual\"", "native = \"nope\"");
     let loaded = load(&[("shop.toml", text.as_str())], Platform::Linux);
     assert_eq!(loaded.diagnostics[0].provider.as_deref(), Some("shop"));
     let shown = loaded.diagnostics[0].to_string();
@@ -241,12 +334,12 @@ fn actions_use_the_manifest_templates() {
 
 #[test]
 fn a_known_catalog_backend_is_accepted_and_exposed() {
-    let manifest = format!("{}\ncatalog = {{ native = \"steam\" }}", minimal("shop"));
-    let loaded = load(&[("shop.toml", manifest.as_str())], Platform::Linux);
+    let loaded = load(&[("steam.toml", STEAM_MANIFEST)], Platform::Linux);
     assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
-    let shop = loaded.get("shop").unwrap();
-    assert!(shop.has_catalog());
-    assert_eq!(shop.catalog_backend(), Some("steam"));
+    assert_eq!(
+        loaded.get("steam").unwrap().catalog_backend(),
+        Some("org.gamenode.plugin.steam-discovery")
+    );
 }
 
 #[test]
@@ -256,7 +349,7 @@ fn a_missing_install_scans_to_nothing() {
     let shop = loaded.get("shop").unwrap();
     let files = MemoryFiles::new();
     let roots = FixedRoots::with_home("/home/me");
-    // No Steam installed: an empty scan, not an error.
+    // An empty native/manual scanner succeeds without fabricated observations.
     assert_eq!(shop.scan(Platform::Linux, &files, &roots), Ok(vec![]));
 }
 

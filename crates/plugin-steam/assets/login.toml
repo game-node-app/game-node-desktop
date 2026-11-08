@@ -1,0 +1,29 @@
+# Trusted Steam login data, consumed through the generic host broker.
+start_url = "https://store.steampowered.com/explore/"
+cookie_url = "https://store.steampowered.com/"
+probe_origin = "https://store.steampowered.com"
+title = "Steam"
+allowed_hosts = ["steampowered.com", "steamcommunity.com", "steamstatic.com"]
+cookie_names = ["steamLoginSecure", "sessionid"]
+width = 600
+height = 760
+timeout_seconds = 600
+probe_script = '''
+(() => {
+  if (window.location.origin !== 'https://store.steampowered.com') return null;
+  const config = document.getElementById('application_config');
+  if (!config) return null;
+  try {
+    const user = JSON.parse(config.getAttribute('data-userinfo') || 'null');
+    const store = JSON.parse(config.getAttribute('data-store_user_config') || 'null');
+    if (!user || user.logged_in !== true || !user.steamid || !store || !store.webapi_token) return null;
+    return {
+      steam_id: String(user.steamid),
+      account_name: user.account_name || null,
+      token: String(store.webapi_token)
+    };
+  } catch (_) {
+    return null;
+  }
+})()
+'''

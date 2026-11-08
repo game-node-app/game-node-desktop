@@ -1,6 +1,7 @@
 import type { TranslationCatalog } from "./en";
 
 export const ptBR: TranslationCatalog = {
+  'providers.packagekit': 'Gerenciador de pacotes Linux',
   "app.activeRendererSkia": "Renderizador ativo: Skia",
   "AppWindow::Active renderer: Skia": "Renderizador ativo: Skia",
   "Active renderer: Skia": "Renderizador ativo: Skia",

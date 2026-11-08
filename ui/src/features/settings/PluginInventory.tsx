@@ -1,3 +1,4 @@
+import { providerLabel } from '../../i18n/providerLabel';
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { commands, type PluginInfo } from '../../api';
@@ -59,7 +60,7 @@ export const PluginInventory: React.FC = () => {
                 className={`flex w-full flex-col items-start gap-1 rounded-sm border px-sm py-compact text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${selectedPlugin?.pluginId === plugin.pluginId ? 'border-brand bg-accent-subtle' : 'border-border-subtle bg-raised hover:bg-[#2e2e2e]'}`}
                 onClick={() => setSelectedPluginId(plugin.pluginId)}
               >
-                <span className={settingsRowTitle}>{plugin.name}</span>
+                <span className={settingsRowTitle}>{providerLabel(plugin.providerId, plugin.name, t)}</span>
                 <span className="flex flex-wrap gap-1">
                   <span className={settingsPill}>{plugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
                   <span className={stateClass(plugin.status)}>{statusLabel(plugin.status, t)}</span>
@@ -70,7 +71,7 @@ export const PluginInventory: React.FC = () => {
           {selectedPlugin && (
             <article className={`${settingsCard} self-start`} aria-label={t('plugins.details')}>
               <div className="flex flex-wrap items-center gap-compact">
-                <h3 className={settingsRowTitle}>{selectedPlugin.name}</h3>
+                <h3 className={settingsRowTitle}>{providerLabel(selectedPlugin.providerId, selectedPlugin.name, t)}</h3>
                 <span className={settingsPill}>{selectedPlugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
                 <span className={stateClass(selectedPlugin.status)}>{statusLabel(selectedPlugin.status, t)}</span>
               </div>

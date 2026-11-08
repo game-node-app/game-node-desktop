@@ -1,3 +1,4 @@
+import { providerLabel } from '../../i18n/providerLabel';
 import type { ReactNode } from 'react';
 import {
   useAppInfo,
@@ -409,7 +410,7 @@ export function Sidebar({
                       <SidebarItem
                         key={provider.id}
                         testId={`sidebar-provider-${provider.id}`}
-                        label={provider.name}
+                        label={providerLabel(provider.id, provider.name, t)}
                         icon={providerIcon(provider.id)}
                         collapsed={collapsed}
                         active={active}

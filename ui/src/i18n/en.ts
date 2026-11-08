@@ -1,4 +1,5 @@
 export const en = {
+  'providers.packagekit': 'Linux Package Manager',
   "app.activeRendererSkia": "Active renderer: Skia",
   "AppWindow::Active renderer: Skia": "Active renderer: Skia",
   "Active renderer: Skia": "Active renderer: Skia",

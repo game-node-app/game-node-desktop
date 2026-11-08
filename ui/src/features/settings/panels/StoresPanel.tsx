@@ -1,3 +1,4 @@
+import { providerLabel } from '../../../i18n/providerLabel';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   commands,
@@ -212,7 +213,7 @@ export const StoresPanel: React.FC = () => {
               return (
                 <div key={provider.id} className={`${settingsRow} py-1`}>
                   <div className={settingsRowInfo}>
-                    <span className={settingsRowTitle}>{provider.name}</span>
+                    <span className={settingsRowTitle}>{providerLabel(provider.id, provider.name, t)}</span>
                     <span className={settingsRowDescription}>{description}</span>
                   </div>
                   {hasFailed && (

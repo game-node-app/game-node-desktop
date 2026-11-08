@@ -122,7 +122,7 @@ describe('StoresPanel Steam account integration', () => {
     renderSettings(baseSnapshot());
 
     const headings = screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent);
-    expect(headings).toEqual(['Steam account', 'Installed plugins', 'Detected stores', 'DRM-free games']);
+    expect(headings).toEqual(['Steam account', 'Detected stores', 'DRM-free games']);
     expect(screen.getByText('Signed in as cassi')).toBeInTheDocument();
     expect(screen.getByText('GOG')).toBeInTheDocument();
     expect(screen.getByText('6 installed games')).toBeInTheDocument();

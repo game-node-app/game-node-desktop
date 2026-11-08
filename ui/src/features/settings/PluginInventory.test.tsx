@@ -34,6 +34,19 @@ function renderInventory(locale = 'en') {
 describe('PluginInventory', () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it.each([
+    ['en', 'Linux Package Manager'],
+    ['pt-BR', 'Gerenciador de pacotes Linux'],
+  ])('localizes the Portuguese manifest in %s and retains unknown names', async (locale, label) => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([
+      { ...plugin, providerId: 'packagekit', name: 'Gerenciador de pacotes Linux' },
+      { ...plugin, providerId: 'community', pluginId: 'community.plugin', name: 'Community Games' },
+    ]);
+    renderInventory(locale);
+    expect((await screen.findAllByText(label)).length).toBeGreaterThan(0);
+    expect(screen.getByText('Community Games')).toBeInTheDocument();
+  });
+
   it('shows trusted origin, runtime status, actual grants and native access separately', async () => {
     vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
     renderInventory();
@@ -55,7 +68,7 @@ describe('PluginInventory', () => {
       ...plugin,
       providerId: 'packagekit',
       pluginId: 'org.gamenode.plugin.packagekit-discovery',
-      name: 'Linux Package Manager',
+      name: 'Gerenciador de pacotes Linux',
       source: 'official',
       capabilities: ['provider.context.read', 'library.discovery'],
       nativeAccess: ['files', 'process', 'dbus'],

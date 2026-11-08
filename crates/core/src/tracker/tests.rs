@@ -617,3 +617,57 @@ fn windows_verbatim_registration_tracks_normal_process_path() {
         assert!(effects.iter().any(|e| matches!(e, Effect::Watch(_))));
     }
 }
+
+#[test]
+fn saved_relative_registration_paths_match_a_running_process_at_its_full_path() {
+    let registration = crate::drm_free::Registration {
+        id: "lantern".into(),
+        title: "Bloodborne".into(),
+        executable: r"D:\Ports\Bloodborne\Lantern Engine.exe".into(),
+        file_identity: "volume:file".into(),
+        root: r"D:\Ports\Bloodborne".into(),
+        working_directory: r"D:\Ports\Bloodborne".into(),
+        arguments: vec![],
+        gameplay: vec![r"BloodbornePC/engine/out/bb-probe.exe".into()],
+        launchers: vec!["Lantern Engine.exe".into()],
+        revision: 1,
+        removed: false,
+        rediscovery_allowed: false,
+        transferred_from: None,
+        available: true,
+    };
+    // The saved row predates absolute paths, so the policy has to resolve them against the root.
+    let policy = registration.process_policy();
+    let running = |tracker: &mut Tracker, exe: &str| {
+        let mut game = entry("manual:lantern", r"\\?\D:\Ports\Bloodborne");
+        game.source = "manual".into();
+        tracker.set_policies(BTreeMap::from([(game.key.clone(), policy.clone())]));
+        apply(
+            tracker,
+            Input::Library {
+                account: Some("a".into()),
+                entries: vec![game],
+                at: 100,
+            },
+        );
+        listed(tracker, 110, vec![process(1, 105, exe)]);
+        tracker.running().contains("manual:lantern")
+    };
+
+    let mut tracker = Tracker::new(true);
+    assert!(
+        running(
+            &mut tracker,
+            r"D:\PORTS\Bloodborne\BloodbornePC\Engine\Out\BB-Probe.exe"
+        ),
+        "the full process path matches case-insensitively"
+    );
+
+    for outside in [
+        r"D:\Ports\Bloodborne\Other.exe",
+        r"D:\Ports\Other\BloodbornePC\engine\out\bb-probe.exe",
+    ] {
+        let mut other = Tracker::new(true);
+        assert!(!running(&mut other, outside), "{outside} must not match");
+    }
+}

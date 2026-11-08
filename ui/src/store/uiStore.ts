@@ -3,6 +3,13 @@ import { useStore } from '@tanstack/react-store';
 
 export type SettingsTopic = 'account' | 'stores' | 'backups' | 'tools' | 'about';
 
+/**
+ * The content-area destination. It is deliberately not persisted: the application always
+ * opens on the library, and only the library layout (view, sort, filter, selection) is
+ * restored.
+ */
+export type ActiveDestination = 'library' | 'ports';
+
 export interface ContextMenuState {
   open: boolean;
   x: number;
@@ -21,6 +28,9 @@ export interface UiStoreState {
   settingsOpen: boolean;
   settingsTopic: SettingsTopic;
   licenseModalOpen: boolean;
+  activeDestination: ActiveDestination;
+  /** Catalog entry the library's provenance link asked PC ports to show. */
+  portsFocusCatalogId: string | null;
   sidebarDragWidth: number | null;
   detailDragWidth: number | null;
   contextMenu: ContextMenuState;
@@ -39,6 +49,8 @@ export const initialUiStoreState: UiStoreState = {
   settingsOpen: false,
   settingsTopic: 'account',
   licenseModalOpen: false,
+  activeDestination: 'library',
+  portsFocusCatalogId: null,
   sidebarDragWidth: null,
   detailDragWidth: null,
   contextMenu: {
@@ -61,6 +73,16 @@ export const uiStore = new Store<UiStoreState>(initialUiStoreState);
 
 export function resetUiStore(): void {
   uiStore.setState(() => ({ ...initialUiStoreState }));
+}
+
+/**
+ * Switches the content area. Selecting the library destination does not clear its filter;
+ * the sidebar sends the explicit filter through `library_input` as well.
+ */
+export function setActiveDestination(destination: ActiveDestination): void {
+  uiStore.setState((prev) =>
+    prev.activeDestination === destination ? prev : { ...prev, activeDestination: destination },
+  );
 }
 
 export function openSettingsModal(topic?: SettingsTopic): void {

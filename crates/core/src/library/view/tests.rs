@@ -285,6 +285,25 @@ fn layout_commands_change_the_view_and_ask_for_the_layout_to_be_saved() {
 }
 
 #[test]
+fn collapsing_the_sidebar_is_remembered_and_saved() {
+    let mut machine = library();
+    assert!(!machine.view().unwrap().layout.sidebar_collapsed);
+
+    let effects = machine.handle(Input::SetSidebarCollapsed(true));
+    let [Effect::PersistLayout(layout)] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    assert!(layout.sidebar_collapsed);
+    assert!(machine.view().unwrap().layout.sidebar_collapsed);
+
+    // Setting what is already set saves nothing.
+    assert!(machine.handle(Input::SetSidebarCollapsed(true)).is_empty());
+
+    machine.handle(Input::SetSidebarCollapsed(false));
+    assert!(!machine.view().unwrap().layout.sidebar_collapsed);
+}
+
+#[test]
 fn pane_widths_are_kept_within_a_usable_range() {
     let mut machine = library();
     machine.handle(Input::SetSidebarWidth(5));

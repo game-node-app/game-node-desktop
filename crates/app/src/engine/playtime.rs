@@ -128,15 +128,7 @@ impl Engine {
                 .registrations
                 .iter()
                 .filter(|r| !r.removed)
-                .map(|r| {
-                    (
-                        r.key(),
-                        gamenode_core::drm_free::ProcessPolicy::Explicit {
-                            gameplay: r.gameplay.clone(),
-                            launchers: r.launchers.clone(),
-                        },
-                    )
-                })
+                .map(|r| (r.key(), r.process_policy()))
                 .chain(
                     state
                         .local
@@ -457,6 +449,7 @@ impl Engine {
             self.stop_tracking(&mut state);
             state.playtime.stopped = true;
         }
+        self.shutdown_ports();
         let (tx, rx) = mpsc::channel();
         self.shared.storage.submit(move || {
             let _ = tx.send(());

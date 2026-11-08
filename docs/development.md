@@ -173,6 +173,31 @@ The native Rust host still starts normally if you run it, so use the browser for
 an isolated UI session. The switch only works in Vite development mode; normal
 production builds and ordinary `pnpm --dir ui dev` keep their existing behavior.
 
+#### PC ports mock
+
+`VITE_UI_MOCK=1` also presents a fictional Windows signed-in build with a PC ports
+catalog, so the `EXPLORE` destination is visible in a browser running on Linux or
+macOS. `?platform=linux` hides it, matching a real Linux build, and
+`?scenario=signed-out` hides it because the destination requires a session.
+
+The catalog fixture has seven fictional entries: a guided recipe with a required
+game folder and a console-package option, a plain release, a pre-release-only
+entry, a withdrawn entry, an installed entry with an update available, an
+installer-only entry with no Windows asset, and one entry whose install always
+fails so the failure details can be checked. A failed install from a previous
+session starts unseen, which gives the sidebar badge a count of one. The catalog
+starts from a cached snapshot marked stale, so opening PC ports shows the
+refreshing state and then the ready state. `?ports=unavailable` starts with no
+snapshot and the unavailable state.
+
+Installing an entry is simulated in memory with `ports:progress` events
+(download, verify, extract, supplied files, finalize, register, complete). Cancel
+a running install to see the cancelling and cancelled states. "Hollow Mountain:
+Deep Delve" always fails with extractor output; the other installable entries
+complete and gain an installed provenance row. Picking a parent folder, picking
+supplied files, choosing an executable, marking results seen and remembering the
+grid/list view and filters all round-trip through the mock host. Reload to reset.
+
 ### Running the native app
 
 The Tauri host embeds the built UI (`ui/dist`) through the default `custom-protocol` cargo

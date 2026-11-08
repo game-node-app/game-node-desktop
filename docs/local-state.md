@@ -190,3 +190,30 @@ and pre-tool file backups live under `private/tool-backups/<entry_key>/<tool_id>
 Tool installations belong to the OS user across GameNode account changes, and startup reconciles
 any transient `Installing`, `Updating`, or `Uninstalling` records using the backup ledger.
 
+## PC ports (migration `0008_ports.sql`)
+
+Migration `0008_ports.sql` adds Windows-user-owned PC ports state. It is additive: every
+existing table and value is kept, and the new tables start empty. An older build refuses the
+upgraded schema without modifying it.
+
+- `port_catalog_snapshot`: the single last complete upstream listing, with `payload` (JSON),
+  `fetched_at` and `entry_count`. A refresh replaces the row in one transaction, so a failed or
+  partial refresh keeps the previous snapshot.
+- `port_overlay`: the single newest valid GameNode overlay, with `version` (the overlay schema
+  version), `etag` and the TOML `payload`.
+- `port_install_jobs`: each install job's `id`, `catalog_id`, `slug`, `port_name`,
+  `release_version`, lifecycle `state`, detailed `phase` (JSON, including the supplied-file
+  slot), `install_folder`, the `created_paths` JSON journal, the nullable `registration_id` it
+  commits, the `result_seen` badge flag, failure reason and capped tool output, the resolved
+  `plan_json`/`release_json`, and its timestamps.
+- `port_installations`: port provenance per DRM-free registration id (`catalog_id`, `slug`,
+  `port_name`, `installed_version`, `install_folder`, `environment_json` and `job_id`). It has no
+  foreign key to `manual_registrations`, so removing a registration keeps the provenance row and
+  the files it describes; `job_id` is unique so a re-added registration is relinked instead of
+  duplicated.
+- `port_preferences`: the single PC ports preference row: `view_mode`, `filters_json` (never the
+  search text) and the last chosen `install_parent` folder.
+
+Catalog and overlay data are not credentials and contain no GameNode account or device
+identifier. The tables belong to the OS user and are shared across GameNode accounts.
+

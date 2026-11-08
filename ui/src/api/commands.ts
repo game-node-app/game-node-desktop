@@ -11,6 +11,14 @@ import type {
   ToolChannel,
   WindowGeometry,
 } from './types';
+import type {
+  PortDetailView,
+  PortInstallRequest,
+  PortPickSuppliedRequest,
+  PortPreferencesPatch,
+  PortSuppliedPick,
+  PortToolsCacheView,
+} from './ports';
 import { createDefaultSnapshot } from './types';
 
 export function isTauriRuntime(): boolean {
@@ -238,4 +246,90 @@ export const commands = {
 
   clearToolCache: () =>
     safeInvoke<void>('clear_tool_cache', undefined, () => undefined),
+
+  // PC ports. Every command is async in the host and never blocks the main thread.
+  /** Starts the first catalog fetch when the user opens PC ports. Idempotent. */
+  portsOpen: () =>
+    safeInvoke<void>('ports_open', undefined, () => undefined),
+
+  /** Manual Refresh. The current snapshot stays visible until a validated replacement lands. */
+  portsRefresh: () =>
+    safeInvoke<void>('ports_refresh', undefined, () => undefined),
+
+  /** Lazy entry detail (releases, assets, withdrawal state). Arg: `{ catalogId }`. */
+  portsDetail: (catalogId: string) =>
+    safeInvoke<PortDetailView | null>('ports_detail', { catalogId }, () => null),
+
+  /** Native parent-folder picker. Arg: `{ initialFolder }`; returns null when cancelled. */
+  portsPickParent: (initialFolder?: string | null) =>
+    safeInvoke<string | null>(
+      'ports_pick_parent',
+      { initialFolder: initialFolder ?? null },
+      () => null,
+    ),
+
+  /**
+   * Native picker plus host validation of one guided-setup slot. Arg: `{ request }`.
+   * Hashing progress is sent on `ports:progress` with `request.setupId` in `jobId`.
+   */
+  portsPickSupplied: (request: PortPickSuppliedRequest) =>
+    safeInvoke<PortSuppliedPick | null>(
+      'ports_pick_supplied',
+      { request },
+      () => null,
+    ),
+
+  /**
+   * Starts a background install. Arg: `{ request }`. Returns the job id, or null when the
+   * request is invalid or Install is unavailable.
+   */
+  portsInstall: (request: PortInstallRequest) =>
+    safeInvoke<string | null>('ports_install', { request }, () => null),
+
+  /** Cancels a job. Arg: `{ jobId }`. */
+  portsCancel: (jobId: string) =>
+    safeInvoke<void>('ports_cancel', { jobId }, () => undefined),
+
+  /** Marks the entry's current result seen, dropping it from the sidebar badge. Arg: `{ catalogId }`. */
+  portsMarkSeen: (catalogId: string) =>
+    safeInvoke<void>('ports_mark_seen', { catalogId }, () => undefined),
+
+  /** Persists remembered view/filters/last folder. Arg: `{ patch }`. */
+  portsSetPreferences: (patch: PortPreferencesPatch) =>
+    safeInvoke<void>('ports_set_preferences', { patch }, () => undefined),
+
+  /**
+   * Follow-up for a completed install whose preferred executable is missing. Arg:
+   * `{ jobId }`; returns the chosen executable inside the install folder or null.
+   */
+  portsPickExecutable: (jobId: string) =>
+    safeInvoke<string | null>('ports_pick_executable', { jobId }, () => null),
+
+  /** Opens an install folder in the OS file manager. Arg: `{ path }`. */
+  openInstallFolder: (path: string) =>
+    safeInvoke<void>('open_install_folder', { path }, () => undefined),
+
+  /**
+   * Settings Tools panel: pinned extraction tools with their licence, source, pinned version and
+   * cache size, plus the cached release downloads. No arguments.
+   */
+  portsToolsCache: () =>
+    safeInvoke<PortToolsCacheView>('ports_tools_cache', undefined, () => ({
+      downloadsBytes: 0,
+      helperTools: [],
+      installActive: false,
+    })),
+
+  /**
+   * Settings Tools panel: deletes the cached release downloads and pinned extraction tools.
+   * Installed ports, their registrations and provenance are untouched. The host refuses with
+   * `{ code: 'installInProgress' }` while a port install is queued, running or waiting for an
+   * executable pick. Returns the recomputed cache view.
+   */
+  portsClearCache: () =>
+    safeInvoke<PortToolsCacheView>('ports_clear_cache', undefined, () => ({
+      downloadsBytes: 0,
+      helperTools: [],
+      installActive: false,
+    })),
 };

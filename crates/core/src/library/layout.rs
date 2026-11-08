@@ -190,12 +190,12 @@ pub struct Sort {
     pub direction: SortDirection,
 }
 
-pub const DEFAULT_SIDEBAR_WIDTH: u32 = 220;
+pub const DEFAULT_SIDEBAR_WIDTH: u32 = 248;
 pub const DEFAULT_DETAIL_WIDTH: u32 = 340;
 
 /// View mode, sidebar selection, filters, sort, pane sizes (logical pixels) and whether the
-/// detail pane is open. Every field has a default, so a layout saved by an older build still
-/// loads.
+/// detail pane or the sidebar is collapsed. Every field has a default, so a layout saved by an
+/// older build still loads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LibraryLayout {
@@ -217,6 +217,8 @@ pub struct LibraryLayout {
     pub detail_width: u32,
     #[serde(alias = "detail_open")]
     pub detail_open: bool,
+    #[serde(alias = "sidebar_collapsed")]
+    pub sidebar_collapsed: bool,
 }
 
 impl Default for LibraryLayout {
@@ -230,6 +232,7 @@ impl Default for LibraryLayout {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             detail_width: DEFAULT_DETAIL_WIDTH,
             detail_open: true,
+            sidebar_collapsed: false,
         }
     }
 }
@@ -271,6 +274,27 @@ mod tests {
             SidebarSelection::Provider("steam".to_owned())
         );
         assert!(!layout.effective_filters().availability.installed);
+    }
+
+    #[test]
+    fn a_layout_saved_before_the_sidebar_collapsed_flag_existed_loads_it_open() {
+        // No key: the sidebar is open and the layout still loads.
+        let layout: LibraryLayout = serde_json::from_str(r#"{"view":"list"}"#).unwrap();
+        assert_eq!(layout.view, ViewMode::List);
+        assert!(!layout.sidebar_collapsed);
+
+        // The snake_case spelling used by older saves is accepted.
+        let old: LibraryLayout = serde_json::from_str(r#"{"sidebar_collapsed":true}"#).unwrap();
+        assert!(old.sidebar_collapsed);
+
+        // New saves write camelCase, matching every sibling field.
+        let json = serde_json::to_value(LibraryLayout {
+            sidebar_collapsed: true,
+            ..LibraryLayout::default()
+        })
+        .unwrap();
+        assert_eq!(json.get("sidebarCollapsed"), Some(&serde_json::json!(true)));
+        assert!(json.get("sidebar_collapsed").is_none());
     }
 
     #[test]

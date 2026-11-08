@@ -81,17 +81,40 @@ pub fn launch_manual(
     registration: &crate::drm_free::Registration,
     kind: LaunchKind,
 ) -> Result<(), LaunchError> {
+    launch_manual_with_environment(
+        host,
+        provider,
+        record,
+        registration,
+        &crate::drm_free::LaunchEnvironment::new(),
+        kind,
+    )
+}
+
+/// [`launch_manual`] with the environment variables a port's provenance records (design D7).
+///
+/// `Registration.arguments` already holds the recipe arguments in launch order; the environment
+/// map does not change argument order.
+pub fn launch_manual_with_environment(
+    host: &dyn crate::drm_free::InstallationHost,
+    provider: &Provider,
+    record: &Record,
+    registration: &crate::drm_free::Registration,
+    environment: &crate::drm_free::LaunchEnvironment,
+    kind: LaunchKind,
+) -> Result<(), LaunchError> {
     if !provider.is_manual_executable() || kind != LaunchKind::Play {
         return Err(LaunchError::Unsupported);
     }
     if registration.removed || !registration.available || record.id != registration.id {
         return Err(LaunchError::Incomplete);
     }
-    host.launch(registration).map_err(|error| match error {
-        crate::drm_free::LocalError::InvalidTarget => LaunchError::Incomplete,
-        crate::drm_free::LocalError::Unsupported => LaunchError::Unsupported,
-        _ => LaunchError::Failed,
-    })
+    host.launch_with_environment(registration, environment)
+        .map_err(|error| match error {
+            crate::drm_free::LocalError::InvalidTarget => LaunchError::Incomplete,
+            crate::drm_free::LocalError::Unsupported => LaunchError::Unsupported,
+            _ => LaunchError::Failed,
+        })
 }
 
 #[cfg(test)]

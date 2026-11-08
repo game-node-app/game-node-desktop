@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { render, screen, fireEvent, act, within, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
 import { I18nProvider } from '../../i18n';
@@ -460,6 +460,127 @@ describe('SettingsModal Feature Suite', () => {
 
       expect(clearSpy).toHaveBeenCalled();
       expect(screen.getByText('Tool cache cleared')).toBeInTheDocument();
+    });
+
+    it('keeps the PC ports cache off non-Windows builds', () => {
+      const infoSpy = vi.spyOn(commands, 'portsToolsCache');
+      openSettingsModal('tools');
+      renderSettings('en', undefined, { platform: 'linux' });
+
+      expect(screen.queryByText('PC ports download cache')).toBeNull();
+      expect(screen.queryByTestId('ports-helper-tools')).toBeNull();
+      expect(screen.queryByTestId('ports-clear-cache')).toBeNull();
+      expect(infoSpy).not.toHaveBeenCalled();
+    });
+
+    it('shows the pinned extraction tool and the ports download cache on Windows', async () => {      const infoSpy = vi.spyOn(commands, 'portsToolsCache').mockResolvedValue({
+        downloadsBytes: 734_003_200,
+        helperTools: [
+          {
+            id: 'ps4-pkg',
+            name: 'Fixture PKG extractor',
+            license: 'GPL-3.0',
+            sourceUrl: 'https://github.com/example/fixture-pkg',
+            version: 'v2.4.1',
+            cacheBytes: 18_874_368,
+          },
+        ],
+        installActive: false,
+      });
+      openSettingsModal('tools');
+      renderSettings('en', undefined, { platform: 'windows' });
+
+      expect(await screen.findByText('Fixture PKG extractor')).toBeInTheDocument();
+      expect(screen.getByText('Pinned version v2.4.1')).toBeInTheDocument();
+      expect(screen.getByText('GPL-3.0')).toBeInTheDocument();
+      expect(screen.getByText('18.0 MB')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
+      expect(infoSpy).toHaveBeenCalled();
+    });
+
+    it('shows the helper-tools group in pt-BR', async () => {
+      vi.spyOn(commands, 'portsToolsCache').mockResolvedValue({
+        downloadsBytes: 734_003_200,
+        helperTools: [
+          {
+            id: 'ps4-pkg',
+            name: 'Fixture PKG extractor',
+            license: 'GPL-3.0',
+            sourceUrl: 'https://github.com/example/fixture-pkg',
+            version: 'v2.4.1',
+            cacheBytes: 18_874_368,
+          },
+        ],
+        installActive: false,
+      });
+      openSettingsModal('tools');
+      renderSettings('pt-BR', undefined, { platform: 'windows' });
+
+      expect(await screen.findByText('Versão fixada v2.4.1')).toBeInTheDocument();
+      expect(screen.getByText('Ferramentas auxiliares')).toBeInTheDocument();
+      expect(screen.getByText('Cache de downloads de ports para PC')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
+    });
+
+    it('handles an overlay with no extraction tool configured', async () => {
+      vi.spyOn(commands, 'portsToolsCache').mockResolvedValue({
+        downloadsBytes: 0,
+        helperTools: [],
+        installActive: false,
+      });
+      openSettingsModal('tools');
+      renderSettings('en', undefined, { platform: 'windows' });
+
+      expect(await screen.findByText('No extraction tool configured')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-clear-cache')).toBeDisabled();
+    });
+
+    it('clears the ports download cache and shows a toast', async () => {
+      vi.spyOn(commands, 'portsToolsCache').mockResolvedValue({
+        downloadsBytes: 734_003_200,
+        helperTools: [],
+        installActive: false,
+      });
+      const clearSpy = vi.spyOn(commands, 'portsClearCache').mockResolvedValue({
+        downloadsBytes: 0,
+        helperTools: [],
+        installActive: false,
+      });
+      openSettingsModal('tools');
+      renderSettings('en', undefined, { platform: 'windows' });
+
+      expect(await screen.findByText('700.0 MB')).toBeInTheDocument();
+      const clearButton = screen.getByTestId('ports-clear-cache');
+      expect(clearButton).toBeEnabled();
+      fireEvent.click(clearButton);
+
+      await waitFor(() => expect(clearSpy).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('Port cache cleared')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('0 B');
+    });
+
+    it('shows the refusal when a port install owns the cache', async () => {
+      vi.spyOn(commands, 'portsToolsCache').mockResolvedValue({
+        downloadsBytes: 734_003_200,
+        helperTools: [],
+        installActive: true,
+      });
+      const clearSpy = vi
+        .spyOn(commands, 'portsClearCache')
+        .mockRejectedValue({ code: 'installInProgress' });
+      openSettingsModal('tools');
+      renderSettings('en', undefined, { platform: 'windows' });
+
+      expect(await screen.findByText('Install running')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('ports-clear-cache'));
+
+      await waitFor(() => expect(clearSpy).toHaveBeenCalledTimes(1));
+      expect(
+        await screen.findByText(
+          'A port install is running. Clear the cache when it finishes.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
     });
 
     it('saves backup destination and shows toast notification', () => {

@@ -51,6 +51,8 @@ pub struct Snapshot {
     pub tools: crate::tools::ToolsView,
     /// One entry per store provider that declares a catalog, with no secret fields.
     pub store_accounts: Vec<StoreAccountView>,
+    /// PC ports catalog, provenance and install jobs. Always present; empty until opened.
+    pub ports: crate::ports::PortsView,
 }
 
 impl Snapshot {
@@ -87,6 +89,7 @@ impl Snapshot {
             launch,
             tools: Default::default(),
             store_accounts: Vec::new(),
+            ports: crate::ports::PortsView::default(),
         }
     }
 }

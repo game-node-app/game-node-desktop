@@ -1,0 +1,100 @@
+{
+  "entry": {
+    "id": "app_fictional_lantern",
+    "catalogId": "qcat_fictional-lantern",
+    "slug": "fictional-game-pc-port",
+    "name": "Fictional Game",
+    "description": "A fictional Windows port used by the platform tests, with a longer detail description.",
+    "projectId": "project_fictional",
+    "projectName": "Fictional Game PC Port",
+    "developer": { "key": "fictional-dev", "name": "Fictional Developer" },
+    "games": [
+      {
+        "id": "game_fictional",
+        "slug": "fictional-game",
+        "title": "Fictional Game"
+      }
+    ],
+    "consoles": ["ps4"],
+    "makers": ["PlayStation"],
+    "tags": ["port", "ps4"],
+    "artwork": "https://example.com/art/fictional-icon.ico",
+    "libraryArt": {
+      "capsule": "https://example.com/art/fictional-capsule.png",
+      "header": "https://example.com/art/fictional-header.png",
+      "hero": "https://example.com/art/fictional-hero.png",
+      "logo": "https://example.com/art/fictional-logo.png"
+    },
+    "launcher": {
+      "folderName": "FictionalGame-FictionalGamePcPort",
+      "filesToAdd": ["portable.txt"],
+      "releaseAssetFilter": "windows",
+      "preferredExecutables": { "windows": ["FictionalGame.exe"] },
+      "setupFiles": [
+        {
+          "id": "game",
+          "label": "Fictional Game (CUSA00000) with update 01.00",
+          "kind": "folder",
+          "contains": ["eboot.bin", "sce_sys/param.sfo"],
+          "destination": "CUSA00000",
+          "accepted": [
+            {
+              "algo": "sha256",
+              "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              "label": "CUSA00000 01.00"
+            }
+          ]
+        }
+      ]
+    },
+    "projectType": "port",
+    "supportedOS": ["windows"],
+    "verified": {
+      "version": "v1.0.0",
+      "releasedAt": 1793702111000,
+      "prerelease": false,
+      "pinned": true
+    },
+    "recommended": 3,
+    "reviewCount": 3,
+    "reportIssues": 0,
+    "reportBroken": 0
+  },
+  "project": {
+    "id": "project_fictional",
+    "slug": "fictional-game-pc-port",
+    "name": "Fictional Game PC Port",
+    "description": "A fictional project used by the platform tests.",
+    "projectType": "port",
+    "provider": "github",
+    "repository": "example-org/fictional-game-pc-port",
+    "website": "https://example.com/fictional-game",
+    "unknownProjectField": true
+  },
+  "games": [
+    {
+      "id": "game_fictional",
+      "slug": "fictional-game",
+      "title": "Fictional Game",
+      "year": 2001
+    }
+  ],
+  "checking": {
+    "version": "v1.1.0",
+    "releasedAt": 1794015373000,
+    "prerelease": false,
+    "firstSeenAt": 1794015373000,
+    "needsReview": true,
+    "reasons": ["A file changed upstream."],
+    "earlyAccess": false,
+    "unknownCheckingField": "ignored"
+  },
+  "withdrawn": [
+    {
+      "version": "v0.8.0",
+      "reason": "Pulled after a report.",
+      "at": 1793000000000
+    }
+  ],
+  "updateWaiting": "v1.1.0"
+}

@@ -303,6 +303,8 @@ pub enum Input {
     SetSidebarWidth(u32),
     SetDetailWidth(u32),
     SetDetailOpen(bool),
+    /// Hide the sidebar and give its width back to the library.
+    SetSidebarCollapsed(bool),
     /// Enter on the focused entry: select it and show its details.
     OpenDetails,
     /// The answer to an [`Effect::ReadEntry`]: `Ok(None)` means the game is not in the library.
@@ -765,6 +767,9 @@ impl LibraryMachine {
                     width.clamp(*DETAIL_WIDTH_RANGE.start(), *DETAIL_WIDTH_RANGE.end());
             }),
             Input::SetDetailOpen(open) => self.update_layout(|layout| layout.detail_open = open),
+            Input::SetSidebarCollapsed(collapsed) => {
+                self.update_layout(|layout| layout.sidebar_collapsed = collapsed)
+            }
             Input::EntryRead {
                 op,
                 game_id,

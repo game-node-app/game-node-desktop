@@ -11,6 +11,8 @@ directory and argument list. **Locate executable** repairs a moved installation
 without changing its identity. **Remove from library** removes only the registration:
 installed files, live saves, measured sessions and archives remain on disk. A missing
 executable stays visible. Store entries continue to use their own launch/install rules.
+Community native PC ports installed from **PC ports** become the same kind of DRM-free
+entry; see [pc-ports.md](pc-ports.md) for the catalog, overlay and install rules.
 
 ## Identity and corrections
 

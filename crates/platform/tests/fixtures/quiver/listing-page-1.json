@@ -1,0 +1,130 @@
+{
+  "items": [
+    {
+      "id": "app_fictional_lantern",
+      "catalogId": "qcat_fictional-lantern",
+      "slug": "fictional-game-pc-port",
+      "name": "Fictional Game",
+      "description": "A fictional Windows port used by the platform tests.",
+      "projectId": "project_fictional",
+      "projectName": "Fictional Game PC Port",
+      "developer": { "key": "fictional-dev", "name": "Fictional Developer" },
+      "games": [
+        {
+          "id": "game_fictional",
+          "slug": "fictional-game",
+          "title": "Fictional Game"
+        }
+      ],
+      "consoles": ["ps4"],
+      "makers": ["PlayStation"],
+      "tags": ["port", "ps4"],
+      "artwork": "https://example.com/art/fictional-icon.ico",
+      "artworkFromGame": false,
+      "libraryArt": {
+        "capsule": "https://example.com/art/fictional-capsule.png",
+        "header": "https://example.com/art/fictional-header.png",
+        "hero": "https://example.com/art/fictional-hero.png",
+        "logo": "https://example.com/art/fictional-logo.png"
+      },
+      "launcher": {
+        "folderName": "FictionalGame-FictionalGamePcPort",
+        "filesToAdd": ["portable.txt"],
+        "releaseAssetFilter": "windows",
+        "preferredExecutables": { "windows": ["FictionalGame.exe"] },
+        "setupFiles": [
+          {
+            "id": "game",
+            "label": "Fictional Game (CUSA00000) with update 01.00",
+            "prompt": "Pick the extracted game folder.",
+            "kind": "folder",
+            "contains": ["eboot.bin", "sce_sys/param.sfo"],
+            "destination": "CUSA00000",
+            "accepted": [
+              {
+                "algo": "sha256",
+                "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "label": "CUSA00000 01.00"
+              }
+            ]
+          }
+        ]
+      },
+      "projectType": "port",
+      "supportedOS": ["windows"],
+      "verified": {
+        "version": "v1.0.0",
+        "releasedAt": 1793702111000,
+        "prerelease": false,
+        "pinned": true
+      },
+      "recommended": 3,
+      "reviewCount": 3,
+      "reportIssues": 0,
+      "reportBroken": 0,
+      "lastReleaseVersion": "v1.0.0",
+      "lastReleaseAt": 1793702111000,
+      "addedAt": 1793740995837,
+      "unknownFutureField": { "nested": ["ignored"] }
+    },
+    {
+      "id": "app_fictional_release",
+      "catalogId": "qcat_fictional-release",
+      "slug": "fictional-release-only",
+      "name": "Fictional Release Only",
+      "description": "A fictional release-only Windows port used by the platform tests.",
+      "projectId": "project_release",
+      "projectName": "Fictional Release Only Port",
+      "games": [
+        {
+          "id": "game_release",
+          "slug": "fictional-release-only",
+          "title": "Fictional Release Only"
+        }
+      ],
+      "consoles": ["ps2"],
+      "artwork": "https://example.com/art/release-icon.png",
+      "libraryArt": {
+        "capsule": "https://example.com/art/release-capsule.png"
+      },
+      "launcher": {
+        "folderName": "FictionalReleaseOnly",
+        "releaseAssetFilter": "windows",
+        "preferredExecutables": { "windows": ["FictionalReleaseOnly.exe"] }
+      },
+      "projectType": "port",
+      "supportedOS": ["windows"],
+      "verified": {
+        "version": "v2.0.0",
+        "releasedAt": 1793600000000,
+        "prerelease": false,
+        "pinned": false,
+        "rolling": true
+      },
+      "recommended": 0,
+      "reviewCount": 0,
+      "reportIssues": 0,
+      "reportBroken": 0
+    },
+    {
+      "id": "app_fictional_linux",
+      "catalogId": "qcat_fictional-linux",
+      "slug": "fictional-linux-only",
+      "name": "Fictional Linux Only",
+      "description": "A fictional Linux-only entry used by the platform tests.",
+      "projectName": "Fictional Linux Only Port",
+      "games": [],
+      "consoles": [],
+      "supportedOS": ["linux"],
+      "launcher": {},
+      "projectType": "port",
+      "recommended": 0,
+      "reviewCount": 0,
+      "reportIssues": 0,
+      "reportBroken": 0
+    }
+  ],
+  "nextCursor": "fixture-cursor-page-2",
+  "isDone": false,
+  "unknownPageField": 1
+}

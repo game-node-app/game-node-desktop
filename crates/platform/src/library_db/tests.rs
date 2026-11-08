@@ -372,6 +372,7 @@ fn the_layout_survives_reopening() {
         sidebar_width: 180,
         detail_width: 420,
         detail_open: false,
+        sidebar_collapsed: true,
         ..LibraryLayout::default()
     };
     open(&dir).library_store().save_layout(&layout).unwrap();

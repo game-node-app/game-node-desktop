@@ -1,0 +1,68 @@
+# GameNode PC ports overlay.
+#
+# `ports/overlay.toml` corrects and extends the upstream port catalog, keyed by the upstream's
+# stable catalog id. The copy in this repository is embedded into the application at build time, so
+# PC ports always has a valid overlay, even offline. The host fetches a newer copy from
+# https://raw.githubusercontent.com/game-node-app/game-node-desktop/main/ports/overlay.toml with an
+# ETag. A copy that fails to parse or validate is ignored whole, and the newest valid copy stays in
+# use.
+#
+# `schema_version` is the major version. A copy that declares a newer one is rejected without
+# looking at its contents, so an older build never misreads a newer overlay.
+#
+# Merge rules (design D4):
+#   - overlay scalar fields replace upstream values;
+#   - an overlay `setup_file` list replaces the whole upstream `setupFiles` list;
+#   - `hidden = true` removes the entry from the list, while an installed copy stays in the
+#     library;
+#   - `launcher` becomes the registration executable and launcher; `gameplay` becomes the
+#     registration's gameplay executables.
+
+schema_version = 1
+
+# --- Extraction tool ---------------------------------------------------------------------------
+
+# `ps4-pkg-extractor` takes one package per run and has no update or merge option. GameNode runs
+# it once for the base and once for the update, then merges the update tree over the base itself.
+# `--overwrite` is required: the runner pre-creates an empty output folder and the tool refuses an
+# existing folder without it.
+[[extractor]]
+id = "ps4-pkg"
+name = "ps4-pkg-extractor"
+repository = "paulomanrique/ps4-pkg-extractor"
+tag = "v0.0.1"
+asset = "pkgextract-x86_64-pc-windows-msvc.zip"
+sha256 = "0c736ee02779fb5cf4403a91da23f94fdaa72debf995be0c400ac9c36acee63a"
+license = "Unlicense"
+executable = "pkgextract.exe"
+args = ["{package}", "-o", "{out}", "--overwrite"]
+
+# --- Lantern Engine, Bloodborne --------------------------------------------------------------
+#
+# `gamenode_game_id = 0` is the "not authored yet" placeholder and is treated as absent.
+#
+# The release archive nests everything under `BloodbornePC/`, so the game copied to `CUSA03173`
+# sits beside that folder, where Lantern Engine looks for it when no folder is saved yet.
+#
+# The slot has no `accepted` hashes on purpose. Editions differ, and Lantern Engine inspects the
+# game's title and version itself, so GameNode only checks that this is a PS4 game folder. The
+# package option has no `title_id` for the same reason: Lantern Engine accepts several retail
+# title ids and decides for itself which dump it can run.
+#
+# A supplied folder and a base plus update package both satisfy this slot.
+
+[entry."qcat_66376ffd-c54c-43de-aeab-d8da689a422b"]
+gamenode_game_id = 0
+launcher = "BloodbornePC/Lantern Engine.exe"
+gameplay = ["BloodbornePC/engine/out/bb-probe.exe"]
+license = "GPL-3.0-or-later"
+edition = "Needs your own dumped Bloodborne game folder. Lantern Engine checks the edition and version."
+
+[[entry."qcat_66376ffd-c54c-43de-aeab-d8da689a422b".setup_file]]
+id = "game"
+label = "Bloodborne game folder"
+prompt = "Choose the folder that contains eboot.bin, or your own base and update packages."
+kind = "folder"
+contains = ["eboot.bin", "sce_sys/param.sfo"]
+destination = "CUSA03173"
+from_package = { extractor = "ps4-pkg", needs_update = "01.09" }

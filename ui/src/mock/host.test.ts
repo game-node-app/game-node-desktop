@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMockHost } from './host';
 import { createDefaultFilters, type AppInfo, type LibraryFilters, type Snapshot } from '../api/types';
+import type { PortProgress, PortSuppliedPick, PortToolsCacheView } from '../api/ports';
 
 describe('UI mock host', () => {
   it('starts with a verified mock session and deterministic games', async () => {
@@ -8,6 +9,8 @@ describe('UI mock host', () => {
     const snapshot = await host.invoke('get_snapshot') as Snapshot;
     expect(snapshot.auth).toEqual({ signedIn: { user: { id: 'mock-user', username: 'UI Developer', email: 'ui@example.invalid' } } });
     expect(snapshot.library?.access).toBe('verified');
+    expect(snapshot.library?.layout.sidebarWidth).toBe(248);
+    expect(snapshot.library?.layout.sidebarCollapsed).toBe(false);
     expect(snapshot.library?.rows).toHaveLength(12);
     snapshot.library!.rows.length = 0;
     expect((await host.invoke('get_snapshot') as Snapshot).library?.rows).toHaveLength(12);
@@ -25,9 +28,14 @@ describe('UI mock host', () => {
     expect(snapshot.library?.rows.map(row => row.title)).toEqual(['Aster Vale']);
     await host.invoke('library_input', { input: { select: { key: 'steam:1', mode: 'replace' } } });
     await host.invoke('library_input', { input: { setDetailOpen: true } });
+    await host.invoke('library_input', { input: { setSidebarCollapsed: true } });
     snapshot = listener.mock.lastCall![0] as Snapshot;
     expect(snapshot.library?.detail?.row.title).toBe('Aster Vale');
     expect(snapshot.library?.layout.detailOpen).toBe(true);
+    expect(snapshot.library?.layout.sidebarCollapsed).toBe(true);
+    await host.invoke('library_input', { input: { setSidebarCollapsed: false } });
+    snapshot = listener.mock.lastCall![0] as Snapshot;
+    expect(snapshot.library?.layout.sidebarCollapsed).toBe(false);
     await host.invoke('dispatch_auth', { input: 'signOut' });
     await host.invoke('dispatch_auth', { input: { startSignIn: 'discord' } });
     expect((await host.invoke('get_snapshot') as Snapshot).library?.rows).toHaveLength(12);
@@ -211,5 +219,239 @@ describe('mock library filters and sorting', () => {
     const snapshot = await withFilters(filters);
     expect(snapshot.library!.layout.filters).toEqual(filters);
     expect(snapshot.library!.rows.every((row) => row.isFavorite)).toBe(true);
+  });
+});
+
+describe('mock PC ports catalog', () => {
+  const getSnapshot = async (host: ReturnType<typeof createMockHost>) =>
+    (await host.invoke('get_snapshot')) as Snapshot;
+
+  it('starts as a signed-in Windows build with every catalog state represented', async () => {
+    const host = createMockHost();
+    const appInfo = (await host.invoke('get_app_info')) as AppInfo;
+    expect(appInfo.platform).toBe('windows');
+
+    const snapshot = await getSnapshot(host);
+    const ports = snapshot.ports;
+    expect(ports.catalog.state).toBe('stale');
+    expect(ports.catalog.entryCount).toBe(ports.entries.length);
+
+    const bySlug = new Map(ports.entries.map((entry) => [entry.slug, entry]));
+    const guided = bySlug.get('aster-vale-revival')!;
+    expect(guided.guided).toBe(true);
+    expect(guided.requirements[0].required).toBe(true);
+    expect(guided.requirements[0].packageOption?.extractorId).toBe('ps4-pkg');
+    expect(bySlug.get('beyond-the-pines')?.guided).toBe(false);
+    expect(bySlug.get('clockwork-harbor')?.prerelease).toBe(true);
+    expect(bySlug.get('distant-skies')?.withdrawn).toBe(true);
+    expect(bySlug.get('glass-garden-enhanced')?.noAssetReason).toBe('installerOnly');
+
+    const installed = bySlug.get('emberfall-iron-trail')!;
+    expect(installed.installedRegistrationKey).toBe('drmfree:mock-emberfall');
+    expect(ports.provenance['drmfree:mock-emberfall'].installedVersion).toBe('1.0.4');
+
+    expect(ports.jobs.some((job) => job.phase === 'failed')).toBe(true);
+    expect(ports.unseenCount).toBe(1);
+  });
+
+  it('refreshes the cached snapshot when PC ports opens', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      let snapshot = await getSnapshot(host);
+      expect(snapshot.ports.catalog.state).toBe('stale');
+
+      await host.invoke('ports_open');
+      snapshot = await getSnapshot(host);
+      expect(snapshot.ports.catalog.state).toBe('refreshing');
+
+      vi.advanceTimersByTime(600);
+      snapshot = await getSnapshot(host);
+      expect(snapshot.ports.catalog.state).toBe('ready');
+      expect(snapshot.ports.catalog.fetchedAt).not.toBeNull();
+      expect(snapshot.ports.catalog.error).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('simulates an install with progress events, provenance and the unseen badge', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      const progress: PortProgress[] = [];
+      const unsubscribe = host.subscribePortProgress((event) => progress.push(event));
+
+      const jobId = (await host.invoke('ports_install', {
+        request: {
+          catalogId: 'qcat_mock_aster',
+          parentFolder: 'D:\\Ports',
+          supplied: [{ slotId: 'game-folder', path: 'D:\\Dumps\\CUSA10101', package: true }],
+        },
+      })) as string;
+      expect(jobId).toMatch(/^job-mock-/);
+
+      let snapshot = await getSnapshot(host);
+      expect(snapshot.ports.jobs[0].jobId).toBe(jobId);
+      expect(snapshot.ports.unseenCount).toBe(2);
+      expect(snapshot.ports.preferences.lastParentFolder).toBe('D:\\Ports');
+
+      vi.advanceTimersByTime(1200);
+      expect(
+        progress.some(
+          (event) =>
+            event.jobId === jobId && event.phase === 'downloading' && event.bytesDone > 0,
+        ),
+      ).toBe(true);
+
+      vi.advanceTimersByTime(1800);
+      snapshot = await getSnapshot(host);
+      const job = snapshot.ports.jobs.find((item) => item.jobId === jobId)!;
+      expect(job.phase).toBe('completed');
+      expect(job.outcome).toBe('completed');
+      expect(job.seen).toBe(false);
+      expect(progress.some((event) => event.jobId === jobId && event.phase === 'hashing')).toBe(
+        true,
+      );
+      expect(progress.some((event) => event.jobId === jobId && event.phase === 'copying')).toBe(
+        true,
+      );
+      expect(
+        snapshot.ports.entries.find((entry) => entry.catalogId === 'qcat_mock_aster')
+          ?.installedRegistrationKey,
+      ).toBe('drmfree:aster-vale-revival');
+      expect(
+        snapshot.ports.provenance['drmfree:aster-vale-revival'].installedVersion,
+      ).toBe('1.4.2');
+
+      await host.invoke('ports_mark_seen', { catalogId: 'qcat_mock_aster' });
+      snapshot = await getSnapshot(host);
+      expect(snapshot.ports.unseenCount).toBe(1);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a running install without creating a library entry', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      const jobId = (await host.invoke('ports_install', {
+        request: { catalogId: 'qcat_mock_beyond', parentFolder: 'D:\\Ports', supplied: [] },
+      })) as string;
+
+      vi.advanceTimersByTime(500);
+      await host.invoke('ports_cancel', { jobId });
+      let snapshot = await getSnapshot(host);
+      expect(snapshot.ports.jobs.find((job) => job.jobId === jobId)?.phase).toBe('cancelling');
+
+      vi.advanceTimersByTime(300);
+      snapshot = await getSnapshot(host);
+      const job = snapshot.ports.jobs.find((item) => item.jobId === jobId)!;
+      expect(job.phase).toBe('cancelled');
+      expect(job.outcome).toBe('cancelled');
+      expect(job.retryable).toBe(true);
+      expect(snapshot.ports.provenance['drmfree:beyond-the-pines']).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails the Hollow Mountain install with extraction-tool output', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      const jobId = (await host.invoke('ports_install', {
+        request: {
+          catalogId: 'qcat_mock_hollow',
+          parentFolder: 'D:\\Ports',
+          supplied: [{ slotId: 'game-package', path: 'D:\\Dumps\\CUSA20202', package: true }],
+        },
+      })) as string;
+
+      vi.advanceTimersByTime(2000);
+      const snapshot = await getSnapshot(host);
+      const job = snapshot.ports.jobs.find((item) => item.jobId === jobId)!;
+      expect(job.phase).toBe('failed');
+      expect(job.outcome).toBe('failed');
+      expect(job.failure?.message).toContain('extraction tool');
+      expect(job.failure?.toolOutput).toContain('encrypted package');
+      expect(job.retryable).toBe(true);
+      expect(snapshot.ports.provenance['drmfree:hollow-mountain-deep-delve']).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('exposes a fictional helper tool and refuses the cache clear during an install', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      let cache = (await host.invoke('ports_tools_cache')) as PortToolsCacheView;
+      expect(cache.downloadsBytes).toBeGreaterThan(0);
+      expect(cache.helperTools).toHaveLength(1);
+      expect(cache.helperTools[0].name).toBe('Fixture PKG extractor');
+      expect(cache.helperTools[0].license).toBe('GPL-3.0');
+      expect(cache.installActive).toBe(false);
+
+      const jobId = (await host.invoke('ports_install', {
+        request: { catalogId: 'qcat_mock_beyond', parentFolder: 'D:\\Ports', supplied: [] },
+      })) as string;
+      expect(jobId).toMatch(/^job-mock-/);
+      cache = (await host.invoke('ports_tools_cache')) as PortToolsCacheView;
+      expect(cache.installActive).toBe(true);
+      await expect(host.invoke('ports_clear_cache')).rejects.toEqual({
+        code: 'installInProgress',
+      });
+
+      vi.advanceTimersByTime(3000);
+      cache = (await host.invoke('ports_clear_cache')) as PortToolsCacheView;
+      expect(cache.installActive).toBe(false);
+      expect(cache.downloadsBytes).toBe(0);
+      expect(cache.helperTools[0].cacheBytes).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('accepts picks, remembers preferences and exposes the unavailable scenario', async () => {    const host = createMockHost();
+    await host.invoke('ports_set_preferences', {
+      patch: { view: 'list', filters: { guided: true }, lastParentFolder: 'D:\\Games' },
+    });
+    let snapshot = await getSnapshot(host);
+    expect(snapshot.ports.preferences.view).toBe('list');
+    expect(snapshot.ports.preferences.filters.guided).toBe(true);
+
+    expect(await host.invoke('ports_pick_parent')).toBe('D:\\Games');
+    const pick = (await host.invoke('ports_pick_supplied', {
+      request: {
+        setupId: 'setup-1',
+        slotId: 'game-folder',
+        kind: 'folder',
+      },
+    })) as PortSuppliedPick;
+    expect(pick.status).toBe('accepted');
+    expect(pick.path).toContain('game-folder');
+    expect(await host.invoke('ports_pick_executable', { jobId: 'job-mock-failed' })).toContain(
+      '.exe',
+    );
+
+    const unavailable = createMockHost({ portsScenario: 'unavailable', platform: 'linux' });
+    snapshot = await getSnapshot(unavailable);
+    expect((await unavailable.invoke('get_app_info') as AppInfo).platform).toBe('linux');
+    expect(snapshot.ports.catalog.state).toBe('unavailable');
+    expect(snapshot.ports.catalog.error).toBe('unreachable');
+    expect(snapshot.ports.entries).toHaveLength(0);
+
+    vi.useFakeTimers();
+    try {
+      await unavailable.invoke('ports_refresh');
+      vi.advanceTimersByTime(600);
+      snapshot = await getSnapshot(unavailable);
+      expect(snapshot.ports.catalog.state).toBe('unavailable');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

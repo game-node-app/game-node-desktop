@@ -98,6 +98,11 @@ fn tools_harness() -> ToolsHarness {
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
         steam: None,
+        pc_ports: None,
+        port_store: None,
+        port_progress: Arc::new(crate::engine::PortProgressPublisher::disabled(
+            tokio::runtime::Handle::current(),
+        )),
         covers_dir: covers.path().to_owned(),
         platform: Platform::Linux,
     };
@@ -122,6 +127,7 @@ fn tools_harness() -> ToolsHarness {
         launch: None,
         tools: Default::default(),
         store_accounts: Vec::new(),
+        ports: Default::default(),
     });
 
     let providers = crate::providers::load_bundled(Platform::Linux).providers;

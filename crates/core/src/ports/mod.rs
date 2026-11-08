@@ -1,9 +1,50 @@
-//! Adapter interfaces implemented outside `core`.
+//! Adapter interfaces implemented outside `core`, and the PC ports domain they persist.
 //!
 //! Settings persistence, credential storage, the GameNode auth API and opening the system browser,
 //! plus what provider scans need from the host: read-only file access ([`HostFiles`]) and root
 //! resolution ([`RootResolver`]). Library, game API and tracking interfaces sit next to the code
 //! that uses them (`library`, `game_api`) or arrive with their roadmap steps.
+//!
+//! The PC ports catalog model, overlay, install plan, job phases and durable state live in the
+//! submodules; the platform implements [`PortStore`] over SQLite and executes the plan.
+
+pub mod catalog;
+pub mod job;
+pub mod matching;
+pub mod overlay;
+pub mod plan;
+pub mod store;
+pub mod view;
+
+pub use catalog::{
+    AcceptedHash, CatalogArt, CatalogDeveloper, CatalogEntry, CatalogGame, CatalogProject,
+    CatalogSnapshot, CheckingRelease, CopyRoot, ExecutableRoles, Extractor, FromPackage,
+    HashAlgorithm, LauncherRecipe, Placement, PortAsset, PortRelease, PreferredExecutables,
+    RecipeError, ReleaseScan, ScanVerdict, SetupFile, SetupKind, VerifiedRelease, WithdrawnRelease,
+    is_safe_relative_path, is_valid_env_name,
+};
+pub use job::{PortJobPhase, SuppliedStep, TransitionError};
+pub use overlay::{
+    Overlay, OverlayEntry, OverlayError, OverlaySetupFile, SUPPORTED_SCHEMA_VERSION,
+};
+pub use plan::{
+    EXTRACTED_SIZE_ESTIMATE, InstallPlanRequest, InstallRisk, PlanError, PlannedAsset,
+    PlannedRelease, PlannedSlot, PortInstallPlan, RegistrationTemplate, SUPPORTED_FORMATS,
+    SuppliedChoice, SuppliedSource, folder_name, join_folder, join_relative, plan_install,
+    sanitize_folder_name, select_asset, select_release, space_estimate,
+};
+pub use store::{
+    PortInstallation, PortJobResume, PortJobRow, PortOverlayRow, PortPreferences, PortStore,
+    PortViewMode,
+};
+pub use view::{
+    PortArgumentKind, PortArgumentSpec, PortArtKind, PortArtView, PortCatalogError,
+    PortCatalogState, PortCatalogStatus, PortDetailView, PortEntryView, PortFiltersView,
+    PortHelperToolView, PortInstallBlockReason, PortInstallationView, PortJobFailure,
+    PortJobOutcome, PortJobPhaseView, PortJobView, PortLink, PortNoAssetReason, PortPackageOption,
+    PortPlacementRoot, PortPlatform, PortPreferencesView, PortProgress, PortProgressPhase,
+    PortReleaseView, PortSetupKind, PortSetupSlot, PortToolsCacheView, PortsView,
+};
 
 use async_trait::async_trait;
 use url::Url;

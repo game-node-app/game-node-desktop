@@ -1,329 +1,40 @@
-//! Release catalog fetching, content-addressed archive caching, and pure-Rust archive extraction.
+//! Release catalog fetching and content-addressed archive caching.
+//!
+//! Archive detection, path validation and extraction live in [`crate::archive`]; checksummed
+//! download caching lives in [`crate::download`]. The re-exports below keep the game-tools API
+//! and tests unchanged.
 
 #![allow(clippy::collapsible_if)]
 
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use gamenode_core::tools::{
-    ArchiveEntry, ArchiveFormat, CachedToolArchive, ToolCatalogApi, ToolChannel, ToolDescriptor,
-    ToolError, ToolRelease,
+    ArchiveFormat, CachedToolArchive, ToolCatalogApi, ToolChannel, ToolDescriptor, ToolError,
+    ToolRelease,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-static PART_COUNTER: AtomicU64 = AtomicU64::new(1);
+use crate::download::{
+    CachedDownloadRequest, GitHubDownloadPolicy, HttpDownloadFetcher, ensure_cached_download,
+    sanitize_path_segment,
+};
 
-/// Maximum uncompressed bytes allowed during archive extraction (2 GiB) to prevent decompression bombs.
-pub const MAX_TOTAL_EXTRACTED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub use crate::archive::{
+    MAX_TOTAL_EXTRACTED_BYTES, extract_archive_to_dir, list_archive_entries,
+    validate_archive_entry_path,
+};
+pub use crate::download::{compute_bytes_sha256, compute_file_sha256};
 
-/// Computes the lowercase hexadecimal SHA-256 digest of arbitrary bytes.
-pub fn compute_bytes_sha256(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-/// Computes the lowercase hexadecimal SHA-256 digest of a file on disk.
-pub fn compute_file_sha256(path: &Path) -> Result<String, ToolError> {
-    let mut file = File::open(path).map_err(|e| ToolError::Io(e.to_string()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let n = file
-            .read(&mut buffer)
-            .map_err(|e| ToolError::Io(e.to_string()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ArchiveType {
-    SevenZip,
-    Zip,
-}
-
-fn detect_archive_type(path: &Path) -> Result<ArchiveType, ToolError> {
-    if let Ok(mut file) = File::open(path) {
-        let mut magic = [0u8; 6];
-        if let Ok(n) = file.read(&mut magic) {
-            if n >= 6 && &magic[..6] == b"7z\xBC\xAF\x27\x1C" {
-                return Ok(ArchiveType::SevenZip);
-            }
-            if n >= 4 && (&magic[..4] == b"PK\x03\x04" || &magic[..4] == b"PK\x05\x06") {
-                return Ok(ArchiveType::Zip);
-            }
-        }
-    }
-
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "7z" => Ok(ArchiveType::SevenZip),
-        "zip" => Ok(ArchiveType::Zip),
-        _ => Err(ToolError::ExtractionFailed(format!(
-            "Unsupported or unrecognized archive format for: {}",
-            path.display()
-        ))),
-    }
-}
-
-/// Validates an entry's relative path against directory traversal attacks (`..`, absolute paths, drive prefixes).
-pub fn validate_archive_entry_path(raw_name: &str) -> Result<PathBuf, ToolError> {
-    let normalized = raw_name.replace('\\', "/");
-    if normalized.starts_with('/') || normalized.contains(':') {
-        return Err(ToolError::ExtractionFailed(format!(
-            "Forbidden absolute or prefixed entry path: {raw_name}"
-        )));
-    }
-
-    let trimmed = normalized.strip_prefix("./").unwrap_or(&normalized);
-    if trimmed.is_empty() || trimmed == "." {
-        return Ok(PathBuf::new());
-    }
-
-    let p = Path::new(trimmed);
-    for comp in p.components() {
-        match comp {
-            Component::ParentDir => {
-                return Err(ToolError::ExtractionFailed(format!(
-                    "Path traversal detected ('..'): {raw_name}"
-                )));
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(ToolError::ExtractionFailed(format!(
-                    "Forbidden root or prefix component in entry: {raw_name}"
-                )));
-            }
-            Component::Normal(_) | Component::CurDir => {}
-        }
-    }
-
-    Ok(p.to_path_buf())
-}
-
-/// Lists all entries inside a `.7z` or `.zip` archive without extracting them.
-pub fn list_archive_entries(archive_path: &Path) -> Result<Vec<ArchiveEntry>, ToolError> {
-    let archive_type = detect_archive_type(archive_path)?;
-    match archive_type {
-        ArchiveType::SevenZip => {
-            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            let reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty())
-                .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open 7z: {e}")))?;
-            let mut entries = Vec::new();
-            for f in reader.archive().files.iter() {
-                let clean = validate_archive_entry_path(&f.name)?;
-                if clean.as_os_str().is_empty() {
-                    continue;
-                }
-                entries.push(ArchiveEntry {
-                    relative_path: clean.to_string_lossy().replace('\\', "/"),
-                    size_bytes: f.size(),
-                    is_dir: f.is_directory(),
-                });
-            }
-            Ok(entries)
-        }
-        ArchiveType::Zip => {
-            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open zip: {e}")))?;
-            let mut entries = Vec::new();
-            for i in 0..archive.len() {
-                let zip_file = archive.by_index(i).map_err(|e| {
-                    ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}"))
-                })?;
-                let clean = validate_archive_entry_path(zip_file.name())?;
-                if clean.as_os_str().is_empty() {
-                    continue;
-                }
-                entries.push(ArchiveEntry {
-                    relative_path: clean.to_string_lossy().replace('\\', "/"),
-                    size_bytes: zip_file.size(),
-                    is_dir: zip_file.is_dir(),
-                });
-            }
-            Ok(entries)
-        }
-    }
-}
-
-/// Safely extracts a `.7z` or `.zip` archive into `dest_dir`, enforcing path traversal checks and size limits.
-pub fn extract_archive_to_dir(
-    archive_path: &Path,
-    dest_dir: &Path,
-) -> Result<Vec<ArchiveEntry>, ToolError> {
-    let archive_type = detect_archive_type(archive_path)?;
-    std::fs::create_dir_all(dest_dir).map_err(|e| ToolError::Io(e.to_string()))?;
-
-    let mut entries = Vec::new();
-    let mut total_bytes = 0u64;
-
-    match archive_type {
-        ArchiveType::SevenZip => {
-            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            let mut reader =
-                sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty())
-                    .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open 7z: {e}")))?;
-
-            reader
-                .for_each_entries(|entry, stream| {
-                    let clean = match validate_archive_entry_path(entry.name()) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )
-                            .into());
-                        }
-                    };
-                    if clean.as_os_str().is_empty() {
-                        return Ok(true);
-                    }
-
-                    // Reject symlinks/reparse points
-                    if entry.has_windows_attributes && (entry.windows_attributes & 0x0400 != 0) {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Symlink/reparse point rejected: {}", entry.name()),
-                        )
-                        .into());
-                    }
-
-                    let target = dest_dir.join(&clean);
-                    if entry.is_directory() {
-                        std::fs::create_dir_all(&target)?;
-                        entries.push(ArchiveEntry {
-                            relative_path: clean.to_string_lossy().replace('\\', "/"),
-                            size_bytes: 0,
-                            is_dir: true,
-                        });
-                    } else {
-                        if let Some(parent) = target.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        let mut out_file = File::create(&target)?;
-                        let mut buf = [0u8; 64 * 1024];
-                        let mut file_size = 0u64;
-                        loop {
-                            let n = stream.read(&mut buf)?;
-                            if n == 0 {
-                                break;
-                            }
-                            total_bytes += n as u64;
-                            if total_bytes > MAX_TOTAL_EXTRACTED_BYTES {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "Archive exceeded maximum extracted size limit (2 GiB)",
-                                )
-                                .into());
-                            }
-                            file_size += n as u64;
-                            out_file.write_all(&buf[..n])?;
-                        }
-                        entries.push(ArchiveEntry {
-                            relative_path: clean.to_string_lossy().replace('\\', "/"),
-                            size_bytes: file_size,
-                            is_dir: false,
-                        });
-                    }
-                    Ok(true)
-                })
-                .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
-        }
-        ArchiveType::Zip => {
-            let file = File::open(archive_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|e| ToolError::ExtractionFailed(format!("Failed to open zip: {e}")))?;
-
-            for i in 0..archive.len() {
-                let mut zip_file = archive.by_index(i).map_err(|e| {
-                    ToolError::ExtractionFailed(format!("Zip read error at {i}: {e}"))
-                })?;
-
-                let clean = validate_archive_entry_path(zip_file.name())?;
-                if clean.as_os_str().is_empty() {
-                    continue;
-                }
-
-                // Check for Unix symlink mode
-                if let Some(mode) = zip_file.unix_mode() {
-                    if (mode & 0o170000) == 0o120000 {
-                        return Err(ToolError::ExtractionFailed(format!(
-                            "Symlink rejected in zip: {}",
-                            zip_file.name()
-                        )));
-                    }
-                }
-
-                let target = dest_dir.join(&clean);
-                if zip_file.is_dir() {
-                    std::fs::create_dir_all(&target).map_err(|e| ToolError::Io(e.to_string()))?;
-                    entries.push(ArchiveEntry {
-                        relative_path: clean.to_string_lossy().replace('\\', "/"),
-                        size_bytes: 0,
-                        is_dir: true,
-                    });
-                } else {
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| ToolError::Io(e.to_string()))?;
-                    }
-                    let mut out_file =
-                        File::create(&target).map_err(|e| ToolError::Io(e.to_string()))?;
-                    let mut buf = [0u8; 64 * 1024];
-                    let mut file_size = 0u64;
-                    loop {
-                        let n = zip_file
-                            .read(&mut buf)
-                            .map_err(|e| ToolError::ExtractionFailed(e.to_string()))?;
-                        if n == 0 {
-                            break;
-                        }
-                        total_bytes += n as u64;
-                        if total_bytes > MAX_TOTAL_EXTRACTED_BYTES {
-                            return Err(ToolError::ExtractionFailed(
-                                "Archive exceeded maximum extracted size limit (2 GiB)".to_string(),
-                            ));
-                        }
-                        file_size += n as u64;
-                        out_file
-                            .write_all(&buf[..n])
-                            .map_err(|e| ToolError::Io(e.to_string()))?;
-                    }
-                    entries.push(ArchiveEntry {
-                        relative_path: clean.to_string_lossy().replace('\\', "/"),
-                        size_bytes: file_size,
-                        is_dir: false,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(entries)
-}
-
-fn sanitize_path_segment(segment: &str) -> String {
-    segment
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            other => other,
-        })
-        .collect()
-}
+#[cfg(test)]
+use crate::download::DownloadUrlPolicy;
+#[cfg(test)]
+use std::fs::File;
+#[cfg(test)]
+use std::io::Write;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::time::Duration;
 
 fn find_64_hex_token(line: &str) -> Option<String> {
     for word in line.split(|c: char| {
@@ -441,7 +152,8 @@ struct GitHubAssetDto {
 pub struct GitHubToolCatalog {
     cache_dir: PathBuf,
     api_base_url: String,
-    client: reqwest::blocking::Client,
+    download_policy: GitHubDownloadPolicy,
+    fetcher: HttpDownloadFetcher,
 }
 
 impl GitHubToolCatalog {
@@ -453,17 +165,12 @@ impl GitHubToolCatalog {
         cache_dir: impl Into<PathBuf>,
         api_base_url: String,
     ) -> Result<Self, ToolError> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .user_agent("gamenode-desktop")
-            .build()
-            .map_err(|e| ToolError::Failed(format!("Failed to build HTTP client: {e}")))?;
-
+        let api_base_url = api_base_url.trim_end_matches('/').to_string();
         Ok(Self {
             cache_dir: cache_dir.into(),
-            api_base_url: api_base_url.trim_end_matches('/').to_string(),
-            client,
+            download_policy: GitHubDownloadPolicy::with_api_base_url(api_base_url.clone()),
+            fetcher: HttpDownloadFetcher::new()?,
+            api_base_url,
         })
     }
 
@@ -475,50 +182,9 @@ impl GitHubToolCatalog {
         &self.api_base_url
     }
 
+    #[cfg(test)]
     fn is_allowed_download_url(&self, raw_url: &str) -> bool {
-        if raw_url.starts_with("file://") {
-            return true;
-        }
-
-        let Ok(parsed) = url::Url::parse(raw_url) else {
-            return false;
-        };
-
-        // When custom/mock base URL is configured, allow matching that host & port
-        let is_custom_base = self.api_base_url != "https://api.github.com";
-        if is_custom_base {
-            if let Ok(base_url) = url::Url::parse(&self.api_base_url) {
-                if parsed.host_str() == base_url.host_str() && parsed.port() == base_url.port() {
-                    return true;
-                }
-            }
-        }
-
-        // Local unit tests and mocks
-        if let Some(host) = parsed.host_str() {
-            if host == "127.0.0.1" || host == "localhost" {
-                return parsed.scheme() == "http" || parsed.scheme() == "https";
-            }
-        }
-
-        // Production security rule: HTTPS from authorized GitHub hosts
-        if parsed.scheme() != "https" {
-            return false;
-        }
-
-        if let Some(host) = parsed.host_str() {
-            let host_lower = host.to_ascii_lowercase();
-            if host_lower == "github.com"
-                || host_lower == "api.github.com"
-                || host_lower == "objects.githubusercontent.com"
-                || host_lower == "release-assets.githubusercontent.com"
-                || host_lower.ends_with(".githubusercontent.com")
-            {
-                return true;
-            }
-        }
-
-        false
+        self.download_policy.is_allowed(raw_url)
     }
 }
 
@@ -585,7 +251,8 @@ impl ToolCatalogApi for GitHubToolCatalog {
         );
 
         let response = self
-            .client
+            .fetcher
+            .client()
             .get(&endpoint)
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .send()
@@ -700,149 +367,35 @@ impl ToolCatalogApi for GitHubToolCatalog {
             .join(descriptor.id.as_str())
             .join(channel_slug)
             .join(&sanitized_version);
-        let target_path = target_dir.join(&release.asset_name);
 
-        // If target file already exists, verify and reuse without downloading
-        if target_path.is_file() {
-            if let Ok(computed) = compute_file_sha256(&target_path) {
-                let valid = if let Some(ref expected) = release.sha256 {
-                    expected.eq_ignore_ascii_case(&computed)
-                } else {
-                    list_archive_entries(&target_path).is_ok()
-                };
-
-                if valid {
-                    let size_bytes = std::fs::metadata(&target_path)
-                        .map(|m| m.len())
-                        .unwrap_or(release.size_bytes);
-                    return Ok(CachedToolArchive {
-                        tool_id: descriptor.id.clone(),
-                        channel: release.channel,
-                        version: release.version.clone(),
-                        path: target_path.to_string_lossy().to_string(),
-                        size_bytes,
-                        sha256: computed,
-                    });
-                }
-            }
-            // Existing file is corrupt; clean it up before downloading
-            let _ = std::fs::remove_file(&target_path);
-        }
-
-        // Security check on download URL
-        if !self.is_allowed_download_url(&release.download_url) {
-            return Err(ToolError::DownloadFailed(format!(
-                "Untrusted or forbidden download URL: {}",
-                release.download_url
-            )));
-        }
-
-        std::fs::create_dir_all(&target_dir).map_err(|e| ToolError::Io(e.to_string()))?;
-
-        let part_filename = format!(
-            "{}.part.{}_{}",
-            release.asset_name,
-            std::process::id(),
-            PART_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let part_path = target_dir.join(part_filename);
-
-        // Download to temporary .part file
-        let download_result = (|| -> Result<(), ToolError> {
-            if release.download_url.starts_with("file://") {
-                let file_path = if let Ok(parsed) = url::Url::parse(&release.download_url) {
-                    parsed.to_file_path().map_err(|_| {
-                        ToolError::DownloadFailed(format!(
-                            "Invalid file URL: {}",
-                            release.download_url
-                        ))
-                    })?
-                } else {
-                    PathBuf::from(release.download_url.strip_prefix("file://").unwrap())
-                };
-                std::fs::copy(&file_path, &part_path).map_err(|e| ToolError::Io(e.to_string()))?;
-            } else if Path::new(&release.download_url).is_absolute()
-                && Path::new(&release.download_url).exists()
-            {
-                std::fs::copy(&release.download_url, &part_path)
-                    .map_err(|e| ToolError::Io(e.to_string()))?;
-            } else {
-                let mut response = self
-                    .client
-                    .get(&release.download_url)
-                    .send()
-                    .map_err(|e| ToolError::DownloadFailed(e.to_string()))?;
-
-                if !response.status().is_success() {
-                    return Err(ToolError::DownloadFailed(format!(
-                        "HTTP {} downloading {}",
-                        response.status(),
-                        release.download_url
-                    )));
-                }
-
-                let mut part_file =
-                    File::create(&part_path).map_err(|e| ToolError::Io(e.to_string()))?;
-                std::io::copy(&mut response, &mut part_file)
-                    .map_err(|e| ToolError::Io(e.to_string()))?;
-            }
-            Ok(())
-        })();
-
-        if let Err(err) = download_result {
-            if part_path.exists() {
-                let _ = std::fs::remove_file(&part_path);
-            }
-            return Err(err);
-        }
-
-        // Verify SHA-256
-        let computed = match compute_file_sha256(&part_path) {
-            Ok(h) => h,
-            Err(e) => {
-                if part_path.exists() {
-                    let _ = std::fs::remove_file(&part_path);
-                }
-                return Err(e);
-            }
+        let request = CachedDownloadRequest {
+            url: &release.download_url,
+            cache_dir: &target_dir,
+            file_name: &release.asset_name,
+            expected_sha256: release.sha256.as_deref(),
         };
-
-        if let Some(ref expected) = release.sha256 {
-            if !expected.eq_ignore_ascii_case(&computed) {
-                if part_path.exists() {
-                    let _ = std::fs::remove_file(&part_path);
-                }
-                return Err(ToolError::ChecksumMismatch {
-                    path: target_path.to_string_lossy().to_string(),
-                    expected: expected.clone(),
-                    actual: computed,
-                });
-            }
-        }
-
-        // Verify archive integrity before promoting
-        if let Err(e) = list_archive_entries(&part_path) {
-            if part_path.exists() {
-                let _ = std::fs::remove_file(&part_path);
-            }
-            return Err(ToolError::ExtractionFailed(format!(
-                "Downloaded archive integrity check failed: {e}"
-            )));
-        }
-
-        // Promote .part to final target
-        std::fs::rename(&part_path, &target_path).map_err(|e| ToolError::Io(e.to_string()))?;
-        let size_bytes = std::fs::metadata(&target_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        // Tool releases are archives; reject a corrupt download even without a published hash.
+        let validate = |path: &Path| {
+            list_archive_entries(path).map(|_| ()).map_err(|e| {
+                ToolError::ExtractionFailed(format!(
+                    "Downloaded archive integrity check failed: {e}"
+                ))
+            })
+        };
+        let cached = ensure_cached_download(
+            &self.fetcher,
+            &self.download_policy,
+            &request,
+            Some(&validate),
+        )?;
 
         Ok(CachedToolArchive {
             tool_id: descriptor.id.clone(),
             channel: release.channel,
             version: release.version.clone(),
-            path: target_path.to_string_lossy().to_string(),
-            size_bytes,
-            sha256: computed,
+            path: cached.path.to_string_lossy().to_string(),
+            size_bytes: cached.size_bytes,
+            sha256: cached.sha256,
         })
     }
 

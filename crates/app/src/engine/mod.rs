@@ -32,10 +32,13 @@ use tokio::runtime::Handle;
 
 mod artwork;
 mod drm_free;
+pub mod pc_ports;
 mod playtime;
 pub mod steam_account;
 pub mod steam_login;
 mod tools;
+
+pub use pc_ports::{PortProgressPublisher, PortsService};
 
 use steam_account::{
     Clock, SteamAccount, SteamAccountPorts, SteamAccountState, SteamSignInResult, StoreAccountStore,
@@ -71,6 +74,13 @@ pub struct Ports {
     pub uri: Arc<dyn UriOpener>,
     /// The Steam store-account adapters; `None` in tests that do not exercise Steam.
     pub steam: Option<SteamPorts>,
+    /// The PC ports service; `None` on builds without port installs and in tests that do not
+    /// exercise PC ports.
+    pub pc_ports: Option<Arc<PortsService>>,
+    /// Durable port provenance. Read on the launch worker so a port's environment is applied.
+    pub port_store: Option<Arc<dyn gamenode_core::ports::PortStore>>,
+    /// Coalesces install progress into the `ports:progress` event.
+    pub port_progress: Arc<PortProgressPublisher>,
     /// Where downloaded covers are stored.
     pub covers_dir: PathBuf,
     pub platform: Platform,
@@ -167,6 +177,8 @@ struct State {
     library_loading: bool,
     /// The selection the last snapshot showed, to notice when it changes.
     published_selection: Option<Vec<String>>,
+    /// The PC ports projection built by the service on a worker thread.
+    ports_view: gamenode_core::ports::PortsView,
 }
 
 struct Shared {
@@ -248,6 +260,7 @@ impl Engine {
                 catalog_clear_pending: false,
                 library_loading: false,
                 published_selection: None,
+                ports_view: gamenode_core::ports::PortsView::default(),
             }),
             ports,
             runtime,
@@ -268,7 +281,38 @@ impl Engine {
                 }
             });
         }
+        if let Some(service) = &shared.ports.pc_ports {
+            let weak = Arc::downgrade(&shared);
+            service.set_observer(Arc::new(move |event| {
+                if let Some(shared) = weak.upgrade() {
+                    Engine { shared }.on_ports_event(event);
+                }
+            }));
+        }
         Self { shared }
+    }
+
+    /// Handles one PC ports worker event. A changed projection is stored and published once;
+    /// progress ticks go to the coalescing publisher and never touch the snapshot.
+    fn on_ports_event(&self, event: pc_ports::PortsEvent) {
+        match event {
+            pc_ports::PortsEvent::Changed { view, completion } => {
+                {
+                    let mut state = self.lock();
+                    state.ports_view = view;
+                    self.publish(&mut state);
+                }
+                if let Some(completion) = completion {
+                    self.port_install_completed(*completion);
+                }
+            }
+            pc_ports::PortsEvent::Progress(progress) => {
+                self.shared.ports.port_progress.publish(progress);
+            }
+            pc_ports::PortsEvent::ExecutableRejected { job_id, reason } => {
+                tracing::warn!(job_id, %reason, "the chosen PC port executable was refused");
+            }
+        }
     }
 
     /// Publishes the current state without holding any adapter lock. Used by the Steam status
@@ -341,6 +385,7 @@ impl Engine {
         };
         snapshot.tools = state.tools.clone();
         snapshot.store_accounts = store_accounts;
+        snapshot.ports = state.ports_view.clone();
         snapshot
     }
 
@@ -721,6 +766,16 @@ impl Engine {
 
     /// Feeds an input to the library and launches its effects. Never blocks on I/O.
     pub fn library_input(&self, input: LibInput) {
+        // PC ports speaks `drmfree:<id>` (the UI contract) while the DRM-free provider's own
+        // entry keys are `manual:<id>`. Translate a selection coming from the catalog so "Open in
+        // library" finds the entry.
+        let input = match input {
+            LibInput::Select { key, mode } if key.starts_with("drmfree:") => LibInput::Select {
+                key: format!("manual:{}", key.trim_start_matches("drmfree:")),
+                mode,
+            },
+            other => other,
+        };
         let mut state = self.lock();
         let cover_done = matches!(&input, LibInput::CoverDone { .. });
         let read_trigger = matches!(
@@ -948,11 +1003,13 @@ impl Engine {
                                 .iter()
                                 .find(|r| r.key() == entry.key && !r.removed)
                                 .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
-                            gamenode_core::library::launch::launch_manual(
+                            let environment = engine.port_launch_environment(&registration.id);
+                            gamenode_core::library::launch::launch_manual_with_environment(
                                 &**host,
                                 &provider,
                                 &entry.record(),
                                 registration,
+                                &environment,
                                 kind,
                             )
                         })

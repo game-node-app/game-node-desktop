@@ -177,3 +177,72 @@ fn manual_launch_requires_approved_available_registration_and_never_installs() {
     assert_eq!(*host.0.lock().unwrap(), 1);
     assert!(!manual.can_install(&record));
 }
+
+#[test]
+fn a_port_launch_passes_its_provenance_environment_to_the_host() {
+    use crate::drm_free::{
+        Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
+    };
+    struct Host(Mutex<Option<LaunchEnvironment>>);
+    impl InstallationHost for Host {
+        fn inspect(&self, _: &str) -> Result<Registration, LocalError> {
+            unreachable!()
+        }
+        fn evidence(&self, _: &Registration) -> Result<Vec<Evidence>, LocalError> {
+            unreachable!()
+        }
+        fn launch(&self, _: &Registration) -> Result<(), LocalError> {
+            unreachable!("an environment-aware launch must not take the plain path")
+        }
+        fn launch_with_environment(
+            &self,
+            _: &Registration,
+            environment: &LaunchEnvironment,
+        ) -> Result<(), LocalError> {
+            *self.0.lock().unwrap() = Some(environment.clone());
+            Ok(())
+        }
+    }
+
+    let providers = registry::load(
+        &[(
+            "manual.toml",
+            include_str!("../../../../../providers/manual.toml"),
+        )],
+        Platform::Windows,
+    );
+    let manual = providers.get("manual").unwrap();
+    let registration = Registration {
+        id: "uuid".into(),
+        title: "Game".into(),
+        executable: "C:/game/game.exe".into(),
+        file_identity: "file".into(),
+        root: "C:/game".into(),
+        working_directory: "C:/game".into(),
+        arguments: vec!["--iso".into(), "D:/dump.iso".into()],
+        gameplay: vec![],
+        launchers: vec![],
+        revision: 1,
+        removed: false,
+        rediscovery_allowed: false,
+        transferred_from: None,
+        available: true,
+    };
+    let record = crate::drm_free::records(&[registration.clone()]).remove(0);
+    let environment =
+        LaunchEnvironment::from([("BLOODBORNE_PATH".to_string(), "D:/dump.iso".to_string())]);
+    let host = Host(Mutex::new(None));
+
+    assert_eq!(
+        launch_manual_with_environment(
+            &host,
+            manual,
+            &record,
+            &registration,
+            &environment,
+            LaunchKind::Play
+        ),
+        Ok(())
+    );
+    assert_eq!(host.0.lock().unwrap().as_ref(), Some(&environment));
+}

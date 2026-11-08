@@ -23,11 +23,12 @@ use gamenode_core::{
 use tokio::sync::watch;
 use url::Url;
 
-use super::{Engine, Ports};
+use super::{Engine, PortProgressPublisher, Ports};
 
 mod drm_free;
 mod favorites;
 mod library;
+mod pc_ports;
 mod playtime;
 mod steam;
 mod tools;
@@ -450,6 +451,11 @@ fn harness_with_steam(
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
         steam,
+        pc_ports: None,
+        port_store: None,
+        port_progress: Arc::new(PortProgressPublisher::disabled(
+            tokio::runtime::Handle::current(),
+        )),
         covers_dir: covers.path().to_owned(),
         platform: Platform::Linux,
     };
@@ -472,6 +478,7 @@ fn harness_with_steam(
         launch: None,
         tools: Default::default(),
         store_accounts: Vec::new(),
+        ports: Default::default(),
     });
     let providers = crate::providers::load_bundled(Platform::Linux).providers;
     let publishes = Arc::new(AtomicUsize::new(0));

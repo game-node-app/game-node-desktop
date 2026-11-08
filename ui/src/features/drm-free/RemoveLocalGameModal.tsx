@@ -113,6 +113,28 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
             </p>
           </div>
 
+          {registration?.root && (
+            <div
+              data-testid="remove-install-folder"
+              className="flex flex-wrap items-center justify-between gap-compact rounded-sm border border-border-subtle bg-raised px-3.5 py-sm text-sm text-text-default"
+            >
+              <div className="min-w-0">
+                <div className="text-xs text-text-dimmed">{t('drmFree.installFolder')}</div>
+                <div className="break-all" title={registration.root}>
+                  {registration.root}
+                </div>
+              </div>
+              <button
+                type="button"
+                data-testid="remove-open-folder"
+                onClick={() => void commands.openInstallFolder(registration.root)}
+                className="shrink-0 rounded-sm border border-border-subtle bg-secondary px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                {t('drmFree.openFolder')}
+              </button>
+            </div>
+          )}
+
           <label className="flex cursor-pointer items-center gap-2.5 rounded-sm border border-border-subtle bg-raised px-3.5 py-sm text-sm text-text-default">
             <input
               type="checkbox"

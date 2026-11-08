@@ -129,6 +129,10 @@ impl Engine {
                 store
                     .save_registration(&registration)
                     .map_err(local_storage)?;
+                // A port whose registration was removed keeps its provenance; adding the same
+                // executable again links the existing install instead of creating a second one
+                // (design D10).
+                engine.relink_port_registration(&registration);
             }
             engine.lock().local_selection = Some(key);
             Ok(())

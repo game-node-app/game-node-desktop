@@ -2,9 +2,11 @@ import { beforeEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { createAppQueryClient } from '../../AppProviders';
 import { render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { commands } from '../../api/commands';
 import { createDefaultFilters, type LibraryView, type LocalView } from '../../api/types';
+import type { PortsView } from '../../api/ports';
 import { I18nProvider } from '../../i18n';
 import { resetUiStore, uiStore } from '../../store/uiStore';
 import { AppMenu } from './AppMenu';
@@ -95,6 +97,24 @@ describe('features/shell', () => {
     profiles: [],
     jobs: [],
     settings: { automatic: false, destination: '/backups' },
+  };
+
+  const samplePorts: PortsView = {
+    catalog: {
+      state: 'ready',
+      fetchedAt: 1_700_000_000,
+      entryCount: 0,
+      error: null,
+    },
+    entries: [],
+    provenance: {},
+    jobs: [],
+    unseenCount: 2,
+    preferences: {
+      view: 'grid',
+      filters: { consoles: [], guided: false, verified: false, installed: false },
+      lastParentFolder: null,
+    },
   };
 
   describe('TopBar', () => {
@@ -246,16 +266,185 @@ describe('features/shell', () => {
       expect(uiStore.state.discoveryModalOpen).toBe(true);
     });
 
-    it('renders version label in footer', () => {
+    it('no longer renders the removed version label', () => {
+      renderWithProviders(
+        <Sidebar library={sampleLibrary} localGames={sampleLocalGames} />,
+      );
+
+      expect(screen.queryByTestId('sidebar-version-label')).not.toBeInTheDocument();
+      expect(screen.queryByText(/GameNode · /)).not.toBeInTheDocument();
+    });
+
+    it('sends setSidebarCollapsed in both directions from the header toggle', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput').mockResolvedValue();
+
+      const view = renderWithProviders(
+        <Sidebar library={sampleLibrary} localGames={sampleLocalGames} />,
+      );
+
+      const expandedToggle = screen.getByTestId('sidebar-collapse-toggle');
+      expect(expandedToggle).toHaveAttribute('aria-label', 'Collapse sidebar');
+      expect(expandedToggle).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.click(expandedToggle);
+      expect(libraryInputSpy).toHaveBeenCalledWith({ setSidebarCollapsed: true });
+
+      const collapsedLibrary: LibraryView = {
+        ...sampleLibrary,
+        layout: { ...sampleLibrary.layout, sidebarCollapsed: true },
+      };
+
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider initialLocale="en">
+            <Sidebar library={collapsedLibrary} localGames={sampleLocalGames} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+
+      const collapsedToggle = screen.getByTestId('sidebar-collapse-toggle');
+      expect(collapsedToggle).toHaveAttribute('aria-label', 'Expand sidebar');
+      expect(collapsedToggle).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(collapsedToggle);
+      expect(libraryInputSpy).toHaveBeenCalledWith({ setSidebarCollapsed: false });
+    });
+
+    it('renders the collapsed dock at 72px with accessible rows, dots and no resize handle', () => {
+      const collapsedLibrary: LibraryView = {
+        ...sampleLibrary,
+        layout: { ...sampleLibrary.layout, sidebarCollapsed: true },
+      };
+
+      renderWithProviders(
+        <Sidebar
+          library={collapsedLibrary}
+          localGames={sampleLocalGames}
+          ports={samplePorts}
+          signedIn
+          user={{ id: 'u-1', username: 'GamerG' }}
+          platform="windows"
+        />,
+      );
+
+      expect(screen.getByTestId('sidebar')).toHaveStyle({ width: '72px' });
+      expect(screen.queryByRole('separator')).not.toBeInTheDocument();
+      expect(screen.queryByText('Navigate')).not.toBeInTheDocument();
+      expect(screen.queryByText('Explore')).not.toBeInTheDocument();
+      expect(screen.queryByText('Your space')).not.toBeInTheDocument();
+      expect(screen.queryByText('Steam')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sidebar-all-count')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sidebar-provider-count-steam')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('sidebar-provider-installed-steam'),
+      ).not.toBeInTheDocument();
+
+      expect(screen.getByRole('button', { name: 'PC ports, 2 installs running or unseen' })).toHaveAttribute(
+        'title',
+        'PC ports',
+      );
+      expect(screen.getByTestId('sidebar-ports-badge')).toHaveAttribute(
+        'aria-label',
+        '2 installs running or unseen',
+      );
+      expect(screen.getByTestId('provider-warning-gog')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-discovery-badge')).toBeInTheDocument();
+
+      expect(screen.getByRole('button', { name: 'All games' })).toHaveAttribute(
+        'title',
+        'All games',
+      );
+      expect(screen.getByRole('button', { name: 'Steam' })).toHaveAttribute(
+        'title',
+        'Steam',
+      );
+      expect(screen.getByRole('button', { name: 'GOG, Provider sync failure' })).toHaveAttribute(
+        'title',
+        'GOG',
+      );
+      expect(
+        screen.getByRole('button', { name: 'Discovered games, 1 games' }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Add a game' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+
+      const account = screen.getByTestId('sidebar-account-button');
+      expect(account).toHaveAttribute('aria-label', 'GamerG');
+      expect(account).toHaveAttribute('title', 'GamerG');
+      expect(screen.queryByText('My account')).not.toBeInTheDocument();
+    });
+
+    it('shows the signed-in account and opens account settings', () => {
       renderWithProviders(
         <Sidebar
           library={sampleLibrary}
           localGames={sampleLocalGames}
-          version="0.2.5"
+          signedIn
+          user={{ id: 'u-1', username: 'GamerG', email: 'gamer@example.com' }}
         />,
       );
 
-      expect(screen.getByTestId('sidebar-version-label')).toHaveTextContent('GameNode · 0.2.5');
+      const account = screen.getByTestId('sidebar-account-button');
+      expect(account).toHaveTextContent('GamerG');
+      expect(account).toHaveTextContent('My account');
+
+      fireEvent.click(account);
+      expect(uiStore.state.settingsOpen).toBe(true);
+      expect(uiStore.state.settingsTopic).toBe('account');
+    });
+
+    it('omits the account row when signed out or without a user', () => {
+      const view = renderWithProviders(
+        <Sidebar
+          library={sampleLibrary}
+          localGames={sampleLocalGames}
+          signedIn={false}
+        />,
+      );
+      expect(screen.queryByTestId('sidebar-account-button')).not.toBeInTheDocument();
+      view.unmount();
+
+      const noUser = renderWithProviders(
+        <Sidebar
+          library={sampleLibrary}
+          localGames={sampleLocalGames}
+          signedIn
+          user={null}
+        />,
+      );
+      expect(screen.queryByTestId('sidebar-account-button')).not.toBeInTheDocument();
+      noUser.unmount();
+
+      // A signed-in flag injected without a user must not crash and shows no account row.
+      renderWithProviders(
+        <Sidebar library={sampleLibrary} localGames={sampleLocalGames} signedIn />,
+      );
+      expect(screen.queryByTestId('sidebar-account-button')).not.toBeInTheDocument();
+    });
+
+    it('does not render destinations the app does not offer', () => {
+      renderWithProviders(
+        <Sidebar
+          library={sampleLibrary}
+          localGames={sampleLocalGames}
+          ports={samplePorts}
+          signedIn
+          platform="windows"
+        />,
+      );
+
+      for (const label of [
+        'Home',
+        'Daily Node',
+        'Collections',
+        'Achievements',
+        'Premium',
+      ]) {
+        expect(
+          screen.queryByRole('button', { name: label }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText(label)).not.toBeInTheDocument();
+      }
     });
 
     it('drags ResizeHandle updating TanStack store and commits clamped width on release', () => {
@@ -314,6 +503,156 @@ describe('features/shell', () => {
       // ArrowRight grows by 16px (200 + 16 = 216)
       fireEvent.keyDown(handle, { key: 'ArrowRight' });
       expect(libraryInputSpy).toHaveBeenCalledWith({ setSidebarWidth: 216 });
+    });
+  });
+
+  describe('Sidebar PC ports destination', () => {
+    const renderSignedInSidebar = (
+      overrides: Partial<React.ComponentProps<typeof Sidebar>> = {},
+      locale = 'en',
+    ) =>
+      renderWithProviders(
+        <Sidebar
+          library={sampleLibrary}
+          localGames={sampleLocalGames}
+          ports={samplePorts}
+          signedIn
+          platform="windows"
+          {...overrides}
+        />,
+        locale,
+      );
+
+    it('switches the content area and marks only PC ports active', () => {
+      const portsOpenSpy = vi.spyOn(commands, 'portsOpen').mockResolvedValue();
+
+      renderSignedInSidebar();
+
+      expect(screen.getByText('Navigate')).toBeInTheDocument();
+      expect(screen.getByText('Explore')).toBeInTheDocument();
+      expect(screen.getByText('Your space')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-explore-group')).toBeInTheDocument();
+      expect(uiStore.state.activeDestination).toBe('library');
+      expect(screen.getByTestId('sidebar-all-games')).toHaveAttribute('aria-current', 'page');
+
+      fireEvent.click(screen.getByTestId('sidebar-ports'));
+
+      expect(portsOpenSpy).toHaveBeenCalledTimes(1);
+      expect(uiStore.state.activeDestination).toBe('ports');
+      expect(screen.getByTestId('sidebar-ports')).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByTestId('sidebar-all-games')).not.toHaveAttribute('aria-current');
+      expect(screen.getByTestId('sidebar-provider-steam')).not.toHaveAttribute('aria-current');
+    });
+
+    it('returns to the library with the chosen filter and preserves the rest of the layout', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput').mockResolvedValue();
+      const steamLibrary: LibraryView = {
+        ...sampleLibrary,
+        layout: { ...sampleLibrary.layout, filter: { provider: 'steam' } },
+      };
+
+      const view = renderSignedInSidebar({ library: steamLibrary });
+
+      expect(screen.getByTestId('sidebar-provider-steam')).toHaveAttribute('aria-current', 'page');
+
+      fireEvent.click(screen.getByTestId('sidebar-ports'));
+      // Opening the catalog must not clear or rewrite the library filter.
+      expect(libraryInputSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId('sidebar-provider-steam')).not.toHaveAttribute('aria-current');
+
+      fireEvent.click(screen.getByTestId('sidebar-provider-gog'));
+
+      expect(uiStore.state.activeDestination).toBe('library');
+      expect(libraryInputSpy).toHaveBeenCalledTimes(1);
+      expect(libraryInputSpy).toHaveBeenCalledWith({ setFilter: { provider: 'gog' } });
+
+      // The engine answers with the updated layout; the sidebar marks exactly that item.
+      const gogLibrary: LibraryView = {
+        ...sampleLibrary,
+        layout: { ...sampleLibrary.layout, filter: { provider: 'gog' } },
+      };
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider initialLocale="en">
+            <Sidebar
+              library={gogLibrary}
+              localGames={sampleLocalGames}
+              ports={samplePorts}
+              signedIn
+              platform="windows"
+            />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId('sidebar-provider-gog')).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByTestId('sidebar-ports')).not.toHaveAttribute('aria-current');
+    });
+
+    it('shows the unseen install badge with an accessible count and hides it at zero', () => {
+      const view = renderSignedInSidebar();
+
+      const badge = screen.getByTestId('sidebar-ports-badge');
+      expect(badge).toHaveTextContent('2');
+      expect(badge).toHaveAttribute('aria-label', '2 installs running or unseen');
+      expect(screen.getByTestId('sidebar-ports')).toHaveTextContent('PC ports');
+
+      view.unmount();
+      renderSignedInSidebar({ ports: { ...samplePorts, unseenCount: 0 } });
+      expect(screen.queryByTestId('sidebar-ports-badge')).not.toBeInTheDocument();
+    });
+
+    it('reaches PC ports by keyboard before the library rows', async () => {
+      const user = userEvent.setup();
+      renderSignedInSidebar();
+
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByTestId('sidebar-collapse-toggle'));
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByTestId('sidebar-ports'));
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByTestId('sidebar-all-games'));
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByTestId('sidebar-provider-steam'));
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByTestId('sidebar-provider-gog'));
+
+      screen.getByTestId('sidebar-ports').focus();
+      await user.keyboard('{Enter}');
+      expect(uiStore.state.activeDestination).toBe('ports');
+
+      fireEvent.click(screen.getByTestId('sidebar-all-games'));
+      expect(uiStore.state.activeDestination).toBe('library');
+
+      screen.getByTestId('sidebar-ports').focus();
+      await user.keyboard(' ');
+      expect(uiStore.state.activeDestination).toBe('ports');
+    });
+
+    it('hides the destination on Linux and when signed out', () => {
+      const linux = renderSignedInSidebar({ platform: 'linux' });
+      expect(screen.queryByTestId('sidebar-explore-group')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sidebar-ports')).not.toBeInTheDocument();
+      linux.unmount();
+
+      renderSignedInSidebar({ signedIn: false });
+      expect(screen.queryByTestId('sidebar-explore-group')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sidebar-ports')).not.toBeInTheDocument();
+    });
+
+    it('renders the pt-BR labels and badge text', () => {
+      renderSignedInSidebar({}, 'pt-BR');
+
+      expect(screen.getByText('Navegar')).toBeInTheDocument();
+      expect(screen.getByText('Explorar')).toBeInTheDocument();
+      expect(screen.getByText('Seu espaço')).toBeInTheDocument();
+      expect(screen.getByText('Ports para PC')).toBeInTheDocument();
+      expect(screen.getByText('Todos os jogos')).toBeInTheDocument();
+      expect(screen.getByText('Adicionar jogo')).toBeInTheDocument();
+      expect(screen.getByText('Jogos descobertos')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-ports-badge')).toHaveAttribute(
+        'aria-label',
+        '2 instalações em andamento ou ainda não vistas',
+      );
     });
   });
 

@@ -1,18 +1,27 @@
 //! Custom `gamenode-asset://` protocol implementation for Tauri v2.
 //!
-//! Serves cached game covers and landscape artwork directly to the WebView
+//! Serves cached game covers, landscape artwork and PC port artwork directly to the WebView
 //! off the main thread without decoding full uncompressed bitmaps in Rust memory.
 //!
 //! Supported schemes and formats:
 //! - Standard: `gamenode-asset://localhost/cover/<file>` or `gamenode-asset://cover/<file>`
 //! - Artwork: `gamenode-asset://localhost/artwork/<game_id>?rev=...` or `gamenode-asset://artwork/<game_id>`
-//! - Windows WebView2 mapped URL: `http://gamenode-asset.localhost/cover/<file>` and
-//!   `http://gamenode-asset.localhost/artwork/<game_id>`
+//! - Port art: `gamenode-asset://localhost/port-art/<catalog_id>/<capsule|hero>`
+//! - Windows WebView2 mapped URL: `http://gamenode-asset.localhost/cover/<file>`,
+//!   `http://gamenode-asset.localhost/artwork/<game_id>` and
+//!   `http://gamenode-asset.localhost/port-art/<catalog_id>/<capsule|hero>`
+//!
+//! Port art is served only while a [`PortArtState`] is managed by the Tauri application. The route
+//! answers 404 before it is registered, and it never fetches a URL supplied by the request.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gamenode_platform::covers::{artwork_dir, cover_file_name};
+use gamenode_platform::ports::art::{
+    PortArtError, PortArtImage, PortArtKind, PortArtLoader, PortArtResolver,
+};
+use tauri::Manager;
 use tauri::http::{Request, Response, StatusCode, Uri, header};
 
 /// Scheme name used for asset requests.
@@ -104,8 +113,16 @@ pub fn percent_decode(input: &str) -> Option<String> {
 /// Parsed asset route extracted from a URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedAsset {
-    Cover { filename: String },
-    Artwork { game_id: u64 },
+    Cover {
+        filename: String,
+    },
+    Artwork {
+        game_id: u64,
+    },
+    PortArt {
+        catalog_id: String,
+        kind: PortArtKind,
+    },
     Invalid,
 }
 
@@ -114,6 +131,12 @@ pub enum ParsedAsset {
 /// - Path starting with `"/cover/"` or `"/covers/"` -> filename is segment after prefix
 /// - Host `"artwork"` or `"artworks"` -> game_id is `path.trim_start_matches('/')`
 /// - Path starting with `"/artwork/"` or `"/artworks/"` -> game_id is segment after prefix
+/// - Path starting with `"/port-art/"` -> `<catalog_id>/<capsule|hero>`, decoded separately
+///
+/// A `port-art` path that does not have exactly two segments, or whose kind is not `capsule` or
+/// `hero`, is not a route at all (`None`, served as 404). Percent-encoded separators inside a
+/// catalog id are decoded and then rejected by the handler, so a request cannot smuggle a URL or a
+/// path traversal through the segment.
 pub fn parse_asset_uri_parts(host: Option<&str>, path: &str) -> Option<ParsedAsset> {
     let path_without_query = path
         .split('?')
@@ -132,6 +155,25 @@ pub fn parse_asset_uri_parts(host: Option<&str>, path: &str) -> Option<ParsedAss
             return Some(ParsedAsset::Invalid);
         };
         return Some(ParsedAsset::Cover { filename: decoded });
+    }
+
+    if let Some(rest) = path_without_query.strip_prefix("/port-art/") {
+        let mut segments = rest.split('/');
+        let (Some(raw_catalog_id), Some(raw_kind), None) =
+            (segments.next(), segments.next(), segments.next())
+        else {
+            return None;
+        };
+        if raw_catalog_id.is_empty() || raw_kind.is_empty() {
+            return None;
+        }
+        let (Some(catalog_id), Some(kind)) =
+            (percent_decode(raw_catalog_id), percent_decode(raw_kind))
+        else {
+            return Some(ParsedAsset::Invalid);
+        };
+        let kind = PortArtKind::parse(&kind)?;
+        return Some(ParsedAsset::PortArt { catalog_id, kind });
     }
 
     if let Some(rest) = path_without_query
@@ -398,6 +440,132 @@ where
     }
 }
 
+/// The `port-art` route state.
+///
+/// ## Wiring
+///
+/// The route is dormant until the app manages this value; every request is answered 404 while it
+/// is absent, so older hosts and tests without port state keep working. The wiring agent constructs
+/// it once, after the port store exists, and registers it on the builder:
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use gamenode_platform::ports::art::SnapshotPortArtResolver;
+///
+/// let resolver = Arc::new(SnapshotPortArtResolver::new(port_store.clone()));
+/// builder = builder.manage(PortArtState::production(resolver, paths.data_dir())?);
+/// ```
+///
+/// The resolver may instead be a closure reading the catalog worker's in-memory entries (they are
+/// the stored snapshot with the overlay applied), which avoids a database read per tile:
+///
+/// ```ignore
+/// let worker = Arc::clone(&catalog_worker);
+/// let resolver: Arc<dyn PortArtResolver> = Arc::new(move |catalog_id: &str, kind| {
+///     // Find the entry in `worker.entries()` and return `PortArtSource::Url(..)`,
+///     // `PortArtSource::NoArt` or `PortArtSource::UnknownEntry`.
+/// });
+/// builder = builder.manage(PortArtState::production(resolver, paths.data_dir())?);
+/// ```
+///
+/// `builder.manage` may run before or after protocol registration; state is looked up when a
+/// request arrives. The fetcher and disk cache are production defaults
+/// ([`PortArtLoader::production`]); tests build a state with a fake fetcher through
+/// [`PortArtState::new`].
+#[derive(Clone)]
+pub struct PortArtState {
+    loader: PortArtLoader,
+}
+
+impl PortArtState {
+    /// Builds a state from an already-configured loader (used by tests and custom hosts).
+    pub fn new(loader: PortArtLoader) -> Self {
+        Self { loader }
+    }
+
+    /// The production state: HTTPS-only fetcher and `<data_dir>/ports/art/` cache.
+    ///
+    /// The resolver is the only source of a port's art URL; the request supplies just the catalog
+    /// id and the size.
+    pub fn production(
+        resolver: Arc<dyn PortArtResolver>,
+        data_dir: &Path,
+    ) -> Result<Self, PortArtError> {
+        Ok(Self {
+            loader: PortArtLoader::production(resolver, data_dir)?,
+        })
+    }
+
+    /// Loads one image. Blocking: only called from the protocol's blocking task.
+    fn load(&self, catalog_id: &str, kind: PortArtKind) -> Result<PortArtImage, PortArtError> {
+        self.loader.load(catalog_id, kind)
+    }
+}
+
+/// Cache policy of port art. The WebView URL is stable while the upstream URL recorded in the
+/// snapshot can change, so the image must not be immutable.
+const PORT_ART_CACHE_CONTROL: &str = "public, max-age=3600";
+
+/// A catalog id is one opaque segment. It never becomes a file path or URL here, but refusing
+/// separators and traversal shapes keeps a hostile request from looking like a route.
+fn valid_port_art_catalog_id(catalog_id: &str) -> bool {
+    !catalog_id.is_empty()
+        && catalog_id.len() <= 200
+        && !catalog_id.starts_with('.')
+        && !catalog_id.contains(['/', '\\', ':', '\0'])
+        && !catalog_id.contains("..")
+}
+
+/// Serves `port-art/<catalog_id>/<capsule|hero>`, resolving the upstream URL from the snapshot in
+/// [`PortArtState`]. The fetch and cache write happen on a blocking worker.
+async fn handle_port_art(
+    catalog_id: &str,
+    kind: PortArtKind,
+    port_art: Option<&PortArtState>,
+) -> Response<Vec<u8>> {
+    if !valid_port_art_catalog_id(catalog_id) {
+        return build_response(StatusCode::NOT_FOUND, None, None, Vec::new());
+    }
+    let Some(port_art) = port_art else {
+        // No port state was registered on the app builder; the route has nothing to resolve.
+        return build_response(StatusCode::NOT_FOUND, None, None, Vec::new());
+    };
+
+    let port_art = port_art.clone();
+    let catalog_id = catalog_id.to_owned();
+    let loaded = tokio::task::spawn_blocking(move || port_art.load(&catalog_id, kind)).await;
+
+    match loaded {
+        Ok(Ok(image)) => build_response(
+            StatusCode::OK,
+            Some(image.content_type),
+            Some(PORT_ART_CACHE_CONTROL),
+            image.bytes,
+        ),
+        Ok(Err(error)) => port_art_error_response(error),
+        Err(error) => {
+            // A panicking worker must not take down the protocol; the tile falls back to its
+            // titled placeholder.
+            tracing::warn!(%error, "the port art worker stopped unexpectedly");
+            build_response(StatusCode::BAD_GATEWAY, None, None, Vec::new())
+        }
+    }
+}
+
+/// Maps a load failure to the response the WebView sees. A missing entry or missing art is 404;
+/// an upstream failure (bad URL, network, oversize or non-image body) is 502.
+fn port_art_error_response(error: PortArtError) -> Response<Vec<u8>> {
+    let status = match error {
+        PortArtError::UnknownEntry { .. } | PortArtError::NoArt { .. } => StatusCode::NOT_FOUND,
+        PortArtError::RejectedUrl { .. }
+        | PortArtError::Fetch(_)
+        | PortArtError::TooLarge { .. }
+        | PortArtError::NotImage
+        | PortArtError::Io(_) => StatusCode::BAD_GATEWAY,
+    };
+    build_response(status, None, None, Vec::new())
+}
+
 /// Asynchronously handles an asset request for a parsed `tauri::http::Uri`.
 pub async fn handle_asset_uri<F>(
     uri: &Uri,
@@ -420,12 +588,31 @@ pub async fn handle_asset_uri_conditional<F>(
 where
     F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
 {
+    handle_asset_uri_conditional_with_port_art(uri, covers_dir, artwork_lookup, if_none_match, None)
+        .await
+}
+
+/// Like [`handle_asset_uri_conditional`], with the app's optional [`PortArtState`]. Without state,
+/// `port-art` requests are answered 404.
+pub async fn handle_asset_uri_conditional_with_port_art<F>(
+    uri: &Uri,
+    covers_dir: &Path,
+    artwork_lookup: &F,
+    if_none_match: Option<&str>,
+    port_art: Option<&PortArtState>,
+) -> Response<Vec<u8>>
+where
+    F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
+{
     match parse_asset_uri(uri) {
         Some(ParsedAsset::Cover { filename }) => {
             handle_cover_conditional(&filename, covers_dir, if_none_match).await
         }
         Some(ParsedAsset::Artwork { game_id }) => {
             handle_artwork(game_id, covers_dir, artwork_lookup).await
+        }
+        Some(ParsedAsset::PortArt { catalog_id, kind }) => {
+            handle_port_art(&catalog_id, kind, port_art).await
         }
         Some(ParsedAsset::Invalid) => {
             build_response(StatusCode::BAD_REQUEST, None, None, Vec::new())
@@ -435,6 +622,9 @@ where
 }
 
 /// Synchronously handles an asset request for a parsed `tauri::http::Uri`.
+///
+/// The synchronous path never performs network I/O, so `port-art` is answered 404 here; the
+/// asynchronous handler is the one the WebView uses.
 pub fn handle_asset_uri_sync<F>(
     uri: &Uri,
     covers_dir: &Path,
@@ -447,6 +637,9 @@ where
         Some(ParsedAsset::Cover { filename }) => handle_cover_sync(&filename, covers_dir),
         Some(ParsedAsset::Artwork { game_id }) => {
             handle_artwork_sync(game_id, covers_dir, artwork_lookup)
+        }
+        Some(ParsedAsset::PortArt { .. }) => {
+            build_response(StatusCode::NOT_FOUND, None, None, Vec::new())
         }
         Some(ParsedAsset::Invalid) => {
             build_response(StatusCode::BAD_REQUEST, None, None, Vec::new())
@@ -494,11 +687,31 @@ pub async fn handle_request<F>(
 where
     F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
 {
+    handle_request_with_port_art(request, covers_dir, artwork_lookup, None).await
+}
+
+/// Like [`handle_request`], with the app's optional [`PortArtState`].
+pub async fn handle_request_with_port_art<F>(
+    request: &Request<Vec<u8>>,
+    covers_dir: &Path,
+    artwork_lookup: &F,
+    port_art: Option<&PortArtState>,
+) -> Response<Vec<u8>>
+where
+    F: Fn(u64) -> Option<Vec<u8>> + ?Sized,
+{
     let if_none_match = request
         .headers()
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok());
-    handle_asset_uri_conditional(request.uri(), covers_dir, artwork_lookup, if_none_match).await
+    handle_asset_uri_conditional_with_port_art(
+        request.uri(),
+        covers_dir,
+        artwork_lookup,
+        if_none_match,
+        port_art,
+    )
+    .await
 }
 
 /// Reads the artwork bytes for `game_id` from the `Engine` when its detail is loaded, without
@@ -559,11 +772,21 @@ where
 
     builder.register_asynchronous_uri_scheme_protocol(
         PROTOCOL_SCHEME,
-        move |_ctx, request, responder| {
+        move |ctx, request, responder| {
             let covers_dir = Arc::clone(&covers_dir);
             let artwork_lookup = Arc::clone(&artwork_lookup);
+            // The state is looked up per request, so `.manage(PortArtState)` may be registered
+            // before or after this protocol. Without it, the route answers 404.
+            let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn(async move {
-                let response = handle_request(&request, &covers_dir, &*artwork_lookup).await;
+                let port_art = app.try_state::<PortArtState>();
+                let response = handle_request_with_port_art(
+                    &request,
+                    &covers_dir,
+                    &*artwork_lookup,
+                    port_art.as_deref(),
+                )
+                .await;
                 responder.respond(response);
             });
         },
@@ -573,6 +796,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gamenode_platform::ports::art::{
+        MAX_PORT_ART_BYTES, PortArtCache, PortArtFetcher, PortArtSource,
+    };
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     #[test]
@@ -921,6 +1149,292 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let res = handle_asset_uri_str_sync(uri, dir.path(), &lookup);
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn port_art_route_parses_the_catalog_id_and_kind() {
+        assert_eq!(
+            parse_asset_uri_parts(Some("localhost"), "/port-art/qcat_1%5F%32/capsule"),
+            Some(ParsedAsset::PortArt {
+                catalog_id: "qcat_1_2".into(),
+                kind: PortArtKind::Capsule,
+            })
+        );
+        assert_eq!(
+            parse_asset_uri_parts(Some("localhost"), "/port-art/qcat_1/hero?rev=2"),
+            Some(ParsedAsset::PortArt {
+                catalog_id: "qcat_1".into(),
+                kind: PortArtKind::Hero,
+            })
+        );
+        // Exactly two segments and a known kind are required.
+        assert_eq!(
+            parse_asset_uri_parts(
+                Some("localhost"),
+                "/port-art/https%3A%2F%2Fevil.example%2Fx.png"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_asset_uri_parts(Some("localhost"), "/port-art/qcat_1/banner"),
+            None
+        );
+        assert_eq!(
+            parse_asset_uri_parts(Some("localhost"), "/port-art/qcat_1/hero/extra"),
+            None
+        );
+    }
+
+    /// A fetcher that records every call, so a test can prove no network was attempted.
+    struct FakePortArtFetcher {
+        bytes: Vec<u8>,
+        calls: AtomicUsize,
+        urls: Mutex<Vec<String>>,
+    }
+
+    impl FakePortArtFetcher {
+        fn new(bytes: &[u8]) -> Arc<Self> {
+            Arc::new(Self {
+                bytes: bytes.to_vec(),
+                calls: AtomicUsize::new(0),
+                urls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+
+        fn urls(&self) -> Vec<String> {
+            self.urls.lock().unwrap().clone()
+        }
+    }
+
+    impl PortArtFetcher for FakePortArtFetcher {
+        fn fetch(&self, url: &str, _max_bytes: u64) -> Result<Vec<u8>, PortArtError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.urls.lock().unwrap().push(url.to_owned());
+            Ok(self.bytes.clone())
+        }
+    }
+
+    const PORT_ART_JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0x03];
+
+    fn port_art_state(
+        source: PortArtSource,
+        fetcher: Arc<FakePortArtFetcher>,
+        data_dir: &Path,
+    ) -> PortArtState {
+        let resolver: Arc<dyn PortArtResolver> =
+            Arc::new(move |_: &str, _: PortArtKind| source.clone());
+        PortArtState::new(PortArtLoader::new(
+            resolver,
+            fetcher,
+            PortArtCache::new(data_dir),
+        ))
+    }
+
+    fn port_art_request(uri: &str) -> Request<Vec<u8>> {
+        Request::builder().uri(uri).body(Vec::new()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn port_art_returns_404_when_the_route_is_not_configured() {
+        let dir = tempdir().unwrap();
+        let res = handle_request(
+            &port_art_request("gamenode-asset://localhost/port-art/qcat_1/capsule"),
+            dir.path(),
+            &|_| None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn port_art_unknown_catalog_id_and_missing_art_are_404_without_fetching() {
+        let dir = tempdir().unwrap();
+        for source in [PortArtSource::UnknownEntry, PortArtSource::NoArt] {
+            let fetcher = FakePortArtFetcher::new(PORT_ART_JPEG);
+            let state = port_art_state(source.clone(), Arc::clone(&fetcher), dir.path());
+            let res = handle_request_with_port_art(
+                &port_art_request("gamenode-asset://localhost/port-art/qcat_1/capsule"),
+                dir.path(),
+                &|_| None,
+                Some(&state),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{source:?}");
+            assert_eq!(fetcher.calls(), 0, "{source:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn port_art_never_fetches_a_url_supplied_by_the_request() {
+        let dir = tempdir().unwrap();
+        let fetcher = FakePortArtFetcher::new(PORT_ART_JPEG);
+        let state = port_art_state(
+            PortArtSource::Url("https://cdn.example/capsule.png".into()),
+            Arc::clone(&fetcher),
+            dir.path(),
+        );
+
+        for uri in [
+            // A URL pasted in place of the catalog id.
+            "gamenode-asset://localhost/port-art/https%3A%2F%2Fevil.example%2Fx.png",
+            "gamenode-asset://localhost/port-art/https%3A%2F%2Fevil.example%2Fx.png/hero",
+            // Encoded separators cannot smuggle a path either.
+            "gamenode-asset://localhost/port-art/..%2F..%2Fetc/hero",
+            // A valid-looking route with an unknown size.
+            "gamenode-asset://localhost/port-art/qcat_1/banner",
+            // Extra segments are not a route.
+            "gamenode-asset://localhost/port-art/qcat_1/hero/extra",
+        ] {
+            let res = handle_request_with_port_art(
+                &port_art_request(uri),
+                dir.path(),
+                &|_| None,
+                Some(&state),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+        assert_eq!(fetcher.calls(), 0, "no request-supplied URL was fetched");
+    }
+
+    #[tokio::test]
+    async fn port_art_fetches_only_the_url_recorded_in_the_snapshot() {
+        let dir = tempdir().unwrap();
+        let fetcher = FakePortArtFetcher::new(PORT_ART_JPEG);
+        let state = port_art_state(
+            PortArtSource::Url("https://cdn.example/hero.png".into()),
+            Arc::clone(&fetcher),
+            dir.path(),
+        );
+
+        let res = handle_request_with_port_art(
+            &port_art_request(
+                "gamenode-asset://localhost/port-art/qcat_1/hero?url=https%3A%2F%2Fevil.example%2Fx.png",
+            ),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(fetcher.urls(), vec!["https://cdn.example/hero.png"]);
+    }
+
+    #[tokio::test]
+    async fn port_art_refuses_a_non_https_snapshot_url() {
+        let dir = tempdir().unwrap();
+        let fetcher = FakePortArtFetcher::new(PORT_ART_JPEG);
+        let state = port_art_state(
+            PortArtSource::Url("http://cdn.example/capsule.png".into()),
+            Arc::clone(&fetcher),
+            dir.path(),
+        );
+
+        let res = handle_request_with_port_art(
+            &port_art_request("gamenode-asset://localhost/port-art/qcat_1/capsule"),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(fetcher.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn port_art_refuses_oversize_and_non_image_bodies() {
+        let dir = tempdir().unwrap();
+        let uri = "gamenode-asset://localhost/port-art/qcat_1/capsule";
+
+        let oversize = FakePortArtFetcher::new(&vec![0u8; MAX_PORT_ART_BYTES as usize + 1]);
+        let state = port_art_state(
+            PortArtSource::Url("https://cdn.example/capsule.png".into()),
+            Arc::clone(&oversize),
+            dir.path(),
+        );
+        let res = handle_request_with_port_art(
+            &port_art_request(uri),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(oversize.calls(), 1);
+
+        let text = FakePortArtFetcher::new(b"<html>not an image</html>");
+        let state = port_art_state(
+            PortArtSource::Url("https://cdn.example/capsule.png".into()),
+            Arc::clone(&text),
+            dir.path(),
+        );
+        let res = handle_request_with_port_art(
+            &port_art_request(uri),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(text.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn port_art_serves_cached_bytes_with_the_right_content_type_and_never_refetches() {
+        let dir = tempdir().unwrap();
+        let fetcher = FakePortArtFetcher::new(PORT_ART_JPEG);
+        let state = port_art_state(
+            PortArtSource::Url("https://cdn.example/capsule.png".into()),
+            Arc::clone(&fetcher),
+            dir.path(),
+        );
+        let uri = "gamenode-asset://localhost/port-art/qcat_1/capsule";
+
+        let first = handle_request_with_port_art(
+            &port_art_request(uri),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            first.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=3600"
+        );
+        assert_eq!(
+            first
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(first.body().as_slice(), PORT_ART_JPEG);
+
+        let second = handle_request_with_port_art(
+            &port_art_request(uri),
+            dir.path(),
+            &|_| None,
+            Some(&state),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(second.body().as_slice(), PORT_ART_JPEG);
+        assert_eq!(
+            fetcher.calls(),
+            1,
+            "the disk cache must answer the second request"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! OS-neutral DRM-free installations, reviewed discovery and independent save protection.
 //! Paths and identities are supplied by worker adapters; this module performs no I/O.
-use crate::ports::StorageError;
+use crate::ports::{StorageError, is_safe_relative_path, join_relative};
 pub mod identity;
 pub mod scheduler;
 use serde::{Deserialize, Serialize};
@@ -31,12 +31,47 @@ impl Registration {
     pub fn key(&self) -> String {
         format!("manual:{}", self.id)
     }
+
+    /// The process-tracking policy for this registration.
+    ///
+    /// Registrations written before PC ports recorded absolute executable paths can still hold
+    /// `gameplay` and `launchers` relative to the install folder (for example
+    /// `BloodbornePC/engine/out/bb-probe.exe`). The tracker compares full process paths, so the
+    /// policy resolves them against [`Registration::root`] here; an existing install then tracks
+    /// without a reinstall. Entries that are already absolute are unchanged.
+    pub fn process_policy(&self) -> ProcessPolicy {
+        ProcessPolicy::Explicit {
+            gameplay: self
+                .gameplay
+                .iter()
+                .filter_map(|path| resolve_install_path(&self.root, path))
+                .collect(),
+            launchers: self
+                .launchers
+                .iter()
+                .filter_map(|path| resolve_install_path(&self.root, path))
+                .collect(),
+        }
+    }
+
     pub fn repair(&mut self, executable: String, identity: String) {
         self.executable = executable;
         self.file_identity = identity;
         self.revision += 1;
         self.available = true;
     }
+}
+
+/// Resolves one executable path recorded for a registration against its install folder.
+///
+/// Paths that are already absolute (drive letter, UNC or Unix root) are returned unchanged. A
+/// relative path is joined to `root` only when [`is_safe_relative_path`] accepts it; an unsafe
+/// relative path such as `..\escape.exe` is refused instead of being resolved outside the folder.
+pub fn resolve_install_path(root: &str, path: &str) -> Option<String> {
+    if path.starts_with(['/', '\\']) || crate::provider::path::is_windows_style(path) {
+        return Some(path.to_string());
+    }
+    is_safe_relative_path(path).then(|| join_relative(root, path))
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,10 +226,29 @@ pub enum LocalError {
     #[error("local operation failed: {0}")]
     Failed(String),
 }
+/// Environment variables a port's provenance adds to its launch (design D7).
+///
+/// Provenance lives beside the registration, never inside it (design D10), so the launch call
+/// carries the map instead of `Registration`. Recipe arguments keep their order: the user's own
+/// arguments follow them.
+pub type LaunchEnvironment = std::collections::BTreeMap<String, String>;
 /// Every method may block and must run on a worker.
 pub trait InstallationHost: Send + Sync {
     fn inspect(&self, executable: &str) -> Result<Registration, LocalError>;
     fn launch(&self, registration: &Registration) -> Result<(), LocalError>;
+    /// Launches with the environment variables a port's provenance records (design D7).
+    ///
+    /// `Registration` stays unchanged, so stored registrations keep their shape (design D10). A
+    /// host that cannot set an environment launches without it, which keeps existing adapters
+    /// working.
+    fn launch_with_environment(
+        &self,
+        registration: &Registration,
+        environment: &LaunchEnvironment,
+    ) -> Result<(), LocalError> {
+        let _ = environment;
+        self.launch(registration)
+    }
     fn validate_registration(
         &self,
         registration: &Registration,
@@ -353,6 +407,48 @@ mod tests {
                 .state,
             JobState::Unchanged
         );
+    }
+
+    #[test]
+    fn a_host_without_environment_support_still_launches() {
+        struct CountingHost(Mutex<usize>);
+        impl InstallationHost for CountingHost {
+            fn inspect(&self, _: &str) -> Result<Registration, LocalError> {
+                unreachable!()
+            }
+            fn launch(&self, _: &Registration) -> Result<(), LocalError> {
+                *self.0.lock().unwrap() += 1;
+                Ok(())
+            }
+            fn evidence(&self, _: &Registration) -> Result<Vec<Evidence>, LocalError> {
+                unreachable!()
+            }
+        }
+        let registration = Registration {
+            id: "stable".into(),
+            title: "Game".into(),
+            executable: "game.exe".into(),
+            file_identity: "one".into(),
+            root: "game".into(),
+            working_directory: "game".into(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            available: true,
+        };
+        let host = CountingHost(Mutex::new(0));
+        assert!(
+            host.launch_with_environment(
+                &registration,
+                &LaunchEnvironment::from([("PORT_DATA".into(), "C:/data".into())]),
+            )
+            .is_ok()
+        );
+        assert_eq!(*host.0.lock().unwrap(), 1);
     }
 }
 

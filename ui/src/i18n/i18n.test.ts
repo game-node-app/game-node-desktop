@@ -27,6 +27,34 @@ describe('i18n catalogs', () => {
     }
   });
 
+  it('keeps every PC ports key in both catalogs with matching placeholders', () => {
+    const portsEnKeys = Object.keys(en)
+      .filter((key) => key.startsWith('Ports::'))
+      .sort();
+    const portsPtKeys = Object.keys(ptBR)
+      .filter((key) => key.startsWith('Ports::'))
+      .sort();
+
+    expect(portsEnKeys.length).toBeGreaterThan(0);
+    expect(portsPtKeys).toEqual(portsEnKeys);
+
+    const placeholders = (value: string) => (value.match(/\{[^}]*\}/g) ?? []).sort();
+    // Words that are already the same in Brazilian Portuguese, plus the percent symbol.
+    const identicalAllowed = new Set(['Ports::Console', 'Ports::Port', 'Ports::{}%']);
+
+    for (const key of portsEnKeys) {
+      const enValue = (en as Record<string, string>)[key];
+      const ptValue = (ptBR as Record<string, string>)[key];
+      expect(ptValue, `missing pt-BR value for ${key}`).toBeTruthy();
+      expect(placeholders(ptValue), `placeholder mismatch for ${key}`).toEqual(
+        placeholders(enValue),
+      );
+      if (!identicalAllowed.has(key)) {
+        expect(ptValue, `untranslated pt-BR value for ${key}`).not.toBe(enValue);
+      }
+    }
+  });
+
   it('supports named parameter interpolation for en and pt-BR', () => {
     const key = 'Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver.';
 

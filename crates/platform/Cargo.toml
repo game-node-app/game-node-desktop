@@ -25,6 +25,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "io-util", "time", "sync"] }
 url.workspace = true
 serde_yaml = "0.9.34"
+sha1 = "0.10.7"
 sha2 = "0.10.9"
 sevenz-rust2 = "0.20"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
@@ -52,10 +53,12 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
+    "Win32_System_JobObjects",
     "Win32_Graphics_Gdi",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_System_Com",
 ] }
 

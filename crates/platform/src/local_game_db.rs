@@ -16,7 +16,7 @@ fn encode(value: &impl Serialize) -> Result<String, StorageError> {
 }
 // Upgrade path spelling at the storage boundary without changing identity,
 // revisions, candidate fingerprints, or requiring the folder to be online.
-fn registration_paths(mut value: Registration) -> Registration {
+pub(crate) fn registration_paths(mut value: Registration) -> Registration {
     for path in [
         &mut value.executable,
         &mut value.root,

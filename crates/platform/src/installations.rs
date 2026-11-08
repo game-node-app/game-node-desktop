@@ -1,5 +1,15 @@
 //! Worker-only executable inspection and direct Windows launch.
-use gamenode_core::drm_free::{Evidence, InstallationHost, LocalError, Registration};
+use gamenode_core::drm_free::{
+    Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
+};
+
+/// Adds a port's provenance environment to the command that launches it (design D7).
+///
+/// The variables are added to the inherited environment; the launcher's own variables stay.
+#[cfg(any(windows, test))]
+fn apply_environment(command: &mut std::process::Command, environment: &LaunchEnvironment) {
+    command.envs(environment);
+}
 #[derive(Default)]
 pub struct WindowsInstallations;
 #[cfg(windows)]
@@ -90,6 +100,39 @@ fn validate(path: &std::path::Path) -> Result<(), LocalError> {
     }
     Ok(())
 }
+impl WindowsInstallations {
+    /// Starts the registration with the environment its port provenance records.
+    #[cfg(windows)]
+    fn spawn(
+        &self,
+        registration: &Registration,
+        environment: &LaunchEnvironment,
+    ) -> Result<(), LocalError> {
+        if registration.removed {
+            return Err(LocalError::InvalidTarget);
+        }
+        let path = canonical(&registration.executable)?;
+        validate(&path)?;
+        let root = canonical(&registration.root)?;
+        let working = canonical(&registration.working_directory)?;
+        let normalize = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+        let root = normalize(&root);
+        if !normalize(&path).starts_with(&(root.trim_end_matches('\\').to_owned() + "\\"))
+            || !working.is_dir()
+            || identity(&path)? != registration.file_identity
+        {
+            return Err(LocalError::InvalidTarget);
+        }
+        let mut command = std::process::Command::new(path);
+        command.args(&registration.arguments).current_dir(working);
+        apply_environment(&mut command, environment);
+        command
+            .spawn()
+            .map_err(|e| LocalError::Failed(e.to_string()))?;
+        Ok(())
+    }
+}
+
 impl InstallationHost for WindowsInstallations {
     fn inspect(&self, executable: &str) -> Result<Registration, LocalError> {
         #[cfg(not(windows))]
@@ -216,27 +259,22 @@ impl InstallationHost for WindowsInstallations {
         }
         #[cfg(windows)]
         {
-            if registration.removed {
-                return Err(LocalError::InvalidTarget);
-            }
-            let path = canonical(&registration.executable)?;
-            validate(&path)?;
-            let root = canonical(&registration.root)?;
-            let working = canonical(&registration.working_directory)?;
-            let normalize = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
-            let root = normalize(&root);
-            if !normalize(&path).starts_with(&(root.trim_end_matches('\\').to_owned() + "\\"))
-                || !working.is_dir()
-                || identity(&path)? != registration.file_identity
-            {
-                return Err(LocalError::InvalidTarget);
-            }
-            std::process::Command::new(path)
-                .args(&registration.arguments)
-                .current_dir(working)
-                .spawn()
-                .map_err(|e| LocalError::Failed(e.to_string()))?;
-            Ok(())
+            self.spawn(registration, &LaunchEnvironment::new())
+        }
+    }
+    fn launch_with_environment(
+        &self,
+        registration: &Registration,
+        environment: &LaunchEnvironment,
+    ) -> Result<(), LocalError> {
+        #[cfg(not(windows))]
+        {
+            let _ = (registration, environment);
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(windows)]
+        {
+            self.spawn(registration, environment)
         }
     }
     fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError> {
@@ -272,10 +310,45 @@ impl InstallationHost for WindowsInstallations {
 pub fn pick_executable() -> Result<Option<String>, LocalError> {
     pick_file(true)
 }
+
+/// Opens a Windows executable picker that starts in `folder` (a port install folder).
+///
+/// The port's follow-up picker uses it when none of the recipe's executables exists.
+pub fn pick_executable_in(folder: &str) -> Result<Option<String>, LocalError> {
+    pick_file_starting_at(true, None, Some(folder))
+}
+
+/// Opens a folder picker with an optional initial selection.
+///
+/// This is the parent-folder picker of a PC port install. Unlike [`pick_save_location`], it can
+/// start at the folder the user chose last time.
+pub fn pick_folder_starting_at(initial: Option<&str>) -> Result<Option<String>, LocalError> {
+    pick_folder(initial)
+}
+
+/// Opens a file picker limited to the supplied extensions (`["iso", ".bin"]` both work).
+///
+/// An empty list offers every file. This is the guided-setup picker for a pot's supplied files
+/// and console packages.
+pub fn pick_file_with_extensions(
+    extensions: &[String],
+    initial: Option<&str>,
+) -> Result<Option<String>, LocalError> {
+    pick_file_starting_at(false, Some(extensions), initial)
+}
+
 fn pick_file(executable: bool) -> Result<Option<String>, LocalError> {
+    pick_file_starting_at(executable, None, None)
+}
+
+fn pick_file_starting_at(
+    executable: bool,
+    extensions: Option<&[String]>,
+    initial: Option<&str>,
+) -> Result<Option<String>, LocalError> {
     #[cfg(not(windows))]
     {
-        let _ = executable;
+        let _ = (executable, extensions, initial);
         Err(LocalError::Unsupported)
     }
     #[cfg(windows)]
@@ -284,19 +357,45 @@ fn pick_file(executable: bool) -> Result<Option<String>, LocalError> {
             CommDlgExtendedError, GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR,
             OFN_PATHMUSTEXIST, OPENFILENAMEW,
         };
-        let mut path = vec![0u16; 32768];
-        let filter: Vec<u16> = if executable {
-            "Windows executable\0*.exe\0\0"
-        } else {
-            "Files\0*.*\0\0"
+        /// Builds the double-NUL-terminated filter list `GetOpenFileNameW` expects.
+        fn filter_list(executable: bool, extensions: Option<&[String]>) -> Vec<u16> {
+            let mut text = String::new();
+            if executable {
+                text.push_str("Windows executable\0*.exe\0");
+            } else if let Some(extensions) = extensions.filter(|list| !list.is_empty()) {
+                text.push_str("Supported files\0");
+                for (index, extension) in extensions.iter().enumerate() {
+                    let extension = extension.trim().trim_start_matches('.');
+                    if extension.is_empty() {
+                        continue;
+                    }
+                    if index > 0 {
+                        text.push(';');
+                    }
+                    text.push('*');
+                    text.push('.');
+                    text.push_str(extension);
+                }
+                text.push_str("\0");
+            }
+            text.push_str("All files\0*.*\0\0");
+            text.encode_utf16().collect()
         }
-        .encode_utf16()
-        .collect();
+
+        let mut path = vec![0u16; 32768];
+        let filter = filter_list(executable, extensions);
+        let initial_dir: Vec<u16> = initial
+            .filter(|folder| !folder.is_empty())
+            .map(|folder| folder.encode_utf16().chain(std::iter::once(0)).collect())
+            .unwrap_or_default();
         let mut data: OPENFILENAMEW = unsafe { std::mem::zeroed() };
         data.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        data.lpstrFilter = filter.as_ptr();
         data.lpstrFile = path.as_mut_ptr();
         data.nMaxFile = path.len() as u32;
-        data.lpstrFilter = filter.as_ptr();
+        if !initial_dir.is_empty() {
+            data.lpstrInitialDir = initial_dir.as_ptr();
+        }
         data.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         // SAFETY: buffers and structure remain valid for the modal dialog call.
         if unsafe { GetOpenFileNameW(&mut data) } == 0 {
@@ -402,21 +501,44 @@ pub fn pick_save_location(folder: bool) -> Result<Option<String>, LocalError> {
     if !folder {
         return pick_file(false);
     }
+    pick_folder(None)
+}
+
+fn pick_folder(initial: Option<&str>) -> Result<Option<String>, LocalError> {
     #[cfg(not(windows))]
     {
+        let _ = initial;
         Err(LocalError::Unsupported)
     }
     #[cfg(windows)]
     {
         use windows_sys::Win32::{
+            Foundation::{HWND, LPARAM},
             System::Com::{
                 COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
             },
             UI::Shell::{
-                BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW,
-                SHGetPathFromIDListW,
+                BFFM_INITIALIZED, BFFM_SETSELECTIONW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS,
+                BROWSEINFOW, SHBrowseForFolderW, SHGetPathFromIDListW,
             },
+            UI::WindowsAndMessaging::SendMessageW,
         };
+        // SAFETY: sends the selected folder to the dialog during initialization; both pointers
+        // stay valid for the duration of the modal call.
+        unsafe extern "system" fn select_initial(
+            hwnd: HWND,
+            message: u32,
+            _lparam: LPARAM,
+            data: LPARAM,
+        ) -> i32 {
+            if message == BFFM_INITIALIZED && data != 0 {
+                unsafe {
+                    SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, data);
+                }
+            }
+            0
+        }
+
         // SAFETY: the picker owns this worker's COM apartment until the dialog closes.
         let result = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
         if result < 0 {
@@ -433,8 +555,18 @@ pub fn pick_save_location(folder: bool) -> Result<Option<String>, LocalError> {
             }
         }
         let _apartment = Apartment;
+        let initial: Vec<u16> = initial
+            .filter(|folder| !folder.is_empty())
+            .map(|folder| folder.encode_utf16().chain(std::iter::once(0)).collect())
+            .unwrap_or_default();
         let options = BROWSEINFOW {
             ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+            lpfn: (!initial.is_empty()).then_some(select_initial as _),
+            lParam: if initial.is_empty() {
+                0
+            } else {
+                initial.as_ptr() as isize
+            },
             ..Default::default()
         };
         // SAFETY: options live through the modal native call; the returned item list is freed below.
@@ -491,6 +623,13 @@ mod tests {
             Err(super::LocalError::Unsupported)
         );
         assert_eq!(
+            host.launch_with_environment(
+                &registration,
+                &gamenode_core::drm_free::LaunchEnvironment::new()
+            ),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
             host.evidence(&registration),
             Err(super::LocalError::Unsupported)
         );
@@ -505,6 +644,45 @@ mod tests {
         assert_eq!(
             super::pick_save_location(false),
             Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            super::pick_folder_starting_at(Some("D:/Ports")),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            super::pick_file_with_extensions(&["pkg".into()], None),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            super::pick_executable_in("D:/Ports/Bloodborne"),
+            Err(super::LocalError::Unsupported)
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_port_environment_is_applied_to_the_launch_command() {
+        use gamenode_core::drm_free::LaunchEnvironment;
+        let mut command = std::process::Command::new("game.exe");
+        let environment =
+            LaunchEnvironment::from([("BLOODBORNE_PATH".to_string(), "D:/dump.iso".to_string())]);
+        super::apply_environment(&mut command, &environment);
+
+        let variables: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            variables,
+            vec![(
+                "BLOODBORNE_PATH".to_string(),
+                Some("D:/dump.iso".to_string())
+            )]
         );
     }
 }

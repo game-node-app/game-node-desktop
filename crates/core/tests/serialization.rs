@@ -188,6 +188,7 @@ fn test_library_input_serialization() {
         LibraryInput::ScanRequested,
         LibraryInput::RequestCatalog,
         LibraryInput::SetFilters(LibraryFilters::default()),
+        LibraryInput::SetSidebarCollapsed(true),
     ];
 
     for input in &inputs {
@@ -203,6 +204,11 @@ fn test_library_input_serialization() {
     assert_eq!(
         json_val.get("setSearch"),
         Some(&serde_json::json!("cyberpunk"))
+    );
+    // Exactly what the UI sends when the sidebar collapses.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetSidebarCollapsed(true)).unwrap(),
+        serde_json::json!({ "setSidebarCollapsed": true })
     );
     let filters =
         serde_json::to_value(LibraryInput::SetFilters(LibraryFilters::default())).unwrap();

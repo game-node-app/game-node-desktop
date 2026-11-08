@@ -10,6 +10,8 @@ pub struct AppInfo {
     pub locale: String,
     pub version: String,
     pub background_supported: bool,
+    /// Platform reported to the UI; PC ports is Windows-only in this release.
+    pub platform: Option<gamenode_core::ports::PortPlatform>,
     /// Directory of the rotating log files; shown in Settings > About.
     pub log_directory: Option<String>,
 }
@@ -193,6 +195,7 @@ pub async fn get_app_info(
         locale: normalize_locale(&system_locale()).to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         background_supported: cfg!(windows),
+        platform: Some(gamenode_core::ports::PortPlatform::current()),
         log_directory: Some(location.directory.to_string_lossy().into_owned()),
     })
 }
@@ -745,6 +748,178 @@ pub async fn clear_tool_cache(engine: tauri::State<'_, Engine>) -> Result<(), St
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// PC Ports Commands
+// ---------------------------------------------------------------------------
+
+/// A typed PC ports command failure. The UI never parses the message; the code is stable.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "code", content = "message")]
+pub enum PortCommandError {
+    /// Port installs are Windows-only in this release.
+    UnsupportedPlatform,
+    /// The workers are still starting.
+    NotReady,
+    /// The request names something that does not exist or is no longer valid.
+    InvalidRequest(String),
+    /// The install cannot start (no verified release, no disk space, confirmation needed).
+    Unavailable(String),
+    /// A port install is queued, running or waiting for an executable pick; the cache is in use.
+    InstallInProgress,
+    /// The picker, the local database or another host step failed.
+    Failed(String),
+}
+
+impl From<crate::engine::pc_ports::PortsError> for PortCommandError {
+    fn from(error: crate::engine::pc_ports::PortsError) -> Self {
+        use crate::engine::pc_ports::PortsError;
+        match error {
+            PortsError::Unsupported => Self::UnsupportedPlatform,
+            PortsError::NotReady => Self::NotReady,
+            PortsError::Invalid(reason) => Self::InvalidRequest(reason),
+            PortsError::Unavailable(reason) => Self::Unavailable(reason),
+            PortsError::InstallInProgress => Self::InstallInProgress,
+            PortsError::Picker(reason) | PortsError::Storage(reason) => Self::Failed(reason),
+        }
+    }
+}
+
+fn require_ports(engine: &Engine) -> Result<(), PortCommandError> {
+    if engine.pc_ports_supported() {
+        Ok(())
+    } else {
+        Err(PortCommandError::UnsupportedPlatform)
+    }
+}
+
+/// Starts the first catalog fetch when PC ports opens. Idempotent and non-blocking.
+#[tauri::command]
+pub async fn ports_open(engine: tauri::State<'_, Engine>) -> Result<(), PortCommandError> {
+    require_ports(&engine)?;
+    engine.ports_open();
+    Ok(())
+}
+
+/// Manual Refresh. The current snapshot stays visible until a validated replacement lands.
+#[tauri::command]
+pub async fn ports_refresh(engine: tauri::State<'_, Engine>) -> Result<(), PortCommandError> {
+    require_ports(&engine)?;
+    engine.ports_refresh();
+    Ok(())
+}
+
+/// Lazy entry detail (releases, assets, withdrawal state).
+#[tauri::command]
+pub async fn ports_detail(
+    engine: tauri::State<'_, Engine>,
+    catalog_id: String,
+) -> Result<Option<gamenode_core::ports::PortDetailView>, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_detail(catalog_id).await?)
+}
+
+/// Native parent-folder picker. Returns `None` when the user cancels.
+#[tauri::command]
+pub async fn ports_pick_parent(
+    engine: tauri::State<'_, Engine>,
+    initial_folder: Option<String>,
+) -> Result<Option<String>, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_pick_parent(initial_folder).await?)
+}
+
+/// Native picker plus host validation of one guided-setup slot.
+#[tauri::command]
+pub async fn ports_pick_supplied(
+    engine: tauri::State<'_, Engine>,
+    request: crate::engine::pc_ports::PortPickSuppliedRequest,
+) -> Result<Option<crate::engine::pc_ports::PortSuppliedPick>, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_pick_supplied(request).await?)
+}
+
+/// Starts a background install. Returns the job id, or `None` when the request was refused.
+#[tauri::command]
+pub async fn ports_install(
+    engine: tauri::State<'_, Engine>,
+    request: crate::engine::pc_ports::PortInstallRequest,
+) -> Result<Option<String>, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_install(request).await?)
+}
+
+/// Cancels a queued, running or executable-awaiting job.
+#[tauri::command]
+pub async fn ports_cancel(
+    engine: tauri::State<'_, Engine>,
+    job_id: String,
+) -> Result<(), PortCommandError> {
+    require_ports(&engine)?;
+    engine.ports_cancel(job_id);
+    Ok(())
+}
+
+/// Marks the entry's current result seen, dropping it from the sidebar badge.
+#[tauri::command]
+pub async fn ports_mark_seen(
+    engine: tauri::State<'_, Engine>,
+    catalog_id: String,
+) -> Result<(), PortCommandError> {
+    require_ports(&engine)?;
+    engine.ports_mark_seen(catalog_id);
+    Ok(())
+}
+
+/// Persists remembered view, filters and last parent folder.
+#[tauri::command]
+pub async fn ports_set_preferences(
+    engine: tauri::State<'_, Engine>,
+    patch: crate::engine::pc_ports::PortPreferencesPatch,
+) -> Result<(), PortCommandError> {
+    require_ports(&engine)?;
+    engine.ports_set_preferences(patch);
+    Ok(())
+}
+
+/// Follow-up for a completed install whose preferred executable is missing.
+#[tauri::command]
+pub async fn ports_pick_executable(
+    engine: tauri::State<'_, Engine>,
+    job_id: String,
+) -> Result<Option<String>, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_pick_executable(job_id).await?)
+}
+
+/// The Settings Tools panel's helper-tools and download-cache block.
+#[tauri::command]
+pub async fn ports_tools_cache(
+    engine: tauri::State<'_, Engine>,
+) -> Result<gamenode_core::ports::PortToolsCacheView, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_tools_cache().await?)
+}
+
+/// Deletes the cached port downloads and extraction tools. Refused while an install runs.
+#[tauri::command]
+pub async fn ports_clear_cache(
+    engine: tauri::State<'_, Engine>,
+) -> Result<gamenode_core::ports::PortToolsCacheView, PortCommandError> {
+    require_ports(&engine)?;
+    Ok(engine.ports_clear_cache().await?)
+}
+
+/// Opens an install folder (or any directory) in the OS file manager.
+#[tauri::command]
+pub async fn open_install_folder(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        gamenode_platform::browser::open_directory(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|_| "the folder could not be opened".to_owned())?
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +1011,13 @@ mod tests {
         assert_eq!(normalize_locale("pt-PT"), "pt-BR");
         assert_eq!(normalize_locale(""), "en");
         assert_eq!(normalize_locale("fr-FR"), "en");
+    }
+
+    #[test]
+    fn a_running_install_refuses_the_cache_clear_with_a_typed_error() {
+        let error: PortCommandError = crate::engine::pc_ports::PortsError::InstallInProgress.into();
+        assert!(matches!(error, PortCommandError::InstallInProgress));
+        let json = serde_json::to_value(&error).unwrap();
+        assert_eq!(json["code"], "installInProgress");
     }
 }

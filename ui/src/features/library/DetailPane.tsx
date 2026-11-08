@@ -12,6 +12,7 @@ import {
   useLibraryView,
   useSnapshot,
   useTools,
+  usePortsView,
   artworkAssetUrl,
   getMatchedGameId,
   type Membership,
@@ -34,12 +35,19 @@ const reasonClass = 'mt-1 text-xs text-warning';
 export const DetailPane: React.FC = () => {
   const library = useLibraryView();
   const tools = useTools();
+  const ports = usePortsView();
   const { data: launch } = useSnapshot((s) => s.launch);
   const detailDragWidth = useUiStore((s) => s.detailDragWidth);
   const { t, locale } = useI18n();
 
   const layout = library?.layout;
   const detail = library?.detail;
+  // PC ports keys provenance by `drmfree:<id>`; the library's own manual entries are
+  // `manual:<id>`. The host renders both from the same row.
+  const portProvenance =
+    detail?.row.key.startsWith('manual:')
+      ? ports.provenance[`drmfree:${detail.row.key.slice('manual:'.length)}`]
+      : undefined;
   const actions = library?.actions;
   const selectedCount = library?.selected?.length ?? 0;
 
@@ -648,6 +656,36 @@ export const DetailPane: React.FC = () => {
                     className="text-text-default"
                   >
                     {t('Library::Not installed on this PC')}
+                  </div>
+                )}
+
+                {/* PC ports provenance */}
+                {portProvenance && (
+                  <div data-testid="detail-port-provenance">
+                    <div className="text-text-dimmed">
+                      {t('Library::Installed by PC ports')}
+                    </div>
+                    <div className="font-medium text-text-default">
+                      {formatI18n(
+                        t('Library::{} version {}'),
+                        portProvenance.portName,
+                        portProvenance.installedVersion,
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="detail-port-link"
+                      onClick={() =>
+                        uiStore.setState((prev) => ({
+                          ...prev,
+                          activeDestination: 'ports',
+                          portsFocusCatalogId: portProvenance.catalogId,
+                        }))
+                      }
+                      className="mt-1 rounded-xs text-left text-xs text-brand transition-colors hover:text-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                    >
+                      {t('Library::Open in PC ports')}
+                    </button>
                   </div>
                 )}
 

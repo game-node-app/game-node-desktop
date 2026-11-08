@@ -27,3 +27,51 @@ it('routes commands and snapshot events through the mock even when Tauri is pres
     delete internals.__TAURI_INTERNALS__;
   }
 });
+
+it('routes PC ports commands and progress events through the mock', async () => {
+  vi.resetModules();
+  vi.stubEnv('VITE_UI_MOCK', '1');
+  const internals = (window as unknown as Record<string, unknown>);
+  internals.__TAURI_INTERNALS__ = {};
+  vi.useFakeTimers();
+  try {
+    const { commands } = await import('../api/commands');
+    const { SNAPSHOT_QUERY_KEY, subscribeToEngineSnapshots } = await import('../api/useSnapshot');
+    const { subscribeToPortProgress } = await import('../api/ports');
+
+    const client = createAppQueryClient();
+    const unlistenSnapshot = await subscribeToEngineSnapshots(client);
+    const phases: string[] = [];
+    const unlistenProgress = await subscribeToPortProgress((event) => {
+      phases.push(event.phase);
+    });
+
+    await commands.portsSetPreferences({ view: 'list' });
+    expect(
+      client.getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY)?.ports.preferences.view,
+    ).toBe('list');
+
+    const jobId = await commands.portsInstall({
+      catalogId: 'qcat_mock_beyond',
+      parentFolder: 'D:\\Ports',
+      supplied: [],
+    });
+    expect(jobId).toMatch(/^job-mock-/);
+    // The mock emits the first downloading tick synchronously.
+    expect(phases).toContain('downloading');
+
+    await commands.portsCancel(jobId as string);
+    vi.advanceTimersByTime(300);
+    expect(
+      client
+        .getQueryData<Snapshot>(SNAPSHOT_QUERY_KEY)
+        ?.ports.jobs.find((job) => job.jobId === jobId)?.phase,
+    ).toBe('cancelled');
+
+    unlistenProgress();
+    unlistenSnapshot();
+  } finally {
+    vi.useRealTimers();
+    delete internals.__TAURI_INTERNALS__;
+  }
+});

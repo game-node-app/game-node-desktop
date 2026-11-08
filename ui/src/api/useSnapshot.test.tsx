@@ -135,6 +135,11 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
     await waitFor(() =>
       expect(queryClient.getQueryState(SNAPSHOT_QUERY_KEY)).toBeDefined(),
     );
+    await act(async () => {
+      // Drain the mount-time query and the subscription's ready state before the
+      // render count below is used to prove that an unrelated event did not render.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     await queryClient.cancelQueries({ queryKey: SNAPSHOT_QUERY_KEY });
     queryClient.setQueryData(SNAPSHOT_QUERY_KEY, createDefaultSnapshot());
     seen.length = 0;

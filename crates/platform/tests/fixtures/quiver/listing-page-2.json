@@ -1,0 +1,55 @@
+{
+  "items": [
+    {
+      "id": "app_fictional_prerelease",
+      "catalogId": "qcat_fictional-prerelease",
+      "slug": "fictional-prerelease",
+      "name": "Fictional Prerelease",
+      "description": "A fictional pre-release-only Windows port used by the platform tests.",
+      "projectName": "Fictional Prerelease Port",
+      "games": [
+        {
+          "id": "game_prerelease",
+          "slug": "fictional-prerelease",
+          "title": "Fictional Prerelease"
+        }
+      ],
+      "consoles": ["psp"],
+      "libraryArt": {
+        "capsule": "https://example.com/art/prerelease-capsule.png"
+      },
+      "launcher": {
+        "preferredExecutables": { "windows": ["FictionalPrerelease.exe"] }
+      },
+      "projectType": "port",
+      "supportedOS": ["windows"],
+      "verified": {
+        "version": "v0.9.0",
+        "releasedAt": 1793000000000,
+        "prerelease": true,
+        "pinned": true
+      },
+      "recommended": 0,
+      "reviewCount": 0,
+      "reportIssues": 0,
+      "reportBroken": 0
+    },
+    {
+      "id": "app_fictional_tool",
+      "catalogId": "qcat_fictional-tool",
+      "slug": "fictional-tool",
+      "name": "Fictional Tool",
+      "description": "A fictional tool entry used by the platform tests.",
+      "projectName": "Fictional Tool",
+      "projectType": "tool",
+      "supportedOS": ["windows"],
+      "launcher": {},
+      "recommended": 0,
+      "reviewCount": 0,
+      "reportIssues": 0,
+      "reportBroken": 0
+    }
+  ],
+  "nextCursor": null,
+  "isDone": true
+}

@@ -1,12 +1,15 @@
 import React, { lazy, Suspense, useEffect, useRef } from 'react';
 import { useAppInfo, useAuth, useLibraryView } from './api';
+import { detectPortPlatform } from './api/ports';
 import { useI18n } from './i18n';
 import { SignedOutView } from './features/auth';
 import { LibraryScreen } from './features/library';
+import { PortsView } from './features/ports';
 import { ToastContainer } from './features/settings/ToastContainer';
 import { useSettingsKeyboardShortcut } from './features/settings/useSettingsKeyboardShortcut';
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
+import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
 // mounted eagerly (each renders null while closed), so the chunks load in the
@@ -88,8 +91,20 @@ export const App: React.FC = () => {
 
   const signedIn = typeof auth === 'object' && 'signedIn' in auth;
 
+  // The destination is UI state, so it survives unrelated snapshot updates but never a
+  // restart. Ports falls back to the library when the build is not an eligible Windows
+  // signed-in build (for example after signing out).
+  const destination = useUiStore((s) => s.activeDestination);
+  const platform = detectPortPlatform(
+    typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    appInfo.data?.platform,
+  );
+  const portsVisible = signedIn && platform === 'windows';
+
   let main: React.ReactNode;
-  if (library) {
+  if (destination === 'ports' && portsVisible) {
+    main = <PortsView />;
+  } else if (library) {
     main = <LibraryScreen />;
   } else if (signedIn) {
     main = <ConnectedPlaceholder />;

@@ -1,0 +1,56 @@
+{
+  "items": [
+    {
+      "id": "release_published_1",
+      "releaseId": "release_1",
+      "version": "v1.0.0",
+      "releasedAt": 1793702111000,
+      "notes": "Fixture release notes.",
+      "prerelease": false,
+      "assets": [
+        {
+          "id": "asset_1",
+          "url": "https://example.com/downloads/fictional-game-windows.zip",
+          "filename": "fictional-game-windows.zip",
+          "os": "windows",
+          "architecture": "x86_64",
+          "format": "zip",
+          "size": 1048576,
+          "checksum": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "scan": {
+            "verdict": "clean",
+            "engines": "0 of 70 engines",
+            "url": "https://example.com/scan/asset-1"
+          }
+        },
+        {
+          "id": "asset_2",
+          "url": "https://example.com/downloads/fictional-game-linux.7z",
+          "filename": "fictional-game-linux.7z",
+          "os": "linux",
+          "architecture": "x86_64",
+          "format": "7z",
+          "size": 2097152,
+          "unverifiedChecksum": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      ]
+    },
+    {
+      "releaseId": "release_0",
+      "version": "v0.9.0",
+      "releasedAt": 1793000000000,
+      "prerelease": true,
+      "assets": []
+    }
+  ],
+  "nextCursor": null,
+  "isDone": true,
+  "checking": {
+    "version": "v1.1.0",
+    "releasedAt": 1794015373000,
+    "prerelease": false,
+    "needsReview": false,
+    "reasons": [],
+    "earlyAccess": true
+  }
+}

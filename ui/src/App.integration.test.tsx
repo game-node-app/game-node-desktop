@@ -33,6 +33,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         locale,
         version: '9.9.9',
         backgroundSupported: false,
+        platform: 'windows',
       } satisfies AppInfo;
     }
     if (cmd === 'get_license_notices') return 'GPL-3.0-only notices';
@@ -197,6 +198,23 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
         input: { setFilter: { provider: 'steam' } },
       }),
     );
+  });
+
+  it('switches the content area to PC ports and back to the filtered library', async () => {
+    await mountApp();
+    await publish(signedIn(current));
+
+    fireEvent.click(await screen.findByTestId('sidebar-ports'));
+    expect(await screen.findByTestId('ports-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-screen')).not.toBeInTheDocument();
+    expect(calls('ports_open')).toHaveLength(1);
+
+    fireEvent.click(screen.getByTestId('sidebar-provider-steam'));
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('ports-view')).not.toBeInTheDocument();
+    expect(calls('library_input').at(-1)?.args).toEqual({
+      input: { setFilter: { provider: 'steam' } },
+    });
   });
 
   it('shows the one-time sync explanation after sign-in and dismisses it through IPC', async () => {

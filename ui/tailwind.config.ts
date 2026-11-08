@@ -93,6 +93,7 @@ const config: Config = {
         'border-subtle': '#2A2A2A',
         'text-default': '#D9D9D9',
         'text-dimmed': '#808080',
+        'text-secondary': 'var(--color-text-secondary)',
         'on-primary': '#EDEDED',
         danger: {
           DEFAULT: '#E5484D',

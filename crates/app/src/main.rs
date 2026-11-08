@@ -4,11 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamenode_app::commands;
+use gamenode_app::engine::pc_ports::{
+    InstallDeps, PORTS_PROGRESS_EVENT, PortProgressPublisher, PortsService, PortsServiceConfig,
+};
 use gamenode_app::engine::steam_account::{LibraryStoreAccounts, SystemClock};
 use gamenode_app::engine::steam_login::TauriSteamLoginWindow;
 use gamenode_app::engine::{Engine, Ports, SteamPorts};
 use gamenode_core::geometry;
 use gamenode_core::library::LibraryStore;
+use gamenode_core::ports::PortStore;
 use gamenode_core::ports::SettingsStore;
 use gamenode_core::{Input, WindowGeometry};
 use gamenode_platform::{
@@ -125,6 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let store = Arc::new(SqliteSettingsStore::open(&paths.database_file())?);
     let initial_settings = store.load()?;
+    // One durable port store, shared by the catalog worker, the install runner and the
+    // `port-art` route. It lives on the same SQLite connection as the rest of the app.
+    let port_store: Arc<dyn PortStore> = Arc::new(store.ports_store());
+    let local_game_store = Arc::new(store.local_game_store());
 
     let platform = gamenode_core::provider::Platform::current()
         .ok_or("GameNode Desktop supports Windows and Linux only")?;
@@ -176,13 +184,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // PC ports progress leaves on its own event; the engine coalesces ticks before they get here.
+    let progress_app_slot = app_handle_slot.clone();
+    let port_progress = Arc::new(PortProgressPublisher::new(
+        runtime.handle().clone(),
+        move |progress| {
+            if let Some(app) = progress_app_slot.lock().unwrap().as_ref() {
+                use tauri::Emitter;
+                let _ = app.emit(PORTS_PROGRESS_EVENT, &progress);
+            }
+        },
+    ));
+
+    // The service loads the overlay, recovers interrupted installs and starts its workers on a
+    // dedicated thread; construction returns immediately.
+    let pc_ports = if gamenode_core::ports::PortPlatform::current().supports_installs() {
+        let data_dir = paths.data_dir().to_owned();
+        Some(PortsService::start(PortsServiceConfig {
+            store: Arc::clone(&port_store),
+            local_games: local_game_store.clone(),
+            catalog: Arc::new(gamenode_platform::ports::QuiverClient::new()?),
+            overlay_fetcher: Arc::new(
+                gamenode_platform::ports::overlay_source::HttpOverlayFetcher::new(),
+            ),
+            clock: Arc::new(gamenode_platform::ports::SystemClock),
+            data_dir: data_dir.clone(),
+            platform: gamenode_core::ports::PortPlatform::current(),
+            install: Some(InstallDeps {
+                fetcher: Arc::new(gamenode_platform::download::HttpDownloadFetcher::new()?),
+                url_policy: Arc::new(gamenode_platform::download::HttpsDownloadPolicy),
+                user_roots: gamenode_platform::ports::UserDataRoots::host()?,
+                identity: Arc::new(gamenode_platform::ports::SystemExecutableIdentity),
+                packages: Arc::new(gamenode_platform::ports::PinnedExtractor::new(data_dir)?),
+            }),
+        }))
+    } else {
+        None
+    };
+
     let pub_clone = publisher.clone();
     let engine = Engine::new(
         Ports {
             backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
                 paths.data_dir(),
             )?)),
-            local_games: Some(Arc::new(store.local_game_store())),
+            local_games: Some(local_game_store),
             installations: Some(Arc::new(
                 gamenode_platform::installations::WindowsInstallations,
             )),
@@ -208,6 +254,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             files: Arc::new(gamenode_platform::host::StdHostFiles),
             roots: Arc::new(gamenode_platform::host::SystemRoots::new()),
             uri: Arc::new(gamenode_platform::uri::SystemUriOpener),
+            pc_ports,
+            port_store: Some(Arc::clone(&port_store)),
+            port_progress,
             steam: Some(SteamPorts {
                 credentials: steam_credentials,
                 accounts: Arc::new(LibraryStoreAccounts::new(library_store)),
@@ -236,6 +285,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder = builder.manage(engine.clone());
     builder = builder.manage(logging.location().clone());
+    // Serves `gamenode-asset://localhost/port-art/<catalogId>/<capsule|hero>`; without this state
+    // every port artwork request is answered 404.
+    builder = builder.manage(gamenode_app::protocol::PortArtState::production(
+        Arc::new(gamenode_platform::ports::SnapshotPortArtResolver::new(
+            Arc::clone(&port_store),
+        )),
+        paths.data_dir(),
+    )?);
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
         commands::get_app_info,
@@ -301,6 +358,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::steam_check,
         commands::get_recent_logs,
         commands::open_logs_folder,
+        commands::ports_open,
+        commands::ports_refresh,
+        commands::ports_detail,
+        commands::ports_pick_parent,
+        commands::ports_pick_supplied,
+        commands::ports_install,
+        commands::ports_cancel,
+        commands::ports_mark_seen,
+        commands::ports_set_preferences,
+        commands::ports_pick_executable,
+        commands::ports_tools_cache,
+        commands::ports_clear_cache,
+        commands::open_install_folder,
     ]);
 
     let eng_for_setup = engine.clone();

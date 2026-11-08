@@ -1,4 +1,5 @@
 import { mockEnabled } from './mock';
+import type { PortPlatform, PortsView } from './ports';
 
 export type Provider = 'google' | 'discord' | 'twitter';
 
@@ -220,6 +221,8 @@ export interface LibraryLayout {
   sidebarWidth: number;
   detailWidth: number;
   detailOpen: boolean;
+  /** Optional so fixtures written before the collapse flag existed keep compiling. */
+  sidebarCollapsed?: boolean;
 }
 
 export type Access = 'unverified' | 'offline' | 'verified';
@@ -698,12 +701,20 @@ export interface Snapshot {
   launch?: LaunchStatus | null;
   tools: ToolsView;
   storeAccounts: StoreAccountView[];
+  /** PC ports catalog, provenance and install jobs. Always present; empty until opened. */
+  ports: PortsView;
 }
 
 export interface AppInfo {
   locale: string;
   version: string;
   backgroundSupported: boolean;
+  /**
+   * Platform reported by the host. Optional because older hosts do not send it; the UI then
+   * falls back to the user agent. The mock reports `windows` so PC ports can be developed
+   * on any machine.
+   */
+  platform?: PortPlatform | null;
   logDirectory?: string | null;
 }
 
@@ -739,6 +750,7 @@ export type LibraryInput =
   | { setFilters: LibraryFilters }
   | { setFavorite: { key: string; favorite: boolean; now: number } }
   | { setSidebarWidth: number }
+  | { setSidebarCollapsed: boolean }
   | { setDetailWidth: number }
   | { setDetailOpen: boolean }
   | 'openDetails'
@@ -764,7 +776,7 @@ export function getMatchedGameId(status: MatchStatus): number | null {
  * serves custom schemes only as `http://<scheme>.localhost`, so the bare scheme never loads
  * there; other platforms use it directly. Same rule as Tauri's own `convertFileSrc`.
  */
-function assetProtocolBase(): string {
+export function assetProtocolBase(): string {
   const onWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
   return onWindows ? 'http://gamenode-asset.localhost' : 'gamenode-asset://localhost';
 }
@@ -780,6 +792,37 @@ export function artworkAssetUrl(gameId: number | null | undefined, rev?: number 
   if (mockEnabled) return `/mock-covers/mock-${(gameId - 1) % 12}.svg`;
   const suffix = rev !== undefined ? `?rev=${encodeURIComponent(String(rev))}` : '';
   return `${assetProtocolBase()}/artwork/${gameId}${suffix}`;
+}
+
+/**
+ * The empty PC ports snapshot used before the host delivers its first payload and by the
+ * web preview. The factory lives here, not in `api/ports.ts`, so `types.ts` never needs a
+ * runtime import of the ports module (which would create an import cycle through
+ * `useSnapshot.ts`).
+ */
+export function createDefaultPortsView(): PortsView {
+  return {
+    catalog: {
+      state: 'idle',
+      fetchedAt: null,
+      entryCount: 0,
+      error: null,
+    },
+    entries: [],
+    provenance: {},
+    jobs: [],
+    unseenCount: 0,
+    preferences: {
+      view: 'grid',
+      filters: {
+        consoles: [],
+        guided: false,
+        verified: false,
+        installed: false,
+      },
+      lastParentFolder: null,
+    },
+  };
 }
 
 export function createDefaultSnapshot(): Snapshot {
@@ -834,5 +877,6 @@ export function createDefaultSnapshot(): Snapshot {
       catalog: [],
     },
     storeAccounts: [],
+    ports: createDefaultPortsView(),
   };
 }

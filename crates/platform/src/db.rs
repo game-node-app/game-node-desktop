@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "favorites",
         sql: include_str!("../migrations/0007_favorites.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "ports",
+        sql: include_str!("../migrations/0008_ports.sql"),
     },
 ];
 
@@ -211,6 +216,11 @@ impl SqliteSettingsStore {
         crate::tools_db::SqliteToolStore::new(Arc::clone(&self.conn))
     }
 
+    /// The PC ports repository on the same serialized connection.
+    pub fn ports_store(&self) -> crate::ports_db::SqlitePortStore {
+        crate::ports_db::SqlitePortStore::new(Arc::clone(&self.conn))
+    }
+
     /// Opens and migrates the database at `path`.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         open(path).map(Self::new)
@@ -331,7 +341,8 @@ mod tests {
                 (4, "drm_free_backups".to_string()),
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
-                (7, "favorites".to_string())
+                (7, "favorites".to_string()),
+                (8, "ports".to_string())
             ]
         );
     }
@@ -428,13 +439,13 @@ mod tests {
         }
     }
 
-    const V8_OK: Migration = Migration {
-        version: 8,
+    const V9_OK: Migration = Migration {
+        version: 9,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V8_BAD: Migration = Migration {
-        version: 8,
+    const V9_BAD: Migration = Migration {
+        version: 9,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -458,7 +469,8 @@ mod tests {
             MIGRATIONS[4],
             MIGRATIONS[5],
             MIGRATIONS[6],
-            V8_OK,
+            MIGRATIONS[7],
+            V9_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -471,7 +483,8 @@ mod tests {
                 (5, "game_tools".into()),
                 (6, "store_accounts_and_catalog".into()),
                 (7, "favorites".into()),
-                (8, "add_notes".into())
+                (8, "ports".into()),
+                (9, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -510,11 +523,12 @@ mod tests {
                 MIGRATIONS[4],
                 MIGRATIONS[5],
                 MIGRATIONS[6],
-                V8_BAD,
+                MIGRATIONS[7],
+                V9_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 8 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 9 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -527,6 +541,7 @@ mod tests {
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
+                (8, "ports".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -555,14 +570,38 @@ mod tests {
                     MIGRATIONS[4],
                     MIGRATIONS[5],
                     MIGRATIONS[6],
-                    V8_OK,
+                    MIGRATIONS[7],
+                    V9_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 7
+        let err = open(&path).unwrap_err(); // this build only knows version 8
+        assert_eq!(
+            err,
+            StorageError::NewerSchema {
+                found: 9,
+                supported: 8
+            }
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a newer database is not modified"
+        );
+    }
+
+    #[test]
+    fn a_favorites_build_refuses_a_ports_database_and_leaves_it_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        drop(open(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+
+        // The build that shipped the favorites schema knows version 7 only.
+        let err = open_with(&path, &MIGRATIONS[..7]).unwrap_err();
         assert_eq!(
             err,
             StorageError::NewerSchema {
@@ -605,6 +644,7 @@ mod tests {
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
+                (8, "ports".to_string()),
             ]
         );
         for table in [
@@ -615,6 +655,11 @@ mod tests {
             "games",
             "store_accounts",
             "favorites",
+            "port_catalog_snapshot",
+            "port_overlay",
+            "port_install_jobs",
+            "port_installations",
+            "port_preferences",
         ] {
             let rows: i64 = store
                 .conn()
@@ -635,7 +680,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 7,
+                found: 8,
                 supported: 1
             }
         );
@@ -659,8 +704,8 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 8,
-            ..V8_OK
+            version: 9,
+            ..V9_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -700,6 +745,7 @@ mod tests {
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
+                (8, "ports".to_string()),
             ]
         );
 
@@ -828,6 +874,7 @@ mod tests {
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
+                (8, "ports".to_string()),
             ]
         );
 
@@ -938,6 +985,314 @@ mod tests {
     }
 
     #[test]
+    fn v7_database_is_upgraded_to_v8_creating_port_tables_and_preserving_all_data() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..7]).unwrap();
+            conn.execute_batch(
+                r#"
+                INSERT INTO settings (key, value) VALUES ('window.width', '1920');
+                INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed,
+                     first_seen, last_seen, owned, family_shared)
+                VALUES ('steam:620', 'steam', '620', 'Portal 2', 'C:/Games/Portal 2',
+                        '{"state_flags":"4"}', 1, 100, 150, 1, 0);
+                INSERT INTO provider_scans
+                    (provider, last_success_at, last_error, last_catalog_at, catalog_error,
+                     last_family_at, family_error)
+                VALUES ('steam', 150, NULL, 140, NULL, 145, NULL);
+                INSERT INTO auto_matches (category, uid, game_ids_json, checked_at)
+                VALUES (1, '620', '[72]', 120);
+                INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+                VALUES ('acct', 'steam:620', 72, 130);
+                INSERT INTO games
+                    (game_id, name, release_year, cover_url, cover_file, cover_failed_at)
+                VALUES (72, 'Portal 2', 2011, 'https://images.example/co1.jpg', '72.jpg', NULL);
+                INSERT INTO playtime_sessions
+                    (id, account_id, entry_key, game_id, source, platform_id, started_at,
+                     checkpoint_at, ended_at)
+                VALUES ('s1', 'acct', 'steam:620', 72, 'steam', 6, 100, 200, 300);
+                INSERT INTO playtime_totals
+                    (account_id, entry_key, total_seconds, last_played_at, accepted_game_id,
+                     accepted_seconds, rejected_seconds)
+                VALUES ('acct', 'steam:620', 3600, 300, 72, 3600, NULL);
+                INSERT INTO manual_registrations (id, file_identity, removed, payload)
+                VALUES ('reg1', 'exe_hash_1', 0, '{"title":"Game 1"}');
+                INSERT INTO discovery_watches (id, payload) VALUES ('w1', '{"path":"D:/Games"}');
+                INSERT INTO discovery_candidates (fingerprint, payload)
+                VALUES ('fp1', '{"title":"Found"}');
+                INSERT INTO local_inferences (account_id, installation_id, payload)
+                VALUES ('acct', 'reg1', '{"game_id":72}');
+                INSERT INTO save_profiles (id, installation_id, revision, payload)
+                VALUES ('p1', 'reg1', 1, '{"label":"Save"}');
+                INSERT INTO backup_jobs
+                    (id, installation_id, profile_id, revision, play_period, destination,
+                     state, payload)
+                VALUES ('j1', 'reg1', 'p1', 1, NULL, 'D:/Backups', 'Completed', '{"ok":true}');
+                INSERT INTO backup_destinations (path) VALUES ('D:/Backups');
+                INSERT INTO store_accounts (provider, account_id, account_name, last_verified_at)
+                VALUES ('steam', '76561198000000000', 'Ana', 160);
+                INSERT INTO tool_installations
+                    (entry_key, tool_id, channel, version, target_exe, proxy_dll, state,
+                     installed_at, updated_at)
+                VALUES ('steam:620', 'optiscaler', 'stable', '0.7.9', 'bin/game.exe', 'dxgi.dll',
+                        'installed', 1000, 1000);
+                INSERT INTO tool_files
+                    (entry_key, tool_id, relative_path, installed_sha256, backup_path,
+                     original_sha256, prior_owner_tool_id, created_dirs_json, ini_patches_json,
+                     ini_section, ini_key, ini_value, ini_prior_value)
+                VALUES ('steam:620', 'optiscaler', 'dxgi.dll', 'sha256_mock', NULL, NULL, NULL,
+                        '[]', '[]', NULL, NULL, NULL, NULL);
+                INSERT INTO tool_releases_cache
+                    (tool_id, channel, version, tag_name, name, published_at, download_url,
+                     asset_name, size_bytes, sha256, cached_path, fetched_at)
+                VALUES ('optiscaler', 'stable', '0.7.9', 'v0.7.9', 'OptiScaler 0.7.9',
+                        '2026-01-01', 'https://github.com/example/asset.7z', 'asset.7z', 1024,
+                        'sha', NULL, 1000);
+                INSERT INTO favorites (account_id, game_id, is_favorite, pending, updated_at)
+                VALUES ('acct', 72, 1, 0, 170);
+                "#,
+            )
+            .unwrap();
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+
+        assert_eq!(
+            versions(&conn),
+            vec![
+                (1, "initial_settings".to_string()),
+                (2, "library".to_string()),
+                (3, "playtime".to_string()),
+                (4, "drm_free_backups".to_string()),
+                (5, "game_tools".to_string()),
+                (6, "store_accounts_and_catalog".to_string()),
+                (7, "favorites".to_string()),
+                (8, "ports".to_string()),
+            ]
+        );
+
+        // Every table that existed at the favorites schema keeps its row.
+        for table in [
+            "auto_matches",
+            "backup_destinations",
+            "backup_jobs",
+            "chosen_matches",
+            "discovery_candidates",
+            "discovery_watches",
+            "favorites",
+            "games",
+            "library_entries",
+            "local_inferences",
+            "manual_registrations",
+            "playtime_sessions",
+            "playtime_totals",
+            "provider_scans",
+            "save_profiles",
+            "store_accounts",
+            "tool_files",
+            "tool_installations",
+            "tool_releases_cache",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 1, "{table} keeps its row");
+        }
+
+        // Values in every pre-existing table survive the upgrade unchanged.
+        let checks = [
+            (
+                "SELECT value FROM settings WHERE key = 'window.width'",
+                "1920",
+            ),
+            (
+                "SELECT name FROM library_entries WHERE key = 'steam:620'",
+                "Portal 2",
+            ),
+            (
+                "SELECT CAST(last_catalog_at AS TEXT) FROM provider_scans WHERE provider = 'steam'",
+                "140",
+            ),
+            (
+                "SELECT game_ids_json FROM auto_matches WHERE uid = '620'",
+                "[72]",
+            ),
+            (
+                "SELECT CAST(game_id AS TEXT) FROM chosen_matches WHERE account_id = 'acct'",
+                "72",
+            ),
+            ("SELECT cover_file FROM games WHERE game_id = 72", "72.jpg"),
+            (
+                "SELECT CAST(ended_at AS TEXT) FROM playtime_sessions WHERE id = 's1'",
+                "300",
+            ),
+            (
+                "SELECT CAST(total_seconds AS TEXT) FROM playtime_totals",
+                "3600",
+            ),
+            (
+                "SELECT payload FROM manual_registrations WHERE id = 'reg1'",
+                "{\"title\":\"Game 1\"}",
+            ),
+            (
+                "SELECT payload FROM discovery_watches WHERE id = 'w1'",
+                "{\"path\":\"D:/Games\"}",
+            ),
+            (
+                "SELECT payload FROM discovery_candidates WHERE fingerprint = 'fp1'",
+                "{\"title\":\"Found\"}",
+            ),
+            (
+                "SELECT payload FROM local_inferences WHERE installation_id = 'reg1'",
+                "{\"game_id\":72}",
+            ),
+            (
+                "SELECT CAST(revision AS TEXT) FROM save_profiles WHERE id = 'p1'",
+                "1",
+            ),
+            ("SELECT state FROM backup_jobs WHERE id = 'j1'", "Completed"),
+            ("SELECT path FROM backup_destinations", "D:/Backups"),
+            (
+                "SELECT account_name FROM store_accounts WHERE provider = 'steam'",
+                "Ana",
+            ),
+            (
+                "SELECT version FROM tool_installations WHERE entry_key = 'steam:620'",
+                "0.7.9",
+            ),
+            (
+                "SELECT installed_sha256 FROM tool_files WHERE relative_path = 'dxgi.dll'",
+                "sha256_mock",
+            ),
+            (
+                "SELECT name FROM tool_releases_cache WHERE tool_id = 'optiscaler'",
+                "OptiScaler 0.7.9",
+            ),
+            (
+                "SELECT CAST(pending AS TEXT) FROM favorites WHERE account_id = 'acct'",
+                "0",
+            ),
+        ];
+        for (sql, expected) in checks {
+            let found: String = conn.query_row(sql, [], |r| r.get(0)).unwrap();
+            assert_eq!(found, expected, "{sql}");
+        }
+
+        // The port tables start empty after the upgrade...
+        for table in [
+            "port_catalog_snapshot",
+            "port_overlay",
+            "port_install_jobs",
+            "port_installations",
+            "port_preferences",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "{table} starts empty");
+        }
+
+        // ...and accept the rows the port store writes.
+        conn.execute(
+            "INSERT INTO port_catalog_snapshot (id, payload, fetched_at, entry_count)
+             VALUES (1, '{\"apps\":[]}', 170, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO port_overlay (id, version, etag, payload)
+             VALUES (1, 1, NULL, 'schema_version = 1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO port_install_jobs
+                (id, catalog_id, slug, port_name, release_version, state, phase, install_folder,
+                 created_paths, registration_id, result_seen, failure_reason, failure_output,
+                 plan_json, release_json, created_at, updated_at, finished_at)
+             VALUES ('job1', 'qcat_1', 'bloodborne', 'Bloodborne', 'v0.9.38', 'completed',
+                     '\"completed\"', 'D:/Ports/Bloodborne', '[\"D:/Ports/Bloodborne\"]', 'reg1',
+                     0, NULL, NULL, '{}', '{}', 100, 200, 200)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO port_installations
+                (registration_id, catalog_id, slug, port_name, installed_version,
+                 install_folder, environment_json, job_id)
+             VALUES ('reg1', 'qcat_1', 'bloodborne', 'Bloodborne PC', 'v0.9.38',
+                     'D:/Ports/Bloodborne', '{\"GAMENODE_TEST\":\"1\"}', 'job1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO port_preferences (id, view_mode, filters_json, install_parent)
+             VALUES (1, 'list', '{\"guided\":true}', 'D:/Ports')",
+            [],
+        )
+        .unwrap();
+
+        let job: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT state, created_paths, registration_id
+                 FROM port_install_jobs WHERE id = 'job1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            job,
+            (
+                "completed".into(),
+                "[\"D:/Ports/Bloodborne\"]".into(),
+                Some("reg1".into())
+            )
+        );
+        let provenance: (String, String) = conn
+            .query_row(
+                "SELECT port_name, environment_json FROM port_installations
+                 WHERE registration_id = 'reg1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            provenance,
+            ("Bloodborne PC".into(), "{\"GAMENODE_TEST\":\"1\"}".into())
+        );
+        let preferences: (String, String) = conn
+            .query_row(
+                "SELECT view_mode, install_parent FROM port_preferences WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preferences, ("list".into(), "D:/Ports".into()));
+
+        // Provenance is not tied to a library registration by a foreign key, so removing a
+        // registration cannot delete it.
+        let foreign_keys: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('port_installations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(foreign_keys, 0);
+        conn.execute("DELETE FROM manual_registrations WHERE id = 'reg1'", [])
+            .unwrap();
+        let provenance_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM port_installations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(provenance_rows, 1);
+    }
+
+    #[test]
     fn database_never_holds_credentials_or_callback_urls() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -973,6 +1328,11 @@ mod tests {
                 "manual_registrations",
                 "playtime_sessions",
                 "playtime_totals",
+                "port_catalog_snapshot",
+                "port_install_jobs",
+                "port_installations",
+                "port_overlay",
+                "port_preferences",
                 "provider_scans",
                 "save_profiles",
                 "schema_migrations",

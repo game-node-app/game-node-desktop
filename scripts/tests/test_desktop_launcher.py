@@ -72,6 +72,15 @@ class DesktopLauncherTests(unittest.TestCase):
         self.assertTrue((self.target / "release" / "gamenode-plugin-steam").is_file())
         self.assertTrue((self.target / "release" / "gamenode-plugin-packagekit").is_file())
 
+    def test_default_launch_handles_empty_cargo_and_app_arguments(self):
+        result = subprocess.run(
+            [str(LAUNCHER)], cwd=ROOT, env=self.env, capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.app_log.read_text()), [])
+        build = json.loads(self.command_log.read_text().splitlines()[0])
+        self.assertNotIn("", build)
+
     def test_missing_adjacent_plugin_fails_without_launching_desktop(self):
         self.env["OMIT_PLUGIN"] = "1"
         result = subprocess.run(

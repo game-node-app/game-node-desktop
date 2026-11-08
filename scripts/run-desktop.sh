@@ -10,6 +10,7 @@ case "$(uname -s)" in
 esac
 
 # Cargo options precede `--`; arguments after it are passed to GameNode.
+# Guard empty array expansions for nounset on Bash versions before 4.4.
 cargo_args=()
 app_args=()
 while (($#)); do
@@ -32,11 +33,11 @@ build_args=(-p gamenode-app -p gamenode-plugin-steam)
 if [[ "$(uname -s)" == Linux ]]; then
     build_args+=(-p gamenode-plugin-packagekit)
 fi
-cargo build --locked --bins "${build_args[@]}" "${cargo_args[@]}"
+cargo build --locked --bins "${build_args[@]}" ${cargo_args[@]+"${cargo_args[@]}"}
 target_dir=$(cargo metadata --locked --no-deps --format-version 1 \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 profile=debug
-for arg in "${cargo_args[@]}"; do
+for arg in ${cargo_args[@]+"${cargo_args[@]}"}; do
     if [[ "$arg" == --release ]]; then
         profile=release
     fi
@@ -55,4 +56,4 @@ for plugin_name in "${plugin_names[@]}"; do
     fi
 done
 
-exec "$desktop" "${app_args[@]}"
+exec "$desktop" ${app_args[@]+"${app_args[@]}"}

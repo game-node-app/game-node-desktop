@@ -15,8 +15,8 @@ try {
     $metadata = & cargo metadata --locked --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $targetDirectory = ($metadata | ConvertFrom-Json).target_directory
-    $profile = if ($CargoArguments -contains '--release') { 'release' } else { 'debug' }
-    $binaryDirectory = Join-Path $targetDirectory $profile
+    $buildProfile = if ($CargoArguments -contains '--release') { 'release' } else { 'debug' }
+    $binaryDirectory = Join-Path $targetDirectory $buildProfile
     $desktop = Join-Path $binaryDirectory 'gamenode.exe'
     $plugin = Join-Path $binaryDirectory 'gamenode-plugin-steam.exe'
     if (!(Test-Path -LiteralPath $desktop -PathType Leaf)) {

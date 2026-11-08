@@ -495,7 +495,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "quit" => {
-                    eng_for_tray.shutdown();
                     app_handle.exit(0);
                 }
                 _ => {}
@@ -629,16 +628,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     set_webview_visible(&win, false);
                 }
             }
-            #[cfg(not(target_os = "windows"))]
-            {
-                eng_for_events.shutdown();
-            }
         }
         _ => {}
     });
 
     let app = builder.build(tauri::generate_context!())?;
-    app.run(|_app_handle, _event| {});
+    let exit_code = app.run_return(|_app_handle, _event| {});
+
+    // The engine flushes storage and may wait; keep it off UI callbacks.
+    if let Err(error) = runtime.block_on(tokio::task::spawn_blocking(move || engine.shutdown())) {
+        tracing::error!(%error, "engine shutdown failed");
+    }
 
     if let Some(provider_runtime) = provider_runtime {
         runtime.block_on(provider_runtime.shutdown());
@@ -648,6 +648,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     runtime.shutdown_timeout(Duration::from_secs(1));
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }
 

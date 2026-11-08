@@ -429,3 +429,16 @@ fn every_documented_provider_manifest_loads() {
         assert_eq!(loaded.providers.len(), 1);
     }
 }
+
+#[test]
+fn foreign_platform_manifests_validate_structure_without_requiring_local_plugins() {
+    let manifest = include_str!("../../../../../providers/packagekit.toml");
+    let valid = super::load_with_plugins(&[("packagekit.toml", manifest)], Platform::Windows, &[]);
+    assert!(valid.providers.is_empty());
+    assert!(valid.diagnostics.is_empty());
+    let invalid = manifest.replace("name = \"Gerenciador de pacotes Linux\"", "name = \"\"");
+    let invalid =
+        super::load_with_plugins(&[("packagekit.toml", &invalid)], Platform::Windows, &[]);
+    assert_eq!(invalid.diagnostics.len(), 1);
+    assert!(invalid.diagnostics[0].problem.contains("name"));
+}

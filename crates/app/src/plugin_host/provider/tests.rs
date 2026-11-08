@@ -414,3 +414,21 @@ async fn received_results_are_fenced_at_core_commit_and_discovery_survives_sign_
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn catalog_deadline_allows_three_network_stages_but_still_expires() {
+    let mut h = Harness::new().await;
+    let sync = h.execute(ProviderOperation::SyncCatalog);
+    let _client = h.next(ProviderOperation::SyncCatalog).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(271)).await;
+    assert!(
+        !sync.is_finished(),
+        "three bounded network stages fit the host budget"
+    );
+    tokio::time::advance(Duration::from_secs(30)).await;
+    assert_eq!(
+        sync.await.unwrap().unwrap_err().code(),
+        tonic::Code::DeadlineExceeded
+    );
+}

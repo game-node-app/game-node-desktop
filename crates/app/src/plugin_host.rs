@@ -33,16 +33,16 @@ pub struct PluginInfo {
 
 /// Resolving the current executable and checking sibling files touches disk;
 /// callers should run this on a blocking worker.
-pub fn inventory(runtime_status: &'static str) -> Vec<PluginInfo> {
+pub fn inventory(health: impl Fn(&str) -> (&'static str, bool)) -> Vec<PluginInfo> {
     let executable_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
-    inventory_at(executable_dir.as_deref(), runtime_status)
+    inventory_at(executable_dir.as_deref(), health)
 }
 
 fn inventory_at(
     executable_dir: Option<&std::path::Path>,
-    runtime_status: &'static str,
+    health: impl Fn(&str) -> (&'static str, bool),
 ) -> Vec<PluginInfo> {
     PLUGINS
         .iter()
@@ -53,6 +53,7 @@ fn inventory_at(
         .map(|plugin| {
             let installed =
                 executable_dir.is_some_and(|dir| dir.join(plugin.executable_name()).is_file());
+            let (runtime_status, connected) = health(plugin.provider_id);
             PluginInfo {
                 provider_id: plugin.provider_id.to_owned(),
                 plugin_id: plugin.plugin_id.to_owned(),
@@ -69,7 +70,7 @@ fn inventory_at(
                     .iter()
                     .map(|capability| (*capability).to_owned())
                     .collect(),
-                session: "stopped".into(),
+                session: if connected { "active" } else { "stopped" }.into(),
                 native_access: plugin
                     .native_access
                     .iter()
@@ -347,8 +348,19 @@ impl PluginApiServer {
         let incoming = futures_util::stream::try_unfold(
             (listener, permits),
             |(mut listener, permits)| async move {
+                let mut reported_error = false;
                 loop {
-                    let pipe = listener.accept().await?;
+                    let pipe = match listener.accept().await {
+                        Ok(pipe) => pipe,
+                        Err(error) => {
+                            if !reported_error {
+                                tracing::warn!(%error, "plugin pipe accept failed; retrying");
+                                reported_error = true;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            continue;
+                        }
+                    };
                     if let Ok(permit) = permits.clone().try_acquire_owned() {
                         return Ok::<_, std::io::Error>(Some((
                             transport::Connection {
@@ -509,5 +521,35 @@ mod tests {
         assert_eq!(packagekit.native_access, &["files", "process", "dbus"]);
         assert!(packagekit.credential_alias.is_none());
         assert!(packagekit.approved_login().unwrap().is_none());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod inventory_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_uses_each_providers_own_health_and_session() {
+        let dir = tempfile::tempdir().unwrap();
+        for plugin in PLUGINS {
+            std::fs::write(dir.path().join(plugin.executable_name()), b"fixture").unwrap();
+        }
+        let plugins = inventory_at(Some(dir.path()), |id| {
+            if id == "steam" {
+                ("failed", false)
+            } else {
+                ("installed", true)
+            }
+        });
+        let steam = plugins.iter().find(|p| p.provider_id == "steam").unwrap();
+        let packages = plugins
+            .iter()
+            .find(|p| p.provider_id == "packagekit")
+            .unwrap();
+        assert_eq!((&*steam.status, &*steam.session), ("failed", "stopped"));
+        assert_eq!(
+            (&*packages.status, &*packages.session),
+            ("installed", "active")
+        );
     }
 }

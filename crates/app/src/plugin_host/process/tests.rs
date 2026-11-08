@@ -63,6 +63,21 @@ async fn fixture_process() {
         tokio::time::sleep(Duration::from_secs(30)).await;
         return;
     }
+    if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("linger") {
+        // Retain the session even after the host invalidates it. This forces
+        // supervision to stop and reap the old process before relaunching.
+        let _session = Session::open(
+            gamenode_plugin_sdk::Launch::from_env().unwrap(),
+            "fixture.plugin",
+            "fixture",
+            "1.0",
+            &[capability::CONTEXT],
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        return;
+    }
     let session = Session::open(
         gamenode_plugin_sdk::Launch::from_env().unwrap(),
         "fixture.plugin",
@@ -228,4 +243,29 @@ async fn incompatible_child_and_missing_endpoint_release_the_launch() {
     assert!(processes.ensure_started("fixture").await.is_err());
     assert!(!processes.inner.api.connected("fixture"));
     processes.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalidated_live_child_is_reaped_before_a_fresh_session_starts() {
+    let (processes, _server, _directory) = manager(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+    )
+    .await;
+    processes.ensure_started("fixture").await.unwrap();
+    let old_pid = processes.process_id("fixture").await.unwrap();
+    processes.inner.api.invalidate_profile().await;
+    assert!(!processes.inner.api.connected("fixture"));
+    assert!(std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+    tokio::time::timeout(Duration::from_secs(8), processes.ensure_started("fixture"))
+        .await
+        .unwrap()
+        .unwrap();
+    let new_pid = processes.process_id("fixture").await.unwrap();
+    assert_ne!(old_pid, new_pid);
+    assert!(!std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+    assert!(processes.inner.api.connected("fixture"));
+    processes.shutdown().await;
+    assert!(!std::path::Path::new(&format!("/proc/{new_pid}")).exists());
 }

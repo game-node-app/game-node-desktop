@@ -343,16 +343,12 @@ pub async fn remove_entry(
 pub async fn plugin_inventory(
     engine: tauri::State<'_, Engine>,
 ) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
-    let status = engine.provider_availability("steam");
-    let (_, connected) = engine.provider_health("steam");
+    let engine = engine.inner().clone();
     tokio::task::spawn_blocking(move || {
-        let mut plugins = crate::plugin_host::inventory(status);
-        for plugin in &mut plugins {
-            if plugin.provider_id == "steam" {
-                plugin.session = if connected { "active" } else { "stopped" }.into();
-            }
-        }
-        plugins
+        crate::plugin_host::inventory(|id| {
+            let (_, connected) = engine.provider_health(id);
+            (engine.provider_availability(id), connected)
+        })
     })
     .await
     .map_err(|_| "plugin inventory worker failed".to_owned())

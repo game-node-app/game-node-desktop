@@ -290,6 +290,18 @@ impl Lease {
     }
 }
 
+// Steam sync performs session validation, owned games, then Family games,
+// each bounded at 90 seconds. Leave bounded headroom for host storage/RPCs.
+fn operation_timeout(kind: ProviderOperation) -> Duration {
+    match kind {
+        ProviderOperation::SignIn => Duration::from_secs(615),
+        ProviderOperation::SyncCatalog => Duration::from_secs(300),
+        ProviderOperation::Initialize | ProviderOperation::Check => Duration::from_secs(105),
+        ProviderOperation::SettingsCancel => Duration::from_secs(3),
+        _ => Duration::from_secs(90),
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -980,11 +992,7 @@ impl ProviderApi {
             lock(&self.state).operations.remove(&key);
             return Err(Status::resource_exhausted("provider command channel full"));
         }
-        let duration = match kind {
-            ProviderOperation::SignIn => Duration::from_secs(615),
-            ProviderOperation::SettingsCancel => Duration::from_secs(3),
-            _ => Duration::from_secs(90),
-        };
+        let duration = operation_timeout(kind);
         match tokio::time::timeout(duration, result).await {
             Ok(Ok(result)) => result,
             _ => {

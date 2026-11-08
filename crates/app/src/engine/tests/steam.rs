@@ -884,6 +884,36 @@ async fn a_different_account_clears_the_old_catalog_before_importing_the_new_one
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn identity_change_before_library_activation_survives_the_old_cache_load() {
+    let cookie = "steamLoginSecure=new-cookie";
+    let fixture = SteamFixture::new().with_stored(cookie, Some(stored_row("A", "old")));
+    fixture.client.set_session(Ok(session("B", "new", cookie)));
+    fixture
+        .client
+        .set_owned(Ok(vec![game("730", "Counter-Strike 2")]));
+    let mut h = steam_harness(&fixture);
+    seed(
+        &h,
+        vec![entry("steam:400", "Portals", false, true, false)],
+        Some(account("u1", "Ana")),
+    );
+    // Force the startup check to commit before the library starts loading.
+    // The cache still contains the previous account's ownership facts.
+    h.engine.provider_check("steam").await;
+    h.engine.start();
+    h.until(
+        "new ownership after a pre-activation identity change",
+        |s| {
+            s.library.as_ref().is_some_and(|view| {
+                view.rows.iter().any(|r| r.key == "steam:730" && r.owned)
+                    && !view.rows.iter().any(|r| r.key == "steam:400")
+            })
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_changed_account_whose_catalog_fails_does_not_keep_the_old_owned_games() {
     let cookie = "steamLoginSecure=new-cookie";
     let fixture = SteamFixture::new().with_stored(cookie, Some(stored_row("A", "old")));

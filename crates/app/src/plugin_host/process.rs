@@ -104,14 +104,17 @@ impl ProviderProcesses {
         // A per-provider async lock joins concurrent startup requests without
         // blocking another provider or a native UI callback.
         let mut stored = slot.child.lock().await;
-        if let Some(child) = stored.as_ref() {
+        if let Some(child) = stored.as_mut() {
             if child.running.load(Ordering::Acquire) && self.inner.api.connected(provider_id) {
                 return Ok(());
             }
             if child.running.load(Ordering::Acquire) {
+                if let Some(stop) = child.stop.take() {
+                    let _ = stop.send(());
+                }
                 let stopped = child.stopped.notified();
                 if child.running.load(Ordering::Acquire)
-                    && tokio::time::timeout(Duration::from_secs(3), stopped)
+                    && tokio::time::timeout(Duration::from_secs(4), stopped)
                         .await
                         .is_err()
                 {
@@ -132,6 +135,8 @@ impl ProviderProcesses {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {

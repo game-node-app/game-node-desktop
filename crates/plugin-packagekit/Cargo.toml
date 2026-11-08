@@ -21,3 +21,6 @@ serde.workspace = true
 zbus = "5.19"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+tempfile.workspace = true

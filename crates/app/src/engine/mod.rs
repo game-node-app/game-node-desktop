@@ -199,6 +199,8 @@ struct Shared {
     runtime: Handle,
     storage: StorageWorker,
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
+    /// Serialize checks and catalog commits without delaying account cancellation.
+    provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
     /// A cover completion is waiting for the coalescing flush task to publish it.
@@ -271,6 +273,7 @@ impl Engine {
             runtime,
             storage: StorageWorker::new(),
             providers: Mutex::new(None),
+            provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
             cover_flush_pending: AtomicBool::new(false),
             cover_flush_scheduled: AtomicBool::new(false),
@@ -477,7 +480,7 @@ impl Engine {
     fn clear_store_catalog_memory(&self, provider: &str) {
         let mut state = self.lock();
         state.catalog_request_pending = false;
-        if state.library_loading {
+        if state.library_loading || !state.library.is_active() {
             state.catalog_clear_pending.insert(provider.to_owned());
         } else {
             self.run_library(

@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[tokio::main]
 async fn main() {
     let _ = tracing_subscriber::fmt()

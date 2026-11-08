@@ -239,6 +239,16 @@ impl Engine {
                 .await;
         }
     }
+    fn provider_check_gate(&self, provider: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.shared
+            .provider_checks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(provider.to_owned())
+            .or_default()
+            .clone()
+    }
+
     async fn provider_action(&self, provider: String, operation: ProviderOperation) {
         let Some(runtime) = self.provider_runtime() else {
             return;
@@ -246,6 +256,15 @@ impl Engine {
         if !runtime.accounts().contains(&provider) {
             return;
         }
+        // A startup check can report the same identity replacement as a joined
+        // catalog sync. Serialize check execution AND its commit with sync so a
+        // late check cannot clear the newly imported catalog. Sign-out/sign-in
+        // remain free to preempt network work through host epoch invalidation.
+        let _check = if operation == ProviderOperation::Check {
+            Some(self.provider_check_gate(&provider).lock_owned().await)
+        } else {
+            None
+        };
         let Ok(completion) = runtime.execute(&provider, operation).await else {
             self.publish_current();
             return;
@@ -344,7 +363,15 @@ impl Engine {
         });
     }
     pub(super) async fn sync_provider_catalog(&self, op: u64, provider: String) {
+        let _check = self.provider_check_gate(&provider).lock_owned().await;
         let Some(runtime) = self.provider_runtime() else {
+            self.library_input(LibInput::CatalogSynced {
+                op,
+                provider,
+                owned: None,
+                family: None,
+                now: unix_now(),
+            });
             return;
         };
         if runtime.status(&provider).is_some_and(|status| {

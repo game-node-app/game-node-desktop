@@ -12,7 +12,8 @@ mod linux {
     const PACKAGEKIT_PATH: &str = "/org/freedesktop/PackageKit";
     const PACKAGEKIT_INTERFACE: &str = "org.freedesktop.PackageKit";
     const TRANSACTION_INTERFACE: &str = "org.freedesktop.PackageKit.Transaction";
-    const FILTER_INSTALLED: u64 = 1;
+    // PkFilterEnum::Installed is enum position 2 in the PackageKit bitfield.
+    const FILTER_INSTALLED: u64 = 1 << 2;
     const MAX_DESKTOP_FILES: usize = 4_096;
     const DESKTOP_SEARCH_BATCH: usize = 128;
 
@@ -175,18 +176,15 @@ mod linux {
         if desktop_paths.is_empty() {
             return Ok(Vec::new());
         }
-        let mut package_rows = Vec::new();
-        for batch in desktop_paths.chunks(DESKTOP_SEARCH_BATCH) {
-            package_rows.extend(
-                transaction_packages(
-                    &connection,
-                    "SearchFiles",
-                    &(FILTER_INSTALLED, batch.to_vec()),
-                )
-                .await
-                .map_err(|_| "packagekit_query_failed")?,
-            );
-        }
+        let package_rows = search_installed_files(&desktop_paths, |filter, files| {
+            let connection = &connection;
+            async move {
+                transaction_packages(connection, "SearchFiles", &(filter, files))
+                    .await
+                    .map_err(|_| "packagekit_query_failed")
+            }
+        })
+        .await?;
         let by_path = desktop_entries
             .into_iter()
             .map(|entry| (entry.path.to_string_lossy().into_owned(), entry))
@@ -233,6 +231,21 @@ mod linux {
         Ok(records.into_values().collect())
     }
 
+    async fn search_installed_files<F, Fut>(
+        desktop_paths: &[String],
+        mut query: F,
+    ) -> Result<Vec<(String, String)>, &'static str>
+    where
+        F: FnMut(u64, Vec<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<(String, String)>, &'static str>>,
+    {
+        let mut rows = Vec::new();
+        for batch in desktop_paths.chunks(DESKTOP_SEARCH_BATCH) {
+            rows.extend(query(FILTER_INSTALLED, batch.to_vec()).await?);
+        }
+        Ok(rows)
+    }
+
     async fn transaction_packages<B>(
         connection: &Connection,
         method: &str,
@@ -265,10 +278,9 @@ mod linux {
                 biased;
                 message = packages.next() => {
                     let Some(message) = message else { break };
-                    if let Ok((_, package_id, summary)) = message.body().deserialize::<(u32, String, String)>() {
-                        if package_id.contains(';') {
-                            result.push((package_id, summary));
-                        }
+                    if let Ok((_, package_id, summary)) = message.body().deserialize::<(u32, String, String)>()
+                        && package_id.contains(';') {
+                        result.push((package_id, summary));
                     }
                 }
                 message = finished.next() => {
@@ -370,12 +382,8 @@ mod linux {
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let executable = exec
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .trim_matches('"');
-        let executable = std::path::Path::new(executable)
+        let executable = exec_program(exec).unwrap_or_default();
+        let executable = std::path::Path::new(&executable)
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
@@ -391,19 +399,43 @@ mod linux {
                 .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
     }
 
-    fn resolve_exec(exec: &str) -> Option<PathBuf> {
-        let executable = exec.split_whitespace().next()?.trim_matches('"');
-        if executable.is_empty() || executable.starts_with('%') || executable.contains('$') {
+    // Only tokenize the program, never interpret shell syntax or expand fields.
+    // Desktop Entry Exec is bounded by the already bounded desktop-file read.
+    fn exec_program(exec: &str) -> Option<String> {
+        if exec.len() > 8_192 {
             return None;
         }
-        let candidate = PathBuf::from(executable);
+        let mut chars = exec.trim_start().chars();
+        let mut program = String::new();
+        let mut quoted = false;
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => quoted = !quoted,
+                '\\' => {
+                    let escaped = chars.next()?;
+                    if quoted && !matches!(escaped, '"' | '`' | '$' | '\\') {
+                        return None;
+                    }
+                    program.push(escaped);
+                }
+                ch if ch.is_whitespace() && !quoted => break,
+                '%' => return None,
+                ch => program.push(ch),
+            }
+        }
+        (!quoted && !program.is_empty()).then_some(program)
+    }
+
+    fn resolve_exec(exec: &str) -> Option<PathBuf> {
+        let executable = exec_program(exec)?;
+        let candidate = PathBuf::from(&executable);
         if candidate.is_absolute() && candidate.is_file() {
             return Some(candidate);
         }
         env::var_os("PATH")?
             .to_string_lossy()
             .split(':')
-            .map(|directory| PathBuf::from(directory).join(executable))
+            .map(|directory| PathBuf::from(directory).join(&executable))
             .find(|path| path.is_file())
     }
 
@@ -468,11 +500,55 @@ mod linux {
 
     #[cfg(test)]
     mod tests {
+        #[tokio::test]
+        async fn desktop_search_queries_only_installed_packages_in_bounded_batches() {
+            let paths = (0..130)
+                .map(|i| format!("/usr/share/applications/game-{i}.desktop"))
+                .collect::<Vec<_>>();
+            let mut calls = Vec::new();
+            let rows = super::search_installed_files(&paths, |filter, files| {
+                calls.push((filter, files));
+                std::future::ready(Ok(vec![("game;1;x86_64;installed".into(), "Game".into())]))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls.len(), 2);
+            // PackageKit's Installed enum has ordinal 2, so the wire bitfield is 4.
+            assert!(calls.iter().all(|(filter, _)| *filter == 4));
+            assert_eq!(calls[0].1.len(), 128);
+            assert_eq!(calls[1].1.len(), 2);
+            assert_eq!(
+                calls
+                    .into_iter()
+                    .flat_map(|(_, files)| files)
+                    .collect::<Vec<_>>(),
+                paths
+            );
+            assert_eq!(rows.len(), 2);
+        }
+
         use super::{
             DesktopEntry, PackageBackend, candidate_from_desktop, normalized_package_name,
             parse_game_desktop_entry, parse_package_owner,
         };
         use std::{collections::BTreeMap, path::PathBuf};
+
+        #[test]
+        fn quoted_exec_program_with_spaces_is_discovered_without_interpreting_arguments() {
+            let dir = tempfile::tempdir().unwrap();
+            let program = dir.path().join("Game With Spaces");
+            std::fs::write(&program, b"fixture").unwrap();
+            let exec = format!("\"{}\" --fullscreen %U", program.display());
+            assert_eq!(super::resolve_exec(&exec), Some(program));
+            assert!(super::exec_program("\"unterminated path").is_none());
+            assert!(super::exec_program("game\\").is_none());
+            assert!(super::exec_program("%f --game").is_none());
+            assert!(super::exec_program(&"a".repeat(8_193)).is_none());
+            assert_eq!(
+                super::exec_program("\"game\\\"name\" %U").as_deref(),
+                Some("game\"name")
+            );
+        }
 
         #[test]
         fn selects_pacman_for_arch_and_arch_derivatives() {

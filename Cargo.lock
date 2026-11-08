@@ -1614,6 +1614,7 @@ dependencies = [
  "gamenode-plugin-protocol",
  "gamenode-plugin-sdk",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

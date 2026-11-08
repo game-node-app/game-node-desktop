@@ -299,7 +299,11 @@ fn template(
 }
 
 /// Checks everything about a parsed manifest except duplicate ids.
-fn validate(manifest: Manifest, plugins: &[PluginBackend]) -> Result<Provider, String> {
+fn validate(
+    manifest: Manifest,
+    plugins: &[PluginBackend],
+    active: bool,
+) -> Result<Provider, String> {
     if !valid_id(&manifest.id) {
         return Err(format!(
             "`id` must be non-empty lowercase letters, digits, `-` or `_`, not `{}`",
@@ -315,7 +319,20 @@ fn validate(manifest: Manifest, plugins: &[PluginBackend]) -> Result<Provider, S
     if manifest.platforms.is_empty() {
         return Err("`platforms` is empty".to_owned());
     }
+    // Foreign-platform manifests still receive structural validation, but do
+    // not require a backend that the current host deliberately does not ship.
+    let inactive_backend = PluginBackend {
+        plugin_id: String::new(),
+        provider_id: String::new(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+    };
     let plugin = |id: &str| -> Result<&PluginBackend, String> {
+        if !active {
+            return Ok(&inactive_backend);
+        }
         plugins
             .iter()
             .find(|p| p.plugin_id == id && p.provider_id == manifest.id)
@@ -433,16 +450,17 @@ pub fn load_with_plugins(
                 continue;
             }
         };
-        if !manifest.platforms.contains(&platform) {
-            continue;
-        }
-        let provider = match validate(manifest, plugins) {
+        let active = manifest.platforms.contains(&platform);
+        let provider = match validate(manifest, plugins, active) {
             Ok(provider) => provider,
             Err(problem) => {
                 loaded.diagnostics.push(diagnostic(id, problem));
                 continue;
             }
         };
+        if !active {
+            continue;
+        }
         if !ids.insert(provider.id().to_owned()) {
             loaded.diagnostics.push(diagnostic(
                 Some(provider.id().to_owned()),

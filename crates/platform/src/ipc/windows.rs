@@ -160,6 +160,8 @@ fn current_user_sid() -> std::io::Result<String> {
 /// as single-instance IPC. Each accepted connection receives a fresh instance.
 pub struct PrivatePipeListener {
     server: NamedPipeServer,
+    connected: bool,
+    replace_failed: bool,
     path: String,
     sddl: String,
 }
@@ -184,6 +186,8 @@ impl PrivatePipeListener {
         let server = create_instance(&endpoint.path, &endpoint.sddl, true)?;
         Ok(Self {
             server,
+            connected: false,
+            replace_failed: false,
             path: endpoint.path,
             sddl: endpoint.sddl,
         })
@@ -194,10 +198,29 @@ impl PrivatePipeListener {
     }
 
     pub async fn accept(&mut self) -> std::io::Result<NamedPipeServer> {
-        self.server.connect().await?;
-        // Keep ownership continuously: create the next listening instance
-        // before the accepted instance can be dropped by its connection owner.
-        let next = create_instance(&self.path, &self.sddl, false)?;
+        self.accept_with(create_instance).await
+    }
+
+    async fn accept_with(
+        &mut self,
+        mut create: impl FnMut(&str, &str, bool) -> std::io::Result<NamedPipeServer>,
+    ) -> std::io::Result<NamedPipeServer> {
+        if self.replace_failed {
+            // Keep the old handle until replacement succeeds, retaining ownership.
+            self.server = create(&self.path, &self.sddl, false)?;
+            self.replace_failed = false;
+        }
+        if !self.connected {
+            if let Err(error) = self.server.connect().await {
+                self.replace_failed = true;
+                return Err(error);
+            }
+            self.connected = true;
+        }
+        // On creation failure retain the connected instance and skip connect()
+        // on the next attempt. There is always a handle owning the pipe name.
+        let next = create(&self.path, &self.sddl, false)?;
+        self.connected = false;
         Ok(std::mem::replace(&mut self.server, next))
     }
 }
@@ -325,6 +348,60 @@ impl Existing {
 #[cfg(test)]
 mod plugin_pipe_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn creation_failure_retains_connected_pipe_and_retries_without_reconnecting() {
+        let name = format!("retry-{}", std::process::id());
+        let mut listener = PrivatePipeListener::bind(&name).unwrap();
+        let mut client = ClientOptions::new().open(listener.pipe_path()).unwrap();
+        assert!(
+            listener
+                .accept_with(|_, _, _| Err(std::io::ErrorKind::Other.into()))
+                .await
+                .is_err()
+        );
+        assert!(listener.connected);
+        assert!(PrivatePipeListener::bind(&name).is_err());
+        client.write_all(b"kept").await.unwrap();
+        let mut accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut data = [0; 4];
+        accepted.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"kept");
+        assert!(!listener.connected);
+    }
+
+    #[tokio::test]
+    async fn failed_pipe_replacement_retains_ownership_until_creation_recovers() {
+        let name = format!("replace-{}", std::process::id());
+        let mut listener = PrivatePipeListener::bind(&name).unwrap();
+        // Exercise the recovery state after connect() fails, injecting a failed
+        // replacement creation before allowing the real factory to recover.
+        listener.replace_failed = true;
+        assert!(
+            listener
+                .accept_with(|_, _, _| Err(std::io::ErrorKind::Other.into()))
+                .await
+                .is_err()
+        );
+        assert!(listener.replace_failed);
+        assert!(PrivatePipeListener::bind(&name).is_err());
+        // Recover replacement, then cancel the pending connect. The listener
+        // remains valid for a subsequent accept (connect is cancellation safe).
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+        assert!(!listener.replace_failed);
+        let _client = ClientOptions::new().open(listener.pipe_path()).unwrap();
+        let _accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn private_listener_owns_the_name_and_accepts_repeated_connections() {

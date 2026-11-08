@@ -252,9 +252,8 @@ describe('Port guided setup', () => {
     expect(pickParent).toHaveBeenCalledWith(null);
     expect(setPreferences).toHaveBeenCalledWith({ lastParentFolder: 'D:\\Ports' });
     expect(start).toBeDisabled();
-    expect(screen.getByTestId('port-setup-missing-required')).toHaveTextContent(
-      'Aster Vale game folder',
-    );
+    // A fresh form does not report missing requirements until the user touches a source.
+    expect(screen.queryByTestId('port-setup-missing-required')).toBeNull();
 
     // Choose the required folder; the optional file stays empty.
     clickTestId('port-setup-pick-game-folder');
@@ -296,6 +295,7 @@ describe('Port guided setup', () => {
         rejected: {
           message: 'Expected CUSA10101 version 01.04.',
           acceptedLabels: ['CUSA10101 (01.04)'],
+          packagesFound: false,
         },
       },
     });
@@ -312,6 +312,76 @@ describe('Port guided setup', () => {
     expect(rejection).toHaveTextContent('Expected CUSA10101 version 01.04.');
     expect(rejection).toHaveTextContent('Accepted versions: CUSA10101 (01.04)');
     expect(screen.getByTestId('port-setup-start')).toBeDisabled();
+  });
+
+  it('points at the package option when the chosen folder holds packages', async () => {
+    const required = makeSlot({
+      id: 'game-package',
+      label: 'Aster Vale game folder',
+      kind: 'folder',
+      required: true,
+      contains: ['eboot.bin'],
+      packageOption: {
+        extractorId: 'ps4-pkg',
+        toolName: 'Mock PKG Extractor',
+        toolSourceUrl: null,
+        toolLicense: 'GPL-3.0',
+        titleId: null,
+        updateVersion: '01.04',
+        requiresUpdate: true,
+      },
+    });
+    const entry = makeEntry({ requirements: [required] });
+
+    vi.spyOn(commands, 'portsPickParent').mockResolvedValue('D:\\Ports');
+    vi.spyOn(commands, 'portsSetPreferences').mockResolvedValue(undefined);
+    vi.spyOn(commands, 'portsPickSupplied').mockResolvedValue({
+      slotId: 'game-package',
+      path: 'D:\\Dumps\\pkgs',
+      status: {
+        rejected: {
+          message: 'the folder D:\\Dumps\\pkgs does not contain eboot.bin',
+          acceptedLabels: [],
+          packagesFound: true,
+        },
+      },
+    });
+
+    renderHost(makeSnapshot([entry]));
+    act(() => openPortSetup(entry.catalogId));
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Extracted folder' }));
+    clickTestId('port-setup-pick-game-package');
+
+    const rejection = await screen.findByTestId('port-setup-rejected-game-package');
+    expect(rejection).toHaveTextContent(
+      'That folder contains game packages. Choose Packages (.pkg) above',
+    );
+    expect(rejection).not.toHaveTextContent('does not contain eboot.bin');
+    expect(screen.getByTestId('port-setup-start')).toBeDisabled();
+  });
+
+  it('words a blocked install from the typed plan problem', async () => {
+    const entry = makeEntry({ requirements: [] });
+    vi.spyOn(commands, 'portsPickParent').mockResolvedValue('D:\\Ports');
+    vi.spyOn(commands, 'portsSetPreferences').mockResolvedValue(undefined);
+    vi.spyOn(commands, 'portsInstall').mockRejectedValue({
+      code: 'installBlocked',
+      message: { code: 'targetNotEmpty', target: 'D:\\Ports\\Bloodborne' },
+    });
+
+    renderHost(makeSnapshot([entry]));
+    act(() => openPortSetup(entry.catalogId));
+    clickTestId('port-setup-choose-folder');
+    await waitFor(() =>
+      expect(screen.getByTestId('port-setup-start')).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByTestId('port-setup-start'));
+
+    const error = await screen.findByTestId('port-setup-start-error');
+    expect(error).toHaveTextContent(
+      'That install folder already contains files. Choose another parent folder and try again.',
+    );
   });
 
   it('shows hashing progress keyed by the setup session id while a pick is validated', async () => {
@@ -473,7 +543,17 @@ describe('Port guided setup', () => {
       expect(screen.getByTestId('port-setup-folder-value')).toHaveTextContent('D:\\Ports'),
     );
 
-    clickTestId('port-setup-mode-game-package');
+    // A slot with a package option opens in package mode.
+    expect(screen.getByTestId('port-setup-pick-game-package-base')).toBeVisible();
+    expect(screen.getByTestId('port-setup-mode-game-package')).toBeVisible();
+
+    // The extracted folder stays available; switching clears the old source.
+    fireEvent.click(screen.getByRole('radio', { name: 'Extracted folder' }));
+    expect(screen.getByTestId('port-setup-pick-game-package')).toBeVisible();
+    expect(screen.queryByTestId('port-setup-pick-game-package-base')).toBeNull();
+    expect(screen.getByTestId('port-setup-start')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Packages (.pkg)' }));
     clickTestId('port-setup-pick-game-package-base');
     await waitFor(() =>
       expect(screen.getByTestId('port-setup-pick-game-package-update')).toBeVisible(),
@@ -536,6 +616,8 @@ describe('Port guided setup', () => {
 
     expect(screen.getByTestId('port-setup-retry-note')).toHaveTextContent('reused');
     expect(screen.getByTestId('port-setup-start')).toHaveTextContent('Retry install');
+    // The stored plan's supplied files are reused, so its slot pickers are not shown.
+    expect(screen.queryByTestId('port-setup-slot-game-folder')).toBeNull();
 
     clickTestId('port-setup-choose-folder');
     await waitFor(() =>

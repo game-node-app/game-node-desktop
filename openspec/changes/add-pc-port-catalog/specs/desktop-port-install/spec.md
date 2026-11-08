@@ -33,7 +33,7 @@ The host SHALL download release assets and helper tools over HTTPS only. It SHAL
 - **THEN** the cached verified asset is reused
 
 ### Requirement: User chooses the install folder
-Before installing, the user SHALL choose a parent folder. The port SHALL be installed in a subfolder named from the recipe's folder name or the entry name. The application SHALL remember the last parent folder. It SHALL refuse a target that is not empty, lies inside another library entry's game folder, or lacks the free space the release and recipe need.
+Before installing, the user SHALL choose a parent folder. The port SHALL be installed in a subfolder named from the recipe's folder name or the entry name. The application SHALL remember the last parent folder. It SHALL refuse a target that is not empty, lies inside another library entry's game folder, or lacks the free space the release, recipe and supplied packages need, counting a package slot's extraction estimate. A refusal SHALL be reported with a translated reason.
 
 #### Scenario: Choose a folder
 - **WHEN** the user installs Bloodborne's port and chooses `D:\Ports`
@@ -59,11 +59,15 @@ The host SHALL extract release archives in-process into the install folder. It S
 - **THEN** an empty `portable.txt` exists in the install folder after extraction
 
 ### Requirement: Guided setup asks for the user's own files
-For each setup file in the merged recipe, the install SHALL show its label and prompt and ask the user to choose a file or folder of the declared kind and extensions. Required slots SHALL block the install until filled. Optional slots SHALL be skippable. The application SHALL NOT download, search for or suggest sources of game content.
+For each setup file in the merged recipe, the install SHALL show its label and prompt and ask the user to choose a file or folder of the declared kind and extensions. A slot that can be produced from console packages SHALL open on its package choice, with the extracted-folder choice as a visible, keyboard-operable alternative. Required slots SHALL block the install until filled. Optional slots SHALL be skippable. The application SHALL NOT download, search for or suggest sources of game content.
 
 #### Scenario: Required folder
 - **WHEN** a recipe requires a game folder and the user has not chosen one
 - **THEN** Install stays disabled with a caption naming the missing folder
+
+#### Scenario: Package-capable slot
+- **WHEN** a recipe slot can be produced from console packages and the user has not chosen a source
+- **THEN** the slot shows the base-package choice first and offers the extracted folder as the other choice of the same control
 
 #### Scenario: Optional file
 - **WHEN** a recipe slot is marked not required
@@ -79,6 +83,10 @@ A supplied file SHALL be accepted when its SHA-1 or SHA-256 matches any accepted
 #### Scenario: Port decides which edition it runs
 - **WHEN** a folder slot lists marker files and no hashes, and the user picks a folder that has every marker
 - **THEN** the choice is accepted without checking the game's edition or version
+
+#### Scenario: Packages picked as a folder
+- **WHEN** a package-capable folder slot is filled in folder mode and the chosen folder directly holds `.pkg` files
+- **THEN** the choice is rejected and the message points at the slot's package option instead of only naming the missing marker
 
 #### Scenario: Large file hashing
 - **WHEN** the user picks a multi-gigabyte disc image
@@ -109,6 +117,13 @@ When the overlay lets a folder slot be produced from console packages, the user 
 #### Scenario: Tool fails
 - **WHEN** the extraction tool exits with an error or the merged folder fails validation
 - **THEN** the staging folder and temporary update folder are removed and the install fails with the tool's last output available in details
+
+### Requirement: A required package update is enforced
+A package choice that omits the update its recipe requires SHALL be refused before any job starts, with a translated reason naming the update.
+
+#### Scenario: Required update missing
+- **WHEN** a package slot's recipe names a required update and the user chooses only the base package
+- **THEN** the install does not start and states which update package is required
 
 ### Requirement: Installs run as cancellable background jobs
 Each install SHALL run as a background job with phases (download, verify, extract, supplied files, register), a progress figure and a cancel action. Jobs SHALL continue while the window is hidden. Cancelling or failing SHALL remove the install folder and staging data that the job created and SHALL leave no library entry.

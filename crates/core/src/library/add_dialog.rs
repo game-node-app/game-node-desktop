@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use crate::game_api::{ApiError, Collection};
 
 use super::actions::Reason;
-use super::add_run::{AddRun, AddSummary};
+use super::add_run::{AddRun, AddSummary, AddSummaryView};
 use super::machine::{Effect, LibraryMachine};
 use super::membership::EntryStatus;
 
@@ -106,7 +106,7 @@ pub struct AddDialogView {
     /// Why nothing can be sent right now (no verified session, or offline).
     pub blocked: Option<Reason>,
     /// Present once every game was handled.
-    pub summary: Option<AddSummary>,
+    pub summary: Option<AddSummaryView>,
 }
 
 impl LibraryMachine {
@@ -319,7 +319,7 @@ impl LibraryMachine {
                 _ => None,
             },
             summary: match &add.stage {
-                Stage::Done(summary) => Some(summary.clone()),
+                Stage::Done(summary) => Some(summary.view()),
                 _ => None,
             },
             applied_from: from.map(|collection| collection.name.clone()),

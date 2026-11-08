@@ -414,8 +414,18 @@ describe('Dialogs Feature Tests', () => {
           skipped: 0,
           failed: 0,
           items: [
-            { entryKey: 'entry-1', title: 'Hades', outcome: 'added' },
-            { entryKey: 'entry-2', title: 'Dead Cells', outcome: 'alreadyPresent' },
+            {
+              entryKey: 'entry-1',
+              title: 'Hades',
+              outcome: 'added',
+              status: 'planned',
+            },
+            {
+              entryKey: 'entry-2',
+              title: 'Dead Cells',
+              outcome: 'alreadyPresent',
+              status: 'finished',
+            },
           ],
         },
       });
@@ -427,7 +437,7 @@ describe('Dialogs Feature Tests', () => {
         'Saved 1 · already in your library 1 · skipped 0 · failed 0',
       );
       expect(screen.getByTestId('add-summary-item-entry-1')).toHaveTextContent(
-        'Saved as Playing',
+        'Saved as Planned',
       );
       expect(screen.getByTestId('add-summary-item-entry-2')).toHaveTextContent(
         'Already in your library',
@@ -446,7 +456,7 @@ describe('Dialogs Feature Tests', () => {
         'Salvos 1 · já na sua biblioteca 1 · ignorados 0 · com falha 0',
       );
       expect(screen.getByTestId('add-summary-item-entry-1')).toHaveTextContent(
-        'Salvo como Jogando',
+        'Salvo como Planejado',
       );
       expect(screen.getByTestId('add-summary-item-entry-2')).toHaveTextContent(
         'Já está na sua biblioteca',
@@ -456,7 +466,7 @@ describe('Dialogs Feature Tests', () => {
 
     it('renders unauthorized/failed error notices and blocked notices in en and pt-BR', () => {
       const unauthSnap = makeAddSnapshot({
-        error: 'unauthorized',
+        error: 'rejected',
         blocked: 'needsVerifiedSession',
       });
 

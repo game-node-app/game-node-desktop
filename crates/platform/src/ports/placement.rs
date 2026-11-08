@@ -889,9 +889,12 @@ mod tests {
             &mut |_| {},
         )
         .unwrap();
-        let copy = dir.path().join("app/CUSA03173");
+        let copy = dir.path().join("app").join("CUSA03173");
         assert_eq!(fs::read(copy.join("eboot.bin")).unwrap(), b"boot");
-        assert_eq!(fs::read(copy.join("sce_sys/param.sfo")).unwrap(), b"sfo");
+        assert_eq!(
+            fs::read(copy.join("sce_sys").join("param.sfo")).unwrap(),
+            b"sfo"
+        );
         assert!(
             outcome.slots[0]
                 .created

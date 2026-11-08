@@ -33,7 +33,7 @@ fn created(
     })
 }
 
-fn summary(machine: &mut LibraryMachine) -> AddSummary {
+fn summary(machine: &mut LibraryMachine) -> AddSummaryView {
     dialog(machine).summary.expect("every game was handled")
 }
 
@@ -65,8 +65,9 @@ fn a_game_added_elsewhere_before_confirm_is_not_sent_again() {
             .iter()
             .map(|item| item.outcome)
             .collect::<Vec<_>>(),
-        [AddOutcome::AlreadyPresent(Some(EntryStatus::Finished))]
+        [AddOutcomeKind::AlreadyPresent]
     );
+    assert_eq!(summary.items[0].status, Some(EntryStatus::Finished));
     assert_eq!(
         machine.membership(7),
         Membership::InLibrary(Some(EntryStatus::Finished)),
@@ -137,10 +138,10 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
     let summary = summary(&mut machine);
     assert_eq!(
         (
-            summary.added(),
-            summary.already_present(),
-            summary.skipped_unmatched(),
-            summary.failed()
+            summary.added,
+            summary.already_present,
+            summary.skipped,
+            summary.failed
         ),
         (3, 1, 1, 0)
     );
@@ -164,6 +165,42 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
     assert!(machine.view().unwrap().add_dialog.is_none());
 }
 
+/// The window reads flat outcome names and the four counts; the summary must serialize exactly
+/// that shape (an externally tagged `AddOutcome` object would render every item as failed).
+#[test]
+fn the_summary_serializes_flat_outcomes_and_their_counts() {
+    let mut machine = library();
+    open_with(&mut machine, &["620", "570"], vec![]);
+    let effects = confirm(&mut machine);
+    let next = read_says(&mut machine, &effects, Ok(None));
+    created(&mut machine, &next, Ok(()));
+
+    let summary = summary(&mut machine);
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap(),
+        serde_json::json!({
+            "added": 1,
+            "alreadyPresent": 0,
+            "skipped": 1,
+            "failed": 0,
+            "items": [
+                {
+                    "entryKey": "steam:570",
+                    "title": "Dota 2",
+                    "outcome": "skipped",
+                    "status": null
+                },
+                {
+                    "entryKey": "steam:620",
+                    "title": "Portal 2",
+                    "outcome": "added",
+                    "status": "playing"
+                }
+            ]
+        })
+    );
+}
+
 #[test]
 fn a_failed_game_does_not_stop_the_others() {
     let mut machine = library();
@@ -177,11 +214,8 @@ fn a_failed_game_does_not_stop_the_others() {
     created(&mut machine, &next, Ok(()));
 
     let summary = summary(&mut machine);
-    assert_eq!((summary.added(), summary.failed()), (1, 1));
-    assert_eq!(
-        summary.items[0].outcome,
-        AddOutcome::Failed(ApiError::Failed)
-    );
+    assert_eq!((summary.added, summary.failed), (1, 1));
+    assert_eq!(summary.items[0].outcome, AddOutcomeKind::Failed);
 }
 
 #[test]
@@ -193,7 +227,7 @@ fn a_read_that_fails_sends_no_create() {
     assert!(creates(&effects).is_empty());
     let next = read_says(&mut machine, &effects, Ok(None));
     created(&mut machine, &next, Ok(()));
-    assert_eq!(summary(&mut machine).failed(), 1);
+    assert_eq!(summary(&mut machine).failed, 1);
 }
 
 #[test]
@@ -245,7 +279,7 @@ fn a_failed_single_add_keeps_the_dialog_and_choices_for_a_retry() {
         (EntryStatus::Finished, ["d".to_owned()].as_slice())
     );
     created(&mut machine, &next, Ok(()));
-    assert_eq!(summary(&mut machine).added(), 1);
+    assert_eq!(summary(&mut machine).added, 1);
     assert_eq!(dialog(&mut machine).error, None);
 }
 
@@ -257,7 +291,7 @@ fn a_rejected_session_ends_the_run() {
     let effects = read_says(&mut machine, &effects, Err(ApiError::Rejected));
     assert!(effects.is_empty(), "no more requests: {effects:?}");
     let summary = summary(&mut machine);
-    assert_eq!(summary.failed(), 3);
+    assert_eq!(summary.failed, 3);
 }
 
 #[test]

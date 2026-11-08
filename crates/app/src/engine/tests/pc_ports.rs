@@ -695,6 +695,78 @@ async fn an_unverified_checksum_needs_the_request_flag() {
 }
 
 #[tokio::test]
+async fn a_package_install_without_its_required_update_is_blocked() {
+    let _serial = serial().lock().await;
+    let db = database();
+    let store: Arc<dyn PortStore> = Arc::new(db.ports_store());
+    let local: Arc<dyn LocalGameStore> = Arc::new(db.local_game_store());
+    let mut fixture = entry();
+    fixture.extractors = vec![gamenode_core::ports::catalog::Extractor {
+        id: "ps4-pkg".into(),
+        name: "Fixture PKG extractor".into(),
+        repository: "example/fixture-pkg".into(),
+        tag: "v2.4.1".into(),
+        asset: "fixture-pkg-win64.zip".into(),
+        sha256: "a".repeat(64),
+        license: "GPL-3.0".into(),
+        executable: "fixture-pkg.exe".into(),
+        args: vec![
+            "extract".into(),
+            "{package}".into(),
+            "--out".into(),
+            "{out}".into(),
+        ],
+    }];
+    fixture.launcher.setup_files = vec![gamenode_core::ports::catalog::SetupFile {
+        id: "game".into(),
+        label: "Bloodborne game folder".into(),
+        kind: gamenode_core::ports::catalog::SetupKind::Folder,
+        destination: Some("CUSA03173".into()),
+        from_package: Some(gamenode_core::ports::catalog::FromPackage {
+            extractor: "ps4-pkg".into(),
+            title_id: None,
+            needs_update: Some("01.09".into()),
+        }),
+        ..Default::default()
+    }];
+    let catalog = Arc::new(FakeCatalog::new(
+        vec![fixture.clone()],
+        Some(fixture),
+        vec![release(Some(format!("sha256:{}", "a".repeat(64))), None)],
+    ));
+    let (service, rx) = start(service_config(store, local, catalog));
+    service.open();
+    wait_for_view(&rx, |view| view.catalog.state == PortCatalogState::Ready);
+    let parent = tempfile::tempdir().unwrap();
+
+    let error = service
+        .prepare_install(&PortInstallRequest {
+            catalog_id: "qcat_lantern".into(),
+            parent_folder: parent.path().to_string_lossy().into_owned(),
+            supplied: vec![crate::engine::pc_ports::PortSuppliedChoice {
+                slot_id: "game".into(),
+                path: r"D:\Dumps\base.pkg".into(),
+                package: true,
+                update: false,
+            }],
+            accept_unverified_checksum: false,
+            accept_malware_flag: false,
+            retry_job_id: None,
+        })
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PortsError::InstallBlocked(
+            crate::engine::pc_ports::PortInstallProblem::MissingRequiredUpdate {
+                slot: "game".into(),
+                version: "01.09".into(),
+            }
+        )
+    );
+    service.shutdown();
+}
+
+#[tokio::test]
 async fn retry_reuses_the_stored_plan_and_its_supplied_sources() {
     let _serial = serial().lock().await;
     let db = database();
@@ -1011,6 +1083,7 @@ fn the_supplied_pick_payload_matches_the_ui_contract() {
         status: PortSuppliedStatus::Rejected {
             message: "wrong version".into(),
             accepted_labels: vec!["CUSA03173 01.09".into()],
+            packages_found: false,
         },
     })
     .unwrap();
@@ -1018,6 +1091,71 @@ fn the_supplied_pick_payload_matches_the_ui_contract() {
     assert_eq!(
         rejected["status"]["rejected"]["acceptedLabels"][0],
         "CUSA03173 01.09"
+    );
+    assert_eq!(rejected["status"]["rejected"]["packagesFound"], false);
+
+    let packages = serde_json::to_value(PortSuppliedStatus::Rejected {
+        message: "the folder contains game packages".into(),
+        accepted_labels: Vec::new(),
+        packages_found: true,
+    })
+    .unwrap();
+    assert_eq!(packages["rejected"]["packagesFound"], true);
+}
+
+#[test]
+fn a_blocked_install_serializes_a_typed_problem() {
+    use crate::commands::PortCommandError;
+    use crate::engine::pc_ports::PortInstallProblem;
+
+    let error: PortCommandError = PortsError::InstallBlocked(PortInstallProblem::TargetNotEmpty {
+        target: r"D:\Ports\Bloodborne".into(),
+    })
+    .into();
+    assert_eq!(
+        serde_json::to_value(error).unwrap(),
+        serde_json::json!({
+            "code": "installBlocked",
+            "message": {
+                "code": "targetNotEmpty",
+                "target": r"D:\Ports\Bloodborne",
+            },
+        })
+    );
+}
+
+#[test]
+fn packaged_supplied_files_count_towards_the_space_estimate() {
+    use crate::engine::pc_ports::supplied_bytes;
+    use gamenode_core::ports::plan::{SuppliedChoice, SuppliedSource};
+
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.pkg");
+    let update = dir.path().join("update.pkg");
+    std::fs::write(&base, vec![1u8; 1_000]).unwrap();
+    std::fs::write(&update, vec![2u8; 500]).unwrap();
+
+    // The extracted estimate is twice the package files; the package files themselves are read
+    // from the user's disk and are not copied into the install folder.
+    assert_eq!(
+        supplied_bytes(&[SuppliedChoice {
+            slot: "game".into(),
+            source: SuppliedSource::Packages {
+                base: base.to_string_lossy().into_owned(),
+                update: Some(update.to_string_lossy().into_owned()),
+            },
+        }]),
+        3_000
+    );
+    assert_eq!(
+        supplied_bytes(&[SuppliedChoice {
+            slot: "game".into(),
+            source: SuppliedSource::Packages {
+                base: base.to_string_lossy().into_owned(),
+                update: None,
+            },
+        }]),
+        2_000
     );
 }
 

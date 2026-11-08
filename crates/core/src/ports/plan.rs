@@ -457,6 +457,8 @@ pub enum PlanError {
     UnsafeRecipePath { path: String },
     #[error("setup file {slot:?} ({label}) has no choice")]
     MissingSlot { slot: String, label: String },
+    #[error("setup file {slot:?} needs update {version} from its update package")]
+    MissingRequiredUpdate { slot: String, version: String },
     #[error("no setup file is named {slot:?}")]
     UnknownSlot { slot: String },
     #[error("setup file {slot:?} cannot be used: {reason}")]
@@ -599,7 +601,7 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
             Placement::Unused => None,
         };
         if let Some(choice) = choice {
-            if let SuppliedSource::Packages { .. } = &choice.source {
+            if let SuppliedSource::Packages { update, .. } = &choice.source {
                 let package = slot
                     .from_package
                     .as_ref()
@@ -607,6 +609,22 @@ pub fn plan_install(request: &InstallPlanRequest) -> Result<PortInstallPlan, Pla
                         slot: slot.id.clone(),
                         reason: "the slot does not accept console packages".into(),
                     })?;
+                if let Some(required) = package
+                    .needs_update
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|required| !required.is_empty())
+                    && update
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|update| !update.is_empty())
+                        .is_none()
+                {
+                    return Err(PlanError::MissingRequiredUpdate {
+                        slot: slot.id.clone(),
+                        version: required.to_owned(),
+                    });
+                }
                 let extractor =
                     entry
                         .extractor(&package.extractor)
@@ -1246,6 +1264,55 @@ mod tests {
             plan_install(&plain),
             Err(PlanError::InvalidSlot { .. })
         ));
+    }
+
+    #[test]
+    fn a_package_slot_requires_its_update_package_when_the_recipe_names_one() {
+        let mut entry = entry();
+        entry.extractors = vec![Extractor {
+            id: "ps4-pkg".into(),
+            name: "PKG extractor".into(),
+            repository: "owner/repo".into(),
+            tag: "v1.2.3".into(),
+            asset: "tool.zip".into(),
+            sha256: digest('1'),
+            license: "GPL-3.0".into(),
+            executable: "tool.exe".into(),
+            args: vec!["{package}".into()],
+        }];
+        entry.launcher.setup_files = vec![SetupFile {
+            id: "game".into(),
+            label: "Game folder".into(),
+            kind: SetupKind::Folder,
+            destination: Some("CUSA03173".into()),
+            from_package: Some(FromPackage {
+                extractor: "ps4-pkg".into(),
+                title_id: None,
+                needs_update: Some("01.09".into()),
+            }),
+            ..SetupFile::default()
+        }];
+        let mut request = request(entry, vec![verified_release()]);
+        request.supplied = vec![SuppliedChoice {
+            slot: "game".into(),
+            source: SuppliedSource::Packages {
+                base: r"D:\Dumps\base.pkg".into(),
+                update: None,
+            },
+        }];
+        assert_eq!(
+            plan_install(&request),
+            Err(PlanError::MissingRequiredUpdate {
+                slot: "game".into(),
+                version: "01.09".into()
+            })
+        );
+
+        request.supplied[0].source = SuppliedSource::Packages {
+            base: r"D:\Dumps\base.pkg".into(),
+            update: Some(r"D:\Dumps\update.pkg".into()),
+        };
+        assert!(plan_install(&request).is_ok());
     }
 
     #[test]

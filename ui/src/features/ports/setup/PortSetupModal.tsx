@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { SegmentedControl } from '@mantine/core';
 import { IconLoader2, IconPackage, IconX } from '@tabler/icons-react';
 import { FloatingModal } from '../../../components/FloatingModal';
 import { commands } from '../../../api';
@@ -6,8 +7,10 @@ import {
   usePortDetail,
   usePortProgress,
   usePortsView,
+  type PortCommandError,
   type PortEntryView,
   type PortInstallBlockReason,
+  type PortInstallProblem,
   type PortPackageOption,
   type PortProgress,
   type PortProgressPhase,
@@ -17,7 +20,7 @@ import {
 } from '../../../api/ports';
 import { useI18n } from '../../../i18n';
 import { formatI18n } from '../../library/formatters';
-import { formatPortDate } from '../catalog/format';
+import { formatBytes, formatPortDate } from '../catalog/format';
 import { closePortSetup, createSetupId, usePortSetupStore } from './setupStore';
 
 interface SlotSelection {
@@ -31,6 +34,8 @@ interface SlotSelection {
 interface SlotPickError {
   message: string;
   acceptedLabels: string[];
+  /** The folder holds console packages; point at the package option. */
+  packagesFound: boolean;
 }
 
 const cardClass =
@@ -82,6 +87,77 @@ function progressLabel(
     default:
       return t('Ports::Checking the selection…');
   }
+}
+
+/** Words a typed plan refusal. The host never sends a plan error as a raw string. */
+function installProblemMessage(
+  problem: PortInstallProblem,
+  t: (key: string) => string,
+  locale: string,
+): string {
+  switch (problem.code) {
+    case 'targetNotEmpty':
+      return t(
+        'Ports::That install folder already contains files. Choose another parent folder and try again.',
+      );
+    case 'targetInsideLibrary':
+      return t(
+        "Ports::The install folder is inside another library entry's folder. Choose another parent folder.",
+      );
+    case 'notEnoughSpace':
+      return formatI18n(
+        t('Ports::Not enough free space: the install needs {} and only {} is available.'),
+        formatBytes(problem.required, locale),
+        formatBytes(problem.available, locale),
+      );
+    case 'missingRequiredUpdate':
+      return formatI18n(
+        t('Ports::The base package needs update {}. Choose the update package too.'),
+        problem.version,
+      );
+    case 'withdrawn':
+      return formatI18n(t('Ports::This release was withdrawn: {}'), problem.reason);
+    case 'releaseUnavailable':
+      return t('Ports::The selected release is no longer available upstream.');
+    case 'noVerifiedRelease':
+      return t('Ports::This port has no verified release.');
+    case 'noWindowsAsset':
+    case 'noMatchingAsset':
+      return t('Ports::No Windows download is available.');
+    case 'unknownAssetFormat':
+    case 'unsupportedFormat':
+      return formatI18n(
+        t('Ports::The Windows download uses an unsupported format: {}'),
+        problem.code === 'unsupportedFormat' ? problem.format : problem.filename,
+      );
+    case 'noChecksum':
+      return t('Ports::The download has no checksum to verify.');
+    case 'missingSlot':
+      return formatI18n(
+        t('Ports::Choose a file or folder for {}.'),
+        problem.label,
+      );
+    case 'other':
+    default:
+      return t('Ports::The install could not start.');
+  }
+}
+
+function installErrorMessage(
+  error: unknown,
+  t: (key: string) => string,
+  locale: string,
+): string {
+  const command = error as Partial<PortCommandError> | null;
+  if (
+    command &&
+    command.code === 'installBlocked' &&
+    command.message &&
+    typeof command.message === 'object'
+  ) {
+    return installProblemMessage(command.message as PortInstallProblem, t, locale);
+  }
+  return t('Ports::The install could not start.');
 }
 
 function releaseFromEntry(entry: PortEntryView | null): PortReleaseView | null {
@@ -161,8 +237,11 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
   onClear,
 }) => {
   const { t } = useI18n();
-  const packageMode = selection?.mode === 'package';
   const packageOption: PortPackageOption | null = slot.packageOption;
+  // A slot that can extract console packages opens in package mode. The extracted folder stays
+  // available as the other segment, and switching between them clears the old choice.
+  const packageMode =
+    packageOption != null && (selection?.mode ?? 'package') === 'package';
   const percent =
     progress && progress.bytesTotal > 0
       ? Math.min(100, Math.round((progress.bytesDone / progress.bytesTotal) * 100))
@@ -183,6 +262,36 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
           {slot.required ? t('Ports::Required') : t('Ports::Optional')}
         </span>
       </div>
+
+      {packageOption && (
+        <div className="flex flex-col gap-1">
+          <SegmentedControl
+            fullWidth
+            size="xs"
+            radius="sm"
+            color="brand"
+            data-testid={`port-setup-mode-${slot.id}`}
+            aria-label={formatI18n(
+              t('Ports::Game files source for {}'),
+              slot.label,
+            )}
+            value={packageMode ? 'package' : 'direct'}
+            onChange={(value) =>
+              onModeChange(slot, value === 'package' ? 'package' : 'direct')
+            }
+            disabled={anyBusy}
+            data={[
+              { value: 'package', label: t('Ports::Packages (.pkg)') },
+              { value: 'direct', label: t('Ports::Extracted folder') },
+            ]}
+          />
+          <p className="text-xs text-text-dimmed">
+            {t(
+              'Ports::Choose your base package and, when required, the update package. If you already extracted the game folder, choose Extracted folder.',
+            )}
+          </p>
+        </div>
+      )}
 
       {slot.acceptedLabels.length > 0 && (
         <p className="break-words text-xs text-text-dimmed">
@@ -291,19 +400,6 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
         </div>
       )}
 
-      {packageOption && (
-        <button
-          type="button"
-          data-testid={`port-setup-mode-${slot.id}`}
-          aria-label={`${packageMode ? t('Ports::Use a folder instead') : t('Ports::Use packages instead')}: ${slot.label}`}
-          onClick={() => onModeChange(slot, packageMode ? 'direct' : 'package')}
-          disabled={anyBusy}
-          className="self-start text-xs font-medium text-brand underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {packageMode ? t('Ports::Use a folder instead') : t('Ports::Use packages instead')}
-        </button>
-      )}
-
       {busy && (
         <div
           data-testid={`port-setup-progress-${slot.id}`}
@@ -340,14 +436,24 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
           role="alert"
           className="rounded-sm border border-danger bg-danger-subtle px-sm py-compact text-xs text-text-default"
         >
-          <p className="break-words">{error.message || t('Ports::The selection was rejected.')}</p>
-          {error.acceptedLabels.length > 0 && (
-            <p className="mt-1 break-words text-text-dimmed">
-              {formatI18n(
-                t('Ports::Accepted versions: {}'),
-                error.acceptedLabels.join(', '),
+          {error.packagesFound && packageOption ? (
+            <p className="break-words font-medium">
+              {t(
+                'Ports::That folder contains game packages. Choose Packages (.pkg) above and pick the base package and, when required, the update package.',
               )}
             </p>
+          ) : (
+            <>
+              <p className="break-words">{error.message || t('Ports::The selection was rejected.')}</p>
+              {error.acceptedLabels.length > 0 && (
+                <p className="mt-1 break-words text-text-dimmed">
+                  {formatI18n(
+                    t('Ports::Accepted versions: {}'),
+                    error.acceptedLabels.join(', '),
+                  )}
+                </p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -387,6 +493,8 @@ export const PortSetupModal: React.FC = () => {
   const [acceptMalware, setAcceptMalware] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  /** True once the user has touched a source control, so validation is not shown on a fresh form. */
+  const [interacted, setInteracted] = useState(false);
   // A fresh id per setup session so hashing progress never leaks between sessions.
   const setupId = useMemo(createSetupId, [session]);
   const progress = usePortProgress(open ? setupId : null);
@@ -407,6 +515,7 @@ export const PortSetupModal: React.FC = () => {
     setAcceptMalware(false);
     setStartError(null);
     setStarting(false);
+    setInteracted(false);
   }, [session]);
 
   if (!open) return null;
@@ -450,6 +559,8 @@ export const PortSetupModal: React.FC = () => {
     update = false,
   ) => {
     if (busySlot) return;
+    setInteracted(true);
+    setStartError(null);
     setPickErrors((previous) => {
       if (!previous[slot.id]) return previous;
       const next = { ...previous };
@@ -496,6 +607,7 @@ export const PortSetupModal: React.FC = () => {
               rejected.acceptedLabels.length > 0
                 ? rejected.acceptedLabels
                 : slot.acceptedLabels,
+            packagesFound: rejected.packagesFound === true,
           },
         }));
       }
@@ -505,6 +617,7 @@ export const PortSetupModal: React.FC = () => {
         [slot.id]: {
           message: t('Ports::The file could not be checked.'),
           acceptedLabels: slot.acceptedLabels,
+          packagesFound: false,
         },
       }));
     } finally {
@@ -513,36 +626,20 @@ export const PortSetupModal: React.FC = () => {
   };
 
   const handleModeChange = (slot: PortSetupSlot, mode: 'direct' | 'package') => {
+    setInteracted(true);
+    setStartError(null);
     setPickErrors((previous) => {
       if (!previous[slot.id]) return previous;
       const next = { ...previous };
       delete next[slot.id];
       return next;
     });
-    setSelections((previous) => {
-      if (mode === 'direct') {
-        const current = previous[slot.id];
-        return {
-          ...previous,
-          [slot.id]: {
-            mode: 'direct',
-            path: current?.mode === 'direct' ? current.path : null,
-            updatePath: null,
-          },
-        };
-      }
-      return {
-        ...previous,
-        [slot.id]: {
-          mode: 'package',
-          path: previous[slot.id]?.mode === 'package' ? previous[slot.id]?.path ?? null : null,
-          updatePath:
-            previous[slot.id]?.mode === 'package'
-              ? previous[slot.id]?.updatePath ?? null
-              : null,
-        },
-      };
-    });
+    // A different source mode never keeps the old choice: a package path is not a folder and a
+    // folder is not a package, so leaving it in place would count as a complete selection.
+    setSelections((previous) => ({
+      ...previous,
+      [slot.id]: { mode, path: null, updatePath: null },
+    }));
   };
 
   const handleClear = (slotId: string) => {
@@ -558,6 +655,7 @@ export const PortSetupModal: React.FC = () => {
       const folder = await commands.portsPickParent(parentFolder);
       if (!folder) return;
       setParentFolder(folder);
+      setStartError(null);
       void commands
         .portsSetPreferences({ lastParentFolder: folder })
         .catch(() => undefined);
@@ -584,8 +682,8 @@ export const PortSetupModal: React.FC = () => {
         return;
       }
       handleClose();
-    } catch {
-      setStartError(t('Ports::The install could not start.'));
+    } catch (error) {
+      setStartError(installErrorMessage(error, t, locale));
     } finally {
       setStarting(false);
     }
@@ -686,7 +784,7 @@ export const PortSetupModal: React.FC = () => {
 
             {retryJobId && (
               <p data-testid="port-setup-retry-note" className={hintClass}>
-                {t('Ports::The files you chose last time are reused. Pick a slot only to replace one.')}
+                {t('Ports::The files you chose last time are reused. To use different files, start a new install.')}
               </p>
             )}
           </section>
@@ -717,8 +815,9 @@ export const PortSetupModal: React.FC = () => {
             </p>
           </section>
 
-          {/* Recipe slots: release-only entries show just the release and folder steps. */}
-          {requirements.length > 0 && (
+          {/* Recipe slots: release-only entries show just the release and folder steps. A retry
+              reuses the stored plan, so its slot choices are not editable here. */}
+          {requirements.length > 0 && !retryJobId && (
             <section data-testid="port-setup-requirements" className="flex flex-col gap-sm">
               <h3 className={sectionTitleClass}>{t('Ports::Files you need to supply')}</h3>
               {requirements.map((slot) => (
@@ -784,7 +883,7 @@ export const PortSetupModal: React.FC = () => {
             </section>
           )}
 
-          {missingRequired.length > 0 && (
+          {interacted && missingRequired.length > 0 && (
             <p data-testid="port-setup-missing-required" className="text-xs text-text-dimmed">
               {formatI18n(
                 t('Ports::Missing required files: {}'),

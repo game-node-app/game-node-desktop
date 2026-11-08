@@ -762,8 +762,10 @@ pub enum PortCommandError {
     NotReady,
     /// The request names something that does not exist or is no longer valid.
     InvalidRequest(String),
-    /// The install cannot start (no verified release, no disk space, confirmation needed).
+    /// The install cannot start for another reason (network, cache, picker).
     Unavailable(String),
+    /// The install plan refused the request for a reason the UI words itself.
+    InstallBlocked(crate::engine::pc_ports::PortInstallProblem),
     /// A port install is queued, running or waiting for an executable pick; the cache is in use.
     InstallInProgress,
     /// The picker, the local database or another host step failed.
@@ -778,6 +780,7 @@ impl From<crate::engine::pc_ports::PortsError> for PortCommandError {
             PortsError::NotReady => Self::NotReady,
             PortsError::Invalid(reason) => Self::InvalidRequest(reason),
             PortsError::Unavailable(reason) => Self::Unavailable(reason),
+            PortsError::InstallBlocked(problem) => Self::InstallBlocked(problem),
             PortsError::InstallInProgress => Self::InstallInProgress,
             PortsError::Picker(reason) | PortsError::Storage(reason) => Self::Failed(reason),
         }

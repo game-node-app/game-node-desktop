@@ -184,11 +184,14 @@ The catalog fixture has seven fictional entries: a guided recipe with a required
 game folder and a console-package option, a plain release, a pre-release-only
 entry, a withdrawn entry, an installed entry with an update available, an
 installer-only entry with no Windows asset, and one entry whose install always
-fails so the failure details can be checked. A failed install from a previous
-session starts unseen, which gives the sidebar badge a count of one. The catalog
-starts from a cached snapshot marked stale, so opening PC ports shows the
-refreshing state and then the ready state. `?ports=unavailable` starts with no
-snapshot and the unavailable state.
+fails so the failure details can be checked. A package-capable slot opens on its
+package choice in the guided setup. Picking a folder for Hollow Mountain's package
+slot reproduces the "that folder contains game packages" rejection, and asking the
+mock to install a base package without its required update returns the host's typed
+missing-update error. A failed install from a previous session starts unseen, which
+gives the sidebar badge a count of one. The catalog starts from a cached snapshot
+marked stale, so opening PC ports shows the refreshing state and then the ready
+state. `?ports=unavailable` starts with no snapshot and the unavailable state.
 
 Installing an entry is simulated in memory with `ports:progress` events
 (download, verify, extract, supplied files, finalize, register, complete). Cancel

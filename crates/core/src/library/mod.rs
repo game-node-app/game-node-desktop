@@ -25,7 +25,9 @@ pub use actions::{Actions, Availability, Reason, Why};
 pub use add_dialog::{
     AddDialogView, AddProgress, AddProgressView, AddTarget, CollectionOption, CollectionsView,
 };
-pub use add_run::{AddItem, AddOutcome, AddOutcomeItem, AddSummary};
+pub use add_run::{
+    AddItem, AddItemView, AddOutcome, AddOutcomeItem, AddOutcomeKind, AddSummary, AddSummaryView,
+};
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
 };

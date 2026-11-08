@@ -304,7 +304,7 @@ export interface CollectionOption {
   picked: boolean;
 }
 
-export type ApiError = 'unauthorized' | 'failed';
+export type ApiError = 'rejected' | 'failed';
 
 export type CollectionsView =
   | 'loading'
@@ -326,6 +326,8 @@ export interface AddItem {
   entryKey: string;
   title: string;
   outcome: AddOutcome;
+  /** The status GameNode has (or applied) for the game, when it is known. */
+  status?: EntryStatus | null;
 }
 
 export interface AddSummary {

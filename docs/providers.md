@@ -68,8 +68,8 @@ account owns plus the games shared with it through Steam Family. Ownership is st
 independent facts per entry: installed on this PC, owned by the account, and shared through
 family. The library shows the union, and an entry that is both owned and shared is treated as
 owned. A failed owned or family sync keeps the previous facts; signing out clears them but keeps
-entries, matches and covers. Only backends compiled into the application are valid, so an unknown
-plugin id must be approved by the host; an unknown id rejects the manifest and the other providers still load.
+entries, matches and covers. Only host-approved plugin IDs are valid; an unknown ID rejects the manifest
+and the other providers still load.
 
 ## Launch and install templates
 
@@ -147,3 +147,13 @@ and argument vector from local storage and revalidates the target before launchi
 on a worker. Manifest text cannot supply executable commands. Windows file identity
 prevents a replaced target from silently receiving approval. No shell interprets the
 stored arguments. Linux omits the manual provider.
+
+## Linux package discovery
+
+The Linux-only PackageKit plugin uses pacman on Arch-family systems and PackageKit
+on other distributions. It discovers installed packages with visible Game desktop
+entries, including quoted executable paths with spaces. Discovery does not add
+Play/Install actions, automatic matching, or a game-folder action. An executable
+under `/usr/bin` does not identify a game's asset directory. These are current
+capability limits; package discovery does not turn desktop Exec values into launch
+commands.

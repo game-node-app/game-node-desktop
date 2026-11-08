@@ -6,8 +6,9 @@ by developers and AI agents.
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
 rustfmt and Clippy. Install Rust using rustup, then let rustup install the toolchain
 when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has
-seven packages: Core, platform, API, app, the public plugin protocol, the public
-plugin SDK and the Steam plugin. Core has no Tauri or OS adapter dependency.
+eight packages: Core, platform, API, app, the public plugin protocol, the public
+plugin SDK, the Steam plugin and the Linux package manager plugin. Core has no Tauri
+or OS adapter dependency.
 Protobuf generation uses the build-host compiler selected from the pinned
 vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.

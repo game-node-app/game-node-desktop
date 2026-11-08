@@ -180,7 +180,6 @@ impl Completion {
             guard: None,
         }
     }
-
 }
 
 /// A service request retains the immutable host-issued authorization context.

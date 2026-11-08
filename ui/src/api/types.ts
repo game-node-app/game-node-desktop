@@ -687,6 +687,17 @@ export interface StoreAccountView {
   canRemoveCredential: boolean;
 }
 
+export interface PluginInfo {
+  providerId: string;
+  pluginId: string;
+  name: string;
+  source: 'official' | 'community';
+  status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
+  capabilities: string[];
+  session: 'active' | 'stopped';
+  nativeAccess: string[];
+}
+
 export interface Snapshot {
   localGames: LocalView;
   playtimeError: boolean;

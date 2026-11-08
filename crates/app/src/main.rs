@@ -196,24 +196,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let login_windows = Arc::new(gamenode_app::plugin_host::login::TauriLoginWindows::new(
         Arc::new(SystemBrowser),
     ));
-    let login_broker = match runtime.block_on(gamenode_app::plugin_host::login::LoginBroker::recover(
-        paths.private_dir(),
-        login_windows.clone(),
-        gamenode_app::plugin_host::legacy_login_profiles(),
-    )) {
-        Ok(broker) => Some(broker),
-        Err(error) => {
-            tracing::warn!(%error, "plugin login services are unavailable");
-            None
-        }
-    };
-    let provider_runtime = match runtime.block_on(gamenode_app::plugin_host::runtime::HostedProviders::bundled(
-        plugin_api.providers.clone(),
-        plugin_endpoint,
-        paths.clone(),
-        library_store.clone(),
-        login_broker,
-    )) {
+    let login_broker =
+        match runtime.block_on(gamenode_app::plugin_host::login::LoginBroker::recover(
+            paths.private_dir(),
+            login_windows.clone(),
+            gamenode_app::plugin_host::legacy_login_profiles(),
+        )) {
+            Ok(broker) => Some(broker),
+            Err(error) => {
+                tracing::warn!(%error, "plugin login services are unavailable");
+                None
+            }
+        };
+    let provider_runtime = match runtime.block_on(
+        gamenode_app::plugin_host::runtime::HostedProviders::bundled(
+            plugin_api.providers.clone(),
+            plugin_endpoint,
+            paths.clone(),
+            library_store.clone(),
+            login_broker,
+        ),
+    ) {
         Ok(providers) => Some(providers),
         Err(error) => {
             tracing::warn!(%error, "Steam provider is unavailable");
@@ -394,6 +397,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::uninstall_tool,
         commands::open_tool_source,
         commands::clear_tool_cache,
+        commands::plugin_inventory,
+        commands::provider_sign_in,
+        commands::provider_focus_sign_in,
+        commands::provider_cancel_sign_in,
+        commands::provider_sign_out,
+        commands::provider_check,
         commands::steam_sign_in,
         commands::steam_focus_sign_in,
         commands::steam_cancel_sign_in,

@@ -214,7 +214,7 @@ fn a_pending_local_change_wins_over_a_stale_server_value() {
     assert!(
         persisted(&effects)
             .iter()
-            .all(|r| r.is_favorite != true || r.pending)
+            .all(|r| !r.is_favorite || r.pending)
     );
 }
 

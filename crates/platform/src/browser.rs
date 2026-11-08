@@ -25,9 +25,8 @@ fn is_web_url(url: &Url) -> bool {
 
 /// Shows a directory in the OS file manager. Used by Settings to open the log folder.
 pub fn open_directory(path: &std::path::Path) -> Result<(), std::io::Error> {
-    open::that_detached(path).map_err(|error| {
+    open::that_detached(path).inspect_err(|error| {
         tracing::warn!(kind = ?error.kind(), "could not open a directory");
-        error
     })
 }
 

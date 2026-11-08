@@ -33,14 +33,17 @@ pub struct PluginInfo {
 
 /// Resolving the current executable and checking sibling files touches disk;
 /// callers should run this on a blocking worker.
-pub fn inventory(available: bool) -> Vec<PluginInfo> {
+pub fn inventory(runtime_status: &'static str) -> Vec<PluginInfo> {
     let executable_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
-    inventory_at(executable_dir.as_deref(), available)
+    inventory_at(executable_dir.as_deref(), runtime_status)
 }
 
-fn inventory_at(executable_dir: Option<&std::path::Path>, available: bool) -> Vec<PluginInfo> {
+fn inventory_at(
+    executable_dir: Option<&std::path::Path>,
+    runtime_status: &'static str,
+) -> Vec<PluginInfo> {
     PLUGINS
         .iter()
         .filter(|plugin| {
@@ -57,10 +60,8 @@ fn inventory_at(executable_dir: Option<&std::path::Path>, available: bool) -> Ve
                 source: "official".to_owned(),
                 status: if !installed {
                     "missing"
-                } else if !available {
-                    "unavailable"
                 } else {
-                    "installed"
+                    runtime_status
                 }
                 .to_owned(),
                 capabilities: plugin

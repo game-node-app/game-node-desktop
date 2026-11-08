@@ -167,6 +167,15 @@ for 328 owned Steam games (18 installed, a few family-shared), and add
 `&steam=expired` (or any store scenario) plus `&locale=pt-BR` (or `?locale=pt-BR` on
 its own) for Portuguese.
 
+The **Stores** settings panel includes the Steam account fixture and bundled plugin
+inventory. Use `&steam=notConnected`, `&steam=signingIn`, `&steam=expired`,
+`&steam=unreachable` or `&steam=credentialError` to exercise account actions and
+progress. The inventory shows trusted origin, executable/session status, exact granted
+capability IDs and native OS access separately; it contains no credential values. The
+mock snapshot carries Steam account and PC ports state together, and the same locale
+parameter covers English and Brazilian Portuguese. Sign-in, check, cancel, focus and
+sign-out use the generic provider command interface.
+
 The mock replaces the Tauri command and snapshot-event bridge, including when
 Vite is displayed inside a native dev window. Unsupported commands produce a
 console warning and do nothing; they never fall through to the real host.

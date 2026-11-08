@@ -34,16 +34,15 @@ struct ChildPlugin;
 #[tonic::async_trait]
 impl ProviderPlugin for ChildPlugin {
     async fn handle(&self, _: ProviderCommand, host: HostClient) -> Result<OperationResult, Error> {
-        if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("crash-once") {
-            if let Some(path) = std::env::var_os("GAMENODE_TEST_PLUGIN_CRASH_MARKER")
-                && std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)
-                    .is_ok()
-            {
-                std::process::exit(23);
-            }
+        if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("crash-once")
+            && let Some(path) = std::env::var_os("GAMENODE_TEST_PLUGIN_CRASH_MARKER")
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .is_ok()
+        {
+            std::process::exit(23);
         }
         assert_eq!(host.provider_context().await?.provider_id, "fixture");
         Ok(OperationResult {
@@ -185,10 +184,12 @@ async fn crashed_provider_restarts_without_reusing_its_old_session() {
         Duration::from_secs(10),
     )
     .await;
-    assert!(processes
-        .execute("fixture", ProviderOperation::Initialize)
-        .await
-        .is_err());
+    assert!(
+        processes
+            .execute("fixture", ProviderOperation::Initialize)
+            .await
+            .is_err()
+    );
     tokio::time::timeout(Duration::from_secs(3), async {
         while processes.process_id("fixture").await.is_some() {
             tokio::task::yield_now().await;

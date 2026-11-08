@@ -1098,15 +1098,8 @@ impl<'a> JobContext<'a> {
         }
         let base = Path::new(base);
         let update = update.map(Path::new);
-        if update.is_some() && !template_takes_update(&extractor) {
-            self.extract_and_merge(
-                &extractor,
-                &tool,
-                base,
-                update.expect("checked"),
-                &output,
-                &slot.id,
-            )?;
+        if let Some(update) = update.filter(|_| !template_takes_update(&extractor)) {
+            self.extract_and_merge(&extractor, &tool, base, update, &output, &slot.id)?;
         } else {
             self.emit_progress(Some(&slot.id), WorkProgress { done: 0, total: 1 });
             let validator = supplied_folder_validator(setup_file, self.cancel.as_ref());

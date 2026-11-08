@@ -72,13 +72,13 @@ describe('SteamAccountCard', () => {
   });
 
   it('offers sign-in when there is no account', () => {
-    const signIn = vi.spyOn(commands, 'steamSignIn');
+    const signIn = vi.spyOn(commands, 'providerSignIn');
     renderCard(account({ canSignIn: true }));
 
     expect(screen.getByText('Not connected')).toBeInTheDocument();
     expect(screen.getByText(/even when they are not installed on this PC/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Steam' }));
-    expect(signIn).toHaveBeenCalledTimes(1);
+    expect(signIn).toHaveBeenCalledWith('steam');
   });
 
   it('shows progress without actions while checking', () => {
@@ -90,8 +90,8 @@ describe('SteamAccountCard', () => {
   });
 
   it('offers focus and cancel while signing in', () => {
-    const focus = vi.spyOn(commands, 'steamFocusSignIn');
-    const cancel = vi.spyOn(commands, 'steamCancelSignIn');
+    const focus = vi.spyOn(commands, 'providerFocusSignIn');
+    const cancel = vi.spyOn(commands, 'providerCancelSignIn');
     renderCard(account({
       state: 'signingIn',
       canFocusSignIn: true,
@@ -101,13 +101,13 @@ describe('SteamAccountCard', () => {
     expect(screen.getByText('Waiting for sign-in')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Bring window to front' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(focus).toHaveBeenCalledTimes(1);
-    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledWith('steam');
+    expect(cancel).toHaveBeenCalledWith('steam');
   });
 
   it('offers sync and sign out when connected', () => {
-    const check = vi.spyOn(commands, 'steamCheck');
-    const signOut = vi.spyOn(commands, 'steamSignOut');
+    const check = vi.spyOn(commands, 'providerCheck');
+    const signOut = vi.spyOn(commands, 'providerSignOut');
     const onSignOut = vi.fn();
     render(
       <MantineProvider theme={appTheme} defaultColorScheme="dark">
@@ -122,14 +122,14 @@ describe('SteamAccountCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith('steam');
+    expect(signOut).toHaveBeenCalledWith('steam');
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
 
   it('offers sign in again and sign out when expired and keeps the installed-games explanation', () => {
-    const signIn = vi.spyOn(commands, 'steamSignIn');
-    const signOut = vi.spyOn(commands, 'steamSignOut');
+    const signIn = vi.spyOn(commands, 'providerSignIn');
+    const signOut = vi.spyOn(commands, 'providerSignOut');
     renderCard(account({
       state: 'expired',
       accountName: 'cassi',
@@ -142,13 +142,13 @@ describe('SteamAccountCard', () => {
     expect(screen.getByText(/Installed games still work/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(signIn).toHaveBeenCalledTimes(1);
-    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(signIn).toHaveBeenCalledWith('steam');
+    expect(signOut).toHaveBeenCalledWith('steam');
   });
 
   it('offers retry and sign out when Steam is unreachable', () => {
-    const check = vi.spyOn(commands, 'steamCheck');
-    const signOut = vi.spyOn(commands, 'steamSignOut');
+    const check = vi.spyOn(commands, 'providerCheck');
+    const signOut = vi.spyOn(commands, 'providerSignOut');
     renderCard(account({
       state: 'unreachable',
       accountName: 'cassi',
@@ -161,14 +161,14 @@ describe('SteamAccountCard', () => {
     expect(screen.getByText(/Showing your saved Steam library/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith('steam');
+    expect(signOut).toHaveBeenCalledWith('steam');
   });
 
   it('offers retry, sign in again and removing the saved credential on a credential error', () => {
-    const check = vi.spyOn(commands, 'steamCheck');
-    const signIn = vi.spyOn(commands, 'steamSignIn');
-    const signOut = vi.spyOn(commands, 'steamSignOut');
+    const check = vi.spyOn(commands, 'providerCheck');
+    const signIn = vi.spyOn(commands, 'providerSignIn');
+    const signOut = vi.spyOn(commands, 'providerSignOut');
     renderCard(account({
       state: 'credentialError',
       canCheck: true,
@@ -181,9 +181,9 @@ describe('SteamAccountCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove saved sign-in' }));
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(signIn).toHaveBeenCalledTimes(1);
-    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith('steam');
+    expect(signIn).toHaveBeenCalledWith('steam');
+    expect(signOut).toHaveBeenCalledWith('steam');
   });
 
   it('keeps the connected actions and warns when the credential could not be saved', () => {

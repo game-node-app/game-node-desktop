@@ -119,6 +119,18 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runtime);
     }
+    pub fn provider_health(&self, id: &str) -> (bool, bool) {
+        self.provider_runtime()
+            .map(|runtime| (runtime.available(id), runtime.connected(id)))
+            .unwrap_or((false, false))
+    }
+
+    pub fn provider_availability(&self, id: &str) -> &'static str {
+        self.provider_runtime()
+            .map(|runtime| runtime.availability(id))
+            .unwrap_or("unavailable")
+    }
+
     pub(super) fn provider_runtime(&self) -> Option<Arc<dyn ProviderRuntime>> {
         self.shared
             .providers
@@ -338,11 +350,11 @@ impl Engine {
         if runtime.status(&provider).is_some_and(|status| {
             matches!(
                 status.state,
-                models::AccountState::NotConnected
-                    | models::AccountState::Expired
+                models::AccountState::Expired
                     | models::AccountState::Unreachable
                     | models::AccountState::CredentialError
-            )
+            ) || (status.state == models::AccountState::NotConnected
+                && status.last_checked_at.is_some())
         }) {
             self.library_input(LibInput::CatalogSynced {
                 op,

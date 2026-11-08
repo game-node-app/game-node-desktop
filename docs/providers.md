@@ -11,30 +11,25 @@ providers still load. Set `RUST_LOG=info` to see more detail from scans.
 
 ## Schema
 
-Unknown fields are rejected. This is the whole schema for this step, using the bundled Steam
-manifest as the example:
+Unknown fields are rejected. This is the bundled Steam provider manifest:
 
 ```toml
 id = "steam"
 name = "Steam"
 platforms = ["windows", "linux"]
 source = "steam"
-scan = { native = "steam" }
-catalog = { native = "steam" }
+scan = { plugin = "org.gamenode.plugin.steam-discovery" }
+catalog = { plugin = "org.gamenode.plugin.steam-discovery" }
+playtime = { plugin = "org.gamenode.plugin.steam-discovery" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
 exclude_ids = ["228980", "1628350", "1493710"]
 
-[[roots.windows]]
-registry = 'HKCU\Software\Valve\Steam'
-value = "SteamPath"
-
-[[roots.linux]]
-path = "~/.steam/steam"
-[[roots.linux]]
-path = "~/.local/share/Steam"
 ```
+
+Steam's native and Flatpak roots and its registry policy are held by the trusted Steam plugin;
+the host resolves them through the provider context and bounded file-access services.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -42,12 +37,12 @@ path = "~/.local/share/Steam"
 | `name` | yes | Name shown in the sidebar and in error messages. |
 | `platforms` | yes | `windows`, `linux`. A manifest that does not list the current platform is not loaded and is not shown as a filter. |
 | `source` | yes | The store or source name. Kept for later steps. |
-| `scan` | yes | `{ native = "<name>" }`. Only scanners built into the application exist (`steam`). An unknown name rejects the manifest. |
-| `catalog` | no | `{ native = "<name>" }`. A catalog backend built into the application (`steam`). An unknown name rejects the manifest. A provider without a catalog has no account connection and no owned-library import. |
+| `scan` | yes | `{ native = "manual" }` for the bundled local-registration scanner, or `{ plugin = "<plugin-id>" }` for a host-approved plugin. Unknown scanners and unapproved plugin IDs reject the manifest. |
+| `catalog` | no | `{ plugin = "<plugin-id>" }` for a host-approved catalog plugin. A provider without a catalog has no account connection and no owned-library import. |
 | `launch`, `install` | no | `{ uri = "<template>" }`. A provider without one has no Play or Install. |
 | `match` | no | `{ external_category = N }`: the GameNode external-game category of the provider's ids. Without it, games are never matched automatically. |
 | `exclude_ids` | no | Provider ids that are never shown: tools, runtimes and redistributables. |
-| `roots.windows`, `roots.linux` | no | Where to look. `path` (a leading `~` is the home folder) or `registry` plus `value`. |
+| `roots.windows`, `roots.linux` | no | Declarative provider roots for host implementations that use them. Plugin policy may instead keep OS-specific roots in trusted plugin data and query them through host services. |
 
 Registry roots are only valid under `roots.windows` and must start with `HKCU\`. A root that does
 not exist is not an error: the scan simply finds nothing there. Roots that resolve to the same
@@ -67,14 +62,14 @@ match and cover.
 
 ## Catalog capability
 
-`catalog = { native = "steam" }` declares that the provider can read games beyond what the
+`catalog = { plugin = "org.gamenode.plugin.steam-discovery" }` declares that the provider can read games beyond what the
 installed scan finds. The bundled Steam provider uses this to import every game the connected
 account owns plus the games shared with it through Steam Family. Ownership is stored as three
 independent facts per entry: installed on this PC, owned by the account, and shared through
 family. The library shows the union, and an entry that is both owned and shared is treated as
 owned. A failed owned or family sync keeps the previous facts; signing out clears them but keeps
 entries, matches and covers. Only backends compiled into the application are valid, so an unknown
-`native` name rejects the manifest and the other providers still load.
+plugin id must be approved by the host; an unknown id rejects the manifest and the other providers still load.
 
 ## Launch and install templates
 
@@ -101,9 +96,9 @@ Steam stores runtimes, Proton builds and redistributables as apps next to games.
 change in `providers/steam.toml`. It is checked against a real Steam install with Proton during
 acceptance.
 
-## Steam scanner
+## Steam discovery plugin
 
-For each root the scanner reads `steamapps/libraryfolders.vdf` (falling back to
+For each approved root the plugin reads `steamapps/libraryfolders.vdf` (falling back to
 `config/libraryfolders.vdf`; both the current and the older format), always includes the root
 itself, and reads every `steamapps/appmanifest_*.acf` in each library folder. A game is kept when
 its manifest has a numeric app id and `steamapps/common/<installdir>` exists. An unreadable or
@@ -121,8 +116,9 @@ an installed entry's install folder or name.
 
 ## Playtime counters
 
-An optional top-level `playtime = { counter = "steam" }` selects a built-in store
-counter. Unknown counters invalidate only that manifest. Steam declares `steam`;
+An optional top-level `playtime = { plugin = "<plugin-id>" }` selects an approved plugin
+counter. Unknown or unapproved counters invalidate only that manifest. Steam declares its
+plugin id;
 its fields and read schedule are documented in `steam-playtime-counter.md`.
 The global Store preference uses that counter; Internal uses measured sessions.
 Providers without a supported counter always use measured sessions.

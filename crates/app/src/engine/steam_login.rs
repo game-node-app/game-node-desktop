@@ -366,41 +366,40 @@ impl SteamLoginWindow for TauriSteamLoginWindow {
                 };
             }
 
-            if let Some(page) = authenticated_store_session(&window).await {
-                if let Ok(cookies) = window.cookies_for_url(cookie_url.clone())
-                    && let Some(cookie) = cookie_header(&cookies)
-                    && page.steam_id.bytes().all(|byte| byte.is_ascii_digit())
-                    && let Some(token) = SessionCredential::new(page.token)
-                {
-                    // Claim the attempt atomically: a cancel that set the generation after
-                    // the read wins, and its result is not saved.
-                    let claimed = self.generation.compare_exchange(
-                        attempt,
-                        attempt.wrapping_add(1),
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    );
-                    self.close_and_wait().await;
-                    self.remove_profile().await;
-                    if claimed.is_ok() {
-                        tracing::info!(attempt, "Steam sign-in verified in the store page");
-                    }
-                    return SteamLoginOutcome {
-                        attempt,
-                        result: if claimed.is_ok() {
-                            SteamLoginResult::Verified {
-                                session: SteamSession {
-                                    steam_id: page.steam_id,
-                                    account_name: page.account_name,
-                                    token,
-                                    cookie,
-                                },
-                            }
-                        } else {
-                            SteamLoginResult::Cancelled
-                        },
-                    };
+            if let Some(page) = authenticated_store_session(&window).await
+                && let Ok(cookies) = window.cookies_for_url(cookie_url.clone())
+                && let Some(cookie) = cookie_header(&cookies)
+                && page.steam_id.bytes().all(|byte| byte.is_ascii_digit())
+                && let Some(token) = SessionCredential::new(page.token)
+            {
+                // Claim the attempt atomically: a cancel that set the generation after
+                // the read wins, and its result is not saved.
+                let claimed = self.generation.compare_exchange(
+                    attempt,
+                    attempt.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                self.close_and_wait().await;
+                self.remove_profile().await;
+                if claimed.is_ok() {
+                    tracing::info!(attempt, "Steam sign-in verified in the store page");
                 }
+                return SteamLoginOutcome {
+                    attempt,
+                    result: if claimed.is_ok() {
+                        SteamLoginResult::Verified {
+                            session: SteamSession {
+                                steam_id: page.steam_id,
+                                account_name: page.account_name,
+                                token,
+                                cookie,
+                            },
+                        }
+                    } else {
+                        SteamLoginResult::Cancelled
+                    },
+                };
             }
 
             tokio::select! {

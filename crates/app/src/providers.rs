@@ -52,7 +52,10 @@ mod tests {
             assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
             let steam = loaded.get("steam").expect("steam loads");
             assert!(steam.has_catalog());
-            assert_eq!(steam.catalog_backend(), Some("steam"));
+            assert_eq!(
+                steam.catalog_backend(),
+                Some("org.gamenode.plugin.steam-discovery")
+            );
         }
     }
 }

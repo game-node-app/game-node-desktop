@@ -5,6 +5,7 @@ import type {
   AuthInput,
   LaunchKind,
   LibraryInput,
+  PluginInfo,
   PlaytimeSource,
   Registration,
   Snapshot,
@@ -103,21 +104,23 @@ export const commands = {
   rescanLibrary: () =>
     safeInvoke<void>('rescan_library', undefined, () => undefined),
 
-  // Store accounts (Steam)
-  steamSignIn: () =>
-    safeInvoke<void>('steam_sign_in', undefined, () => undefined),
+  pluginInventory: () =>
+    safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
 
-  steamCancelSignIn: () =>
-    safeInvoke<void>('steam_cancel_sign_in', undefined, () => undefined),
+  providerSignIn: (providerId: string) =>
+    safeInvoke<void>('provider_sign_in', { providerId }, () => undefined),
 
-  steamFocusSignIn: () =>
-    safeInvoke<void>('steam_focus_sign_in', undefined, () => undefined),
+  providerCancelSignIn: (providerId: string) =>
+    safeInvoke<void>('provider_cancel_sign_in', { providerId }, () => undefined),
 
-  steamSignOut: () =>
-    safeInvoke<void>('steam_sign_out', undefined, () => undefined),
+  providerFocusSignIn: (providerId: string) =>
+    safeInvoke<void>('provider_focus_sign_in', { providerId }, () => undefined),
 
-  steamCheck: () =>
-    safeInvoke<void>('steam_check', undefined, () => undefined),
+  providerSignOut: (providerId: string) =>
+    safeInvoke<void>('provider_sign_out', { providerId }, () => undefined),
+
+  providerCheck: (providerId: string) =>
+    safeInvoke<void>('provider_check', { providerId }, () => undefined),
 
   removeEntry: (key: string, allowRediscovery: boolean) =>
     safeInvoke<void>('remove_entry', { key, allowRediscovery }, () => undefined),

@@ -338,6 +338,71 @@ pub async fn remove_entry(
 // Store Account Commands
 // ---------------------------------------------------------------------------
 
+/// Returns trusted packaged plugin metadata. Executable inspection runs off the async worker.
+#[tauri::command]
+pub async fn plugin_inventory(
+    engine: tauri::State<'_, Engine>,
+) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
+    let status = engine.provider_availability("steam");
+    let (_, connected) = engine.provider_health("steam");
+    tokio::task::spawn_blocking(move || {
+        let mut plugins = crate::plugin_host::inventory(status);
+        for plugin in &mut plugins {
+            if plugin.provider_id == "steam" {
+                plugin.session = if connected { "active" } else { "stopped" }.into();
+            }
+        }
+        plugins
+    })
+    .await
+    .map_err(|_| "plugin inventory worker failed".to_owned())
+}
+
+#[tauri::command]
+pub async fn provider_sign_in(
+    engine: tauri::State<'_, Engine>,
+    provider_id: String,
+) -> Result<(), String> {
+    engine.provider_sign_in(&provider_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_focus_sign_in(
+    engine: tauri::State<'_, Engine>,
+    provider_id: String,
+) -> Result<(), String> {
+    engine.provider_focus_sign_in(&provider_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_cancel_sign_in(
+    engine: tauri::State<'_, Engine>,
+    provider_id: String,
+) -> Result<(), String> {
+    engine.provider_cancel_sign_in(&provider_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_sign_out(
+    engine: tauri::State<'_, Engine>,
+    provider_id: String,
+) -> Result<(), String> {
+    engine.provider_sign_out(&provider_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_check(
+    engine: tauri::State<'_, Engine>,
+    provider_id: String,
+) -> Result<(), String> {
+    engine.provider_check(&provider_id).await;
+    Ok(())
+}
+
 /// Opens Steam's isolated sign-in window and waits for the attempt to end.
 #[tauri::command]
 pub async fn steam_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {

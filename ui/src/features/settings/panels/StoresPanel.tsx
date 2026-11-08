@@ -10,6 +10,7 @@ import {
 import { pushToast } from '../../../store/uiStore';
 import { useI18n } from '../../../i18n';
 import { SteamAccountCard } from '../SteamAccountCard';
+import { PluginInventory } from '../PluginInventory';
 import {
   settingsButtonGhost,
   settingsButtonSecondary,
@@ -96,7 +97,7 @@ export const StoresPanel: React.FC = () => {
     const stale = Math.floor(Date.now() / 1000) - lastChecked > 5 * 60;
     if (stale && autoCheckedFor.current !== lastChecked) {
       autoCheckedFor.current = lastChecked;
-      void commands.steamCheck();
+      void commands.providerCheck('steam');
     }
   }, [steamAccount.state, steamAccount.lastCheckedAt]);
 
@@ -181,6 +182,8 @@ export const StoresPanel: React.FC = () => {
         scanFailed={steamScanFailed}
         onSignOut={handleSteamSignOut}
       />
+
+      <PluginInventory />
 
       <div className={settingsSection}>
         <h3 className={settingsSectionTitle}>{t('Detected stores') || 'Detected stores'}</h3>

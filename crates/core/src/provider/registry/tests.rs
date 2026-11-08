@@ -360,7 +360,7 @@ fn the_example_in_the_providers_doc_loads() {
     let example = &DOC[start..start + DOC[start..].find("```").expect("closing fence")];
 
     for platform in [Platform::Windows, Platform::Linux] {
-        let loaded = load(&[("steam.toml", example)], platform);
+        let loaded = tests::load(&[("steam.toml", example)], platform);
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
         assert!(loaded.get("steam").is_some());
     }
@@ -394,7 +394,7 @@ fn every_documented_provider_manifest_loads() {
     let doc = include_str!("../../../../../docs/providers.md");
     for block in doc.split("```toml\n").skip(1) {
         let example = block.split("```").next().unwrap();
-        let loaded = load(&[("example.toml", example)], Platform::Windows);
+        let loaded = tests::load(&[("example.toml", example)], Platform::Windows);
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
         assert_eq!(loaded.providers.len(), 1);
     }

@@ -211,7 +211,7 @@ id = "deluxe"
 name = "Deluxe"
 platforms = ["windows", "linux"]
 source = "deluxe"
-scan = { native = "steam" }
+scan = { native = "manual" }
 launch = { uri = "deluxe://run/{launch_id}" }
 install = { uri = "deluxe://install/{id}" }
 "#

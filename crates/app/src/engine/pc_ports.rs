@@ -134,6 +134,76 @@ pub struct PortsServiceConfig {
     pub install: Option<InstallDeps>,
 }
 
+/// Why an install cannot start, in the UI's own vocabulary. The UI translates each code, so a
+/// plan failure never reaches the user as a raw English message.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "code"
+)]
+pub enum PortInstallProblem {
+    /// The resolved install folder is not empty.
+    TargetNotEmpty { target: String },
+    /// The resolved install folder sits inside another library entry.
+    TargetInsideLibrary { target: String, root: String },
+    /// The target volume has less free space than the install needs.
+    NotEnoughSpace { required: u64, available: u64 },
+    /// A package slot needs its update package, but only a base package was chosen.
+    MissingRequiredUpdate { slot: String, version: String },
+    /// The selected release was withdrawn upstream.
+    Withdrawn { version: String, reason: String },
+    /// The overlay pins a release the catalog no longer lists.
+    ReleaseUnavailable { version: String },
+    /// The entry has no verified release.
+    NoVerifiedRelease,
+    /// The release has no Windows asset.
+    NoWindowsAsset,
+    /// No asset matches the recipe's asset filter.
+    NoMatchingAsset,
+    /// The selected asset has no file format.
+    UnknownAssetFormat { filename: String },
+    /// The selected asset format is not installable.
+    UnsupportedFormat { format: String },
+    /// The asset has no checksum to verify the download against.
+    NoChecksum,
+    /// A required setup slot has no choice.
+    MissingSlot { label: String },
+    /// Any other plan failure; the UI shows the general message.
+    Other,
+}
+
+impl From<PlanError> for PortInstallProblem {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::TargetNotEmpty { target } => Self::TargetNotEmpty { target },
+            PlanError::TargetInsideLibrary { target, root } => {
+                Self::TargetInsideLibrary { target, root }
+            }
+            PlanError::NotEnoughSpace {
+                required,
+                available,
+            } => Self::NotEnoughSpace {
+                required,
+                available,
+            },
+            PlanError::MissingRequiredUpdate { slot, version } => {
+                Self::MissingRequiredUpdate { slot, version }
+            }
+            PlanError::Withdrawn { version, reason } => Self::Withdrawn { version, reason },
+            PlanError::ReleaseUnavailable { version } => Self::ReleaseUnavailable { version },
+            PlanError::NoVerifiedRelease => Self::NoVerifiedRelease,
+            PlanError::NoWindowsAsset => Self::NoWindowsAsset,
+            PlanError::NoMatchingAsset { .. } => Self::NoMatchingAsset,
+            PlanError::UnknownAssetFormat { filename } => Self::UnknownAssetFormat { filename },
+            PlanError::UnsupportedFormat { format } => Self::UnsupportedFormat { format },
+            PlanError::NoChecksum => Self::NoChecksum,
+            PlanError::MissingSlot { label, .. } => Self::MissingSlot { label },
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Why a PC ports request failed. Commands turn these into a typed UI error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PortsError {
@@ -143,8 +213,10 @@ pub enum PortsError {
     NotReady,
     /// The request names something invalid or no longer valid.
     Invalid(String),
-    /// The install cannot start.
+    /// The install cannot start for another reason the host explains (network, cache, picker).
     Unavailable(String),
+    /// The install plan refused the request for a reason the UI words itself.
+    InstallBlocked(PortInstallProblem),
     /// The native picker failed.
     Picker(String),
     /// Local port state could not be read.
@@ -161,6 +233,9 @@ impl std::fmt::Display for PortsError {
             Self::Invalid(reason) => write!(formatter, "the request is invalid: {reason}"),
             Self::Unavailable(reason) => {
                 write!(formatter, "the install could not start: {reason}")
+            }
+            Self::InstallBlocked(problem) => {
+                write!(formatter, "the install is blocked: {problem:?}")
             }
             Self::Picker(reason) => write!(formatter, "the file picker failed: {reason}"),
             Self::Storage(reason) => {
@@ -254,6 +329,9 @@ pub enum PortSuppliedStatus {
     Rejected {
         message: String,
         accepted_labels: Vec<String>,
+        /// True when the picked folder holds console packages and the slot offers the package
+        /// option; the UI then points at that option instead of the missing marker.
+        packages_found: bool,
     },
 }
 
@@ -666,6 +744,7 @@ impl PortsService {
             Ok(CheckOutcome::Skipped) => PortSuppliedStatus::Rejected {
                 message: "choose a file or folder for this slot".to_owned(),
                 accepted_labels: accepted_labels(&slot),
+                packages_found: false,
             },
             Err(error) => PortSuppliedStatus::Rejected {
                 message: error.to_string(),
@@ -679,6 +758,7 @@ impl PortsService {
                     }
                     _ => accepted_labels(&slot),
                 },
+                packages_found: matches!(error, SupplyError::PackagesInFolder { .. }),
             },
         }
     }
@@ -889,9 +969,9 @@ impl PortsService {
                     confirmed_risk: true,
                     ..plan_request
                 })
-                .map_err(|error| PortsError::Unavailable(error.to_string()))?
+                .map_err(|error| PortsError::InstallBlocked(error.into()))?
             }
-            Err(error) => return Err(PortsError::Unavailable(error.to_string())),
+            Err(error) => return Err(PortsError::InstallBlocked(error.into())),
         };
         Ok(InstallJobRequest {
             job_id,
@@ -1362,12 +1442,25 @@ fn translate_supplied(supplied: &[PortSuppliedChoice]) -> Result<Vec<SuppliedCho
     Ok(translated)
 }
 
-fn supplied_bytes(supplied: &[SuppliedChoice]) -> u64 {
+/// A console package is compressed, and its extracted tree is what lands on the target volume.
+/// Counting twice the package files keeps the free-space check on the safe side, matching the
+/// release asset's extraction estimate.
+const PACKAGE_EXTRACTED_SIZE_ESTIMATE: u64 = 2;
+
+pub(crate) fn supplied_bytes(supplied: &[SuppliedChoice]) -> u64 {
     supplied
         .iter()
         .map(|choice| match &choice.source {
             SuppliedSource::Path { path } => path_bytes(Path::new(path)),
-            SuppliedSource::Packages { .. } => 0,
+            SuppliedSource::Packages { base, update } => {
+                let packages = path_bytes(Path::new(base)).saturating_add(
+                    update
+                        .as_deref()
+                        .map(|path| path_bytes(Path::new(path)))
+                        .unwrap_or(0),
+                );
+                packages.saturating_mul(PACKAGE_EXTRACTED_SIZE_ESTIMATE)
+            }
         })
         .fold(0u64, u64::saturating_add)
 }

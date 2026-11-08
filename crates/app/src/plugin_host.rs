@@ -121,22 +121,37 @@ impl PluginDescriptor {
     }
 }
 
-const PLUGINS: &[PluginDescriptor] = &[PluginDescriptor {
-    provider_id: "steam",
-    plugin_id: "org.gamenode.plugin.steam-discovery",
-    name: "Steam",
-    platforms: &[
-        gamenode_core::provider::Platform::Linux,
-        gamenode_core::provider::Platform::Windows,
-    ],
-    capabilities: capability::ALL,
-    executable: "gamenode-plugin-steam",
-    provider_manifest: include_str!("../../../providers/steam.toml"),
-    login_policy: Some(include_str!("../../plugin-steam/assets/login.toml")),
-    credential_alias: Some(gamenode_platform::credentials::CredentialSlot::Steam),
-    native_access: &["files", "network", "registry"],
-    legacy_login_profiles: &["steam-login"],
-}];
+const PLUGINS: &[PluginDescriptor] = &[
+    PluginDescriptor {
+        provider_id: "steam",
+        plugin_id: "org.gamenode.plugin.steam-discovery",
+        name: "Steam",
+        platforms: &[
+            gamenode_core::provider::Platform::Linux,
+            gamenode_core::provider::Platform::Windows,
+        ],
+        capabilities: capability::ALL,
+        executable: "gamenode-plugin-steam",
+        provider_manifest: include_str!("../../../providers/steam.toml"),
+        login_policy: Some(include_str!("../../plugin-steam/assets/login.toml")),
+        credential_alias: Some(gamenode_platform::credentials::CredentialSlot::Steam),
+        native_access: &["files", "network", "registry"],
+        legacy_login_profiles: &["steam-login"],
+    },
+    PluginDescriptor {
+        provider_id: "packagekit",
+        plugin_id: "org.gamenode.plugin.packagekit-discovery",
+        name: "Gerenciador de pacotes Linux",
+        platforms: &[gamenode_core::provider::Platform::Linux],
+        capabilities: &[capability::CONTEXT, capability::DISCOVERY],
+        executable: "gamenode-plugin-packagekit",
+        provider_manifest: include_str!("../../../providers/packagekit.toml"),
+        login_policy: None,
+        credential_alias: None,
+        native_access: &["files", "process", "dbus"],
+        legacy_login_profiles: &[],
+    },
+];
 
 pub fn legacy_login_profiles() -> Vec<String> {
     PLUGINS
@@ -475,12 +490,24 @@ mod tests {
     }
 
     #[test]
-    fn only_the_official_steam_plugin_is_registered() {
-        assert_eq!(PLUGINS.len(), 1);
+    fn only_trusted_plugins_are_registered_with_narrow_packagekit_grants() {
+        assert_eq!(PLUGINS.len(), 2);
         assert_eq!(
             descriptor_for_provider("steam").unwrap().capabilities,
             capability::ALL
         );
-        assert!(descriptor_for_provider("packagekit").is_none());
+        let packagekit = descriptor_for_provider("packagekit").unwrap();
+        assert_eq!(packagekit.name, "Gerenciador de pacotes Linux");
+        assert_eq!(
+            packagekit.platforms,
+            &[gamenode_core::provider::Platform::Linux]
+        );
+        assert_eq!(
+            packagekit.capabilities,
+            &[capability::CONTEXT, capability::DISCOVERY]
+        );
+        assert_eq!(packagekit.native_access, &["files", "process", "dbus"]);
+        assert!(packagekit.credential_alias.is_none());
+        assert!(packagekit.approved_login().unwrap().is_none());
     }
 }

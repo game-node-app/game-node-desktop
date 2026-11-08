@@ -33,6 +33,7 @@ def fixture_metadata(extra_packages=(), extra_nodes=(), *, app_dependencies=()):
         "gamenode-plugin-protocol",
         "gamenode-plugin-sdk",
         "gamenode-plugin-steam",
+        "gamenode-plugin-packagekit",
         "gamenode-app",
         *extra_packages,
     ]
@@ -41,6 +42,7 @@ def fixture_metadata(extra_packages=(), extra_nodes=(), *, app_dependencies=()):
         node("gamenode-plugin-protocol"),
         node("gamenode-plugin-sdk", [("gamenode-plugin-protocol", None, None)]),
         node("gamenode-plugin-steam", [("gamenode-plugin-sdk", None, None)]),
+        node("gamenode-plugin-packagekit", [("gamenode-plugin-sdk", None, None)]),
         node("gamenode-app", app_dependencies),
         *extra_nodes,
     ]
@@ -101,8 +103,10 @@ class PluginBoundaryTests(unittest.TestCase):
         errors = checker.check_metadata(metadata)
         self.assertTrue(any("production graph" in error for error in errors))
 
-    def test_deferred_package_manager_is_not_required_by_the_checker(self):
-        metadata = fixture_metadata()
+    def test_host_allows_package_manager_only_as_a_dev_dependency(self):
+        metadata = fixture_metadata(
+            app_dependencies=[("gamenode-plugin-packagekit", "dev", None)],
+        )
         self.assertEqual(checker.check_metadata(metadata), [])
 
 

@@ -31,7 +31,9 @@ class DesktopLauncherTests(unittest.TestCase):
             "  profile = 'release' if '--release' in args else 'debug'\n"
             "  out = target / profile; out.mkdir(parents=True, exist_ok=True)\n"
             "  desktop = out / 'gamenode'; desktop.write_text('#!/usr/bin/env python3\\nimport json,os,pathlib,sys; pathlib.Path(os.environ[\"APP_ARG_LOG\"]).write_text(json.dumps(sys.argv[1:]))\\n'); desktop.chmod(0o755)\n"
-            "  if os.environ.get('OMIT_PLUGIN') != '1': (out / 'gamenode-plugin-steam').write_text('plugin')\n"
+            "  if os.environ.get('OMIT_PLUGIN') != '1':\n"
+            "    (out / 'gamenode-plugin-steam').write_text('plugin')\n"
+            "    (out / 'gamenode-plugin-packagekit').write_text('plugin')\n"
             "else: sys.exit(2)\n",
             encoding="utf-8",
         )
@@ -65,8 +67,10 @@ class DesktopLauncherTests(unittest.TestCase):
         self.assertIn("--bins", build)
         self.assertIn("gamenode-app", build)
         self.assertIn("gamenode-plugin-steam", build)
+        self.assertIn("gamenode-plugin-packagekit", build)
         self.assertEqual(json.loads(self.app_log.read_text()), ["--background"])
         self.assertTrue((self.target / "release" / "gamenode-plugin-steam").is_file())
+        self.assertTrue((self.target / "release" / "gamenode-plugin-packagekit").is_file())
 
     def test_missing_adjacent_plugin_fails_without_launching_desktop(self):
         self.env["OMIT_PLUGIN"] = "1"
@@ -74,7 +78,7 @@ class DesktopLauncherTests(unittest.TestCase):
             [str(LAUNCHER)], cwd=ROOT, env=self.env, capture_output=True, text=True
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Steam plugin was not built beside the desktop", result.stderr)
+        self.assertIn("Required provider plugin was not built beside the desktop", result.stderr)
         self.assertFalse(self.app_log.exists())
 
 

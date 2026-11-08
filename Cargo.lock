@@ -1606,6 +1606,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gamenode-plugin-packagekit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "gamenode-plugin-protocol",
+ "gamenode-plugin-sdk",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "gamenode-plugin-protocol"
 version = "0.1.0"
 dependencies = [

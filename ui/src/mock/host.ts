@@ -928,6 +928,24 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     const entry = ports.entries.find((item) => item.catalogId === request.catalogId);
     if (!entry || !entry.installable) return null;
 
+    // The plan refuses a package choice that omits the update the recipe requires. The mock
+    // answers with the same typed problem the real command returns.
+    for (const slot of entry.requirements) {
+      const choices = request.supplied.filter((choice) => choice.slotId === slot.id);
+      const usesPackage = choices.some((choice) => choice.package);
+      const hasUpdate = choices.some((choice) => choice.package && choice.update);
+      if (slot.packageOption?.requiresUpdate && usesPackage && !hasUpdate) {
+        throw {
+          code: 'installBlocked',
+          message: {
+            code: 'missingRequiredUpdate',
+            slot: slot.id,
+            version: slot.packageOption.updateVersion ?? '?',
+          },
+        };
+      }
+    }
+
     const jobId = `job-mock-${++jobCounter}`;
     const job: PortJobView = {
       jobId,
@@ -1169,6 +1187,19 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
             ? ['files', 'network', 'registry']
             : ['files', 'network'],
         };
+        if (platform === 'linux') {
+          const packageManagerPlugin: PluginInfo = {
+            providerId: 'packagekit',
+            pluginId: 'org.gamenode.plugin.packagekit-discovery',
+            name: 'Gerenciador de pacotes Linux',
+            source: 'official',
+            status: 'installed',
+            capabilities: ['provider.context.read', 'library.discovery'],
+            session: 'stopped',
+            nativeAccess: ['files', 'process', 'dbus'],
+          };
+          return [steamPlugin, packageManagerPlugin];
+        }
         return [steamPlugin];
       }
       if (cmd === 'get_app_info') {
@@ -1252,6 +1283,21 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
           bytesDone: 1,
           bytesTotal: 1,
         });
+        // Hollow Mountain's package slot models the mistake this fixture exists for: a folder
+        // that holds `.pkg` files picked in folder mode. The host names the package option.
+        if (request.kind === 'folder' && request.slotId === 'game-package') {
+          return {
+            slotId: request.slotId,
+            path,
+            status: {
+              rejected: {
+                message: 'the folder contains game packages; use the package option instead',
+                acceptedLabels: ['CUSA20202 (01.01)'],
+                packagesFound: true,
+              },
+            },
+          } satisfies PortSuppliedPick;
+        }
         return {
           slotId: request.slotId,
           path,

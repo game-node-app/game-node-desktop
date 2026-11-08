@@ -16,15 +16,25 @@ pub fn load_bundled_with_plugins(platform: Platform, plugins: &[PluginBackend]) 
 
 #[cfg(test)]
 pub(crate) fn load_bundled_for_tests(platform: Platform) -> LoadedProviders {
-    let steam = PluginBackend {
+    let mut plugins = vec![PluginBackend {
         plugin_id: "org.gamenode.plugin.steam-discovery".into(),
         provider_id: "steam".into(),
         discovery: true,
         catalog: true,
         counter: true,
         actions: true,
-    };
-    load_bundled_with_plugins(platform, &[steam])
+    }];
+    if platform == Platform::Linux {
+        plugins.push(PluginBackend {
+            plugin_id: "org.gamenode.plugin.packagekit-discovery".into(),
+            provider_id: "packagekit".into(),
+            discovery: true,
+            catalog: false,
+            counter: false,
+            actions: false,
+        });
+    }
+    load_bundled_with_plugins(platform, &plugins)
 }
 
 #[cfg(test)]
@@ -43,6 +53,7 @@ mod tests {
         let embedded: Vec<&str> = BUNDLED_MANIFESTS.iter().map(|(name, _)| *name).collect();
         assert_eq!(embedded, on_disk);
         assert!(embedded.contains(&"steam.toml"));
+        assert!(embedded.contains(&"packagekit.toml"));
     }
 
     #[test]
@@ -56,6 +67,17 @@ mod tests {
                 steam.catalog_backend(),
                 Some("org.gamenode.plugin.steam-discovery")
             );
+            if platform == Platform::Linux {
+                let packagekit = loaded.get("packagekit").unwrap();
+                assert_eq!(packagekit.name(), "Gerenciador de pacotes Linux");
+                assert_eq!(
+                    packagekit.manifest().scan.plugin.as_deref(),
+                    Some("org.gamenode.plugin.packagekit-discovery")
+                );
+                assert!(packagekit.manifest().catalog.is_none());
+            } else {
+                assert!(loaded.get("packagekit").is_none());
+            }
         }
     }
 }

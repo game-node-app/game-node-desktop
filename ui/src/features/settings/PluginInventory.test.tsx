@@ -53,11 +53,12 @@ describe('PluginInventory', () => {
   it('lets the user select a plugin and inspect its identity and permissions', async () => {
     const secondPlugin: PluginInfo = {
       ...plugin,
-      pluginId: 'org.gamenode.plugin.linux-packages',
+      providerId: 'packagekit',
+      pluginId: 'org.gamenode.plugin.packagekit-discovery',
       name: 'Linux Package Manager',
-      source: 'community',
-      capabilities: ['library.discovery'],
-      nativeAccess: ['files'],
+      source: 'official',
+      capabilities: ['provider.context.read', 'library.discovery'],
+      nativeAccess: ['files', 'process', 'dbus'],
     };
     vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin, secondPlugin]);
     renderInventory();
@@ -67,8 +68,14 @@ describe('PluginInventory', () => {
     fireEvent.click(packagePluginOption);
 
     expect(packagePluginOption).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('org.gamenode.plugin.linux-packages');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('org.gamenode.plugin.packagekit-discovery');
     expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('library.discovery');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('provider.context.read');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('Local process execution');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('System D-Bus');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('Official');
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('Process session: Active');
+    expect(packagePluginOption).toHaveTextContent('Installed');
     expect(screen.getByRole('article', { name: 'Plugin details' })).not.toHaveTextContent('auth.webview');
   });
 
@@ -80,5 +87,20 @@ describe('PluginInventory', () => {
     expect((await screen.findAllByText('Executável ausente')).length).toBeGreaterThan(0);
     expect(screen.getByText('Permissões de plugin concedidas')).toBeInTheDocument();
     expect(screen.getByText(/Sessão do processo: Parada/)).toBeInTheDocument();
+  });
+
+  it('renders native package manager access labels in Portuguese', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([{
+      ...plugin,
+      providerId: 'packagekit',
+      pluginId: 'org.gamenode.plugin.packagekit-discovery',
+      name: 'Gerenciador de pacotes Linux',
+      capabilities: ['provider.context.read', 'library.discovery'],
+      nativeAccess: ['files', 'process', 'dbus'],
+    }]);
+    renderInventory('pt-BR');
+
+    expect(await screen.findByText('Execução de processos locais')).toBeInTheDocument();
+    expect(screen.getByText('D-Bus do sistema')).toBeInTheDocument();
   });
 });

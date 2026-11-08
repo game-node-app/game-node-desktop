@@ -166,6 +166,36 @@ fn skips_manifests_for_other_platforms() {
 }
 
 #[test]
+fn platform_filtered_plugin_manifest_does_not_require_another_platform_registry_entry() {
+    let packagekit = r#"
+id = "packagekit"
+name = "Linux package manager"
+platforms = ["linux"]
+source = "packagekit"
+scan = { plugin = "org.gamenode.plugin.packagekit-discovery" }
+"#;
+    let linux_registry = [PluginBackend {
+        plugin_id: "org.gamenode.plugin.packagekit-discovery".into(),
+        provider_id: "packagekit".into(),
+        discovery: true,
+        catalog: false,
+        counter: false,
+        actions: false,
+    }];
+    let windows = load_with_plugins(&[("packagekit.toml", packagekit)], Platform::Windows, &[]);
+    assert!(windows.providers.is_empty());
+    assert!(windows.diagnostics.is_empty());
+
+    let linux = load_with_plugins(
+        &[("packagekit.toml", packagekit)],
+        Platform::Linux,
+        &linux_registry,
+    );
+    assert!(linux.diagnostics.is_empty(), "{:?}", linux.diagnostics);
+    assert!(linux.get("packagekit").is_some());
+}
+
+#[test]
 fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
     let cases: Vec<(&str, String, &str)> = vec![
         (

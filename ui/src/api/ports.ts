@@ -446,6 +446,11 @@ export type PortSuppliedStatus =
         /** Message naming the accepted title id and versions. */
         message: string;
         acceptedLabels: string[];
+        /**
+         * True when the picked folder holds console packages and the slot offers the package
+         * option. The modal then points at that option instead of the missing marker.
+         */
+        packagesFound: boolean;
       };
     };
 
@@ -481,6 +486,41 @@ export interface PortInstallRequest {
    * hosts ignore it and resolve the entry again; verified downloads are still reused (D5).
    */
   retryJobId?: string;
+}
+
+/**
+ * Why the install plan refused a request. The host sends this as the `message` of a
+ * `{ code: 'installBlocked' }` command error, and the modal words each code itself.
+ */
+export type PortInstallProblem =
+  | { code: 'targetNotEmpty'; target: string }
+  | { code: 'targetInsideLibrary'; target: string; root: string }
+  | { code: 'notEnoughSpace'; required: number; available: number }
+  | { code: 'missingRequiredUpdate'; slot: string; version: string }
+  | { code: 'withdrawn'; version: string; reason: string }
+  | { code: 'releaseUnavailable'; version: string }
+  | { code: 'noVerifiedRelease' }
+  | { code: 'noWindowsAsset' }
+  | { code: 'noMatchingAsset' }
+  | { code: 'unknownAssetFormat'; filename: string }
+  | { code: 'unsupportedFormat'; format: string }
+  | { code: 'noChecksum' }
+  | { code: 'missingSlot'; label: string }
+  | { code: 'other' };
+
+/** A typed PC ports command failure; the UI never parses the message. */
+export interface PortCommandError {
+  code:
+    | 'unsupportedPlatform'
+    | 'notReady'
+    | 'invalidRequest'
+    | 'unavailable'
+    | 'installBlocked'
+    | 'installInProgress'
+    | 'failed';
+  /** Problem detail for `invalidRequest`, `unavailable` and `failed`; a typed problem for
+   * `installBlocked`. */
+  message?: string | PortInstallProblem;
 }
 
 // ---------------------------------------------------------------------------------------

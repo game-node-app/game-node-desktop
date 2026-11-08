@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the desktop and its bundled Steam provider into one target directory, then run the host.
+# Build the desktop and its bundled provider plugins into one target directory, then run the host.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 case "$(uname -s)" in
-    Linux) desktop_name=gamenode ; plugin_name=gamenode-plugin-steam ;;
-    MINGW*|MSYS*|CYGWIN*) desktop_name=gamenode.exe ; plugin_name=gamenode-plugin-steam.exe ;;
+    Linux) desktop_name=gamenode ; plugin_names=(gamenode-plugin-steam gamenode-plugin-packagekit) ;;
+    MINGW*|MSYS*|CYGWIN*) desktop_name=gamenode.exe ; plugin_names=(gamenode-plugin-steam.exe) ;;
     *) echo 'Native desktop development supports Linux and Windows.' >&2; exit 1 ;;
 esac
 
@@ -28,7 +28,11 @@ while (($#)); do
     shift
 done
 
-cargo build --locked --bins -p gamenode-app -p gamenode-plugin-steam "${cargo_args[@]}"
+build_args=(-p gamenode-app -p gamenode-plugin-steam)
+if [[ "$(uname -s)" == Linux ]]; then
+    build_args+=(-p gamenode-plugin-packagekit)
+fi
+cargo build --locked --bins "${build_args[@]}" "${cargo_args[@]}"
 target_dir=$(cargo metadata --locked --no-deps --format-version 1 \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 profile=debug
@@ -39,14 +43,16 @@ for arg in "${cargo_args[@]}"; do
 done
 binary_dir="$target_dir/$profile"
 desktop="$binary_dir/$desktop_name"
-plugin="$binary_dir/$plugin_name"
 if [[ ! -f "$desktop" ]]; then
     echo "Desktop executable was not built: $desktop" >&2
     exit 1
 fi
-if [[ ! -f "$plugin" ]]; then
-    echo "Steam plugin was not built beside the desktop: $plugin" >&2
-    exit 1
-fi
+for plugin_name in "${plugin_names[@]}"; do
+    plugin="$binary_dir/$plugin_name"
+    if [[ ! -f "$plugin" ]]; then
+        echo "Required provider plugin was not built beside the desktop: $plugin" >&2
+        exit 1
+    fi
+done
 
 exec "$desktop" "${app_args[@]}"

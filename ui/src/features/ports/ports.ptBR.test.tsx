@@ -390,14 +390,14 @@ describe('PC ports in Brazilian Portuguese', () => {
     expect(screen.getByTestId('port-setup-choose-folder')).toHaveTextContent(
       'Escolher pasta',
     );
-    expect(screen.getByTestId('port-setup-pick-game-folder')).toHaveTextContent(
-      'Escolher pasta',
+    expect(screen.getByTestId('port-setup-mode-game-folder')).toHaveTextContent(
+      'Pacotes (.pkg)',
     );
     expect(screen.getByTestId('port-setup-mode-game-folder')).toHaveTextContent(
-      'Usar pacotes',
+      'Pasta extraída',
     );
 
-    fireEvent.click(screen.getByTestId('port-setup-mode-game-folder'));
+    // The package option is the default, so its fields are on screen immediately.
     expect(dialog).toHaveTextContent('Pacote base');
     expect(dialog).toHaveTextContent('Pacote de atualização');
     expect(dialog).toHaveTextContent('A atualização 01.04 é obrigatória.');
@@ -407,8 +407,13 @@ describe('PC ports in Brazilian Portuguese', () => {
     expect(screen.getByTestId('port-setup-pick-game-folder-update')).toHaveTextContent(
       'Escolher pacote de atualização',
     );
-    expect(screen.getByTestId('port-setup-mode-game-folder')).toHaveTextContent(
-      'Usar uma pasta',
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Pasta extraída' }));
+    expect(screen.getByTestId('port-setup-pick-game-folder')).toHaveTextContent(
+      'Escolher pasta',
+    );
+    expect(dialog).toHaveTextContent(
+      'Escolha o pacote base e, quando for exigido, o pacote de atualização.',
     );
 
     expectNoRawKeys(document.body);
@@ -417,7 +422,8 @@ describe('PC ports in Brazilian Portuguese', () => {
       'Files you need to supply',
       'Start install',
       'Choose folder',
-      'Use packages instead',
+      'Packages (.pkg)',
+      'Extracted folder',
       'You can close this window',
     ]);
   });

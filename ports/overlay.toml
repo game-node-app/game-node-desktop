@@ -61,7 +61,7 @@ edition = "Needs your own dumped Bloodborne game folder. Lantern Engine checks t
 [[entry."qcat_66376ffd-c54c-43de-aeab-d8da689a422b".setup_file]]
 id = "game"
 label = "Bloodborne game folder"
-prompt = "Choose the folder that contains eboot.bin, or your own base and update packages."
+prompt = "Choose your own base and update packages, or a folder that already contains eboot.bin."
 kind = "folder"
 contains = ["eboot.bin", "sce_sys/param.sfo"]
 destination = "CUSA03173"

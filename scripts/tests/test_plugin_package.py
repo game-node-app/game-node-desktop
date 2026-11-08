@@ -53,7 +53,7 @@ class PackageLayout(unittest.TestCase):
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<H", header, 18, 62)
-        for name in ("gamenode", "gamenode-plugin-steam"):
+        for name in ("gamenode", "gamenode-plugin-steam", "gamenode-plugin-packagekit"):
             binary = directory / name
             binary.write_bytes(header)
             binary.chmod(0o755)
@@ -75,10 +75,10 @@ class PackageLayout(unittest.TestCase):
         self.assertIn("Linux package-manager", errors[1])
 
     @unittest.skipUnless(os.name == "posix", "Linux execute bits require POSIX stat semantics")
-    def test_linux_requires_adjacent_steam_plugin_and_user_execute_permissions(self):
+    def test_linux_requires_adjacent_plugins_and_user_execute_permissions(self):
         self._linux()
         self.assertEqual(package_check.verify(self.root, "linux"), [])
-        plugin = self.root / "libexec/gamenode-plugin-steam"
+        plugin = self.root / "libexec/gamenode-plugin-packagekit"
         plugin.chmod(0o644)
         errors = package_check.verify(self.root, "linux")
         self.assertEqual(len(errors), 1)

@@ -37,7 +37,7 @@ def verify(package: Path, platform: str) -> list[str]:
     package = Path(package)
     if platform == "linux":
         binary_dir = package / "libexec"
-        names = ("gamenode", "gamenode-plugin-steam")
+        names = ("gamenode", "gamenode-plugin-steam", "gamenode-plugin-packagekit")
         resources = (
             "LICENSE", "README.md", "build-manifest.json", "gamenode.png",
             "install.sh", "uninstall.sh", "gamenode.sh", "desktop-integration.sh",
@@ -72,8 +72,6 @@ def verify(package: Path, platform: str) -> list[str]:
             errors.append(f"obsolete prototype binary in package: {obsolete}")
     if platform == "windows" and (binary_dir / "gamenode-plugin-packagekit.exe").exists():
         errors.append("Linux package-manager plugin must not be shipped in the Windows package")
-    if platform == "linux" and (binary_dir / "gamenode-plugin-packagekit").exists():
-        errors.append("deferred package-manager plugin must not be required or shipped here")
     return errors
 
 
@@ -87,7 +85,7 @@ def main() -> int:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
-    print(f"{args.platform} host/Steam package layout passed: {args.package.resolve()}")
+    print(f"{args.platform} host/plugin package layout passed: {args.package.resolve()}")
     return 0
 
 

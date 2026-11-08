@@ -433,6 +433,9 @@ pub fn load_with_plugins(
                 continue;
             }
         };
+        if !manifest.platforms.contains(&platform) {
+            continue;
+        }
         let provider = match validate(manifest, plugins) {
             Ok(provider) => provider,
             Err(problem) => {
@@ -440,9 +443,6 @@ pub fn load_with_plugins(
                 continue;
             }
         };
-        if !provider.manifest.platforms.contains(&platform) {
-            continue;
-        }
         if !ids.insert(provider.id().to_owned()) {
             loaded.diagnostics.push(diagnostic(
                 Some(provider.id().to_owned()),

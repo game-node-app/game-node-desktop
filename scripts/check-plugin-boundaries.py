@@ -15,6 +15,7 @@ PUBLIC_PLUGIN_CRATES = (
     "gamenode-plugin-protocol",
     "gamenode-plugin-sdk",
     "gamenode-plugin-steam",
+    "gamenode-plugin-packagekit",
 )
 INTERNAL_APPLICATION_CRATES = {
     "gamenode-app",
@@ -25,6 +26,7 @@ INTERNAL_APPLICATION_CRATES = {
 FORBIDDEN_HOST_PLUGIN_CRATES = {
     "gamenode-plugin-sdk",
     "gamenode-plugin-steam",
+    "gamenode-plugin-packagekit",
 }
 
 

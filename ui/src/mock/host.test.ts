@@ -76,8 +76,14 @@ describe('UI mock host', () => {
     expect(windowsPlugin.nativeAccess).toContain('registry');
     expect(JSON.stringify(windowsPlugin)).not.toMatch(/token|cookieValue|password|credentialValue/i);
 
-    const linuxPlugin = (await createMockHost({ platform: 'linux' }).invoke('plugin_inventory') as PluginInfo[])[0];
-    expect(linuxPlugin.nativeAccess).not.toContain('registry');
+    const linuxPlugins = await createMockHost({ platform: 'linux' }).invoke('plugin_inventory') as PluginInfo[];
+    expect(linuxPlugins[0].nativeAccess).not.toContain('registry');
+    const packagePlugin = linuxPlugins.find((plugin) => plugin.providerId === 'packagekit');
+    expect(packagePlugin?.name).toBe('Gerenciador de pacotes Linux');
+    expect(packagePlugin?.capabilities).toEqual(['provider.context.read', 'library.discovery']);
+    expect(packagePlugin?.nativeAccess).toEqual(['files', 'process', 'dbus']);
+    expect((await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])
+      .some((plugin) => plugin.providerId === 'packagekit')).toBe(false);
   });
 
   it.each(['en', 'pt-BR'] as const)('keeps Steam account and PC ports state together in the %s snapshot', async (locale) => {
@@ -307,7 +313,15 @@ describe('mock PC ports catalog', () => {
         request: {
           catalogId: 'qcat_mock_aster',
           parentFolder: 'D:\\Ports',
-          supplied: [{ slotId: 'game-folder', path: 'D:\\Dumps\\CUSA10101', package: true }],
+          supplied: [
+            { slotId: 'game-folder', path: 'D:\\Dumps\\CUSA10101', package: true },
+            {
+              slotId: 'game-folder',
+              path: 'D:\\Dumps\\CUSA10101-update.pkg',
+              package: true,
+              update: true,
+            },
+          ],
         },
       })) as string;
       expect(jobId).toMatch(/^job-mock-/);
@@ -387,7 +401,15 @@ describe('mock PC ports catalog', () => {
         request: {
           catalogId: 'qcat_mock_hollow',
           parentFolder: 'D:\\Ports',
-          supplied: [{ slotId: 'game-package', path: 'D:\\Dumps\\CUSA20202', package: true }],
+          supplied: [
+            { slotId: 'game-package', path: 'D:\\Dumps\\base-CUSA20202.pkg', package: true },
+            {
+              slotId: 'game-package',
+              path: 'D:\\Dumps\\update-CUSA20202.pkg',
+              package: true,
+              update: true,
+            },
+          ],
         },
       })) as string;
 
@@ -403,6 +425,54 @@ describe('mock PC ports catalog', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuses a base package that omits the required update', async () => {
+    const host = createMockHost();
+    await expect(
+      host.invoke('ports_install', {
+        request: {
+          catalogId: 'qcat_mock_hollow',
+          parentFolder: 'D:\\Ports',
+          supplied: [
+            { slotId: 'game-package', path: 'D:\\Dumps\\base.pkg', package: true },
+          ],
+        },
+      }),
+    ).rejects.toEqual({
+      code: 'installBlocked',
+      message: {
+        code: 'missingRequiredUpdate',
+        slot: 'game-package',
+        version: '01.01',
+      },
+    });
+  });
+
+  it('names the package option when a package folder is picked in folder mode', async () => {
+    const host = createMockHost();
+    const pick = (await host.invoke('ports_pick_supplied', {
+      request: {
+        setupId: 'setup-1',
+        catalogId: 'qcat_mock_hollow',
+        slotId: 'game-package',
+        kind: 'folder',
+      },
+    })) as PortSuppliedPick;
+
+    expect(pick.status).toMatchObject({
+      rejected: { packagesFound: true },
+    });
+
+    const extracted = (await host.invoke('ports_pick_supplied', {
+      request: {
+        setupId: 'setup-2',
+        catalogId: 'qcat_mock_aster',
+        slotId: 'game-folder',
+        kind: 'folder',
+      },
+    })) as PortSuppliedPick;
+    expect(extracted.status).toBe('accepted');
   });
 
   it('exposes a fictional helper tool and refuses the cache clear during an install', async () => {

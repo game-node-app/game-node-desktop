@@ -167,10 +167,10 @@ A slot uses exactly one of `destination`, `flag`, `positional` and `env`. With n
 them the port asks for the choice itself; GameNode only validates it and passes nothing.
 The user's original file or folder is never moved or modified.
 
-`from_package.extractor` is required. `title_id` and `needs_update` are shown to the user
-(the update is required when `needs_update` is set), but GameNode does not read package
-metadata to check them. The slot's `contains` markers and accepted hashes decide whether
-the extracted folder is the right dump.
+`from_package.extractor` is required. `title_id` and `needs_update` are shown to the user.
+The install plan requires an update package when `needs_update` is set; GameNode does not
+read package metadata to check the title or version. The slot's `contains` markers and
+accepted hashes decide whether the extracted folder is the right dump.
 
 ### Validation
 
@@ -329,9 +329,11 @@ by Lantern Engine itself remains task 10.1.
 **Install** opens the guided setup surface. It confirms the release, asks for the parent
 folder (the last one used is offered first), shows one slot for every file or folder the
 merged recipe asks for, and lets a package-capable slot switch between a user-picked
-folder and a base package plus, when the recipe requires it, an update package. Required
-slots block the install; optional slots can be skipped. The modal can be closed while the
-job keeps running.
+folder and a base package plus, when the recipe requires it, an update package. A slot
+that has a package option opens on the package choice; **Extracted folder** is the other
+position of the same control, for a game folder that is already unpacked. Required slots
+block the install; optional slots can be skipped. The modal can be closed while the job
+keeps running.
 
 When the user starts, the host loads the entry detail and release list, merges the overlay
 again and plans the install. Planning is pure and every failure happens before a job is
@@ -352,7 +354,9 @@ queued:
 - The install subfolder is named from the recipe's `folderName`, else the entry name,
   else the slug, sanitized for Windows. It must be absent or empty, must not be a
   registered game folder or sit inside one, and the volume must have room for the
-  download, twice its size as an extraction estimate, and the supplied files.
+  download, twice its size as an extraction estimate, the supplied files, and twice the
+  size of a package slot's base and update packages as its extraction estimate. A plan
+  that refuses one of these rules is reported with a translated reason, not a raw error.
 - Every `filesToAdd` path must be safe, and every required slot must have a choice. A
   choice for an optional slot that disappeared between picking and starting is skipped.
 
@@ -400,7 +404,10 @@ cancellation between chunks of at most 8 MiB. A folder must contain every `conta
 marker as a file; its accepted hashes apply to `hash_file`, or to the first marker when
 the overlay does not name one. Without accepted hashes, a choice's contents are not
 rejected beyond the folder markers above. A choice that fails the hash check names the
-accepted versions.
+accepted versions. When a package-capable slot is filled in folder mode and the chosen
+folder directly holds `.pkg` files, the rejection points at the slot's package option
+instead of only naming the missing marker. The folder scan and every hash run on the
+install worker, never on the UI thread.
 
 An accepted file or folder is copied, never moved:
 
@@ -420,7 +427,9 @@ A failed copy removes what it wrote.
 When the slot declares `from_package` and the user chooses packages, the pinned tool is
 prepared under `<data_dir>/ports/tools/<id>/<tag>/`: its GitHub release asset is
 downloaded, checked against the overlay SHA-256 and extracted into a sibling `tool/`
-folder. A checksum mismatch fails before a process is created.
+folder. A checksum mismatch fails before a process is created. When the overlay sets
+`from_package.needs_update`, the install plan refuses a choice that has only the base
+package; the modal states which update is required.
 
 The tool runs without a shell, with no console window and inside a Windows job object (a
 process group elsewhere) so cancelling or quitting kills its process tree. Its working
@@ -493,7 +502,8 @@ runs before the install worker:
   cached downloads, and is marked `Interrupted` with **Retry**.
 
 **Retry** reuses the stored plan with a new job id and staging folder, so it does not need
-to re-plan or re-ask for the provided files.
+to re-plan or re-ask for the provided files. The setup window therefore does not show the
+slot pickers for a retry; start a new install to use different files.
 
 ### Library entry, provenance and launch
 
@@ -604,6 +614,7 @@ detail needs a qualification:
   validated and merged onto the entry, but the current view model and detail pane do not
   render it.
 - **Implementation note: `title_id` and `needs_update` are display and gating data.** The
-  host does not read package metadata to verify them. The extracted folder is checked like
-  any supplied folder: its `contains` markers, and accepted hashes when the recipe lists
-  them. Without hashes, the port decides whether it can run that dump.
+  host does not read package metadata to verify them. `needs_update` is enforced while the
+  install is planned: a base-only package choice is refused. The extracted folder is checked
+  like any supplied folder: its `contains` markers, and accepted hashes when the recipe
+  lists them. Without hashes, the port decides whether it can run that dump.

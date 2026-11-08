@@ -1,6 +1,6 @@
 import React from 'react';
 import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useLibraryView, type EntryStatus } from '../../api';
+import { commands, useLibraryView, type AddItem, type EntryStatus } from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason, formatStatus } from '../library/formatters';
 
@@ -40,10 +40,13 @@ export const AddDialog: React.FC = () => {
     commands.libraryInput('closeAdd');
   };
 
-  const renderOutcomeText = (outcome: string, itemStatus: EntryStatus) => {
-    switch (outcome) {
+  const renderOutcomeText = (item: AddItem, appliedStatus: EntryStatus) => {
+    switch (item.outcome) {
       case 'added':
-        return formatI18n(t('Library::Saved as {}'), formatStatus(itemStatus, t));
+        return formatI18n(
+          t('Library::Saved as {}'),
+          formatStatus(item.status ?? appliedStatus, t),
+        );
       case 'alreadyPresent':
         return t('Library::Already in your library');
       case 'skipped':
@@ -117,7 +120,7 @@ export const AddDialog: React.FC = () => {
                       {item.title}
                     </span>
                     <span className="mt-0.5 text-xs text-text-dimmed">
-                      {renderOutcomeText(item.outcome, dialog.status)}
+                      {renderOutcomeText(item, dialog.appliedStatus)}
                     </span>
                   </div>
                 ))}
@@ -327,7 +330,7 @@ export const AddDialog: React.FC = () => {
                   data-testid="add-error-notice"
                   className="text-xs text-danger"
                 >
-                  {dialog.error === 'unauthorized' &&
+                  {dialog.error === 'rejected' &&
                     t('Library::GameNode rejected your session. Sign in again.')}
                   {dialog.error === 'failed' &&
                     t('Library::Could not save the game. Your choices are kept; try again.')}

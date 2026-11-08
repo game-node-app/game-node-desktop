@@ -8,7 +8,7 @@
 //! worker thread, never on the UI or main thread. Hashing is cancellable between chunks of at most
 //! [`CHUNK_BYTES`] and reports progress as it goes.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -120,6 +120,9 @@ pub fn check_choice(
                     expected: "folder",
                 });
             }
+            // A player who owns a `.pkg` dump sometimes picks the folder holding the packages
+            // in folder mode. Name the package option instead of only the missing marker.
+            let package_folder = slot.from_package.is_some() && folder_contains_packages(path);
             for marker in &slot.contains {
                 if !is_safe_relative_path(marker) {
                     return Err(SupplyError::UnsafeMarker {
@@ -128,6 +131,12 @@ pub fn check_choice(
                     });
                 }
                 if !relative_join(path, marker).is_file() {
+                    if package_folder {
+                        return Err(SupplyError::PackagesInFolder {
+                            slot: slot.id.clone(),
+                            folder: path.display().to_string(),
+                        });
+                    }
                     return Err(SupplyError::MissingMarker {
                         slot: slot.id.clone(),
                         marker: marker.clone(),
@@ -253,6 +262,26 @@ pub(crate) fn relative_join(base: &Path, relative: &str) -> PathBuf {
         .fold(base.to_path_buf(), |path, part| path.join(part))
 }
 
+/// True when the folder directly holds at least one console package. A dump keeps its `.pkg`
+/// files at the root of the folder the player picks, and a shallow scan stays cheap for a
+/// multi-gigabyte game folder.
+fn folder_contains_packages(folder: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+            && entry
+                .path()
+                .extension()
+                .map(|ext| ext.to_string_lossy().eq_ignore_ascii_case("pkg"))
+                .unwrap_or(false)
+    })
+}
+
 fn missing_choice(slot: &SetupFile) -> Result<CheckOutcome, SupplyError> {
     if slot.required {
         Err(SupplyError::MissingChoice {
@@ -306,6 +335,9 @@ pub enum SupplyError {
         marker: String,
         folder: String,
     },
+    /// A folder picked in folder mode holds console packages and the slot can extract them.
+    #[error("the folder {folder} contains game packages; use the package option instead")]
+    PackagesInFolder { slot: String, folder: String },
     /// The recipe gives no file to apply a folder's hashes to.
     #[error(
         "the recipe for {label} lists accepted hashes but no hash_file or contains entry to check them against"
@@ -334,7 +366,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use gamenode_core::ports::SetupFile;
+    use gamenode_core::ports::{FromPackage, SetupFile};
 
     const ABC_SHA1: &str = "a9993e364706816aba3e25717850c26c9cd0d89d";
     const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -528,6 +560,49 @@ mod tests {
                 folder: folder.display().to_string(),
             }
         );
+    }
+
+    #[test]
+    fn a_package_folder_picked_in_folder_mode_names_the_package_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Bloodborne dump");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("CUSA03173-base.pkg"), b"package").unwrap();
+        fs::write(folder.join("CUSA03173-update.pkg"), b"update").unwrap();
+        let mut slot = slot(SetupKind::Folder);
+        slot.contains = vec!["eboot.bin".into()];
+        slot.from_package = Some(FromPackage {
+            extractor: "ps4-pkg".into(),
+            title_id: None,
+            needs_update: Some("01.09".into()),
+        });
+
+        let error = check_choice(
+            Some(&folder),
+            &slot,
+            &mut no_progress(),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            SupplyError::PackagesInFolder {
+                slot: "game".into(),
+                folder: folder.display().to_string(),
+            }
+        );
+
+        // A slot that cannot extract packages keeps the missing-marker message.
+        slot.from_package = None;
+        assert!(matches!(
+            check_choice(
+                Some(&folder),
+                &slot,
+                &mut no_progress(),
+                &AtomicBool::new(false)
+            ),
+            Err(SupplyError::MissingMarker { .. })
+        ));
     }
 
     #[test]

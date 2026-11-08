@@ -32,6 +32,38 @@ pub enum AddOutcome {
 
 pub type AddOutcomeItem = AddOutcome;
 
+impl AddOutcome {
+    /// The status GameNode has (or applied) for the game, when it is known.
+    pub fn status(self) -> Option<EntryStatus> {
+        match self {
+            Self::Added(status) => Some(status),
+            Self::AlreadyPresent(status) => status,
+            Self::SkippedUnmatched | Self::Failed(_) => None,
+        }
+    }
+}
+
+/// What happened to one game, as the window shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AddOutcomeKind {
+    Added,
+    AlreadyPresent,
+    Skipped,
+    Failed,
+}
+
+impl From<&AddOutcome> for AddOutcomeKind {
+    fn from(outcome: &AddOutcome) -> Self {
+        match outcome {
+            AddOutcome::Added(_) => Self::Added,
+            AddOutcome::AlreadyPresent(_) => Self::AlreadyPresent,
+            AddOutcome::SkippedUnmatched => Self::Skipped,
+            AddOutcome::Failed(_) => Self::Failed,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddItem {
@@ -40,11 +72,33 @@ pub struct AddItem {
     pub outcome: AddOutcome,
 }
 
+/// One game in the summary, as the window shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddItemView {
+    pub entry_key: String,
+    pub title: String,
+    pub outcome: AddOutcomeKind,
+    /// The status GameNode has (or applied) for the game, when it is known.
+    pub status: Option<EntryStatus>,
+}
+
 /// The result of a confirmed add: one item per target, in the order they were selected.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddSummary {
     pub items: Vec<AddItem>,
+}
+
+/// The result of a confirmed add, as the window shows it: flat outcomes and their counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddSummaryView {
+    pub items: Vec<AddItemView>,
+    pub added: usize,
+    pub already_present: usize,
+    pub skipped: usize,
+    pub failed: usize,
 }
 
 impl AddSummary {
@@ -69,6 +123,26 @@ impl AddSummary {
 
     pub fn failed(&self) -> usize {
         self.count(|outcome| matches!(outcome, AddOutcome::Failed(_)))
+    }
+
+    /// The same summary, shaped for the window.
+    pub fn view(&self) -> AddSummaryView {
+        AddSummaryView {
+            items: self
+                .items
+                .iter()
+                .map(|item| AddItemView {
+                    entry_key: item.entry_key.clone(),
+                    title: item.title.clone(),
+                    outcome: AddOutcomeKind::from(&item.outcome),
+                    status: item.outcome.status(),
+                })
+                .collect(),
+            added: self.added(),
+            already_present: self.already_present(),
+            skipped: self.skipped_unmatched(),
+            failed: self.failed(),
+        }
     }
 }
 

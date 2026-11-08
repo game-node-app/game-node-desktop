@@ -134,7 +134,7 @@ Queued -> Resolving -> Downloading -> Verifying -> Extracting
   on start, unfinished -> Interrupted (after cleanup)
 ```
 
-- **Staging.** All work for `<parent>\<folder>` happens in `<parent>\.gamenode-staging-<job_id>\`, on the same volume as the target. Finalizing is one directory rename. This makes cleanup trivial, means nothing is ever half visible at the target path, and lets the free-space check cover a single volume.
+- **Staging.** All work for `<parent>\<folder>` happens in `<parent>\.gamenode-staging-<job_id>\`, on the same volume as the target. Finalizing is one directory rename. This makes cleanup trivial, means nothing is ever half visible at the target path, and lets the free-space check cover a single volume. The supplied-files estimate counts a package slot's base and update packages at twice their size, because their extracted tree is what lands on that volume.
 - **Journal.** Before the job writes any path, the path is recorded in `port_install_jobs.created_paths`. Paths under the target folder, the staging folder and external roots (`%APPDATA%`, `%LOCALAPPDATA%`) are all recorded. External-root copies are written under a temporary name and renamed when they finish.
 - **Registration as the commit point.** The DRM-free registration is inserted in the same SQLite transaction that marks the job `Completed` and records the registration id. Recovery uses this:
   - a registration exists: the job is completed
@@ -156,7 +156,7 @@ Supported Windows asset formats are `zip`, `7z` and a bare `.exe`, which is copi
 ### D7. Validating supplied files
 
 - **Files.** A file is hashed once, with SHA-1 and SHA-256 computed in the same pass, in a worker that reports progress. It is accepted if either digest matches any accepted value, or if the slot lists no accepted values.
-- **Folders.** Every name in `contains` must exist. If `accepted` hashes are given, `hash_file`, or the first `contains` entry when `hash_file` is absent, is the file hashed. The upstream schema does not say which file in a folder its hashes apply to, so the overlay can make that explicit.
+- **Folders.** Every name in `contains` must exist. If `accepted` hashes are given, `hash_file`, or the first `contains` entry when `hash_file` is absent, is the file hashed. The upstream schema does not say which file in a folder its hashes apply to, so the overlay can make that explicit. A package-capable slot opens on its package choice; if the player picks a folder that directly holds `.pkg` files, the rejection names the package option instead of only the missing marker.
 - **Who decides the game version.** Hashes are enforced only when a recipe lists them, which upstream recipes may do. A port that inspects the game itself decides which editions and versions it runs, so a GameNode overlay recipe for it lists only structural markers. Lantern Engine is such a port: its launcher accepts several retail title ids and its engine checks the game image at every start.
 - **Placement.**
   - `destination` + `root` → copy (never move), then re-hash the copy for files or the hash file for folders.
@@ -183,6 +183,8 @@ It then overlays the update tree onto the base: every update file replaces or jo
 Validation runs once, on the merged folder, exactly like a supplied folder (D7); the intermediate trees are not validated because the update tree alone may not carry the slot's markers. A template that contains `{update}` keeps the single-run behaviour, for a tool that merges the update itself. `check_choice` still builds the digests a later copy re-verifies.
 
 The tool's stdout and stderr are kept, capped at 64 KiB, for the failure details view. Only packages the user's own dump tools produce, which are unencrypted or fake-signed, can work. GameNode ships no keys, and if the tool reports an encrypted retail package, the job fails with a message that says so.
+
+A slot whose `from_package.needs_update` is set requires the update package: the pure install plan refuses a base-only choice with a typed plan error, and the UI names the missing update. The plan's free-space estimate counts twice the base and update package sizes as the extracted size, because the packages are read from the player's disk and their extracted tree is written into staging on the target volume.
 
 ### D9. Port art goes through the asset protocol
 

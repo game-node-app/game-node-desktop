@@ -8,4 +8,4 @@ pub mod proto {
 }
 
 pub const API_MAJOR: u32 = 1;
-pub const API_MINOR: u32 = 0;
+pub const API_MINOR: u32 = 1;

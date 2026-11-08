@@ -13,9 +13,15 @@
 - Plugins são processos separados. Eles conectam a uma Plugin API autenticada e
   versionada hospedada pelo processo Tauri. Essa API é distinta do IPC `invoke` que
   liga o React ao host e da API REST do GameNode.
-- O primeiro fluxo é o plugin oficial de descoberta Steam no Linux. O plugin envia
-  observações tipadas; o host conserva reconciliação, associação, persistência e
-  publicação de snapshots.
+- O host seleciona plugins oficiais de descoberta a partir de descritores por
+  provedor. Steam e o gerenciador de pacotes Linux reportam observações tipadas; o host conserva
+  reconciliação, associação, persistência e publicação de snapshots.
+- O crate independente `gamenode-scanner` contém o contrato de scanners reutilizável
+  e a implementação Steam compartilhada pelo provider nativo e pelo executável plugin.
+- O gerenciador de pacotes é uma fonte Linux de candidatos: cruza entradas desktop
+  categorizadas como jogos com a propriedade de arquivos confirmada por pacman no
+  Arch ou PackageKit nas demais distribuições. Não
+  instala, inicia nem associa automaticamente os pacotes a jogos do catálogo.
 - A API Linux usa gRPC/Protobuf sobre Unix socket privado, valida UID e uma
   credencial temporária por execução. Isso autentica a sessão local; não cria uma
   sandbox para código nativo executado pelo mesmo usuário.
@@ -29,8 +35,11 @@
 
 Instalação de plugins comunitários, UX geral de permissões, marketplace, assinatura,
 sandbox, capacidades sociais e suporte de transporte Windows exigem decisões e
-mudanças próprias. Plugins não recebem credenciais REST nem escrevem diretamente no
-banco do aplicativo.
+mudanças próprias. A capacidade atualmente concedida aos plugins de descoberta é
+`library.discovery`; ela permite submeter apenas o resultado tipado
+da operação autorizada. Plugins não recebem credenciais REST nem escrevem diretamente
+no banco do aplicativo. Consulte [Plugin development](plugin-development.md) para o
+contrato e o fluxo de registro.
 
 ## Histórico
 

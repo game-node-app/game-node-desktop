@@ -123,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
         commands::get_app_info,
+        commands::get_plugins,
         commands::get_license_notices,
         commands::dispatch_auth,
         commands::set_sync_enabled,

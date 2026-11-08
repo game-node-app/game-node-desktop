@@ -192,6 +192,13 @@ pub async fn get_app_info() -> Result<AppInfo, String> {
     })
 }
 
+#[tauri::command]
+pub async fn get_plugins() -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
+    tokio::task::spawn_blocking(crate::plugin_host::inventory)
+        .await
+        .map_err(|error| format!("could not read plugin inventory: {error}"))
+}
+
 /// Bundled third-party notices. Serialized only when the About panel requests them.
 #[tauri::command]
 pub async fn get_license_notices() -> Result<String, String> {

@@ -23,13 +23,16 @@ gamenode-desktop/
 ├── gamenode.sh          # Run this launcher
 ├── libexec/gamenode     # Desktop host
 ├── libexec/gamenode-plugin-steam # Official Linux Steam discovery plugin
+├── libexec/gamenode-plugin-packagekit # Official Linux package manager candidate scanner
 ├── VERSION
 └── build-manifest.json
 ```
 
 The desktop process owns the Engine and profile. It hosts the Linux Plugin API and
-starts the official Steam discovery plugin only when a scan requests it. Both
-executables are packaged together; no separate daemon or CLI is included.
+starts official Steam and Linux package manager discovery plugins only when their providers
+are scanned. Package discovery uses pacman on Arch-based systems and the PackageKit
+system service on other distributions. The plugins
+are packaged with the host; no separate daemon or CLI is included.
 
 When upgrading from a package with the binary at its root, extract into a fresh
 directory rather than overlaying the old archive: tar extraction does not remove

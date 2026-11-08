@@ -2,6 +2,15 @@ import { mockEnabled } from './mock';
 
 export type Provider = 'google' | 'discord' | 'twitter';
 
+export interface PluginInfo {
+  providerId: string;
+  pluginId: string;
+  name: string;
+  source: 'official' | 'community' | string;
+  status: 'installed' | 'missing' | string;
+  capabilities: string[];
+}
+
 export interface User {
   id: string;
   username?: string | null;

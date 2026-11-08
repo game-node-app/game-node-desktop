@@ -22,6 +22,7 @@ for name in "${files[@]}"; do
 done
 [[ -x "$source_dir/libexec/gamenode" ]] || { echo 'Package is missing executable libexec/gamenode' >&2; exit 1; }
 [[ -x "$source_dir/libexec/gamenode-plugin-steam" ]] || { echo 'Package is missing executable libexec/gamenode-plugin-steam' >&2; exit 1; }
+[[ -x "$source_dir/libexec/gamenode-plugin-packagekit" ]] || { echo 'Package is missing executable libexec/gamenode-plugin-packagekit' >&2; exit 1; }
 if [[ -e "$install_dir" ]]; then
     marker="$install_dir/.gamenode-desktop-install"
     [[ ! -L "$marker" && -f "$marker" ]] &&
@@ -37,6 +38,7 @@ integration_prepare
 mkdir -p "$integration_dir"
 [[ ! -L "$integration_dir/libexec" && ! -L "$integration_dir/libexec/gamenode" && \
    ! -L "$integration_dir/libexec/gamenode-plugin-steam" && \
+   ! -L "$integration_dir/libexec/gamenode-plugin-packagekit" && \
    ! -L "$integration_dir/libexec/gamenode-daemon" && ! -L "$integration_dir/libexec/gamenode-cli" && \
    ! -L "$integration_dir/gamenode" ]] || {
     echo 'Refusing symlink binary installation paths.' >&2
@@ -55,7 +57,7 @@ if [[ "$source_dir" != "$integration_dir" ]]; then
 fi
 # Remove obsolete binaries from a previously owned CLI/daemon installation.
 rm -f -- "$integration_dir/libexec/gamenode-daemon" "$integration_dir/libexec/gamenode-cli"
-chmod 755 "$integration_dir/libexec/gamenode" "$integration_dir/libexec/gamenode-plugin-steam" "$integration_dir/gamenode.sh" \
+chmod 755 "$integration_dir/libexec/gamenode" "$integration_dir/libexec/gamenode-plugin-steam" "$integration_dir/libexec/gamenode-plugin-packagekit" "$integration_dir/gamenode.sh" \
     "$integration_dir/install.sh" "$integration_dir/uninstall.sh"
 integration_register
 # Retire the managed flat-layout binary when upgrading an owned installation.

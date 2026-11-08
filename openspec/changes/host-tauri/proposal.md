@@ -2,30 +2,30 @@
 
 ## Why
 
-The Linux CLI/daemon prototype adds a second application host without a clear product benefit, while the desktop application already owns the Engine and profile. Plugin processes still need a stable, authenticated way to submit work to that application, so Tauri should host the Plugin API directly.
+The Tauri application is the sole owner of the Engine and profile, while separately launched plugins need a narrow, authenticated way to contribute discovery results. The current Steam-only path couples the host and plugin to Steam-specific logic, making another scanner unnecessarily dependent on Steam and internal Core/platform APIs.
 
 ## What Changes
 
-- Keep one desktop process as the owner of the Engine, profile, persistence, and plugin lifecycle. Keep `gamenode-core` and `gamenode-app` as separate Rust crates compiled into the same application.
-- Add a versioned Plugin API hosted by the Tauri application process and distinct from Tauri's React `invoke` IPC. Plugins connect to the host and submit typed requests or observations; the host validates them and routes accepted work through the Engine.
-- Deliver a first Linux plugin flow for Steam discovery, preserving the existing records, scan coordination, failure behavior, and persistence semantics.
-- Authenticate each plugin session, validate its declared identity and capabilities, and avoid giving plugins GameNode credentials or direct database ownership.
-- Remove the product CLI/daemon prototype and its Client API. Retain the isolated IPC probe as transport research unless it becomes obsolete during implementation.
-- Supersede the unstarted `connect-tauri-gui-to-daemon` change. Windows plugin transport and non-Steam plugins remain future work.
+- Keep `gamenode-core` and `gamenode-app` as separate Rust crates compiled into the desktop process, with Tauri owning the Engine, profile, persistence, and plugin lifecycle.
+- Generalize the Linux Plugin API host around registered discovery providers, scoped capabilities, and typed provider results that flow through the existing Engine reconciliation path.
+- Extract the reusable scanner contract and Steam implementation so the Steam plugin no longer depends directly on `gamenode-core` or `gamenode-platform`.
+- Add an official Linux package-manager discovery plugin that identifies installed packages as game candidates, using pacman directly on Arch-based distributions and PackageKit elsewhere; the Engine remains responsible for validation, confirmation, and persistence. Use installed SuperTux as an acceptance reference.
+- Preserve the existing Tauri WebView IPC, retire the product CLI/daemon prototype, and keep Windows Steam scanning in-process pending Windows plugin transport.
+- Document scanner authoring, discovery permissions, native package-manager selection, and candidate limitations.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `desktop-plugins`: The desktop host authenticates, authorizes, and routes requests from separately launched plugins through a versioned local API.
+- `desktop-plugins`: The desktop host authenticates, authorizes, and routes results from separately launched discovery plugins through a versioned local API.
 
 ### Modified Capabilities
 
-None. Existing provider-facing scan results and failure semantics remain required; this change adds a plugin host without changing those product behaviors.
+None. Existing provider-facing scan results and failure semantics remain required; this change generalizes their plugin source without changing the UI contract.
 
 ## Impact
 
-- Rust: Tauri startup and Engine composition, provider scan orchestration, plugin process lifecycle, IPC transport, and removal of the CLI/daemon binaries and Client API.
-- Packaging and docs: install the Linux Steam plugin with the desktop host and document plugin failure/recovery behavior.
-- React: keep the existing Tauri command and `engine:snapshot` contracts; plugins do not connect to the WebView IPC.
-- Data: no database schema change is intended; existing library records, credentials, and settings remain owned by the desktop application.
+- Rust: scanner contracts, Steam scanner extraction, Tauri Engine composition, plugin registry/process lifecycle, Linux package-manager integration, and the Plugin API.
+- Dependencies and runtime: native pacman queries on Arch-based distributions and PackageKit D-Bus access elsewhere; scanner absence or unsupported environments must produce a provider-level result without blocking other scans.
+- Packaging and docs: include both official Linux discovery plugins and document permissions and candidate semantics.
+- Data: no database schema change; Engine owns candidate review, canonical records, credentials, and persistence.

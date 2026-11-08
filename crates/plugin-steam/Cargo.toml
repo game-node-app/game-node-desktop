@@ -12,9 +12,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-gamenode-core.workspace = true
-gamenode-platform.workspace = true
+gamenode-scanner.workspace = true
 gamenode-plugin-protocol = { path = "../plugin-protocol" }
+serde.workspace = true
+toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
 tonic = { version = "0.14", features = ["transport"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

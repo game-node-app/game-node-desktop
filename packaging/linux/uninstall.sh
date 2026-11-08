@@ -82,6 +82,7 @@ fi
 if [[ "$mode" == installed ]]; then
     rm -f "$install_dir/libexec/gamenode"
     rm -f "$install_dir/libexec/gamenode-plugin-steam"
+    rm -f "$install_dir/libexec/gamenode-plugin-packagekit"
     if [[ -d "$install_dir/libexec" ]]; then
         rmdir "$install_dir/libexec" 2>/dev/null || true
     fi

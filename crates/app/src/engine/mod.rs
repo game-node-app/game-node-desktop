@@ -629,17 +629,17 @@ impl Engine {
                     return;
                 };
                 #[cfg(target_os = "linux")]
-                if found.id() == "steam"
-                    && let Some(manager) = self
-                        .shared
-                        .plugin_manager
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone()
+                if let Some(manager) = self
+                    .shared
+                    .plugin_manager
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+                    && manager.has_provider(&found.id())
                 {
                     let engine = self.clone();
                     self.shared.runtime.spawn(async move {
-                        let result = manager.run_steam_discovery(op.to_string()).await;
+                        let result = manager.run_discovery(&provider, op.to_string()).await;
                         engine.library_input(LibInput::ProviderScanned {
                             op,
                             provider,

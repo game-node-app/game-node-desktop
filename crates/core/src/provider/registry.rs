@@ -44,6 +44,11 @@ pub type ScanFn = fn(&ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError>;
 pub fn native_scanner(name: &str) -> Option<ScanFn> {
     match name {
         "steam" => Some(steam::scan),
+        "packagekit" => Some(|_| {
+            Err(ScanError::Failed(
+                "Linux package discovery must run through the registered plugin".to_owned(),
+            ))
+        }),
         "manual" => Some(|_| Ok(Vec::new())),
         _ => None,
     }

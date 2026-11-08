@@ -101,6 +101,12 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string }
       if (cmd === 'get_app_info') {
         return { locale: options.locale ?? 'en', version: 'mock', backgroundSupported: false };
       }
+      if (cmd === 'get_plugins') {
+        return [
+          { providerId: 'steam', pluginId: 'org.gamenode.plugin.steam-discovery', name: 'Steam game discovery', source: 'official', status: 'installed', capabilities: ['library.discovery'] },
+          { providerId: 'packagekit', pluginId: 'org.gamenode.plugin.packagekit-discovery', name: 'Linux package manager', source: 'official', status: 'installed', capabilities: ['library.discovery'] },
+        ];
+      }
       if (cmd === 'get_license_notices') return 'Mock UI development session';
       if (cmd === 'dispatch_auth') {
         const input = args.input as AuthInput;

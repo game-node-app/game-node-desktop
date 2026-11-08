@@ -29,6 +29,7 @@ message DiscoveryRecord {
 
 message DiscoveryResult {
   repeated DiscoveryRecord records = 1;
+  string provider_id = 2;
 }
 
 message PluginFailure {

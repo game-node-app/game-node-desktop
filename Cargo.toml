@@ -5,7 +5,9 @@ members = [
   "crates/platform",
   "crates/api",
   "crates/plugin-protocol",
+  "crates/scanner",
   "crates/plugin-steam",
+  "crates/plugin-packagekit",
   "crates/app",
 ]
 
@@ -38,6 +40,7 @@ unimplemented = "deny"
 gamenode-core = { path = "crates/core" }
 gamenode-platform = { path = "crates/platform" }
 gamenode-api = { path = "crates/api" }
+gamenode-scanner = { path = "crates/scanner" }
 
 async-trait = "0.1.92"
 getrandom = "0.4.3"

@@ -1,9 +1,8 @@
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::{env, path::PathBuf, time::Duration};
+    use serde::Deserialize;
+    use std::{collections::BTreeSet, env, fs, path::PathBuf, time::Duration};
 
-    use gamenode_core::provider::{Platform, load};
-    use gamenode_platform::host::{StdHostFiles, SystemRoots};
     use gamenode_plugin_protocol::{
         API_MAJOR, API_MINOR,
         proto::{
@@ -11,10 +10,11 @@ mod linux {
             plugin_host_client::PluginHostClient, submit_discovery_request::Outcome,
         },
     };
+    use gamenode_scanner::{Files, ScanInput, steam};
     use tonic::transport::{Channel, Endpoint};
 
     const PLUGIN_ID: &str = "org.gamenode.plugin.steam-discovery";
-    const CAPABILITY: &str = "library.discovery.steam";
+    const CAPABILITY: &str = "library.discovery";
 
     pub(super) async fn run() -> Result<(), &'static str> {
         let _ = tracing_subscriber::fmt()
@@ -51,9 +51,9 @@ mod linux {
         let records = records
             .into_iter()
             .map(|record| DiscoveryRecord {
-                id: record.id,
+                id: record.id.unwrap_or_default(),
                 name: record.name.unwrap_or_default(),
-                install_dir: record.install_dir,
+                install_dir: record.install_dir.unwrap_or_default(),
                 fields: record.fields.into_iter().collect(),
             })
             .collect();
@@ -63,7 +63,10 @@ mod linux {
                 session_id: session.session_id,
                 session_credential: credential,
                 operation_id,
-                outcome: Some(Outcome::Completed(DiscoveryResult { records })),
+                outcome: Some(Outcome::Completed(DiscoveryResult {
+                    records,
+                    provider_id: "steam".to_owned(),
+                })),
             })
             .await
             .map_err(|_| "result_rejected")?;
@@ -86,15 +89,69 @@ mod linux {
             .map_err(|_| "host_unavailable")
     }
 
-    fn scan_steam() -> Result<Vec<gamenode_core::provider::Record>, ()> {
-        let loaded = load(
-            &[("steam.toml", include_str!("../../../providers/steam.toml"))],
-            Platform::Linux,
-        );
-        let provider = loaded.get("steam").ok_or(())?;
-        provider
-            .scan(Platform::Linux, &StdHostFiles, &SystemRoots::new())
-            .map_err(|_| ())
+    fn scan_steam() -> Result<Vec<gamenode_scanner::RawRecord>, ()> {
+        let home = env::var_os("HOME").map(PathBuf::from).ok_or(())?;
+        let roots = [
+            home.join(".steam/steam"),
+            home.join(".local/share/Steam"),
+            home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        ]
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        let mut records = steam::scan(&ScanInput {
+            files: &StdFiles,
+            roots: &roots,
+        })
+        .map_err(|_| ())?;
+        #[derive(Deserialize)]
+        struct SteamManifest {
+            #[serde(default)]
+            exclude_ids: Vec<String>,
+        }
+        let manifest: SteamManifest =
+            toml::from_str(include_str!("../../../providers/steam.toml")).map_err(|_| ())?;
+        let excluded = manifest.exclude_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        records.retain(|record| {
+            let Some(id) = record.id.as_deref() else {
+                return false;
+            };
+            let id = id.trim();
+            !id.is_empty() && !excluded.contains(id) && seen.insert(id.to_owned())
+        });
+        Ok(records)
+    }
+
+    struct StdFiles;
+
+    impl Files for StdFiles {
+        fn canonicalize(&self, path: &str) -> Result<String, String> {
+            fs::canonicalize(path)
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        }
+
+        fn read_dir(&self, path: &str) -> Result<Vec<String>, String> {
+            fs::read_dir(path)
+                .map_err(|error| error.to_string())?
+                .map(|entry| {
+                    entry
+                        .map_err(|error| error.to_string())?
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| "filesystem entry name is not UTF-8".to_owned())
+                })
+                .collect()
+        }
+
+        fn read_to_string(&self, path: &str) -> Result<String, String> {
+            fs::read_to_string(path).map_err(|error| error.to_string())
+        }
+
+        fn is_dir(&self, path: &str) -> bool {
+            fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        }
     }
 
     fn required(name: &'static str) -> Result<String, &'static str> {

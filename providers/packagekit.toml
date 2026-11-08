@@ -1,0 +1,6 @@
+# Linux package inventory reported as game candidates by the package manager plugin.
+id = "packagekit"
+name = "Linux package manager"
+platforms = ["linux"]
+source = "packagekit"
+scan = { native = "packagekit" }

@@ -106,32 +106,32 @@ describe('SettingsModal Feature Suite', () => {
   });
 
   describe('Topic Navigation and Content', () => {
-    it('renders the 5 topics in exact order and confirms Advanced/Avançado is absent (en)', () => {
+    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (en)', () => {
       openSettingsModal();
       renderSettings('en');
 
       const navButtons = screen.getAllByRole('button', {
-        name: /Account|Stores|Backups|Tools|About/i,
+        name: /Account|Stores|Backups|Tools|Plugins|About/i,
       });
 
       const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Account', 'Stores', 'Backups', 'Tools', 'About']);
+      expect(topicTexts).toEqual(['Account', 'Stores', 'Backups', 'Tools', 'Plugins', 'About']);
 
       // Verify removed Advanced topic is NOT present anywhere
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();
     });
 
-    it('renders the 5 topics in exact order and confirms Advanced/Avançado is absent (pt-BR)', () => {
+    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (pt-BR)', () => {
       openSettingsModal();
       renderSettings('pt-BR');
 
       const navButtons = screen.getAllByRole('button', {
-        name: /Conta|Lojas|Backups|Ferramentas|Sobre/i,
+        name: /Conta|Lojas|Backups|Ferramentas|Sobre|Plugins/i,
       });
 
       const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Conta', 'Lojas', 'Backups', 'Ferramentas', 'Sobre']);
+      expect(topicTexts).toEqual(['Conta', 'Lojas', 'Backups', 'Ferramentas', 'Plugins', 'Sobre']);
 
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();

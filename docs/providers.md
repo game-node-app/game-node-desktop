@@ -41,7 +41,7 @@ path = "~/.local/share/Steam"
 | `name` | yes | Name shown in the sidebar and in error messages. |
 | `platforms` | yes | `windows`, `linux`. A manifest that does not list the current platform is not loaded and is not shown as a filter. |
 | `source` | yes | The store or source name, including the playtime source. |
-| `scan` | yes | `{ native = "<name>" }`. Only scanners built into the application exist (`steam` and `manual`). An unknown name rejects the manifest. |
+| `scan` | yes | `{ native = "<name>" }`. Built-in scanners include `steam` and `manual`; `packagekit` is a host-routed Linux plugin provider. An unknown name rejects the manifest. |
 | `launch`, `install` | no | URI providers use `{ uri = "<template>" }`. The bundled manual provider additionally supports `launch = { executable = "manual" }`; it has no Install action. |
 | `match` | no | `{ external_category = N }`: the GameNode external-game category of the provider's ids. This enables store-id lookup. DRM-free entries instead support automatic matching from conservative local evidence; see `desktop-game-matching` in the main specs. |
 | `exclude_ids` | no | Provider ids that are never shown: tools, runtimes and redistributables. |
@@ -93,6 +93,26 @@ logged. Its games leave the library view but keep their saved matches.
 
 The bundled Steam Install action opens the game’s Steam library page, where Steam exposes its
 installation controls. This also gives a visible destination for an already-installed game.
+
+## Linux package manager candidate source
+
+`providers/packagekit.toml` registers the Linux-only `packagekit` source, displayed as Linux package
+manager. The official plugin reads installed desktop entries categorized as `Game`. On Arch-based
+distributions it uses pacman's native ownership query; on other distributions it asks PackageKit
+to confirm ownership by an installed package. It uses the package id as the source id, the desktop
+entry name as the title, and the resolved executable directory as the record's install location.
+The source identifies candidates; it does not currently provide a Play or Install action or a
+GameNode catalogue id. A missing daemon, missing file-owner search support, or empty game metadata
+causes a scan failure/empty result without deleting the last successful scan.
+
+PackageKit data is backend-dependent on non-Arch distributions. On Arch Linux, native pacman
+ownership queries avoid PackageKit's incomplete ALPM support. This machine has SuperTux installed
+through pacman; its desktop entry is owned by the `supertux` package.
+
+## External scanner plugins
+
+See [Plugin development](plugin-development.md) for the versioned discovery contract, provider
+registration, supported capabilities and the same-user trust boundary.
 
 ## Playtime counters
 

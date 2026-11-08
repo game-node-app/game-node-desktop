@@ -16,6 +16,7 @@ import { StoresPanel } from './panels/StoresPanel';
 import { BackupsPanel } from './panels/BackupsPanel';
 import { ToolsPanel } from './panels/ToolsPanel';
 import { AboutPanel } from './panels/AboutPanel';
+import { PluginsPanel } from './panels/PluginsPanel';
 import { DiscardChangesDialog } from './DiscardChangesDialog';
 import { LicenseNoticesModal } from './LicenseNoticesModal';
 import { settingsCloseButton } from './settingsClasses';
@@ -46,6 +47,11 @@ const TOPICS: TopicItem[] = [
     id: 'tools',
     titleKey: 'Tools',
     descKey: 'Upscalers, frame generation tools, and local download cache.',
+  },
+  {
+    id: 'plugins',
+    titleKey: 'settings.plugins',
+    descKey: 'settings.pluginsDescription',
   },
   {
     id: 'about',
@@ -257,6 +263,7 @@ export const SettingsModal: React.FC = () => {
               {settingsTopic === 'stores' && <StoresPanel />}
               {settingsTopic === 'backups' && <BackupsPanel />}
               {settingsTopic === 'tools' && <ToolsPanel />}
+              {settingsTopic === 'plugins' && <PluginsPanel />}
               {settingsTopic === 'about' && (
                 <AboutPanel showLicenseNoticesButtonRef={showLicenseNoticesButtonRef} />
               )}

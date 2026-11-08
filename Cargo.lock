@@ -1524,6 +1524,7 @@ name = "gamenode-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "gamenode-scanner",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -1565,6 +1566,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gamenode-plugin-packagekit"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "gamenode-plugin-protocol",
+ "hyper-util",
+ "serde",
+ "tokio",
+ "tonic",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "gamenode-plugin-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1578,15 +1595,23 @@ dependencies = [
 name = "gamenode-plugin-steam"
 version = "0.1.0"
 dependencies = [
- "gamenode-core",
- "gamenode-platform",
  "gamenode-plugin-protocol",
+ "gamenode-scanner",
  "hyper-util",
+ "serde",
  "tokio",
+ "toml 1.2.0+spec-1.1.0",
  "tonic",
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "gamenode-scanner"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

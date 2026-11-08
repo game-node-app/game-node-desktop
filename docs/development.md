@@ -5,9 +5,9 @@ by developers and AI agents.
 
 Build from the repository root. `rust-toolchain.toml` pins Rust 1.99.1 with
 rustfmt and Clippy. Install Rust using rustup, then let rustup install the toolchain
-when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has six
-packages: core, platform, api, plugin-protocol, plugin-steam and app. Core has no
-Tauri or OS adapter dependency.
+when invoking Cargo. Keep `Cargo.lock` and use `--locked`. The workspace has
+core, platform, api, plugin-protocol, scanner, plugin-steam, plugin-packagekit
+and app. Core has no Tauri or OS adapter dependency.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Linux (Ubuntu/Debian, native x86-64)
@@ -31,24 +31,32 @@ not OpenSSL.
 The desktop process owns the Engine and profile. On Linux it hosts the Plugin API
 at `$XDG_RUNTIME_DIR/gamenode-desktop/plugins.sock` (or the private temporary
 directory used by single-instance IPC). This versioned gRPC API is separate from
-Tauri's React `invoke` bridge. The official Steam discovery plugin runs only for a
-requested scan and is started from beside the desktop executable.
+Tauri's React `invoke` bridge. The official Steam and Linux package manager discovery
+plugins run only for requested scans and are started from beside the desktop
+executable.
 
 ### Plugin security and diagnostics
 
-The host accepts only its own Linux UID, the bundled Steam plugin identity and
-the `library.discovery.steam` capability. Socket permissions are owner-only;
+The host accepts only its own Linux UID and bundled plugin identities. Both
+discovery plugins are granted `library.discovery`. The host still binds each
+session to its registered provider and active operation. Socket permissions are owner-only;
 messages and connections have fixed size and concurrency limits, and each launch
-gets a short-lived session credential. The plugin receives neither GameNode REST
+gets a short-lived session credential. Plugins receive neither GameNode REST
 credentials nor authentication callback URLs. Host diagnostics report lifecycle
 and sanitized failure codes; they must not log session credentials or manifest
 contents.
 
 These checks authenticate a local session; they do not sandbox a native process.
 The plugin runs with the user's OS permissions and can access files and start
-processes available to that user. Only the bundled official plugin is supported
-in this first slice. Windows continues to run Steam discovery in-process; the
-Plugin API transport is Linux-only.
+processes available to that user. Only bundled official plugins are supported
+in this slice. Linux package discovery uses pacman's native ownership query on
+Arch-based distributions and requires the system D-Bus PackageKit service with
+installed-file ownership support elsewhere; a missing selected backend is
+reported as a scanner failure. The plugin classifies applications from
+desktop-entry `Game` categories and confirms each desktop entry belongs to an
+installed package. These are candidates and do not
+guarantee GameNode catalogue matching or direct launch support. Windows continues
+to run Steam discovery in-process; the Plugin API transport is Linux-only.
 
 ### Linux plugin acceptance record (partial)
 
@@ -62,6 +70,15 @@ the already-running host. The app stayed responsive during the scan.
 
 Still pending for full acceptance: an empty Steam result, missing-plugin and
 timeout recovery, preservation after a plugin failure, and a clean GUI shutdown.
+
+On 2026-11-08, the release app was launched with another disposable
+`GAMENODE_DATA_DIR` on Arch Linux without PackageKit installed. The provider scan
+completed successfully through pacman, and the persisted `packagekit:supertux`
+entry contained the installed desktop path, `/usr/bin/supertux2`, and
+`package_manager=pacman`. The initial dual-provider run had exposed that one
+plugin's cleanup cancelled another provider's session when both shared a scan
+operation id; cancellation is now scoped by provider and covered by a regression
+test.
 
 ## Windows (native x86-64 MSVC)
 
@@ -219,16 +236,17 @@ Without that feature Tauri treats the build as a dev build and loads `devUrl`
 server is running. For native HMR, start `pnpm --dir ui dev` and run
 `cargo run -p gamenode-app --no-default-features`.
 
-To exercise Linux Steam discovery from a development build, build both binaries
-so the host can resolve the plugin beside itself:
+To exercise Linux discovery from a development build, build the host and both
+plugins so the host can resolve them beside itself:
 
 ```sh
-cargo build --locked -p gamenode-app -p gamenode-plugin-steam
+cargo build --locked -p gamenode-app -p gamenode-plugin-steam -p gamenode-plugin-packagekit
 ```
 
-`cargo run -p gamenode-app` still starts only the desktop host; if the plugin
-binary is absent, a Steam scan reports a provider failure and keeps the previous
-successful data.
+`cargo run -p gamenode-app` still starts only the desktop host; if a plugin
+binary is absent, its provider scan reports a failure and keeps the previous
+successful data. See [Plugin development](plugin-development.md) for the
+provider registry and discovery API contract.
 
 ### Driving and previewing from T3 Code Preview
 

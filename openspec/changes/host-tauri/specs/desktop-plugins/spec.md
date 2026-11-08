@@ -75,3 +75,51 @@ On Linux, Steam discovery SHALL be supplied by the external Steam plugin while p
 #### Scenario: One Steam manifest is unreadable
 - **WHEN** the plugin encounters an unreadable or malformed game manifest
 - **THEN** it skips that entry, reports diagnostics without file contents, and returns other valid records
+
+### Requirement: Discovery plugins are registered by provider
+The desktop host SHALL select a discovery plugin from host-owned provider metadata and SHALL authorize only the provider capability for the requested scan operation.
+
+#### Scenario: A registered provider is scanned
+- **WHEN** the Engine requests discovery for a provider with an available registered plugin
+- **THEN** the host launches that plugin with only its provider-scoped discovery capability
+
+#### Scenario: An unknown provider is requested
+- **WHEN** a scan requests a provider without a registered plugin
+- **THEN** the host reports that provider as unavailable without launching another plugin
+
+### Requirement: Discovery results identify their provider
+An authorized discovery plugin SHALL return typed observations associated with its registered provider, and the host SHALL reject results that do not match the active provider and operation.
+
+#### Scenario: Plugin returns valid provider observations
+- **WHEN** a plugin completes an authorized operation with typed records for its registered provider
+- **THEN** the host routes those records through the Engine's existing provider reconciliation and persistence flow
+
+#### Scenario: Plugin returns mismatched observations
+- **WHEN** a plugin submits records for another provider or operation
+- **THEN** the host rejects the result and preserves application state
+
+### Requirement: Scanner plugins use a stable discovery contract
+Official scanner plugins SHALL depend on the versioned plugin contract and shared discovery data types rather than directly on application-internal Engine or platform crates.
+
+#### Scenario: Scanner implementation is built as an external plugin
+- **WHEN** an official discovery plugin is compiled independently of the desktop application
+- **THEN** it can submit the shared typed result contract without linking `gamenode-core` or `gamenode-platform`
+
+### Requirement: Linux package-manager discovery reports game candidates
+On Linux, the official package-manager discovery plugin SHALL use the native pacman query interface on Arch-based distributions and PackageKit on other distributions. It SHALL report installed packages as game candidates only when installed desktop application metadata identifies them as games.
+
+#### Scenario: SuperTux is installed and identified as a game
+- **WHEN** SuperTux is installed on Arch Linux and its installed desktop entry identifies it as a game
+- **THEN** the plugin returns a SuperTux candidate with its package identifier and available launch metadata
+
+#### Scenario: PackageKit is used on a non-Arch distribution
+- **WHEN** the host distribution is not Arch-based and PackageKit reports installed ownership for a game desktop entry
+- **THEN** the plugin returns the corresponding package candidate with its available launch metadata
+
+#### Scenario: Selected package manager is unavailable
+- **WHEN** the native pacman query on an Arch-based distribution or PackageKit on another distribution is missing or cannot be queried
+- **THEN** the plugin reports a provider failure without blocking other discovery providers or replacing prior successful data
+
+#### Scenario: Installed package is not identified as a game
+- **WHEN** an installed package has no game classification in desktop application metadata
+- **THEN** the plugin omits it from game candidates

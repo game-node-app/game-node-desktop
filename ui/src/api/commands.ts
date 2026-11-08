@@ -6,6 +6,7 @@ import type {
   LaunchKind,
   LibraryInput,
   PlaytimeSource,
+  PluginInfo,
   Registration,
   Snapshot,
   ToolChannel,
@@ -44,6 +45,12 @@ export const commands = {
       version: '0.1.0',
       backgroundSupported: false,
     })),
+
+  getPlugins: () =>
+    safeInvoke<PluginInfo[]>('get_plugins', undefined, () => [
+      { providerId: 'steam', pluginId: 'org.gamenode.plugin.steam-discovery', name: 'Steam game discovery', source: 'official', status: 'installed', capabilities: ['library.discovery'] },
+      { providerId: 'packagekit', pluginId: 'org.gamenode.plugin.packagekit-discovery', name: 'Linux package manager', source: 'official', status: 'installed', capabilities: ['library.discovery'] },
+    ]),
 
   getLicenseNotices: () =>
     safeInvoke<string>(

@@ -56,7 +56,7 @@ Parallel work MUST respect dependencies, avoid simultaneous edits to shared file
 
 ## 7. Integrated automated and upgrade checks
 
-- [ ] 7.1 Run the integrated locked Rust workspace tests, formatting, strict Clippy, public-boundary/reference-host and packaging checks, UI suites/build and strict OpenSpec validation; verify all required checks pass and record exact candidate revision, commands and environment rather than copying donor totals.
+- [x] 7.1 Run the integrated locked Rust workspace tests, formatting, strict Clippy, public-boundary/reference-host and packaging checks, UI suites/build and strict OpenSpec validation; verify all required checks pass and record exact candidate revision, commands and environment rather than copying donor totals.
 - [ ] 7.2 Exercise controlled baseline profile copies across schema 6/7/8 and a restart using a safely isolated credential setup; verify both Steam metadata and existing port registrations/jobs/provenance are preserved, rollback uses a schema-compatible binary and no live profile/keyring is mutated.
 - [ ] 7.3 Build and verify the Linux release package and smoke-run it from its packaged location with an isolated profile; verify desktop startup, Steam launch, missing-plugin degradation and normal Quit work without developer-tree executables, and record package identity and any remaining native-only cases.
 

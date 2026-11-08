@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { commands, type PluginInfo } from '../../api';
 import { useI18n } from '../../i18n';
@@ -7,9 +7,7 @@ import {
   settingsPill,
   settingsPillSuccess,
   settingsPillWarning,
-  settingsRow,
   settingsRowDescription,
-  settingsRowInfo,
   settingsRowTitle,
 } from './settingsClasses';
 
@@ -21,60 +19,84 @@ function statusLabel(status: PluginInfo['status'], t: (key: string) => string): 
 
 export const PluginInventory: React.FC = () => {
   const { t } = useI18n();
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const { data = [], isPending, isError } = useQuery({
     queryKey: inventoryQueryKey,
     queryFn: commands.pluginInventory,
     staleTime: 30_000,
   });
+  const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
+
+  const stateClass = (status: PluginInfo['status']) => status === 'installed'
+    ? settingsPillSuccess
+    : status === 'missing' || status === 'failed' || status === 'incompatible'
+      ? settingsPillWarning
+      : settingsPill;
 
   return (
     <section aria-label={t('plugins.inventoryTitle')}>
-      <h3 className="mb-1 text-sm font-semibold text-white">{t('plugins.inventoryTitle')}</h3>
       <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.inventoryDescription')}</p>
-      <div className={settingsCard}>
-        {isPending ? (
+      {isPending ? (
+        <div className={settingsCard}>
           <p className={settingsRowDescription} role="status">{t('plugins.loading')}</p>
-        ) : isError ? (
+        </div>
+      ) : isError ? (
+        <div className={settingsCard}>
           <p className={settingsRowDescription} role="alert">{t('plugins.loadFailed')}</p>
-        ) : data.length === 0 ? (
+        </div>
+      ) : data.length === 0 ? (
+        <div className={settingsCard}>
           <p className={settingsRowDescription}>{t('plugins.empty')}</p>
-        ) : data.map((plugin) => {
-          const stateClass = plugin.status === 'installed'
-            ? settingsPillSuccess
-            : plugin.status === 'missing' || plugin.status === 'failed' || plugin.status === 'incompatible'
-              ? settingsPillWarning
-              : settingsPill;
-          return (
-            <article key={plugin.pluginId} className={`${settingsRow} items-start py-1`}>
-              <div className={`${settingsRowInfo} gap-1`}>
-                <div className="flex flex-wrap items-center gap-compact">
-                  <span className={settingsRowTitle}>{plugin.name}</span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-md lg:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.6fr)]">
+          <div className={settingsCard} role="group" aria-label={t('plugins.inventoryTitle')}>
+            {data.map((plugin) => (
+              <button
+                key={plugin.pluginId}
+                type="button"
+                aria-pressed={selectedPlugin?.pluginId === plugin.pluginId}
+                className={`flex w-full flex-col items-start gap-1 rounded-sm border px-sm py-compact text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${selectedPlugin?.pluginId === plugin.pluginId ? 'border-brand bg-accent-subtle' : 'border-border-subtle bg-raised hover:bg-[#2e2e2e]'}`}
+                onClick={() => setSelectedPluginId(plugin.pluginId)}
+              >
+                <span className={settingsRowTitle}>{plugin.name}</span>
+                <span className="flex flex-wrap gap-1">
                   <span className={settingsPill}>{plugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
-                  <span className={stateClass}>{statusLabel(plugin.status, t)}</span>
-                </div>
-                <p className={settingsRowDescription}>{t('plugins.session')}: {plugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
-                <div>
-                  <p className={settingsRowDescription}>{t('plugins.grants')}</p>
-                  <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>
-                    {plugin.capabilities.map((grant) => (
-                      <li key={grant} className={settingsPill}>{grant}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <p className={settingsRowDescription}>{t('plugins.nativeAccess')}</p>
-                  <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.nativeAccess')}>
-                    {plugin.nativeAccess.map((access) => (
-                      <li key={access} className={settingsPill}>{t(`plugins.native.${access}`)}</li>
-                    ))}
-                  </ul>
-                  <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
-                </div>
+                  <span className={stateClass(plugin.status)}>{statusLabel(plugin.status, t)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedPlugin && (
+            <article className={`${settingsCard} self-start`} aria-label={t('plugins.details')}>
+              <div className="flex flex-wrap items-center gap-compact">
+                <h3 className={settingsRowTitle}>{selectedPlugin.name}</h3>
+                <span className={settingsPill}>{selectedPlugin.source === 'official' ? t('plugins.official') : t('plugins.community')}</span>
+                <span className={stateClass(selectedPlugin.status)}>{statusLabel(selectedPlugin.status, t)}</span>
+              </div>
+              <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
+              <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
+              <div>
+                <p className={settingsRowDescription}>{t('plugins.grants')}</p>
+                <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>
+                  {selectedPlugin.capabilities.map((grant) => (
+                    <li key={grant} className={settingsPill}>{grant}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <p className={settingsRowDescription}>{t('plugins.nativeAccess')}</p>
+                <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.nativeAccess')}>
+                  {selectedPlugin.nativeAccess.map((access) => (
+                    <li key={access} className={settingsPill}>{t(`plugins.native.${access}`)}</li>
+                  ))}
+                </ul>
+                <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
               </div>
             </article>
-          );
-        })}
-      </div>
+          )}
+        </div>
+      )}
     </section>
   );
 };

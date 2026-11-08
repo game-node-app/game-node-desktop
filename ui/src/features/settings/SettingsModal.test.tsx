@@ -107,32 +107,32 @@ describe('SettingsModal Feature Suite', () => {
   });
 
   describe('Topic Navigation and Content', () => {
-    it('renders the 5 topics in exact order and confirms Advanced/Avançado is absent (en)', () => {
+    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (en)', () => {
       openSettingsModal();
       renderSettings('en');
 
       const navButtons = screen.getAllByRole('button', {
-        name: /Account|Stores|Backups|Tools|About/i,
+        name: /Account|Stores|Plugins|Backups|Tools|About/i,
       });
 
       const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Account', 'Stores', 'Backups', 'Tools', 'About']);
+      expect(topicTexts).toEqual(['Account', 'Stores', 'Plugins', 'Backups', 'Tools', 'About']);
 
       // Verify removed Advanced topic is NOT present anywhere
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();
     });
 
-    it('renders the 5 topics in exact order and confirms Advanced/Avançado is absent (pt-BR)', () => {
+    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (pt-BR)', () => {
       openSettingsModal();
       renderSettings('pt-BR');
 
       const navButtons = screen.getAllByRole('button', {
-        name: /Conta|Lojas|Backups|Ferramentas|Sobre/i,
+        name: /Conta|Lojas|Plugins|Backups|Ferramentas|Sobre/i,
       });
 
       const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Conta', 'Lojas', 'Backups', 'Ferramentas', 'Sobre']);
+      expect(topicTexts).toEqual(['Conta', 'Lojas', 'Plugins', 'Backups', 'Ferramentas', 'Sobre']);
 
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();
@@ -158,6 +158,9 @@ describe('SettingsModal Feature Suite', () => {
 
       expect(screen.getByRole('heading', { level: 2, name: 'Stores' })).toBeInTheDocument();
       expect(scrollContainer?.scrollTop).toBe(0);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Plugins' }));
+      expect(screen.getByRole('heading', { level: 2, name: 'Plugins' })).toBeInTheDocument();
 
       // Switch to Backups
       const backupsBtn = screen.getByRole('button', { name: 'Backups' });

@@ -13,6 +13,7 @@ import { useI18n } from '../../i18n';
 
 import { AccountPanel } from './panels/AccountPanel';
 import { StoresPanel } from './panels/StoresPanel';
+import { PluginInventory } from './PluginInventory';
 import { BackupsPanel } from './panels/BackupsPanel';
 import { ToolsPanel } from './panels/ToolsPanel';
 import { AboutPanel } from './panels/AboutPanel';
@@ -36,6 +37,11 @@ const TOPICS: TopicItem[] = [
     id: 'stores',
     titleKey: 'Stores',
     descKey: 'Stores found on this PC and how playtime is read.',
+  },
+  {
+    id: 'plugins',
+    titleKey: 'plugins.navTitle',
+    descKey: 'plugins.navDescription',
   },
   {
     id: 'backups',
@@ -275,6 +281,7 @@ export const SettingsModal: React.FC = () => {
             >
               {settingsTopic === 'account' && <AccountPanel />}
               {settingsTopic === 'stores' && <StoresPanel />}
+              {settingsTopic === 'plugins' && <PluginInventory />}
               {settingsTopic === 'backups' && <BackupsPanel />}
               {settingsTopic === 'tools' && <ToolsPanel />}
               {settingsTopic === 'about' && (

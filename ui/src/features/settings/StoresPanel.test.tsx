@@ -157,13 +157,13 @@ describe('StoresPanel Steam account integration', () => {
   });
 
   it('checks a stale Steam session when Stores opens and leaves a fresh one alone', async () => {
-    const check = vi.spyOn(commands, 'steamCheck').mockResolvedValue(undefined);
+    const check = vi.spyOn(commands, 'providerCheck').mockResolvedValue(undefined);
     openSettingsModal('stores');
     const { unmount } = renderSettings(baseSnapshot({
       storeAccounts: [account({ lastCheckedAt: Math.floor(Date.now() / 1000) - 10 * 60 })],
     }));
 
-    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(check).toHaveBeenCalledWith('steam'));
     unmount();
 
     check.mockClear();
@@ -214,7 +214,7 @@ describe('StoresPanel Steam account integration', () => {
   });
 
   it('announces sign-out and leaves focus on the sign-out control', () => {
-    const signOut = vi.spyOn(commands, 'steamSignOut').mockResolvedValue(undefined);
+    const signOut = vi.spyOn(commands, 'providerSignOut').mockResolvedValue(undefined);
     openSettingsModal('stores');
     renderSettings(baseSnapshot());
 
@@ -222,7 +222,7 @@ describe('StoresPanel Steam account integration', () => {
     signOutButton.focus();
     fireEvent.click(signOutButton);
 
-    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledWith('steam');
     expect(screen.getByText('Steam disconnected. Installed games stay in your library.')).toBeInTheDocument();
     expect(document.activeElement).toBe(signOutButton);
   });

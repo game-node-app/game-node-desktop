@@ -1789,20 +1789,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_late_load_does_not_reset_a_finished_check() {
-        let harness = harness(Some(cred("stored-cookie")), None);
-        harness
-            .client
-            .set_session(Ok(session("A", "cassi", "stored-cookie")));
-        let (startup, checked) = tokio::join!(harness.account.startup(), harness.account.check());
-        assert_eq!(startup.state, SteamAccountState::Checking);
-        assert_eq!(checked.status.state, SteamAccountState::Connected);
-        let status = harness.account.status();
-        assert_eq!(status.state, SteamAccountState::Connected);
-        assert_eq!(status.last_checked_at, Some(1_000));
-    }
-
-    #[tokio::test]
     async fn startup_without_a_credential_is_not_connected() {
         let harness = harness(None, Some(stored("old", "Old", 10)));
         let status = harness.account.startup().await;

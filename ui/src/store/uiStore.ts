@@ -1,7 +1,7 @@
 import { Store } from '@tanstack/react-store';
 import { useStore } from '@tanstack/react-store';
 
-export type SettingsTopic = 'account' | 'stores' | 'backups' | 'tools' | 'about';
+export type SettingsTopic = 'account' | 'stores' | 'plugins' | 'backups' | 'tools' | 'about';
 
 /**
  * The content-area destination. It is deliberately not persisted: the application always

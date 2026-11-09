@@ -12,7 +12,6 @@ use url::Url;
 
 use super::manifest::{Manifest, Platform, RootSpec};
 use super::record::{RawRecord, Record, finish_records};
-use super::steam;
 use super::template::{FillError, Template};
 use crate::ports::{HostFiles, RootResolver};
 
@@ -28,22 +27,40 @@ pub enum ScanError {
     Failed(String),
 }
 
-pub type CounterFn =
-    fn(&ScanInput<'_>) -> std::collections::BTreeMap<String, steam::counter::CounterValue>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CounterValue {
+    pub seconds: i64,
+    pub last_played: i64,
+}
+pub type CounterFn = fn(&ScanInput<'_>) -> std::collections::BTreeMap<String, CounterValue>;
 
-pub fn counter(name: &str) -> Option<CounterFn> {
-    match name {
-        "steam" => Some(steam::counter::read),
-        _ => None,
-    }
+pub fn counter(_name: &str) -> Option<CounterFn> {
+    None
 }
 
 pub type ScanFn = fn(&ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError>;
 
+/// Host-approved plugin operations. Core sees only domain capabilities; it does
+/// not import the transport SDK or know how to start a provider executable.
+#[derive(Clone, Debug)]
+pub struct PluginBackend {
+    pub plugin_id: String,
+    pub provider_id: String,
+    pub discovery: bool,
+    pub catalog: bool,
+    pub counter: bool,
+    pub actions: bool,
+}
+
+fn plugin_scan(_: &ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError> {
+    Err(ScanError::Failed(
+        "this provider requires its registered plugin".into(),
+    ))
+}
+
 /// The scanners built into the application, by manifest name.
 pub fn native_scanner(name: &str) -> Option<ScanFn> {
     match name {
-        "steam" => Some(steam::scan),
         "manual" => Some(|_| Ok(Vec::new())),
         _ => None,
     }
@@ -134,7 +151,18 @@ impl Provider {
         self.manifest
             .catalog
             .as_ref()
-            .map(|catalog| catalog.native.as_str())
+            .map(|catalog| catalog.plugin.as_deref().unwrap_or(catalog.native.as_str()))
+    }
+
+    pub fn discovery_plugin(&self) -> Option<&str> {
+        self.manifest.scan.plugin.as_deref()
+    }
+
+    pub fn counter_plugin(&self) -> Option<&str> {
+        self.manifest
+            .playtime
+            .as_ref()
+            .and_then(|p| p.plugin.as_deref())
     }
 
     pub fn is_manual_executable(&self) -> bool {
@@ -271,7 +299,11 @@ fn template(
 }
 
 /// Checks everything about a parsed manifest except duplicate ids.
-fn validate(manifest: Manifest) -> Result<Provider, String> {
+fn validate(
+    manifest: Manifest,
+    plugins: &[PluginBackend],
+    active: bool,
+) -> Result<Provider, String> {
     if !valid_id(&manifest.id) {
         return Err(format!(
             "`id` must be non-empty lowercase letters, digits, `-` or `_`, not `{}`",
@@ -287,17 +319,55 @@ fn validate(manifest: Manifest) -> Result<Provider, String> {
     if manifest.platforms.is_empty() {
         return Err("`platforms` is empty".to_owned());
     }
-    let scanner = native_scanner(&manifest.scan.native)
-        .ok_or_else(|| format!("unknown native scanner `{}`", manifest.scan.native))?;
-    if let Some(catalog) = &manifest.catalog
-        && catalog.native != "steam"
-    {
-        return Err(format!("unknown catalog backend `{}`", catalog.native));
+    // Foreign-platform manifests still receive structural validation, but do
+    // not require a backend that the current host deliberately does not ship.
+    let inactive_backend = PluginBackend {
+        plugin_id: String::new(),
+        provider_id: String::new(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+    };
+    let plugin = |id: &str| -> Result<&PluginBackend, String> {
+        if !active {
+            return Ok(&inactive_backend);
+        }
+        plugins
+            .iter()
+            .find(|p| p.plugin_id == id && p.provider_id == manifest.id)
+            .ok_or_else(|| "provider plugin is not registered for this provider".into())
+    };
+    let scanner: ScanFn = match &manifest.scan.plugin {
+        Some(id) => {
+            if !manifest.scan.native.is_empty() || !plugin(id)?.discovery {
+                return Err("invalid or unauthorized plugin discovery declaration".into());
+            }
+            plugin_scan
+        }
+        None => native_scanner(&manifest.scan.native)
+            .ok_or_else(|| format!("unknown native scanner `{}`", manifest.scan.native))?,
+    };
+    if let Some(catalog) = &manifest.catalog {
+        match &catalog.plugin {
+            Some(id) if catalog.native.is_empty() && plugin(id)?.catalog => {}
+            Some(_) => return Err("invalid or unauthorized plugin catalog declaration".into()),
+            None => return Err(format!("unknown catalog backend `{}`", catalog.native)),
+        }
     }
-    if let Some(playtime) = &manifest.playtime
-        && counter(&playtime.counter).is_none()
+    if let Some(playtime) = &manifest.playtime {
+        match &playtime.plugin {
+            Some(id) if playtime.counter.is_empty() && plugin(id)?.counter => {}
+            Some(_) => return Err("invalid or unauthorized plugin counter declaration".into()),
+            None if counter(&playtime.counter).is_some() => {}
+            None => return Err(format!("unknown playtime counter `{}`", playtime.counter)),
+        }
+    }
+    if let Some(id) = &manifest.scan.plugin
+        && (manifest.launch.is_some() || manifest.install.is_some())
+        && !plugin(id)?.actions
     {
-        return Err(format!("unknown playtime counter `{}`", playtime.counter));
+        return Err("provider plugin actions are not authorized".into());
     }
     let executable = matches!(
         manifest.launch,
@@ -338,6 +408,14 @@ fn validate(manifest: Manifest) -> Result<Provider, String> {
 /// Loads manifests for `platform`. Sources are processed in file-name order so results do not
 /// depend on how the build listed them; on a duplicate id the first file wins.
 pub fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProviders {
+    load_with_plugins(sources, platform, &[])
+}
+
+pub fn load_with_plugins(
+    sources: &[(&str, &str)],
+    platform: Platform,
+    plugins: &[PluginBackend],
+) -> LoadedProviders {
     let mut ordered: Vec<&(&str, &str)> = sources.iter().collect();
     ordered.sort_by_key(|(file, _)| *file);
 
@@ -372,14 +450,15 @@ pub fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProviders {
                 continue;
             }
         };
-        let provider = match validate(manifest) {
+        let active = manifest.platforms.contains(&platform);
+        let provider = match validate(manifest, plugins, active) {
             Ok(provider) => provider,
             Err(problem) => {
                 loaded.diagnostics.push(diagnostic(id, problem));
                 continue;
             }
         };
-        if !provider.manifest.platforms.contains(&platform) {
+        if !active {
             continue;
         }
         if !ids.insert(provider.id().to_owned()) {

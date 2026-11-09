@@ -63,7 +63,7 @@ async fn favoriting_with_sync_off_stays_local_and_persists_pending() {
         favorite: true,
         now: 10,
     });
-    let snapshot = h.until("the star appears", |s| row_is_favorite(s)).await;
+    let snapshot = h.until("the star appears", row_is_favorite).await;
     assert!(row_is_favorite(&snapshot));
     assert!(
         h.api.favorite_pushes.lock().unwrap().is_empty(),

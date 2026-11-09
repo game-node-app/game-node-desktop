@@ -5,6 +5,10 @@ use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::plugin_host::{
+    provider::Completion,
+    runtime::{Observer, ProviderRuntime},
+};
 use gamenode_core::drm_free::{LocalGameStore, Registration};
 use gamenode_core::ports::StorageError;
 use gamenode_core::ports::catalog::{
@@ -24,6 +28,8 @@ use gamenode_platform::ports::catalog_worker::{CatalogSource, Clock};
 use gamenode_platform::ports::job_runner::{InstallJobRequest, JobError};
 use gamenode_platform::ports::overlay_source::{FetchedOverlay, OverlayFetcher};
 use gamenode_platform::ports::quiver::QuiverError;
+use gamenode_plugin_protocol::{models, proto::ProviderOperation};
+use tonic::Status;
 
 use crate::engine::pc_ports::{
     InstallRunner, PortFiltersPatch, PortInstallRequest, PortPreferencesPatch, PortsError,
@@ -271,6 +277,32 @@ fn start(config: PortsServiceConfig) -> (Arc<PortsService>, std::sync::mpsc::Rec
     (service, rx)
 }
 
+struct FailingSteamRuntime;
+
+#[async_trait::async_trait]
+impl ProviderRuntime for FailingSteamRuntime {
+    fn accounts(&self) -> Vec<String> {
+        vec!["steam".into()]
+    }
+    fn has_provider(&self, provider: &str) -> bool {
+        provider == "steam"
+    }
+    fn status(&self, _: &str) -> Option<models::AccountStatus> {
+        None
+    }
+    fn available(&self, _: &str) -> bool {
+        false
+    }
+    fn availability(&self, _: &str) -> &'static str {
+        "failed"
+    }
+    fn set_observer(&self, _: Observer) {}
+    async fn execute(&self, _: &str, _: ProviderOperation) -> Result<Completion, Status> {
+        Err(Status::unavailable("fixture Steam process failure"))
+    }
+    async fn shutdown(&self) {}
+}
+
 fn wait_for_view(
     rx: &std::sync::mpsc::Receiver<PortsEvent>,
     mut predicate: impl FnMut(&PortsView) -> bool,
@@ -420,6 +452,56 @@ async fn starting_and_opening_pc_ports_never_waits_for_the_network() {
     let view = wait_for_view(&rx, |view| view.catalog.state == PortCatalogState::Ready);
     assert_eq!(view.catalog.entry_count, 1);
     assert_eq!(view.entries[0].catalog_id, "qcat_lantern");
+    service.shutdown();
+}
+
+#[tokio::test]
+async fn failed_steam_runtime_leaves_the_pc_ports_service_and_saved_job_untouched() {
+    let _serial = serial().lock().await;
+    let db = database();
+    let ports_store: Arc<dyn PortStore> = Arc::new(db.ports_store());
+    let local: Arc<dyn LocalGameStore> = Arc::new(db.local_game_store());
+    let job = PortJobRow {
+        id: "ports-job-preserved".into(),
+        catalog_id: "qcat_lantern".into(),
+        slug: "bloodborne-pc".into(),
+        port_name: "Bloodborne".into(),
+        release_version: Some("v0.9.38".into()),
+        install_folder: Some("D:/Ports/Bloodborne".into()),
+        phase: PortJobPhase::Completed,
+        created_paths: Vec::new(),
+        registration_id: None,
+        error: None,
+        failure_output: None,
+        seen: false,
+        created_at: 1,
+        updated_at: 1,
+        finished_at: Some(1),
+    };
+    ports_store.save_job(&job).unwrap();
+    let (service, events) = start(service_config(
+        ports_store.clone(),
+        local,
+        Arc::new(FakeCatalog::new(vec![entry()], None, Vec::new())),
+    ));
+    let initial_view = wait_for_view(&events, |view| view.jobs.len() == 1);
+    assert_eq!(initial_view.jobs[0].job_id, job.id);
+
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.pc_ports = Some(service.clone());
+        shared.ports.port_store = Some(ports_store.clone());
+    }
+    h.engine.set_provider_runtime(Arc::new(FailingSteamRuntime));
+    assert_eq!(h.engine.provider_availability("steam"), "failed");
+    h.engine.provider_check("steam").await;
+
+    assert!(
+        h.engine.pc_ports_supported(),
+        "PC ports remains available after Steam failure"
+    );
+    assert_eq!(ports_store.job(&job.id).unwrap(), Some(job));
     service.shutdown();
 }
 

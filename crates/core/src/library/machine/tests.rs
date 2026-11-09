@@ -8,7 +8,7 @@ id = "shop"
 name = "Shop"
 platforms = ["windows", "linux"]
 source = "shop"
-scan = { native = "steam" }
+scan = { native = "manual" }
 "#;
 
 pub(crate) fn providers(with_shop: bool) -> Vec<Provider> {
@@ -16,7 +16,7 @@ pub(crate) fn providers(with_shop: bool) -> Vec<Provider> {
     if with_shop {
         sources.push(("shop.toml", SHOP_MANIFEST));
     }
-    let loaded = registry::load(&sources, Platform::Linux);
+    let loaded = registry::tests::load(&sources, Platform::Linux);
     assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
     loaded.providers
 }

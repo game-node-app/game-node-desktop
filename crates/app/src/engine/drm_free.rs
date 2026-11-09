@@ -5,6 +5,7 @@ impl Engine {
     pub fn refresh_local_games(&self) {
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
+            let _views = engine.lock_local_views();
             let (account, generation) = {
                 let state = engine.lock();
                 (
@@ -255,6 +256,7 @@ impl Engine {
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
             let result = work(&engine);
+            let _views = engine.lock_local_views();
             let view = engine.load_local_view();
             {
                 let mut state = engine.lock();
@@ -575,6 +577,7 @@ impl Engine {
                 tracing::warn!(%error,"could not save backup outcome");
             }
             let installation_id = job.installation.clone();
+            let _views = engine.lock_local_views();
             let mut view = engine.load_local_view();
             let mut state = engine.lock();
             view.inferences = state.local.inferences.clone();

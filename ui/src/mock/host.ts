@@ -7,6 +7,7 @@ import {
   type LibraryFilters,
   type LibraryInput,
   type LibraryView,
+  type PluginInfo,
   type ProviderCount,
   type Row,
   type Snapshot,
@@ -1166,6 +1167,41 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
+      if (cmd === 'plugin_inventory') {
+        const platform = options.platform ?? 'windows';
+        const steamPlugin: PluginInfo = {
+          providerId: 'steam',
+          pluginId: 'org.gamenode.plugin.steam-discovery',
+          name: 'Steam',
+          source: 'official',
+          status: 'installed',
+          capabilities: [
+            'provider.context.read', 'library.discovery', 'library.catalog',
+            'account.state.read', 'account.state.publish', 'auth.webview',
+            'auth.webview.cookies.read', 'auth.webview.page.read', 'secrets.read',
+            'secrets.write', 'secrets.delete', 'playtime.counter',
+            'provider.actions.declare',
+          ],
+          session: steamScenario === 'notConnected' ? 'stopped' : 'active',
+          nativeAccess: platform === 'windows'
+            ? ['files', 'network', 'registry']
+            : ['files', 'network'],
+        };
+        if (platform === 'linux') {
+          const packageManagerPlugin: PluginInfo = {
+            providerId: 'packagekit',
+            pluginId: 'org.gamenode.plugin.packagekit-discovery',
+            name: 'Gerenciador de pacotes Linux',
+            source: 'official',
+            status: 'installed',
+            capabilities: ['provider.context.read', 'library.discovery'],
+            session: 'stopped',
+            nativeAccess: ['files', 'process', 'dbus'],
+          };
+          return [steamPlugin, packageManagerPlugin];
+        }
+        return [steamPlugin];
+      }
       if (cmd === 'get_app_info') {
         return {
           locale: options.locale ?? 'en',
@@ -1195,7 +1231,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
       else if (cmd === 'set_sync_enabled') snapshot.sync.enabled = args.enabled as boolean;
       else if (cmd === 'dismiss_sync_explanation') snapshot.sync.explained = true;
       else if (cmd === 'set_playtime_source') snapshot.playtimeSource = args.source as Snapshot['playtimeSource'];
-      else if (cmd === 'steam_sign_in') {
+      else if (cmd === 'provider_sign_in' && args.providerId === 'steam') {
         previousSteamScenario = steamScenario === 'signingIn' ? 'notConnected' : steamScenario;
         applySteamScenario('signingIn');
         scheduleSteam(1500, () => {
@@ -1203,15 +1239,15 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
           applySteamScenario('connected');
           publish();
         });
-      } else if (cmd === 'steam_cancel_sign_in') {
+      } else if (cmd === 'provider_cancel_sign_in' && args.providerId === 'steam') {
         steamGeneration += 1;
         applySteamScenario(steamScenario === 'signingIn' ? previousSteamScenario : steamScenario);
-      } else if (cmd === 'steam_focus_sign_in') { /* the mock has no separate window to focus */ }
-      else if (cmd === 'steam_sign_out') {
+      } else if (cmd === 'provider_focus_sign_in' && args.providerId === 'steam') { /* the mock has no separate window to focus */ }
+      else if (cmd === 'provider_sign_out' && args.providerId === 'steam') {
         steamGeneration += 1;
         clearSteamCatalog();
         applySteamScenario('notConnected');
-      } else if (cmd === 'steam_check') {
+      } else if (cmd === 'provider_check' && args.providerId === 'steam') {
         applySteamScenario('checking');
         scheduleSteam(900, () => {
           rows = structuredClone(baseRows);

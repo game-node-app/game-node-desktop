@@ -3,9 +3,9 @@ id = "steam"
 name = "Steam"
 platforms = ["windows", "linux"]
 source = "steam"
-scan = { native = "steam" }
+scan = { plugin = "org.gamenode.plugin.steam-discovery" }
 # Owned and Steam Family games, read with the connected account's web session.
-catalog = { native = "steam" }
+catalog = { plugin = "org.gamenode.plugin.steam-discovery" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }
@@ -37,7 +37,7 @@ exclude_ids = [
     "3658110", # Proton 10.0
 ]
 
-playtime = { counter = "steam" }
+playtime = { plugin = "org.gamenode.plugin.steam-discovery" }
 
 [[roots.windows]]
 registry = 'HKCU\Software\Valve\Steam'

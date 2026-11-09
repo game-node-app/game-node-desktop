@@ -22,9 +22,18 @@ The browser may ask permission to open GameNode when completing sign-in.
 gamenode-desktop/
 ├── gamenode.sh          # Run this launcher
 ├── libexec/gamenode     # Internal executable
+├── libexec/gamenode-plugin-steam
+├── libexec/gamenode-plugin-packagekit
 ├── VERSION
 └── build-manifest.json
 ```
+
+The package manager provider discovers games from installed desktop entries. It uses pacman on
+Arch-family distributions and PackageKit on other Linux distributions. The scan only queries
+installed packages; it does not install, update or remove them. The plugin process runs with the
+current user's OS permissions and is not sandboxed. In Settings, Plugins shows its GameNode grants
+(`provider.context.read` and `library.discovery`) separately from its native file, process and
+system D-Bus access.
 
 When upgrading from a package with the binary at its root, extract into a fresh
 directory rather than overlaying the old archive: tar extraction does not remove

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMockHost } from './host';
-import { createDefaultFilters, type AppInfo, type LibraryFilters, type Snapshot } from '../api/types';
+import { createDefaultFilters, type AppInfo, type LibraryFilters, type PluginInfo, type Snapshot } from '../api/types';
 import type { PortProgress, PortSuppliedPick, PortToolsCacheView } from '../api/ports';
 
 describe('UI mock host', () => {
@@ -68,6 +68,33 @@ describe('UI mock host', () => {
     }
   });
 
+  it('returns trusted plugin inventory without credential data and respects the mock platform', async () => {
+    const windowsPlugin = (await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])[0];
+    expect(windowsPlugin.source).toBe('official');
+    expect(windowsPlugin.status).toBe('installed');
+    expect(windowsPlugin.capabilities).toContain('library.discovery');
+    expect(windowsPlugin.nativeAccess).toContain('registry');
+    expect(JSON.stringify(windowsPlugin)).not.toMatch(/token|cookieValue|password|credentialValue/i);
+
+    const linuxPlugins = await createMockHost({ platform: 'linux' }).invoke('plugin_inventory') as PluginInfo[];
+    expect(linuxPlugins[0].nativeAccess).not.toContain('registry');
+    const packagePlugin = linuxPlugins.find((plugin) => plugin.providerId === 'packagekit');
+    expect(packagePlugin?.name).toBe('Gerenciador de pacotes Linux');
+    expect(packagePlugin?.capabilities).toEqual(['provider.context.read', 'library.discovery']);
+    expect(packagePlugin?.nativeAccess).toEqual(['files', 'process', 'dbus']);
+    expect((await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])
+      .some((plugin) => plugin.providerId === 'packagekit')).toBe(false);
+  });
+
+  it.each(['en', 'pt-BR'] as const)('keeps Steam account and PC ports state together in the %s snapshot', async (locale) => {
+    const host = createMockHost({ locale });
+    await host.invoke('ports_pick_parent');
+    const snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.storeAccounts[0].provider).toBe('steam');
+    expect(snapshot.ports).toBeDefined();
+    expect(snapshot.ports.preferences.lastParentFolder).toBe('D:\\Ports');
+  });
+
   it('marks rows with installed, owned and family facts and keeps counts consistent', async () => {
     const snapshot = await createMockHost().invoke('get_snapshot') as Snapshot;
     const rows = snapshot.library!.rows;
@@ -92,31 +119,31 @@ describe('UI mock host', () => {
       const listener = vi.fn();
       host.subscribe(listener);
 
-      await host.invoke('steam_check');
+      await host.invoke('provider_check', { providerId: 'steam' });
       let snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('checking');
       vi.advanceTimersByTime(900);
       snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('connected');
 
-      await host.invoke('steam_sign_out');
+      await host.invoke('provider_sign_out', { providerId: 'steam' });
       snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('notConnected');
       expect(snapshot.library!.rows.every((row) => row.installed)).toBe(true);
       expect(snapshot.library!.providers.find((provider) => provider.id === 'steam')!.ownedCount).toBe(0);
 
-      await host.invoke('steam_sign_in');
+      await host.invoke('provider_sign_in', { providerId: 'steam' });
       snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('signingIn');
       vi.advanceTimersByTime(1500);
       snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('connected');
 
-      await host.invoke('steam_sign_in');
-      await host.invoke('steam_cancel_sign_in');
+      await host.invoke('provider_sign_in', { providerId: 'steam' });
+      await host.invoke('provider_cancel_sign_in', { providerId: 'steam' });
       snapshot = await host.invoke('get_snapshot') as Snapshot;
       expect(snapshot.storeAccounts[0].state).toBe('connected');
-      await host.invoke('steam_focus_sign_in');
+      await host.invoke('provider_focus_sign_in', { providerId: 'steam' });
 
       expect(listener).toHaveBeenCalled();
     } finally {

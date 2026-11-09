@@ -280,7 +280,7 @@ fn catalog_errors_keep_their_stored_categories() {
         serde_json::from_str(r#"{"filter":{"provider":"steam"},"installedOnly":true}"#).unwrap();
     assert_eq!(layout.sidebar, SidebarSelection::Provider("steam".into()));
     assert!(layout.effective_filters().availability.installed);
-    let json = serde_json::to_value(&layout.normalized()).unwrap();
+    let json = serde_json::to_value(layout.normalized()).unwrap();
     assert_eq!(
         json.get("filter"),
         Some(&serde_json::json!({ "provider": "steam" }))

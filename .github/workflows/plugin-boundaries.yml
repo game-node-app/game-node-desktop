@@ -1,0 +1,62 @@
+name: Workspace validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  linux-and-windows-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.11.0'
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install native and cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config cmake ninja-build clang libclang-dev llvm lld nasm libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+      - name: Test UI
+        run: pnpm --dir ui test --run
+      - name: Typecheck and build UI
+        run: pnpm --dir ui build
+      - name: Validate formatting and plugin boundaries
+        run: |
+          cargo fmt --all --check
+          cargo metadata --format-version 1 --locked > /dev/null
+          python3 scripts/check-plugin-boundaries.py
+          python3 -m unittest discover -s scripts/tests
+      - name: Test all workspace crates (including app and PackageKit)
+        run: cargo test --locked --workspace
+      - name: Lint all workspace targets
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Install pinned Windows cross-check tool
+        run: cargo install cargo-xwin --version 0.23.1 --locked
+      - name: Compile Windows workspace and tests (no native acceptance)
+        run: cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc --locked

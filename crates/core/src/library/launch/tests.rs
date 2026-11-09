@@ -74,7 +74,7 @@ id = "plain"
 name = "Plain"
 platforms = ["windows", "linux"]
 source = "plain"
-scan = { native = "steam" }
+scan = { native = "manual" }
 "#;
     let loaded = registry::load(&[("plain.toml", manifest)], Platform::Linux);
     let plain = loaded.providers.into_iter().next().unwrap();
@@ -96,7 +96,7 @@ id = "custom"
 name = "Custom"
 platforms = ["windows", "linux"]
 source = "custom"
-scan = { native = "steam" }
+scan = { native = "manual" }
 launch = { uri = "custom://run/{slug}" }
 "#;
     let loaded = registry::load(&[("custom.toml", manifest)], Platform::Linux);
@@ -155,7 +155,7 @@ fn manual_launch_requires_approved_available_registration_and_never_installs() {
         transferred_from: None,
         available: true,
     };
-    let record = crate::drm_free::records(&[registration.clone()]).remove(0);
+    let record = crate::drm_free::records(std::slice::from_ref(&registration)).remove(0);
     let host = Host(Mutex::new(0));
     assert_eq!(
         launch_manual(&host, manual, &record, &registration, LaunchKind::Play),
@@ -228,7 +228,7 @@ fn a_port_launch_passes_its_provenance_environment_to_the_host() {
         transferred_from: None,
         available: true,
     };
-    let record = crate::drm_free::records(&[registration.clone()]).remove(0);
+    let record = crate::drm_free::records(std::slice::from_ref(&registration)).remove(0);
     let environment =
         LaunchEnvironment::from([("BLOODBORNE_PATH".to_string(), "D:/dump.iso".to_string())]);
     let host = Host(Mutex::new(None));

@@ -30,6 +30,7 @@ mod favorites;
 mod library;
 mod pc_ports;
 mod playtime;
+pub(super) mod provider_runtime;
 mod steam;
 mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
@@ -480,7 +481,7 @@ fn harness_with_steam(
         store_accounts: Vec::new(),
         ports: Default::default(),
     });
-    let providers = crate::providers::load_bundled(Platform::Linux).providers;
+    let providers = crate::providers::load_bundled_for_tests(Platform::Linux).providers;
     let publishes = Arc::new(AtomicUsize::new(0));
     let publish_count = publishes.clone();
     let engine = Engine::new(

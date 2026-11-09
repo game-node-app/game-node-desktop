@@ -144,12 +144,12 @@ export const SteamAccountCard: React.FC<SteamAccountCardProps> = ({
     }
   };
 
-  const signIn = () => { void commands.steamSignIn(); };
-  const focusSignIn = () => { void commands.steamFocusSignIn(); };
-  const cancelSignIn = () => { void commands.steamCancelSignIn(); };
-  const check = () => { void commands.steamCheck(); };
+  const signIn = () => { void commands.providerSignIn(account.provider); };
+  const focusSignIn = () => { void commands.providerFocusSignIn(account.provider); };
+  const cancelSignIn = () => { void commands.providerCancelSignIn(account.provider); };
+  const check = () => { void commands.providerCheck(account.provider); };
   const signOut = () => {
-    void commands.steamSignOut();
+    void commands.providerSignOut(account.provider);
     onSignOut?.();
   };
 

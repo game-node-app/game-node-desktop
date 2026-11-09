@@ -1,0 +1,6 @@
+# Linux package candidates reported through PackageKit or pacman.
+id = "packagekit"
+name = "Gerenciador de pacotes Linux"
+platforms = ["linux"]
+source = "packagekit"
+scan = { plugin = "org.gamenode.plugin.packagekit-discovery" }

@@ -42,7 +42,12 @@ target_dir="$repo_root/target/windows-hmr"
 binary_dir="$target_dir/x86_64-pc-windows-msvc/debug"
 echo 'Building the current Windows development executable...'
 XWIN_ARCH=x86_64 CARGO_TARGET_DIR="$target_dir" cargo xwin build \
-    --locked -p gamenode-app --no-default-features --target x86_64-pc-windows-msvc
+    --locked --bins -p gamenode-app -p gamenode-plugin-steam \
+    --no-default-features --target x86_64-pc-windows-msvc
+[[ -f "$binary_dir/gamenode-plugin-steam.exe" ]] || {
+    echo 'The Windows Steam plugin was not built beside the desktop executable.' >&2
+    exit 1
+}
 
 # The native host expects its pinned backup helper and manifest beside the executable.
 if [[ ! -d "$binary_dir/backup-assets" && -d dist/windows/gamenode-desktop/backup-assets ]]; then

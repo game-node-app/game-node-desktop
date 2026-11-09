@@ -1,0 +1,19 @@
+"AppState"
+{
+	"appid"		"620"
+	"Universe"		"1"
+	"name"		"Portal 2"
+	"StateFlags"		"4"
+	"installdir"		"Portal 2"
+	"LastUpdated"		"1700000000"
+	"SizeOnDisk"		"12345678"
+	"buildid"		"1234567"
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+	"MountedConfig"
+	{
+		"language"		"english"
+	}
+}

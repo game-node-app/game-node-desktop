@@ -356,8 +356,8 @@ mod tests {
     #[test]
     fn an_old_installed_only_layout_selects_installed_and_is_saved_without_it() {
         let layout: LibraryLayout = serde_json::from_str(r#"{"installedOnly":true}"#).unwrap();
-        assert_eq!(layout.effective_filters().availability.installed, true);
-        assert_eq!(layout.effective_filters().availability.owned, false);
+        assert!(layout.effective_filters().availability.installed);
+        assert!(!layout.effective_filters().availability.owned);
 
         let normalized = layout.normalized();
         assert!(normalized.legacy_installed_only.is_none());

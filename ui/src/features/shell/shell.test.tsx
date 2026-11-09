@@ -237,6 +237,23 @@ describe('features/shell', () => {
       expect(libraryInputSpy).toHaveBeenCalledWith({ setFilter: 'all' });
     });
 
+    it.each([
+      ['en', 'Linux Package Manager'],
+      ['pt-BR', 'Gerenciador de pacotes Linux'],
+    ])('localizes the PackageKit manifest in the %s sidebar', (locale, label) => {
+      const library = {
+        ...sampleLibrary,
+        providers: [
+          ...sampleLibrary.providers,
+          { ...sampleLibrary.providers[0], id: 'packagekit', name: 'Gerenciador de pacotes Linux' },
+          { ...sampleLibrary.providers[0], id: 'external', name: 'External Games' },
+        ],
+      };
+      renderWithProviders(<Sidebar library={library} localGames={sampleLocalGames} />, locale);
+      expect(screen.getByTestId('sidebar-provider-packagekit')).toHaveTextContent(label);
+      expect(screen.getByTestId('sidebar-provider-external')).toHaveTextContent('External Games');
+    });
+
     it('renders provider list and warning indicator for failed provider', () => {
       const libraryInputSpy = vi.spyOn(commands, 'libraryInput').mockResolvedValue();
 

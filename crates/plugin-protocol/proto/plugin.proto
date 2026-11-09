@@ -1,0 +1,456 @@
+syntax = "proto3";
+package gamenode.plugin.v1;
+
+service PluginHost {
+  rpc OpenSession (OpenSessionRequest) returns (OpenSessionReply);
+  rpc SubmitDiscovery (SubmitDiscoveryRequest) returns (SubmitDiscoveryReply);
+}
+
+message OpenSessionRequest {
+  string plugin_id = 1;
+  string plugin_version = 2;
+  uint32 api_major = 3;
+  uint32 api_minor = 4;
+  bytes session_credential = 5;
+  repeated string requested_capabilities = 6;
+}
+
+message OpenSessionReply {
+  string session_id = 1;
+  repeated string granted_capabilities = 2;
+  uint32 api_major = 3;
+  uint32 api_minor = 4;
+}
+
+message DiscoveryRecord {
+  string id = 1;
+  string name = 2;
+  string install_dir = 3;
+  map<string, string> fields = 4;
+}
+
+message DiscoveryResult {
+  repeated DiscoveryRecord records = 1;
+  string provider_id = 2;
+}
+
+message PluginFailure {
+  string code = 1;
+  string message = 2;
+}
+
+message SubmitDiscoveryRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+  string operation_id = 3;
+  oneof outcome {
+    DiscoveryResult completed = 4;
+    PluginFailure failed = 5;
+  }
+}
+
+message SubmitDiscoveryReply {
+  bool accepted = 1;
+}
+
+// Full providers use this service on the same authenticated local endpoint.
+// Discovery-only v1 clients may continue using PluginHost.SubmitDiscovery.
+service ProviderHost {
+  rpc Exchange (stream ProviderEvent) returns (stream ProviderCommand);
+  rpc GetContext (ServiceContext) returns (ProviderContext);
+  rpc Account (AccountRequest) returns (AccountReply);
+  rpc Secret (SecretRequest) returns (SecretReply);
+  rpc Login (LoginRequest) returns (LoginReply);
+  rpc DeclareActions (ActionRequest) returns (ActionReply);
+}
+
+// Epochs and operation ids are issued by the host; clients cannot widen them.
+message ServiceContext {
+  string session_id = 1;
+  bytes session_credential = 2;
+  string provider_id = 3;
+  string operation_id = 4;
+  uint64 account_epoch = 5;
+  uint64 profile_epoch = 6;
+}
+
+enum ProviderOperation {
+  PROVIDER_OPERATION_UNSPECIFIED = 0;
+  PROVIDER_OPERATION_INITIALIZE = 1;
+  PROVIDER_OPERATION_DISCOVER = 2;
+  PROVIDER_OPERATION_SIGN_IN = 3;
+  PROVIDER_OPERATION_FOCUS_SIGN_IN = 4;
+  PROVIDER_OPERATION_CANCEL_SIGN_IN = 5;
+  PROVIDER_OPERATION_CHECK = 6;
+  PROVIDER_OPERATION_SYNC_CATALOG = 7;
+  PROVIDER_OPERATION_SIGN_OUT = 8;
+  PROVIDER_OPERATION_READ_COUNTER = 9;
+  PROVIDER_OPERATION_CANCEL = 10;
+  PROVIDER_OPERATION_SHUTDOWN = 11;
+  PROVIDER_OPERATION_ACKNOWLEDGE = 12;
+  PROVIDER_OPERATION_SETTINGS_DESCRIBE_READ = 13;
+  PROVIDER_OPERATION_SETTINGS_SUBMIT = 14;
+  PROVIDER_OPERATION_SETTINGS_CANCEL = 15;
+}
+
+message ProviderCommand {
+  ServiceContext context = 1;
+  ProviderOperation operation = 2;
+  string target_operation_id = 3;
+  optional SettingsRequest settings = 4;
+}
+
+message ProviderContext {
+  string provider_id = 1;
+  string platform = 2;
+  string manifest_toml = 3;
+  repeated string granted_capabilities = 4;
+  uint32 max_records = 5;
+  uint32 max_message_bytes = 6;
+  uint32 catalog_chunk_records = 7;
+  SecretStorage secret_storage = 8;
+}
+
+enum AccountConnection {
+  ACCOUNT_CONNECTION_UNSPECIFIED = 0;
+  ACCOUNT_CONNECTION_NOT_CONNECTED = 1;
+  ACCOUNT_CONNECTION_CHECKING = 2;
+  ACCOUNT_CONNECTION_SIGNING_IN = 3;
+  ACCOUNT_CONNECTION_CONNECTED = 4;
+  ACCOUNT_CONNECTION_EXPIRED = 5;
+  ACCOUNT_CONNECTION_UNREACHABLE = 6;
+  ACCOUNT_CONNECTION_CREDENTIAL_ERROR = 7;
+}
+
+enum SecretStorage {
+  SECRET_STORAGE_UNSPECIFIED = 0;
+  SECRET_STORAGE_WINDOWS_CREDENTIAL_MANAGER = 1;
+  SECRET_STORAGE_SECRET_SERVICE = 2;
+  SECRET_STORAGE_PRIVATE_FILE = 3;
+}
+
+enum CatalogFailure {
+  CATALOG_FAILURE_UNSPECIFIED = 0;
+  CATALOG_FAILURE_UNREACHABLE = 1;
+  CATALOG_FAILURE_RATE_LIMITED = 2;
+  CATALOG_FAILURE_SERVER = 3;
+  CATALOG_FAILURE_EXPIRED = 4;
+  CATALOG_FAILURE_PRIVACY = 5;
+  CATALOG_FAILURE_CHANGED = 6;
+  CATALOG_FAILURE_INVALID_COOKIES = 7;
+  CATALOG_FAILURE_FAMILY_UNAVAILABLE = 8;
+}
+
+message AccountIdentity {
+  string provider_id = 1;
+  string account_id = 2;
+  optional string account_name = 3;
+  optional int64 last_verified_at = 4;
+}
+
+message AccountStatus {
+  AccountConnection state = 1;
+  optional string account_id = 2;
+  optional string account_name = 3;
+  optional int64 last_checked_at = 4;
+  optional int64 last_synced_at = 5;
+  SecretStorage storage = 6;
+  bool persist_failed = 7;
+  optional CatalogFailure catalog_error = 8;
+  optional CatalogFailure family_error = 9;
+}
+
+message AccountRequest {
+  ServiceContext context = 1;
+  oneof action {
+    bool read = 2;
+    AccountIdentity save = 3;
+    bool clear = 4;
+  }
+}
+
+message AccountReply {
+  optional AccountIdentity account = 1;
+  bool accepted = 2;
+}
+
+enum SecretOperation {
+  SECRET_OPERATION_UNSPECIFIED = 0;
+  SECRET_OPERATION_READ = 1;
+  SECRET_OPERATION_WRITE = 2;
+  SECRET_OPERATION_DELETE = 3;
+}
+
+enum ServiceFailure {
+  SERVICE_FAILURE_UNSPECIFIED = 0;
+  SERVICE_FAILURE_LOCKED = 1;
+  SERVICE_FAILURE_FAILED = 2;
+  SERVICE_FAILURE_STALE_OPERATION = 3;
+}
+
+// Never log the request/reply or include the value in UI state.
+message SecretRequest {
+  ServiceContext context = 1;
+  string key = 2;
+  SecretOperation operation = 3;
+  optional bytes value = 4;
+}
+
+message SecretReply {
+  SecretStorage storage = 1;
+  oneof outcome {
+    bytes value = 2;
+    bool absent = 3;
+    bool accepted = 4;
+    ServiceFailure failed = 5;
+  }
+}
+
+enum LoginOperation {
+  LOGIN_OPERATION_UNSPECIFIED = 0;
+  LOGIN_OPERATION_OPEN = 1;
+  LOGIN_OPERATION_READ = 2;
+  LOGIN_OPERATION_FOCUS = 3;
+  LOGIN_OPERATION_CANCEL = 4;
+  LOGIN_OPERATION_CLOSE = 5;
+}
+
+enum LoginState {
+  LOGIN_STATE_UNSPECIFIED = 0;
+  LOGIN_STATE_OPEN = 1;
+  LOGIN_STATE_CLOSED = 2;
+  LOGIN_STATE_CANCELLED = 3;
+  LOGIN_STATE_TIMED_OUT = 4;
+  LOGIN_STATE_FAILED = 5;
+}
+
+message LoginRequest {
+  ServiceContext context = 1;
+  LoginOperation operation = 2;
+  string handle = 3;
+}
+
+message LoginCookie {
+  string name = 1;
+  string value = 2;
+}
+
+// Extraction policy is trusted packaged data, never supplied in LoginRequest.
+message LoginReply {
+  string handle = 1;
+  LoginState state = 2;
+  repeated LoginCookie cookies = 3;
+  optional string page_result_json = 4;
+}
+
+message ActionDeclaration {
+  optional string play_uri = 1;
+  optional string install_uri = 2;
+}
+
+message ActionRequest {
+  ServiceContext context = 1;
+  ActionDeclaration actions = 2;
+}
+
+message ActionReply {
+  bool accepted = 1;
+}
+
+message CatalogGame {
+  string id = 1;
+  string name = 2;
+}
+
+enum CatalogCategory {
+  CATALOG_CATEGORY_UNSPECIFIED = 0;
+  CATALOG_CATEGORY_OWNED = 1;
+  CATALOG_CATEGORY_FAMILY = 2;
+}
+
+message CatalogChunk {
+  CatalogCategory category = 1;
+  uint32 index = 2;
+  repeated CatalogGame games = 3;
+}
+
+message CatalogCompletion {
+  CatalogCategory category = 1;
+  oneof outcome {
+    uint32 completed_records = 2;
+    CatalogFailure failed = 3;
+    bool unchanged = 4;
+  }
+}
+
+message CounterObservation {
+  string id = 1;
+  int64 seconds = 2;
+  int64 last_played = 3;
+}
+
+enum OperationDisposition {
+  OPERATION_DISPOSITION_UNSPECIFIED = 0;
+  OPERATION_DISPOSITION_COMPLETED = 1;
+  OPERATION_DISPOSITION_CANCELLED = 2;
+  OPERATION_DISPOSITION_SUPERSEDED = 3;
+  OPERATION_DISPOSITION_FAILED = 4;
+}
+
+enum AccountLoginOutcome {
+  ACCOUNT_LOGIN_OUTCOME_UNSPECIFIED = 0;
+  ACCOUNT_LOGIN_OUTCOME_CONNECTED = 1;
+  ACCOUNT_LOGIN_OUTCOME_CANCELLED = 2;
+  ACCOUNT_LOGIN_OUTCOME_CLOSED = 3;
+  ACCOUNT_LOGIN_OUTCOME_TIMED_OUT = 4;
+  ACCOUNT_LOGIN_OUTCOME_FAILED = 5;
+  ACCOUNT_LOGIN_OUTCOME_SUPERSEDED = 6;
+}
+
+message OperationResult {
+  OperationDisposition disposition = 1;
+  optional AccountStatus status = 2;
+  bool account_changed = 3;
+  bool signed_out = 4;
+  optional DiscoveryResult discovery = 5;
+  repeated CounterObservation counters = 6;
+  repeated CatalogCompletion catalogs = 7;
+  int64 observed_at = 8;
+  optional PluginFailure failure = 9;
+  optional AccountLoginOutcome login_outcome = 10;
+  optional bool focused = 11;
+  optional SettingsReply settings = 12;
+}
+
+// Optional ui.settings, negotiated independently at API 1.3. This closed schema
+// carries non-secret configuration only; it grants no executable UI or storage.
+message SettingsContext {
+  string plugin_id = 1;
+  string provider_id = 2;
+  string session_id = 3;
+  uint64 profile_epoch = 4;
+  string form_handle = 5;
+}
+
+message SettingsText {
+  string fallback = 1;
+  map<string, string> translations = 2;
+}
+
+message SettingsValue {
+  oneof value {
+    bool boolean = 1;
+    string text = 2;
+    double number = 3;
+    string choice = 4;
+  }
+}
+
+message SettingsTextField {
+  uint32 min_length = 1;
+  uint32 max_length = 2;
+}
+
+message SettingsNumberField {
+  double min = 1;
+  double max = 2;
+  double step = 3;
+}
+
+message SettingsChoiceOption {
+  string id = 1;
+  SettingsText label = 2;
+}
+
+message SettingsChoiceField {
+  repeated SettingsChoiceOption options = 1;
+}
+
+message SettingsField {
+  string id = 1;
+  SettingsText label = 2;
+  optional SettingsText help = 3;
+  SettingsValue default_value = 4;
+  oneof kind {
+    bool boolean = 5;
+    SettingsTextField text = 6;
+    SettingsNumberField number = 7;
+    SettingsChoiceField choice = 8;
+  }
+}
+
+message SettingsForm {
+  uint32 schema_version = 1;
+  string form_id = 2;
+  string schema_revision = 3;
+  string configuration_revision = 4;
+  SettingsText title = 5;
+  repeated SettingsField fields = 6;
+}
+
+message SettingsSubmission {
+  string schema_revision = 1;
+  string configuration_revision = 2;
+  map<string, SettingsValue> values = 3;
+}
+
+message SettingsRequest {
+  SettingsContext context = 1;
+  oneof action {
+    bool describe_read = 2;
+    SettingsSubmission submit = 3;
+    bool cancel = 4;
+  }
+}
+
+message SettingsView {
+  SettingsForm form = 1;
+  map<string, SettingsValue> values = 2;
+}
+
+enum SettingsPersistence {
+  SETTINGS_PERSISTENCE_UNSPECIFIED = 0;
+  SETTINGS_PERSISTENCE_PERSISTED = 1;
+  SETTINGS_PERSISTENCE_SESSION_ONLY = 2;
+}
+
+message SettingsApplied {
+  string configuration_revision = 1;
+  SettingsPersistence persistence = 2;
+}
+
+message SettingsFieldErrors {
+  map<string, SettingsText> errors = 1;
+}
+
+enum SettingsFailure {
+  SETTINGS_FAILURE_UNSPECIFIED = 0;
+  SETTINGS_FAILURE_DENIED = 1;
+  SETTINGS_FAILURE_UNAVAILABLE = 2;
+  SETTINGS_FAILURE_TIMED_OUT = 3;
+  SETTINGS_FAILURE_CANCELLED = 4;
+  SETTINGS_FAILURE_STALE = 5;
+  SETTINGS_FAILURE_INVALID = 6;
+  SETTINGS_FAILURE_PERSISTENCE_FAILED = 7;
+}
+
+message SettingsReply {
+  SettingsContext context = 1;
+  oneof outcome {
+    SettingsView form = 2;
+    SettingsApplied applied = 3;
+    SettingsFieldErrors field_errors = 4;
+    string revision_conflict = 5;
+    SettingsFailure failed = 6;
+  }
+}
+
+message ProviderEvent {
+  ServiceContext context = 1;
+  oneof event {
+    bool ready = 2;
+    AccountStatus account_status = 3;
+    CatalogChunk catalog_chunk = 4;
+    OperationResult result = 5;
+  }
+}

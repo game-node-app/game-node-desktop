@@ -11,12 +11,12 @@ pub mod memory;
 pub mod path;
 pub mod record;
 pub mod registry;
-pub mod steam;
 pub mod template;
 
 pub use manifest::{CatalogSpec, Manifest, Platform};
 pub use record::{RawRecord, Record};
 pub use registry::{
-    ActionError, Diagnostic, LoadedProviders, Provider, ScanError, ScanInput, load,
+    ActionError, Diagnostic, LoadedProviders, PluginBackend, Provider, ScanError, ScanInput, load,
+    load_with_plugins,
 };
 pub use template::{FillError, Template, TemplateError};

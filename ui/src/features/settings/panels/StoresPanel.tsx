@@ -1,3 +1,4 @@
+import { providerLabel } from '../../../i18n/providerLabel';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   commands,
@@ -96,7 +97,7 @@ export const StoresPanel: React.FC = () => {
     const stale = Math.floor(Date.now() / 1000) - lastChecked > 5 * 60;
     if (stale && autoCheckedFor.current !== lastChecked) {
       autoCheckedFor.current = lastChecked;
-      void commands.steamCheck();
+      void commands.providerCheck('steam');
     }
   }, [steamAccount.state, steamAccount.lastCheckedAt]);
 
@@ -212,7 +213,7 @@ export const StoresPanel: React.FC = () => {
               return (
                 <div key={provider.id} className={`${settingsRow} py-1`}>
                   <div className={settingsRowInfo}>
-                    <span className={settingsRowTitle}>{provider.name}</span>
+                    <span className={settingsRowTitle}>{providerLabel(provider.id, provider.name, t)}</span>
                     <span className={settingsRowDescription}>{description}</span>
                   </div>
                   {hasFailed && (

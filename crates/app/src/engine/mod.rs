@@ -195,6 +195,10 @@ struct Shared {
     local_discovering: std::sync::atomic::AtomicBool,
     local_discovery_again: std::sync::atomic::AtomicBool,
     state: Mutex<State>,
+    /// Serializes each "read the local-game store, then install that view" section.
+    /// Without it, a refresh that read the store before a write can apply after a newer
+    /// view and temporarily hide registrations or inferences from the snapshot.
+    local_views: Mutex<()>,
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
@@ -269,6 +273,7 @@ impl Engine {
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
             }),
+            local_views: Mutex::new(()),
             ports,
             runtime,
             storage: StorageWorker::new(),
@@ -326,6 +331,16 @@ impl Engine {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.shared
             .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Held across a local-game store read and the snapshot view it installs, so two
+    /// concurrent readers apply in the order they read. Callers may take the state lock
+    /// while holding this, never the other way around.
+    fn lock_local_views(&self) -> MutexGuard<'_, ()> {
+        self.shared
+            .local_views
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

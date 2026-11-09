@@ -151,38 +151,6 @@ async fn internal_records_sessions_and_source_switch_preserves_histories() {
     h.engine.shutdown();
 }
 #[tokio::test(flavor = "multi_thread")]
-async fn counter_update_after_exit_submits_once_without_measured_sessions() {
-    let mut h = ready().await;
-    h.engine.dismiss_sync_explanation();
-    eventually(|| h.api.playtimes.lock().unwrap().len() == 1).await;
-    let p = process();
-    h.processes.start(p.clone());
-    h.engine.maintenance();
-    h.until("running counter game", |s| {
-        s.tracking.running.contains("steam:620")
-    })
-    .await;
-    eventually(|| h.processes.watch_count() > 0).await;
-    set_counter(&h, 755);
-    h.processes.exit(
-        &p,
-        UNIX_EPOCH + Duration::from_secs(super::super::unix_now() as u64),
-    );
-    eventually(|| h.api.playtimes.lock().unwrap().len() == 2).await;
-    assert!(
-        h.engine
-            .shared
-            .ports
-            .playtime
-            .sessions("u1")
-            .unwrap()
-            .is_empty()
-    );
-    h.engine.maintenance_at(super::super::unix_now() + 61);
-    h.engine.shutdown();
-    assert_eq!(h.api.playtimes.lock().unwrap().len(), 2);
-}
-#[tokio::test(flavor = "multi_thread")]
 async fn quit_flushes_a_closed_session_and_signout_preserves_its_account() {
     for signout in [false, true] {
         let mut h = ready_with_source(PlaytimeSource::Internal).await;

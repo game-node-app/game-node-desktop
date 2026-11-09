@@ -62,6 +62,7 @@ impl Harness {
             cap::CATALOG,
             cap::ACCOUNT_PUBLISH,
             cap::LOGIN,
+            cap::SETTINGS,
         ];
         api.register(Registration {
             provider_id: "fixture".into(),
@@ -431,4 +432,47 @@ async fn catalog_deadline_allows_three_network_stages_but_still_expires() {
         sync.await.unwrap().unwrap_err().code(),
         tonic::Code::DeadlineExceeded
     );
+}
+
+#[tokio::test]
+async fn typed_settings_failure_is_accepted_and_keeps_the_session_alive() {
+    let mut h = Harness::new().await;
+    let context = h.api.settings_scope("fixture", "form-1".into()).unwrap();
+    let request = settings::Request {
+        context: context.clone(),
+        action: settings::Action::DescribeRead,
+    };
+    let api = h.api.clone();
+    let operation = tokio::spawn(async move { api.execute_settings(request).await });
+    let client = h.next(ProviderOperation::SettingsDescribeRead).await;
+    client
+        .finish(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            settings: Some(
+                settings::Reply {
+                    context,
+                    outcome: settings::Outcome::Failed {
+                        failure: settings::Failure::Invalid,
+                    },
+                }
+                .into(),
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let completion = operation.await.unwrap().unwrap();
+    let reply: settings::Reply = completion.result.settings.unwrap().try_into().unwrap();
+    assert_eq!(
+        reply.outcome,
+        settings::Outcome::Failed {
+            failure: settings::Failure::Invalid
+        }
+    );
+    // A typed failure is a normal terminal result: the same provider stream
+    // must still serve the next operation.
+    let check = h.execute(ProviderOperation::Check);
+    let client = h.next(ProviderOperation::Check).await;
+    client.finish(completed()).await.unwrap();
+    check.await.unwrap().unwrap();
 }

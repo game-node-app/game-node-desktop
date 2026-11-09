@@ -478,13 +478,24 @@ pub async fn run<P: ProviderPlugin>(
                 let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel);
                 let permit = if control { controls.clone() } else { work.clone() }.try_acquire_owned();
                 let Ok(permit) = permit else {
-                    host.finish(failure(Error::Busy)).await?;
+                    let busy = if is_settings(operation) {
+                        host.settings_request(&command).map_or_else(
+                            // A command with an unparseable settings scope has
+                            // no trustworthy context to echo; the host rejects
+                            // it as a protocol error.
+                            |_| failure(Error::Busy),
+                            |request| settings_failure(&request, Error::Busy),
+                        )
+                    } else {
+                        failure(Error::Busy)
+                    };
+                    host.finish(busy).await?;
                     continue;
                 };
                 let plugin = plugin.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let result = if matches!(operation, ProviderOperation::SettingsDescribeRead | ProviderOperation::SettingsSubmit | ProviderOperation::SettingsCancel) {
+                    let result = if is_settings(operation) {
                         dispatch_settings(plugin.as_ref(), command, host.clone()).await
                     } else {
                         plugin.handle(command, host.clone()).await
@@ -505,19 +516,64 @@ pub async fn run<P: ProviderPlugin>(
     Ok(())
 }
 
+fn is_settings(operation: ProviderOperation) -> bool {
+    matches!(
+        operation,
+        ProviderOperation::SettingsDescribeRead
+            | ProviderOperation::SettingsSubmit
+            | ProviderOperation::SettingsCancel
+    )
+}
+
 async fn dispatch_settings<P: ProviderPlugin>(
     plugin: &P,
     command: ProviderCommand,
     host: HostClient,
 ) -> Result<OperationResult, Error> {
-    let request = host.settings_request(&command)?;
-    let reply = plugin.settings(request.clone(), host).await?;
-    reply.validate_for(&request)?;
+    let request = match host.settings_request(&command) {
+        Ok(request) => request,
+        // The host-issued scope is invalid or unavailable, so no context can
+        // be echoed faithfully. The host treats this malformed command as a
+        // protocol error instead of a settings outcome.
+        Err(error) => return Ok(failure(error)),
+    };
+    let reply = match plugin.settings(request.clone(), host).await {
+        Ok(reply) => match reply.validate_for(&request) {
+            Ok(()) => reply,
+            Err(_) => return Ok(settings_failure(&request, Error::Protocol)),
+        },
+        Err(error) => return Ok(settings_failure(&request, error)),
+    };
     Ok(OperationResult {
         disposition: OperationDisposition::Completed as i32,
         settings: Some(reply.into()),
         ..Default::default()
     })
+}
+
+/// Errors after request parsing still need a typed settings reply: the host
+/// rejects a bare failure because it cannot correlate it to the settings
+/// operation, and then drops the whole provider session.
+fn settings_failure(request: &settings::Request, error: Error) -> OperationResult {
+    let failure = match error {
+        Error::Denied => settings::Failure::Denied,
+        Error::Unavailable | Error::Busy => settings::Failure::Unavailable,
+        Error::Stale => settings::Failure::Stale,
+        // Configuration and protocol problems make this request/reply invalid;
+        // there is no more specific settings failure variant.
+        Error::Configuration | Error::Protocol => settings::Failure::Invalid,
+    };
+    OperationResult {
+        disposition: OperationDisposition::Failed as i32,
+        settings: Some(
+            settings::Reply {
+                context: request.context.clone(),
+                outcome: settings::Outcome::Failed { failure },
+            }
+            .into(),
+        ),
+        ..Default::default()
+    }
 }
 
 fn failure(error: Error) -> OperationResult {

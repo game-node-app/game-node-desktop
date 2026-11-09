@@ -293,17 +293,31 @@ impl HostServices for ProviderServices {
                         })
                     }
                     account_request::Action::Save(account) => {
-                        let changed = lock(&identity)
-                            .as_ref()
-                            .is_some_and(|id| id != &account.account_id);
-                        authority.accept_identity(changed)?;
-                        *lock(&identity) = Some(account.account_id.clone());
-                        accounts.save(
-                            account.try_into().map_err(|_| {
-                                Status::invalid_argument("invalid account identity")
-                            })?,
-                            changed,
-                        )
+                        // A plugin may save before it ever reads, so an empty
+                        // cache cannot be treated as "no previous account":
+                        // the persisted record is then the only trustworthy
+                        // source for deciding whether identity changed.
+                        let known = match lock(&identity).clone() {
+                            Some(id) => Ok(Some(id)),
+                            None => accounts
+                                .load(&provider)
+                                .map(|account| account.map(|account| account.account_id)),
+                        };
+                        match known {
+                            Ok(known) => {
+                                let changed =
+                                    known.as_ref().is_some_and(|id| id != &account.account_id);
+                                authority.accept_identity(changed)?;
+                                *lock(&identity) = Some(account.account_id.clone());
+                                accounts.save(
+                                    account.try_into().map_err(|_| {
+                                        Status::invalid_argument("invalid account identity")
+                                    })?,
+                                    changed,
+                                )
+                            }
+                            Err(error) => Err(error),
+                        }
                     }
                     account_request::Action::Clear(true) => {
                         let result = accounts.clear(&provider);

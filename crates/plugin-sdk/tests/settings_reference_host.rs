@@ -161,7 +161,7 @@ impl Harness {
         )
     }
 
-    async fn send(&self, id: &str, action: Action) {
+    async fn send(&self, id: &str, action: Action) -> Request {
         let settings = gamenode_plugin_sdk::settings::Request {
             context: Context {
                 plugin_id: "fixture.settings".into(),
@@ -184,13 +184,14 @@ impl Harness {
                 }),
                 operation: settings.operation() as i32,
                 target_operation_id: String::new(),
-                settings: Some(settings.into()),
+                settings: Some(settings.clone().into()),
             }))
             .await
             .unwrap();
+        settings
     }
 
-    async fn reply(&mut self, id: &str) -> Reply {
+    async fn result(&mut self, id: &str) -> OperationResult {
         let event = tokio::time::timeout(std::time::Duration::from_secs(3), self.events.recv())
             .await
             .unwrap()
@@ -199,6 +200,27 @@ impl Harness {
         let Some(provider_event::Event::Result(result)) = event.event else {
             panic!("terminal reply expected");
         };
+        result
+    }
+
+    async fn collect(&mut self, count: usize) -> BTreeMap<String, OperationResult> {
+        let mut results = BTreeMap::new();
+        for _ in 0..count {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(3), self.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let id = event.context.unwrap().operation_id;
+            let Some(provider_event::Event::Result(result)) = event.event else {
+                panic!("terminal reply expected");
+            };
+            results.insert(id, result);
+        }
+        results
+    }
+
+    async fn reply(&mut self, id: &str) -> Reply {
+        let result = self.result(id).await;
         assert_eq!(result.disposition, OperationDisposition::Completed as i32);
         assert!(result.failure.is_none());
         result.settings.unwrap().try_into().unwrap()
@@ -344,6 +366,60 @@ fn submit(revision: &str, prefix: &str) -> Action {
     }
 }
 
+/// Mirrors the desktop host's acceptance check: a settings result must carry a
+/// correlated, valid payload. A bare failure is denied and tears down the
+/// whole provider session, which the permissive reference host never did.
+fn host_accepts(request: &Request, result: &OperationResult) -> bool {
+    result.settings.as_ref().is_some_and(|reply| {
+        Reply::try_from(reply.clone()).is_ok_and(|reply| reply.validate_for(request).is_ok())
+    })
+}
+
+struct FailingSettings;
+
+#[tonic::async_trait]
+impl ProviderPlugin for FailingSettings {
+    async fn handle(&self, _: ProviderCommand, _: HostClient) -> Result<OperationResult, Error> {
+        Err(Error::Denied)
+    }
+    async fn settings(&self, request: Request, _: HostClient) -> Result<Reply, Error> {
+        match request.action {
+            Action::DescribeRead => Err(Error::Denied),
+            Action::Submit { .. } => {
+                let mut context = request.context;
+                context.form_handle = "other-form".into();
+                Ok(Reply {
+                    context,
+                    outcome: Outcome::Failed {
+                        failure: Failure::Unavailable,
+                    },
+                })
+            }
+            Action::Cancel => Err(Error::Stale),
+        }
+    }
+}
+
+struct HeldSettings {
+    release: Semaphore,
+}
+
+#[tonic::async_trait]
+impl ProviderPlugin for HeldSettings {
+    async fn handle(&self, _: ProviderCommand, _: HostClient) -> Result<OperationResult, Error> {
+        Err(Error::Denied)
+    }
+    async fn settings(&self, request: Request, _: HostClient) -> Result<Reply, Error> {
+        self.release.acquire().await.unwrap().forget();
+        Ok(Reply {
+            context: request.context,
+            outcome: Outcome::Failed {
+                failure: Failure::Cancelled,
+            },
+        })
+    }
+}
+
 #[tokio::test]
 async fn independent_settings_plugin_acknowledges_save_reopen_conflicts_and_persistence_failure() {
     let (mut h, session) = Harness::open(3, &[capability::SETTINGS]).await;
@@ -440,4 +516,79 @@ async fn settings_require_feature_version_and_grant_before_dispatch() {
     assert!(result.settings.is_none());
     assert_eq!(fixture.config.lock().unwrap().revision, 1);
     h.stop(plugin).await;
+}
+
+#[tokio::test]
+async fn plugin_settings_errors_become_typed_failures_the_host_can_accept() {
+    let (mut h, session) = Harness::open(3, &[capability::SETTINGS]).await;
+    let plugin = tokio::spawn(gamenode_plugin_sdk::run(
+        session.unwrap(),
+        Arc::new(FailingSettings),
+    ));
+
+    let request = h.send("denied", Action::DescribeRead).await;
+    let result = h.result("denied").await;
+    assert_eq!(result.disposition, OperationDisposition::Failed as i32);
+    let reply: Reply = result.settings.clone().unwrap().try_into().unwrap();
+    assert_eq!(
+        reply.outcome,
+        Outcome::Failed {
+            failure: Failure::Denied
+        }
+    );
+    assert_eq!(reply.context, request.context);
+    assert!(
+        host_accepts(&request, &result),
+        "a bare or uncorrelated failure would be rejected by the desktop host"
+    );
+
+    // A reply that fails correlation is replaced by a typed Invalid failure
+    // instead of escaping as a bare protocol error.
+    let request = h.send("uncorrelated", submit("1", "Arcade")).await;
+    let result = h.result("uncorrelated").await;
+    let reply: Reply = result.settings.clone().unwrap().try_into().unwrap();
+    assert_eq!(
+        reply.outcome,
+        Outcome::Failed {
+            failure: Failure::Invalid
+        }
+    );
+    assert_eq!(reply.context, request.context);
+    assert!(host_accepts(&request, &result));
+    h.stop(plugin).await;
+}
+
+#[tokio::test]
+async fn settings_busy_replies_keep_their_typed_context() {
+    let (mut h, session) = Harness::open(3, &[capability::SETTINGS]).await;
+    let plugin = Arc::new(HeldSettings {
+        release: Semaphore::new(0),
+    });
+    let task = tokio::spawn(gamenode_plugin_sdk::run(session.unwrap(), plugin.clone()));
+    let mut requests = BTreeMap::new();
+    for index in 0..9 {
+        let id = format!("hold-{index}");
+        let request = h.send(&id, Action::DescribeRead).await;
+        requests.insert(id, request);
+    }
+    // The ninth concurrent settings operation exhausts the work permits, but
+    // the Busy path runs before dispatch and must still echo its context.
+    let busy = h.collect(1).await;
+    let result = &busy["hold-8"];
+    assert_eq!(result.disposition, OperationDisposition::Failed as i32);
+    let reply: Reply = result.settings.clone().unwrap().try_into().unwrap();
+    assert_eq!(
+        reply.outcome,
+        Outcome::Failed {
+            failure: Failure::Unavailable
+        }
+    );
+    assert!(host_accepts(&requests["hold-8"], result));
+    plugin.release.add_permits(8);
+    let held = h.collect(8).await;
+    assert_eq!(held.len(), 8);
+    for (id, result) in &held {
+        assert!(host_accepts(&requests[id], result));
+    }
+    h.stop(task).await;
 }

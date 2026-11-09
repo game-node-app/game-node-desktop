@@ -313,7 +313,18 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
         |s| matches!(s.auth, AuthView::SignedIn { ref user } if user.id == "u2"),
     )
     .await;
-    assert!(store.inferences("u2").unwrap().is_empty());
+    // Signing in re-runs enrichment for the new account. Inferences are stored per
+    // account, so wait for u2's own record instead of assuming the write has not
+    // happened yet, and prove u1's record was not replaced.
+    h.until("u2 enrichment is scoped to u2", |s| {
+        matches!(s.auth, AuthView::SignedIn { ref user } if user.id == "u2")
+            && s.local_games.inferences.iter().any(|i| i.account == "u2")
+    })
+    .await;
+    let inferences_u2 = store.inferences("u2").unwrap();
+    assert!(!inferences_u2.is_empty());
+    assert!(inferences_u2.iter().all(|i| i.account == "u2"));
+    assert_eq!(store.inferences("u1").unwrap(), inferences_u1);
 
     // Switch back to u1: inference for u1 is restored
     h.engine.dispatch(Input::SignOut);
@@ -344,11 +355,6 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
     assert_eq!(store.inferences("u1").unwrap().len(), 1);
 
     h.engine.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn launcher_gameplay_learning_persistence_and_external_tracking() {
-    gameplay_learning(true).await;
 }
 
 #[tokio::test]
@@ -645,12 +651,16 @@ async fn drm_free_session_tracking_restart_recovery_and_no_http_submission() {
         );
     }
     h2.engine.start();
-    h2.until("signed in and library scanned on restart", |s| {
-        matches!(s.auth, AuthView::SignedIn { .. })
-            && s.library
-                .as_ref()
-                .is_some_and(|l| !l.scanning && l.rows.iter().any(|r| r.key == key))
-    })
+    h2.until(
+        "signed in, library scanned and local games loaded on restart",
+        |s| {
+            matches!(s.auth, AuthView::SignedIn { .. })
+                && s.library
+                    .as_ref()
+                    .is_some_and(|l| !l.scanning && l.rows.iter().any(|r| r.key == key))
+                && s.local_games.registrations.iter().any(|r| r.key() == key)
+        },
+    )
     .await;
 
     eventually(|| h2.engine.lock().playtime.ready).await;

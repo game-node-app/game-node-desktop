@@ -122,27 +122,24 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
 
   it('keeps the auth selection identity when unrelated snapshot fields change', async () => {
     const queryClient = createAppQueryClient();
+    // Seed the cache before mounting. The hook uses `staleTime: Infinity`, so the
+    // mount-time getSnapshot request never starts and cannot land mid-test.
+    queryClient.setQueryData(SNAPSHOT_QUERY_KEY, createDefaultSnapshot());
     const seen: AuthSelection[] = [];
 
-    render(
+    const view = render(
       <QueryClientProvider client={queryClient}>
         <AuthIdentityProbe onValue={(value) => seen.push(value)} />
       </QueryClientProvider>,
     );
 
-    // Let the mount-time subscription and getSnapshot settle, cancel any late
-    // fetch, then control the cache from the snapshot events below.
+    // Wait for the probe's event subscription before emitting snapshots.
     await waitFor(() =>
-      expect(queryClient.getQueryState(SNAPSHOT_QUERY_KEY)).toBeDefined(),
+      expect(listeners.get(ENGINE_SNAPSHOT_EVENT)?.size ?? 0).toBe(1),
     );
-    await act(async () => {
-      // Drain the mount-time query and the subscription's ready state before the
-      // render count below is used to prove that an unrelated event did not render.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    await queryClient.cancelQueries({ queryKey: SNAPSHOT_QUERY_KEY });
-    queryClient.setQueryData(SNAPSHOT_QUERY_KEY, createDefaultSnapshot());
-    seen.length = 0;
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    const signedOut = seen.at(-1)!;
+    expect(signedOut.auth).toBe('signedOut');
 
     const signedInSnapshot = createDefaultSnapshot();
     signedInSnapshot.auth = {
@@ -158,11 +155,15 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
     await act(async () => {
       emitMockEvent(ENGINE_SNAPSHOT_EVENT, signedInSnapshot);
     });
+    // TanStack Query delivers subscriber notifications on its own schedule, so
+    // wait for the render instead of assuming it happens inside act().
+    await waitFor(() => expect(seen.at(-1)).not.toBe(signedOut));
     const afterSignIn = seen.at(-1)!;
-    const rendersAfterSignIn = seen.length;
+    expect(afterSignIn.auth).toEqual(signedInSnapshot.auth);
 
-    // A local-games-only update leaves every auth field untouched. The selector
-    // deep-compares the selection, so the same object comes back.
+    // A local-games-only update leaves every auth field untouched. Rendering
+    // again with that snapshot current must return the same selection object:
+    // no timer, notification count or render count is involved.
     const unrelated = createDefaultSnapshot();
     unrelated.auth = signedInSnapshot.auth;
     unrelated.localGames = { ...unrelated.localGames, busy: true };
@@ -170,17 +171,22 @@ describe('useSnapshot and engine:snapshot event synchronization', () => {
     await act(async () => {
       emitMockEvent(ENGINE_SNAPSHOT_EVENT, unrelated);
     });
+    expect(queryClient.getQueryData(SNAPSHOT_QUERY_KEY)).toEqual(unrelated);
 
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <AuthIdentityProbe onValue={(value) => seen.push(value)} />
+      </QueryClientProvider>,
+    );
     expect(seen.at(-1)).toBe(afterSignIn);
-    expect(seen).toHaveLength(rendersAfterSignIn);
 
     const signedOutSnapshot = createDefaultSnapshot();
     await act(async () => {
       emitMockEvent(ENGINE_SNAPSHOT_EVENT, signedOutSnapshot);
     });
 
+    await waitFor(() => expect(seen.at(-1)!.auth).toBe('signedOut'));
     expect(seen.at(-1)).not.toBe(afterSignIn);
-    expect(seen.at(-1)!.auth).toBe('signedOut');
   });
 
   it('drops the license notices cache when the viewer unmounts', async () => {

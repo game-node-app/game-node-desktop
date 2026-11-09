@@ -386,6 +386,98 @@ async fn real_account_storage_is_provider_scoped_and_actions_cannot_expand_templ
     operation.await.unwrap().unwrap();
 }
 
+fn stored(id: &str) -> gamenode_core::library::StoreAccount {
+    gamenode_core::library::StoreAccount {
+        provider: "steam".into(),
+        account_id: id.into(),
+        account_name: Some("player".into()),
+        last_verified_at: Some(10),
+    }
+}
+
+fn plugin_account(id: &str) -> models::StoreAccount {
+    models::StoreAccount {
+        provider: "steam".into(),
+        account_id: id.into(),
+        account_name: Some("player".into()),
+        last_verified_at: Some(10),
+    }
+}
+
+#[tokio::test]
+async fn saving_a_different_account_with_an_empty_identity_cache_reports_a_change() {
+    let mut h = Harness::new(FakeCredentials::new()).await;
+    // The cache is empty (no prior read) but the library already holds a
+    // different account from the previous run.
+    h.library.save_store_account(&stored("previous")).unwrap();
+    let (_pending, pending_operation) = h.operation(ProviderOperation::Check).await;
+    let (replacement, replacement_operation) = h.operation(ProviderOperation::SyncCatalog).await;
+    replacement
+        .account_save(plugin_account("replacement"))
+        .await
+        .unwrap();
+    // An identity change fences the account-scoped operation that was already
+    // in flight; without the persisted-account lookup it would stay valid.
+    assert!(pending_operation.await.unwrap().is_err());
+    replacement.finish(completed()).await.unwrap();
+    replacement_operation.await.unwrap().unwrap();
+    assert_eq!(
+        h.library.load_store_accounts().unwrap()[0].account_id,
+        "replacement"
+    );
+}
+
+#[tokio::test]
+async fn saving_the_persisted_account_with_an_empty_identity_cache_reports_no_change() {
+    let mut h = Harness::new(FakeCredentials::new()).await;
+    h.library.save_store_account(&stored("same")).unwrap();
+    let (pending, pending_operation) = h.operation(ProviderOperation::Check).await;
+    let (same, same_operation) = h.operation(ProviderOperation::SyncCatalog).await;
+    same.account_save(plugin_account("same")).await.unwrap();
+    // The in-flight operation stays valid when the persisted identity did not
+    // change, so it can complete normally.
+    pending.finish(completed()).await.unwrap();
+    pending_operation.await.unwrap().unwrap();
+    same.finish(completed()).await.unwrap();
+    same_operation.await.unwrap().unwrap();
+    assert_eq!(
+        h.library.load_store_accounts().unwrap()[0].account_id,
+        "same"
+    );
+}
+
+struct UnavailableAccounts;
+
+impl AccountPersistence for UnavailableAccounts {
+    fn load(&self, _: &str) -> Result<Option<models::StoreAccount>, Status> {
+        Err(Status::unavailable("account storage unavailable"))
+    }
+    fn save(&self, _: models::StoreAccount, _: bool) -> Result<(), Status> {
+        panic!("the previous identity must be read before saving")
+    }
+    fn clear(&self, _: &str) -> Result<(), Status> {
+        panic!("the previous identity must be read before clearing")
+    }
+}
+
+#[tokio::test]
+async fn a_failed_previous_identity_read_is_reported_as_a_persistence_failure() {
+    let mut h = Harness::new(FakeCredentials::new()).await;
+    h.services
+        .set_account_persistence(Arc::new(UnavailableAccounts));
+    let (client, pending) = h.operation(ProviderOperation::Check).await;
+    assert!(
+        client
+            .account_save(plugin_account("account"))
+            .await
+            .is_err()
+    );
+    h.services.publish_status(connected());
+    assert!(h.services.status().unwrap().persist_failed);
+    client.finish(completed()).await.unwrap();
+    pending.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn storage_outcomes_override_false_persistence_and_plaintext_claims() {
     let credentials = FakeCredentials::new();

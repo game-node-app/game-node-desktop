@@ -18,7 +18,7 @@ The host SHALL deny third-party data permissions by default and persist each use
 - **THEN** the previous saved grant remains effective and the UI restores its actual state with an error
 
 ### Requirement: Stable permission catalog
-Every public data method or event SHALL declare its permission, supported API version, resource scope and read/write/execute effects. Read, write and delete permissions SHALL be independent. Unknown required permissions SHALL prevent activation; unknown optional permissions SHALL be reported unsupported and never granted.
+Every public data method or event SHALL declare its permission, supported API version, resource scope and read/write/execute effects. Read, write and delete SHALL be independent except for explicitly authorized storage.persist own-cleanup. Unknown required permissions SHALL prevent activation; unknown optional permissions SHALL be reported unsupported and never granted.
 
 #### Scenario: Future unknown permission
 - **WHEN** an older host sees an unknown optional permission in an otherwise compatible package
@@ -51,7 +51,7 @@ Permission changes SHALL increment the effective grant revision and notify activ
 - **THEN** its success remains accurate, subsequent writes are refused and no automatic undo is claimed
 
 ### Requirement: Plugin and profile isolation
-The host SHALL isolate third-party credentials, private storage, jobs and provider results by validated identity and current profile. Plugins SHALL NOT access Core credentials, other plugins' secrets or another provider's mutable records. Broader library reads SHALL require an explicit separate grant.
+The host SHALL isolate credentials, private storage, jobs and provider results by identity and profile. Core credentials and foreign secrets SHALL remain inaccessible. Foreign provider account/discovery facts SHALL NOT be mutated through domain-resource grants. Mutating another plugin's shared domain records SHALL require explicit resource-and-operation consent and immutable creator provenance. Broader library reads SHALL require a separate grant.
 
 #### Scenario: Foreign secret slot
 - **WHEN** a plugin requests another plugin's secret or a GameNode/Steam credential alias
@@ -106,7 +106,7 @@ Every third-party permission SHALL start disabled at installation. File read/wri
 - **THEN** the full shared scope must be reviewed and authorized before the host permits the write
 
 ### Requirement: Default-deny field-level sharing
-Data read and subscription capabilities SHALL not grant automatic access to another source. Users SHALL explicitly select source/destination identity and version, dataset/game/resources, fields, delivery, history and retention. Newly added fields and changed package versions SHALL remain unshared until reviewed.
+Sensitive/custom data read and subscriptions SHALL require explicit source/destination identity and version, dataset/game/resources, fields, delivery, history and retention. Domain catalogs SHALL instead use explicit resource/owner/field read scopes. Neither model SHALL enable access by default or automatically expose new fields or resources.
 
 #### Scenario: Install a new consumer
 - **WHEN** a new plugin requests hardware or presence data
@@ -122,6 +122,10 @@ The host SHALL enforce sharing policy on queries, subscriptions, queued delivery
 ### Requirement: Persistence does not imply other access
 storage.persist SHALL default disabled and authorize retention/own-namespace cleanup only. It SHALL NOT imply reading another dataset, modifying game files, deleting foreign plugin data or disclosing physical managed paths. Recipient persistence SHALL also require explicit sharing-retention consent.
 
+#### Scenario: Own cleanup without general delete
+- **WHEN** a plugin has storage.persist but lacks storage.delete and requests authorized cleanup through Persistence
+- **THEN** it can clean its own eligible persisted entries within user limits, while Storage.Delete still requires storage.delete and no foreign namespace becomes accessible
+
 #### Scenario: Reused archived producer data
 - **WHEN** a new plugin requests records retained after the original producer was uninstalled
 - **THEN** access and persistence are denied until the user separately approves that archived source and recipient
@@ -132,3 +136,46 @@ Third-party permission UI SHALL describe restrictions as controls enforced on Ga
 #### Scenario: Read-only API grant
 - **WHEN** the user grants API read access to a native plugin
 - **THEN** the UI does not claim that the process is unable to perform direct filesystem writes using its OS privileges
+
+### Requirement: Catalog read is scoped user consent
+Domain catalog read grants SHALL select permitted resources/owners and metadata projections and start disabled. They SHALL authorize those reads without a mandatory pairwise broker policy. Newly added sensitive/private fields and changed ownership SHALL not inherit access; original provenance SHALL remain visible.
+
+#### Scenario: Runtime reader only
+- **WHEN** B has approved runtime read scope and no Data permission
+- **THEN** B reads authorized catalog records from A but cannot inspect A private storage, sensitive datasets or executable resource contents
+
+### Requirement: Metadata never supplies authority
+Unknown metadata and extension schemas SHALL not define permissions, executable policy, ownership or persistence selectors. Private/unclassified extensions SHALL remain hidden until authorized. Alternate domain/Data query paths SHALL enforce the same projection and cannot recover withheld fields.
+
+#### Scenario: Projection bypass attempt
+- **WHEN** B requests an excluded runtime extension through the Data alias
+- **THEN** the host still withholds or denies that extension
+
+### Requirement: Launch confirmation is not policy escalation
+User launch confirmation SHALL approve only the exact supported plan within existing API grants and per-game scope. It SHALL not override prohibited operations, grant writes/install permissions or promise native code confinement. Remembered approval SHALL be bound to plan/source/component revisions and remain revocable.
+
+#### Scenario: Install permission absent
+- **WHEN** a plugin has an approved modded launch plan but lacks installation/write grants
+- **THEN** its request to install or modify mod files remains explicitly denied
+
+### Requirement: Independent creator-scoped domain permissions
+Runtime, library-root and save-profile read/write/delete grants SHALL be independent and default denied. Their initial scope SHALL cover records created by the authenticated plugin only. Creation SHALL assign host-controlled creator provenance. Write SHALL NOT imply delete, file access, execution or access to another creator's records. storage.persist SHALL remain the explicit own-cleanup exception.
+
+#### Scenario: Dolphin changes its own installation
+- **WHEN** Dolphin's plugin has own-record write/delete grants and replaces its external-disk runtime registration with an SSD registration
+- **THEN** it can change its own registrations but cannot modify or remove RetroArch's runtime or delete game files, saves or history
+
+#### Scenario: Write without delete
+- **WHEN** a plugin has game.runtime.write but lacks game.runtime.delete
+- **THEN** an in-scope revision update can succeed and Runtimes.Remove returns an explicit denial
+
+### Requirement: Explicit foreign domain resource grants
+The user SHALL be able to extend read/write/delete scope to selected shared runtime, library-root and save-profile records from other plugins. Grants SHALL identify recipient, original creator, resources, operations and current revisions. Writes SHALL retain creator provenance and record the acting plugin. This exception SHALL NOT expose foreign private persistence, secrets or provider-owned account/discovery facts.
+
+#### Scenario: Only selected foreign runtime authorized
+- **WHEN** the user grants a migration plugin read/write on one DeSmuME runtime but not delete or access to a RetroArch runtime
+- **THEN** it can perform the approved operations on that record, cannot delete it and cannot access RetroArch outside separately authorized scope
+
+#### Scenario: Foreign grant revoked
+- **WHEN** the user revokes resource access while a mutation is queued
+- **THEN** the host refuses the mutation at commit and preserves both the record and original creator provenance

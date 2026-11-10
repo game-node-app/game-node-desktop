@@ -60,6 +60,21 @@ Each example SHALL include a versioned manifest, license notices and reproducibl
 - **WHEN** a developer imports either packaged example
 - **THEN** the same signature, permission, activation and license checks as other third-party packages apply
 
+### Requirement: Target compatibility authoring and fixtures
+The manifest reference SHALL define target constraints, comparison/selection rules, tested environments and host verdicts, including interpreter/native dependency requirements. Deterministic evaluator fixtures SHALL cover Windows builds/products, Linux distribution/libc/version bounds, omitted allowlists, tested coverage, unknown facts, malformed/ambiguous targets and environment changes. Real detection SHALL receive separate native acceptance.
+
+#### Scenario: Portable Python source with native dependencies
+- **WHEN** an author packages Python source with a platform-specific interpreter or extension library
+- **THEN** the guide requires target requirements for that execution environment rather than declaring compatibility from the source language alone
+
+#### Scenario: No provisioning implied
+- **WHEN** target compatibility support is implemented
+- **THEN** it introduces neither Python environment provisioning nor executable installation hooks or a required detector plugin
+
+#### Scenario: Portable evaluator fixtures
+- **WHEN** pure compatibility fixtures run on a developer machine
+- **THEN** injected environment facts determine results independently of the machine running the tests
+
 ### Requirement: Configuration examples and ownership documentation
 Both reference plugins SHALL demonstrate a working plugin-owned configuration window, focus/close lifecycle and saving one non-secret preference without altering API grants. Documentation SHALL distinguish GameNode-managed administration from plugin-owned functional configuration and include an optional declarative-form recipe.
 
@@ -95,3 +110,17 @@ Examples SHALL demonstrate scoped save profile proposals and installation/save i
 #### Scenario: Hash content changes
 - **WHEN** the fixture changes bytes without changing file size
 - **THEN** both SDK and direct gRPC comparison report the content change under authorized scope
+
+### Requirement: Hybrid contract and catalog examples
+Both language examples SHALL demonstrate typed resource registration with a declared versioned Struct extension and authorized lookup by the other example through the domain catalog. Guides SHALL identify typed execution/security fields, opaque content, optional metadata and the distinct sensitive-data sharing flow.
+
+#### Scenario: No Core change for custom runtime metadata
+- **WHEN** the examples exchange a declared plugin-specific runtime annotation through normal catalog methods
+- **THEN** the same public protobuf schema supports the exchange and standard action validation remains unchanged
+
+### Requirement: Launch consent examples
+Both reference clients SHALL demonstrate host-generated launch review for runtime/emulator, mod-loader and custom argument/environment recipes, with run-once and remembered approval behavior. Fixtures SHALL cover substituted plans, changed components, revoked scope and forbidden requests without performing destructive real launches.
+
+#### Scenario: Malicious substitution fixture
+- **WHEN** either example changes a fixture argument after user approval
+- **THEN** the old host plan token cannot authorize the altered execution

@@ -28,6 +28,83 @@ Packages SHALL declare stable plugin/provider identity, publisher key, SemVer ve
 - **WHEN** the package has no verified entrypoint for the active OS and architecture
 - **THEN** the plugin is reported incompatible and no substitute binary is executed
 
+### Requirement: Typed target compatibility declarations
+Manifest schema 1 SHALL bind each explicit OS/architecture/ABI target to a verified relative entrypoint and typed optional Windows version/build/product or Linux libc/distribution constraints. These signed fields SHALL NOT use Struct, shell expressions or executable probes. Mandatory requirements SHALL be separate from optional author-tested environments.
+
+#### Scenario: Windows minimum version
+- **WHEN** a target requires Windows client build 22000 or later and the detected client build is below that bound
+- **THEN** activation is refused with required and detected values, even when OS and architecture match
+
+#### Scenario: Linux libc mismatch
+- **WHEN** a target requires glibc and the effective execution environment uses musl
+- **THEN** it is incompatible regardless of a matching Linux kernel or CPU architecture
+
+#### Scenario: Explicit distribution support
+- **WHEN** a target restricts distributions to Debian version 13 and the detected distribution is outside that allowlist
+- **THEN** the host refuses activation rather than inferring support from distribution ancestry
+
+#### Scenario: Test coverage is informational
+- **WHEN** all mandatory requirements pass but the author's tested-environment list does not include this distribution release
+- **THEN** the target remains eligible and the host identifies the environment as not author-tested
+
+#### Scenario: Constraint conjunction and alternatives
+- **WHEN** a target declares multiple mandatory requirements and distribution alternatives
+- **THEN** every requirement must pass and at least one distribution alternative must match; an absent distribution allowlist adds no distribution restriction
+
+#### Scenario: Invalid or ambiguous declaration
+- **WHEN** selectors are unknown, bounds malformed, ABI contradictory or target selection ambiguous
+- **THEN** manifest validation rejects the declaration without deriving a Cartesian product from separate OS and architecture lists
+
+#### Scenario: Distribution version comparison
+- **WHEN** a distribution version constraint is evaluated
+- **THEN** exact values or documented distribution-specific ordering apply rather than an assumed universal SemVer ordering
+
+### Requirement: Host-owned execution environment detection
+Core/platform SHALL detect required OS version/product/build, executable architecture/ABI and Linux distribution/libc facts before candidate code runs, independently of detector plugins. It SHALL evaluate the effective execution environment using background workers for blocking probes. Probes SHALL NOT execute candidate code, package hooks or plugin-supplied detection commands.
+
+#### Scenario: Detection without plugins
+- **WHEN** GameNode evaluates its first third-party package with no detector plugin installed
+- **THEN** it can assess platform requirements using host-owned detection without executing the candidate
+
+#### Scenario: Isolated Linux execution
+- **WHEN** the plugin executes in an isolated environment whose userspace differs from the surrounding host
+- **THEN** libc and distribution requirements are evaluated against that execution environment
+
+#### Scenario: Distribution identity and ancestry
+- **WHEN** Linux distribution support is evaluated
+- **THEN** the detector uses os-release ID/VERSION_ID where available and treats ID_LIKE as diagnostic ancestry rather than automatic allowlist membership
+
+#### Scenario: Missing facts and architecture emulation
+- **WHEN** a required fact cannot be established or a target needs architecture emulation
+- **THEN** unknown facts remain unknown and emulation requires explicit host policy plus verified execution support instead of being assumed
+
+#### Scenario: Windows product and actual version
+- **WHEN** Windows version/build/product requirements are evaluated
+- **THEN** reliable platform detection supplies actual values and distinguishes client/server products where required
+
+### Requirement: Compatibility verdict and lifecycle revalidation
+The host SHALL return typed compatible/incompatible/indeterminate verdicts with reasons and required/detected values during validation, update selection/activation and before supervised launch with refreshed facts. Activation SHALL require compatible status plus existing integrity/API/grant/consent checks. Failed checks SHALL NOT authorize substitute binaries, shell workarounds or assumed emulation. Compatibility SHALL NOT certify code safety or successful execution.
+
+#### Scenario: Required libc version is unknown
+- **WHEN** the host cannot determine a libc version required by the selected target
+- **THEN** compatibility is indeterminate and the plugin cannot activate with an actionable detection reason
+
+#### Scenario: Environment changes after installation
+- **WHEN** a previously compatible installed target no longer satisfies a mandatory requirement before its next launch
+- **THEN** that launch is refused while package state and previous data/history remain available for management
+
+#### Scenario: Verdict precedence
+- **WHEN** mandatory constraints contain a known mismatch or unresolved facts
+- **THEN** a known mismatch yields incompatible; otherwise unresolved mandatory facts yield indeterminate, and compatible requires all mandatory checks to pass
+
+#### Scenario: Candidate update cannot run
+- **WHEN** a candidate update fails compatibility checks
+- **THEN** the previous version remains selected and can restart only if it passes current checks; historical data is preserved and no fallback bypass is executed
+
+#### Scenario: Existing import rejection rules
+- **WHEN** package validation finds unsupported OS/architecture
+- **THEN** existing import rejection rules remain in force rather than permitting execution under an indeterminate verdict
+
 ### Requirement: Publisher identity and trust
 The host SHALL require explicit initial trust of the publisher key fingerprint and pin it to the installed plugin identity. A signature SHALL NOT imply official status, safe code or legal certification. Publisher-key changes SHALL require separate user re-trust before activation.
 
@@ -114,3 +191,10 @@ Host administration SHALL offer reviewed cleanup of unused/uninstalled or large 
 #### Scenario: Reclaim unused data
 - **WHEN** the user selects an uninstalled plugin dataset in cleanup
 - **THEN** only the reviewed managed data is deleted and actual reclaimed space or failure is reported
+
+### Requirement: Packaged extension schema assets
+A package declaring public metadata/custom-data schemas SHALL include versioned declarative schema assets covered by integrity metadata. Namespace ownership and sensitive field classifications SHALL be validated. Schema assets SHALL not introduce executable hooks, remote code or unknown security-relevant manifest fields.
+
+#### Scenario: Unsafe external schema reference
+- **WHEN** a package schema attempts to load an external reference during validation
+- **THEN** validation refuses it without network retrieval or executing plugin code

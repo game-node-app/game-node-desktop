@@ -1,8 +1,10 @@
 # Tasks
 
+This change evolves the Steam integration baseline consolidated in main `desktop-plugins`, `desktop-plugin-services` and `desktop-providers`. Preserve its surviving contracts while adding managed third-party behavior. Steam integration native acceptance remains tracked by `integrate-steam-plugin-into-main` and `docs/steam-plugin-integration.md`; these tasks do not mark those pending checks complete.
+
 ## 1. Public licensing and official compatibility baseline
 
-- [ ] 1.1 Record current official descriptors, grants, credential mappings, packaging and API 1.1–1.3 outcomes as regression fixtures; verify those fixtures pass before introducing third-party paths.
+- [ ] 1.1 Record the consolidated main plugin/service/provider specs, current official descriptors, grants, credential mappings, packaging and API 1.1–1.3 outcomes as regression fixtures; verify those fixtures pass before introducing third-party paths and distinguish the delivered baseline from pending native acceptance.
 - [ ] 1.2 Review provenance of SDK, protocol and example source; deliver a file-level licensing-authority record and resolve unauthorized material before MIT distribution, preserving existing third-party notices.
 - [ ] 1.3 Add explicit MIT notices/licenses for approved public assets and retain GPL-3.0-only on host/Core; verify package metadata and dependency closures and document the public-only licensing boundary.
 
@@ -14,6 +16,9 @@
 - [ ] 2.4 Extend the optional Rust SDK with detailed errors, new service clients and configuration lifecycle dispatch without breaking existing official call sites; verify SDK client fixtures and unchanged official builds.
 - [ ] 2.5 Document the complete transport/session/Exchange lifecycle, credentials, limits, cancellation and existing-versus-new RPCs in public API guides; verify every existing method/event family and every new contract has a reference entry.
 
+- [ ] 2.6 Turn design section 18 into a per-RPC request/response/extension/access contract fixture and reference docs; verify every existing/proposed route and Exchange operation has a classification and official wire fixtures remain compatible.
+- [ ] 2.7 Add typed ExtensionPayload/namespace patches and bounded packaged schema descriptors to protocol/SDK without introducing dynamic host dispatch; verify precise 64-bit fields stay typed and Go/Rust preserve unselected application extension namespaces.
+
 ## 3. Package format, trust and managed registry
 
 - [ ] 3.1 Implement manifest schema 1 validation, including provider/extension kinds, optional provider identity, platform entrypoints, API range, scoped permissions, configuration modes and SPDX/LicenseRef notices; verify valid and malformed package fixtures and publish the manifest reference.
@@ -23,9 +28,15 @@
 - [ ] 3.5 Implement initial publisher fingerprint confirmation, identity pinning and explicit re-trust for key changes; verify a valid signature alone cannot establish official attribution or silently replace a pinned publisher.
 - [ ] 3.6 Deliver package-building/signing/validation tooling and format documentation with clearly marked development keys; verify both target package fixtures round-trip without executing installation hooks.
 
+- [ ] 3.7 Validate packaged namespace/schema ownership, versions, classifications and bounded declarative schemas without remote references/code; verify malformed/missing assets and namespace collisions fail package validation with actionable errors.
+
+- [ ] 3.8 Extend signed manifest target schema/reference with explicit OS/architecture/ABI, Windows version/build/product and Linux libc/distribution constraints plus separate author-tested environments; verify invalid bounds, unknown required selectors, contradictory ABI, distribution alternatives and ambiguous selection fixtures.
+- [ ] 3.9 Implement minimal Core/platform detection of the effective plugin execution environment on background workers, independent of detector plugins; verify os-release identity, libc/ABI/version, Windows client/server/build, unknown facts, isolation boundaries and explicit emulation policy without executing candidate code.
+- [ ] 3.10 Implement typed compatibility verdicts/reasons and requirement evaluation at validation, update selection/activation and pre-launch; verify compatible/incompatible/indeterminate, informational tested coverage, environment changes, failed-update recovery and preserved package/data state without fallback execution.
+
 ## 4. Permission persistence and enforcement
 
-- [ ] 4.1 Implement third-party default-deny grants with independent read/write/delete, required/optional flags, scopes and revisions; verify save/restart behavior, unknown capabilities and persistence-failure rollback.
+- [ ] 4.1 Implement third-party default-deny grants with independent read/write/delete, required/optional flags, scopes and revisions; map runtime/library-root/save-profile methods to read/write/delete rather than configure, and verify own-creator scope, selected foreign resource/operation consent, immutable provenance, acting-plugin audit, revocation, save/restart and persistence-failure rollback. Preserve the explicit storage.persist own-cleanup exception without bypassing Storage.Delete or foreign namespace isolation.
 - [ ] 4.2 Enforce grants and identity/profile/session/operation scope for unary services and Exchange messages; verify explicit denial details and rejected submissions preserve previous successful facts.
 - [ ] 4.3 Implement revocation notifications, affected-job cancellation and authorization checks at effect commit after queued work/confirmations; verify races cannot commit newly unauthorized changes.
 - [ ] 4.4 Isolate account identity, secret slots, storage and jobs by external identity/profile; verify Core/Steam aliases and foreign plugin resources are inaccessible through the API.
@@ -61,9 +72,11 @@
 - [ ] 7.9 Implement per-game/profile plugin-owned overlays for official, third-party and manual games, with independent normal/custom grants and one-use host user intents; verify an extension can target a selected Steam game without provider impersonation, broad library reads or modification of official state.
 - [ ] 7.10 Fence approvals to recipe/base-target/resource revisions, sanitize child environment and associate wrapper/child process attribution with the original game; verify revocation and changed recipes block new launches without killing running games, leaking session credentials or silently switching routes.
 
+- [ ] 7.11 Build immutable typed LaunchPlan resolution and versioned canonical approval fingerprints, binding source/package/component identities, effective target/argv/cwd/env and resource/grant revisions; verify plan substitution, replay, expiry and changed known mod/runtime components cannot dispatch through an old approval, with hashing/revalidation off the UI thread.
+
 ## 8. External provider and configuration lifecycle
 
-- [ ] 8.1 Compose external provider backends and provider-free launch extensions beside the official registry, reserving official ids/namespaces; verify collisions, missing provider contexts and invalid policies cannot impersonate or change official registration.
+- [ ] 8.1 Compose external provider backends and provider-free launch extensions beside the official registry, reserving official ids/namespaces; verify valid registered scanner/catalog/counter backends are accepted, operations exceeding their approved descriptor are rejected and collisions, missing provider contexts and invalid policies cannot impersonate or change official registration.
 - [ ] 8.2 Add external secret/account/login service composition with approved origins/cookies and host-defined page probes; verify no third-party credential alias or arbitrary privileged-page script is accepted.
 - [ ] 8.3 Implement start/enable/disable/remove and bounded process-tree shutdown with durable state and session fencing; verify crashes, timeouts, restart and removal preserve library facts and official operation.
 - [ ] 8.4 Add ui.configure and correlated Open/Focus/Close lifecycle results with one window handle per plugin/profile; verify repeated Configure focuses, five-second acknowledgements time out and provider commands remain serviceable.
@@ -86,7 +99,11 @@
 - [ ] 10.4 Add publisher fingerprint, requested/granted/effective access, native-code consent and offline license viewers; verify notice availability without network and accurate distinction between declared and enforced access.
 - [ ] 10.5 Add update diff, failure and rollback status plus complete en/pt-BR labels and mocks; verify slow operations leave unrelated UI usable and restore controls to actual saved state on persistence errors.
 
-- [ ] 10.6 Add per-game launch recipe review/selection and explicit return to detected default, displaying plugin, runtime/executable, arguments, working directory and environment effects; verify unchanged Play needs no repeated prompt while changed or revoked recipes require an actionable choice in both locales.
+- [ ] 10.6 Add per-game launch recipe selection and explicit return to detected default using the shared host launch-plan review for runtime/emulator, mod-loader/layer and custom target/parameter changes; verify unchanged approved Play needs no repeated prompt and changed/revoked plans require an actionable choice in both locales.
+
+- [ ] 10.7 Implement the shared Launch plan / Plano de lançamento review with source provenance, ordered known components, complete literal arguments/paths/environment delta and differences; verify Cancel default, Run once, exact-recipe remembered approval, explicit secret reveal, accessibility, denied-request no-bypass behavior and scope-not-safety wording in en/pt-BR.
+
+- [ ] 10.8 Show target requirements, detected effective environment, compatibility verdict/reasons and separate author-tested coverage in import/details/update review; verify glibc/musl mismatch, unknown mandatory facts and compatible-but-untested activation states in en/pt-BR component fixtures.
 
 ## 11. Standalone SDK distributions and two examples
 
@@ -98,28 +115,41 @@
 - [ ] 11.6 Supply per-example manifests, notices, package/sign commands and standalone build/install/run guides; verify package import and consent flows through the same production validators.
 - [ ] 11.7 Add conformance checks for generated-code freshness, public dependency boundaries, supported-version fallback and both examples; verify they fail for stale bindings or internal Core imports and document contribution expectations.
 
+- [ ] 11.8 Add equivalent safe Go/Rust launch-consent fixtures for emulators/runtimes, known mod layers and environment-only customization; verify both clients use host review and cannot replace approved fields or treat launch consent as installation/write permission.
+
+- [ ] 11.9 Publish target compatibility examples and deterministic evaluator fixtures for Windows builds/products, Debian release constraints, glibc/musl versions, absent allowlists, interpreted-plugin native dependencies and unknown/ambiguous inputs; document that provisioning/install hooks are outside this decision.
+
 ## 12. Shared data plane and consent
 
-- [ ] 12.1 Define typed dataset schemas and paired get/list/watch projections for every shareable ingestion family plus common Data APIs; verify a coverage fixture rejects any data family lacking a scoped read alternative and secrets/raw command payloads cannot enter those projections.
+- [ ] 12.1 Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and paired get/list/watch access; verify domain catalog lookup needs only its approved resource-read scope while sensitive/custom data still uses explicit broker projections.
 - [ ] 12.2 Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
-- [ ] 12.3 Implement default-deny source-to-recipient field/resource/game/history/live-sharing policies bound to both package versions; verify updates/new fields/new recipients and newly installed future consumers receive no implicit access.
-- [ ] 12.4 Implement projected queries and authenticated subscriptions with revocation/cursor fencing, bounded queues and onward-provenance constraints; verify queued records stop on revocation and a two-plugin exchange shares only approved fields.
+- [ ] 12.3 Implement default-deny catalog resource/owner/namespace read grants and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify A-registers/B-reads requires no pairwise catalog link and neither model exposes unapproved new fields/resources.
+- [ ] 12.4 Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
 - [ ] 12.5 Document each dataset/method/permission/projection and safe non-shareable exclusions; verify the published producer-consumer contract can be followed without source-private RPCs or Core dashboards.
+
+- [ ] 12.6 Implement structural Struct validation, size/depth/key budgets and namespace/field projection; verify metadata cannot shadow typed execution/ownership/grant fields and unknown optional schemas do not invalidate usable base resources.
+- [ ] 12.7 Implement revision-checked typed field masks and owner-authorized namespace patches; verify old-client updates preserve unfamiliar namespaces and read-only/foreign/stale writers cannot overwrite resource data.
 
 ## 13. Save profiles and location/storage inspection
 
-- [ ] 13.1 Add plugin-contributed save-profile CRUD with multiple file/directory rules, independent save contexts, scope previews, revisions and preserved history; verify an emulator-specific profile can target an approved game across providers without rewriting another source's profile.
+- [ ] 13.1 Add plugin-contributed save-profile CRUD with independent read/write/delete, plugin-defined directories/naming rules, optional versioned format/compatibility descriptors, independent runtime save contexts, scope previews and revisions; verify distinct emulator save folders for one ROM, own-scope/explicit foreign grants, denied file access and preserved history without requiring save parsing/conversion.
 - [ ] 13.2 Add shared-emulator-resource declarations and backing-resource coordination for backup/restore; verify changing a memory card scope requires full affected-game consent and active emulator use blocks unsafe restore.
 - [ ] 13.3 Implement common size/access/last-modified inspection for save/installation/runtime handles; verify logical byte totals, overlapping-root deduplication, read-only versus effective ACL states, unknowns and timestamp precision without modifying source files.
 - [ ] 13.4 Implement fresh streaming SHA-256/tree fingerprints and snapshot comparison as cancellable bounded worker jobs; verify same-size/same-mtime content changes, added/deleted files, empty directories, unreadable files and concurrent writes never yield a false complete unchanged result.
 - [ ] 13.5 Implement platform location/volume metadata and availability events with separate local/network, external/removable, interface/media dimensions and unknown evidence; verify replaced-volume identities cannot inherit approval and disconnected mounts preserve game/profile/history state.
 - [ ] 13.6 Document inspection consistency, per-game permissions, engine/platform availability and non-diagnostic media hints; verify fixtures distinguish unavailable storage from missing/deleted saves and never create replacement source directories while unmounted.
 
+- [ ] 13.7 Document the future save-descriptor roadmap: artifact kind, format/version/size constraints, content binding, compatibility evidence, slots/containers, observed last-loaded events, image provenance and import/conversion lineage; use illustrative metadata fixtures to distinguish unknown fields and save states from in-game saves. Explicitly defer save browsers, collectors, parsers, slot editors and converters; add no successful stub endpoints or mandatory emulator tooling.
+
 ## 14. Libraries and runtime-hosted game identity
 
 - [ ] 14.1 Expose logical library CRUD/root operations/list/get/watch backed by existing multi-root monitoring; verify root overlap/alias deduplication, independent unavailable roots and removal without filesystem deletion, and document scope approval.
-- [ ] 14.2 Add approved runtime/interpreter resources and per-content game/installation bindings to structured launch recipes; verify several emulated/interpreted games share one runtime while retaining separate identities, save contexts and histories.
-- [ ] 14.3 Integrate resource contexts with session/process attribution, without identifying all hosted games by runtime PID; verify runtime updates preserve game identity, ambiguous activity stays unknown and runtime registration does not install executable software.
+- [ ] 14.2 Add approved runtime/interpreter resources and per-content game/installation bindings to structured launch recipes; verify several games share a runtime and one registered ROM/GameNode game offers several runtimes without duplicate game identity, lost history or save changes. Cover moving/renaming content, distinct variants, binding migration and runtime removal without cascading file/game/save deletion.
+- [ ] 14.3 Define and implement the common typed runtime-session event/result family over Exchange under default-deny per-game/runtime game.sessions.report, with plugin-owned adapters and Core arbitration; verify same-PID content switches, concurrent instances, duplicate evidence, PID reuse, boot failure, stale/disconnected/revoked reports, unknown gaps and fresh confirmation after restart. Preserve direct-executable, account, source, checkpoint and platform policies, and apply Core-owned pause rules. Document that one plugin may support multiple runtimes and that descriptive presence cannot establish sessions; test consented Data projections without exposing handles or credentials.
+
+- [ ] 14.4 Exercise A registering an owned runtime with a custom compatibility extension and B querying it through Runtimes.List/Get/Watch under only runtime-read scope; verify no Data/pairwise grant is required and B cannot mutate or execute the runtime from metadata alone.
+
+- [ ] 14.5 Add negotiated scoped runtime-content discovery through Games.RegisterContent for runtime plugins/extensions under library.discovery without provider impersonation; verify ZSNES/bsnes observations reconcile one registered game/content with selectable bindings, discovery grants no execution, and DeSmuME-to-melonDS binding migration preserves history and save references without requiring foreign deletion.
 
 ## 15. Plugin-produced diagnostic and gameplay data
 
@@ -138,17 +168,25 @@
 
 ## 17. Administration and interoperability coverage
 
-- [ ] 17.1 Add source/recipient field-level sharing controls with plugin/developer/origin/publisher/version, game/resource/history/delivery/retention review; verify every grant starts off and changing fields/versions cannot preselect new access in en/pt-BR component tests.
+- [ ] 17.1 Add domain catalog resource/owner/namespace read controls and separate sensitive-data source/recipient field/history/delivery/retention review, displaying provenance; verify all start off and catalog lookup has no mandatory transfer wizard in en/pt-BR component tests.
 - [ ] 17.2 Add host-only physical-path storage accounting, uninstall retain/delete and cleanup preview/policy screens; verify plugin IPC cannot access these host administrative paths and slow accounting/deletion remains off the UI thread.
 - [ ] 17.3 Extend both Go/Rust examples with fixture producer-consumer exchanges, performance history/cleanup, save/location inspection and multiple content identities under a shared runtime; verify parity, no real collector dependency, no physical managed paths and explicit denied/granted/revoked flows.
+
+- [ ] 17.4 Add matching Go/Rust hybrid-record, opaque-byte and custom-dataset examples with schema-version/unknown-namespace handling; verify equivalent field preservation, projection and unsupported-feature outcomes, and document which values Core interprets.
 
 ## 18. Cross-component acceptance
 
 - [ ] 18.1 Run focused Rust protocol/SDK/host tests, UI component tests and Go example checks, then required workspace checks; record results and resolve integration failures without changing official plugin implementations.
 - [ ] 18.2 On native Linux, exercise signed package import, both example transports/windows, grant revocation, scoped file/keyring access, process shutdown, update and rollback; record acceptance evidence and any reproducible platform limitations.
 - [ ] 18.3 On native Windows, exercise both example named-pipe sessions/windows, ACL/junction behavior, credential isolation, supervised process shutdown and update/rollback; record native evidence separately from cross-build results.
-- [ ] 18.4 Confirm official Steam sign-in/discovery/catalog/counter/actions and Linux package discovery remain unchanged with empty, invalid, enabled and disabled third-party registries; record compatibility evidence against the baseline fixtures.
+- [ ] 18.4 Confirm official Steam sign-in/discovery/catalog/counter/actions and Linux package discovery remain unchanged with empty, invalid, enabled and disabled third-party registries; verify a missing/incompatible Steam executable reports unavailability, preserves cached data and does not invoke an in-process substitute, retaining previously validated cached actions where inputs remain valid; record compatibility evidence against the baseline fixtures without claiming unresolved predecessor acceptance is complete.
 
 - [ ] 18.5 Exercise detected and custom launches across official, third-party and manual game fixtures, including a Linux Proton-style runtime wrapper and direct executable bypass; record equivalent Go/Rust parameters, original game identity, explicit unsupported-target outcomes and unchanged official provider files/credentials.
 
 - [ ] 18.6 Exercise the combined two-plugin data flow: selected per-game read/write, source/recipient field consent, measured performance publication, persistent history, producer uninstall, explicit future-consumer reuse and own/global cleanup; record no leakage across games/namespaces and clear native-process API-only disclosure.
+
+- [ ] 18.7 Verify the entire endpoint matrix against generated contract fixtures and both clients, including catalog versus sensitive sharing, unknown metadata preservation, rejected Struct authority injection and unchanged official 1.1–1.3 behavior; record coverage without treating annotation exchange as execution approval.
+
+- [ ] 18.8 Exercise common launch-plan consent end to end for runtime, mod and parameter-only overlays on official/third-party game fixtures; record accurate provenance/differences, changed-plan refusal, unchanged remembered Play, no unauthorized operation bypass and explicit limits on native-program behavior certification.
+
+- [ ] 18.9 Record native Windows/Linux environment-detection acceptance separately from pure evaluator fixtures, including execution userspace versus host, pre-launch revalidation and compatibility failure UI; do not treat a successful declaration check as native code safety certification.

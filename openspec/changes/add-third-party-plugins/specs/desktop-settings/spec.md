@@ -13,6 +13,21 @@ The Stores panel SHALL extend its plugin inventory with separate official and th
 - **WHEN** the user selects Steam in the inventory
 - **THEN** its existing official attribution/details remain and third-party permission or update controls cannot alter its grants or bundled binary
 
+### Requirement: Actionable platform compatibility review
+Import/details and update review SHALL show the target, mandatory requirements, detected effective environment and typed verdict/reasons. Author-tested coverage SHALL be labelled separately from eligibility. Incompatible or indeterminate mandatory checks SHALL prevent activation/Configure while leaving management/removal available. Unknown facts SHALL remain labelled unknown; compatible SHALL NOT imply safe code or successful execution.
+
+#### Scenario: Wrong libc family
+- **WHEN** a plugin requires glibc but the effective environment uses musl
+- **THEN** the UI identifies both families and the unavailable activation reason instead of showing only a generic failure
+
+#### Scenario: Environment not author-tested
+- **WHEN** a target passes mandatory checks but has no matching tested-environment entry
+- **THEN** the UI distinguishes that informational state from incompatibility and applies normal activation consent
+
+#### Scenario: Required fact is unknown
+- **WHEN** a mandatory environment fact cannot be determined
+- **THEN** the UI reports indeterminate with required/unknown values, keeps activation and Configure unavailable and leaves management/removal accessible
+
 ### Requirement: Effective access review
 Plugin details SHALL distinguish requested, granted and effective API permissions, their scopes and read/write/execute effects. Native-access declarations SHALL be identified as publisher statements rather than enforced OS restrictions. First activation and changed native declarations SHALL require explicit acknowledgement of native-code risks and independent maintenance.
 
@@ -23,6 +38,13 @@ Plugin details SHALL distinguish requested, granted and effective API permission
 #### Scenario: Deny optional permission
 - **WHEN** the user denies an optional grant
 - **THEN** the saved effective state and affected unavailable features appear without describing the plugin as sandboxed
+
+### Requirement: Creator and selected foreign resource scope review
+Domain permission controls SHALL independently present read/write/delete, own-creator scope and explicitly selected foreign runtime/library-root/save-profile records. Review SHALL identify creator and acting plugin/version, resources and allowed effects. All grants SHALL start denied. Removing a runtime registration SHALL disclose affected bindings without implying game-file, save or history deletion.
+
+#### Scenario: Extend one runtime scope
+- **WHEN** the user grants a migration plugin read/write access to one foreign runtime but leaves delete denied
+- **THEN** only those operations and that resource are added to its scope, while unrelated resources and private namespaces remain inaccessible
 
 ### Requirement: Configure delegates functional configuration
 The inventory SHALL offer Configure for enabled compatible plugins with an authorized configuration mode. It SHALL prefer a declared plugin-owned window, focus an existing one and use a declarative form only as a separately supported option. Installation, grants, activation, updates and licensing SHALL remain administered in GameNode.
@@ -76,7 +98,7 @@ GameNode SHALL let users review and select one approved custom recipe per game/p
 - **THEN** the UI explains why that route is unavailable and offers an explicit choice of the detected default without silently starting it
 
 ### Requirement: Data sharing source and recipient review
-Settings SHALL show sharing disabled by default and let users select the exact source/recipient plugin, developer, origin, publisher identity and installed version, plus fields/resources, snapshot/live delivery, history and persistence. No preselected option SHALL silently grant a new field, recipient or version.
+Settings SHALL distinguish catalog resource-read grants from sensitive/custom dataset sharing. Both SHALL default disabled and show owner/consumer developer, origin, publisher and installed version. Sensitive sharing SHALL select source/recipient, fields/resources, delivery, history and persistence. Catalog grants SHALL select resources and metadata projections without requiring pairwise transfer.
 
 #### Scenario: Authorize hardware fields
 - **WHEN** the user selects GPU model and RAM capacity for a chosen consumer
@@ -95,3 +117,47 @@ GameNode SHALL report unavailable approved game/save/runtime volumes without del
 #### Scenario: Missing external save disk
 - **WHEN** a registered volume disconnects
 - **THEN** the user sees an unavailable-volume state and previous save profiles/history remain intact
+
+### Requirement: Catalog and sensitive sharing controls
+Runtime and other catalog permissions SHALL let users grant scoped resource reads while showing provenance and available metadata namespaces. Sensitive fields SHALL remain under the explicit sharing review. New metadata SHALL not silently become visible or trigger new Core behavior.
+
+#### Scenario: Grant runtime lookup
+- **WHEN** the user approves B runtime catalog read scope
+- **THEN** B can discover A authorized runtime records without a separate send-to-B action and the UI still distinguishes private fields
+
+### Requirement: Unified launch-plan review
+Every GameNode-mediated execution customization SHALL use a host-generated launch-plan review, including runtimes/emulators, known mod loaders/layers, alternate targets, arguments, cwd and environment changes. The review SHALL show game, source/developer/origin/version, effective programs/URI, ordered intermediaries, full arguments and changes from the default/previous plan. Plugin explanations SHALL be labelled separately from host facts.
+
+#### Scenario: Runtime customization
+- **WHEN** the user first selects an emulator/runtime-based customized launch
+- **THEN** the review displays the resolved runtime, game/content target, source and effective parameters
+
+#### Scenario: Modded launch
+- **WHEN** a known mod loader or declared launch-time mod layer changes the execution plan
+- **THEN** the same review identifies those components and changes before approval
+
+#### Scenario: Environment-only customization
+- **WHEN** a customization changes only environment values or working directory
+- **THEN** the host still presents the effective change rather than skipping review because the executable is unchanged
+
+### Requirement: Scoped launch consent choices
+Launch review SHALL offer Cancel as the default, Run once and optional remembered approval for this recipe/game. No choice SHALL grant global execution permission. An unchanged approved plan SHALL run through user Play without another prompt. Changed plan-bound components, executable identity, arguments, cwd, environment or authorization SHALL require renewed approval.
+
+#### Scenario: Run once
+- **WHEN** the user selects Run once
+- **THEN** only that displayed plan receives an expiring single-use approval
+
+#### Scenario: Remembered recipe changes
+- **WHEN** a mod loader, runtime, plugin version or effective argument changes after remembered approval
+- **THEN** the prior approval cannot execute the changed plan without another review
+
+### Requirement: Honest launch disclosure and complete details
+Launch review SHALL state that scope validation does not certify native executable behavior. It SHALL show complete execution details safely as literal text, with unknown facts identified and secret values revealable only explicitly. Forbidden API requests SHALL not offer Execute anyway. Review SHALL support keyboard access, English and pt-BR.
+
+#### Scenario: Forbidden request
+- **WHEN** a launch request requires a prohibited shell/elevation route or unauthorized scope
+- **THEN** the host refuses it before confirmation and provides no consent bypass
+
+#### Scenario: Plugin claims launch is safe
+- **WHEN** a plugin provides a reassuring explanation
+- **THEN** the UI labels it as plugin-provided text and retains the independent host disclosure

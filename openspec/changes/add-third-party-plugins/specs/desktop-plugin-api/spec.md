@@ -208,11 +208,30 @@ Libraries SHALL support create/update/remove, multiple approved roots, individua
 - **THEN** each root can be monitored independently and an unavailable external root does not disable the others
 
 ### Requirement: Save profile configuration
-The public API SHALL support listing, creating, updating and removing plugin-contributed save profiles for approved games, with multiple scoped files/directories, include/exclude rules and save-context identity. Scope changes SHALL require host review, preserve earlier history and invalidate obsolete jobs. Configuration SHALL NOT authorize file-content reads or restore.
+The public API SHALL support listing, creating, updating and removing plugin-contributed save profiles for approved games, with multiple scoped files/directories, include/exclude rules and save-context identity. Independent read/write/delete grants SHALL control own records or explicitly selected foreign records. Scope changes SHALL require host review, preserve history and invalidate obsolete jobs. Configuration SHALL NOT authorize file-content reads or restore.
 
 #### Scenario: Emulator save context
 - **WHEN** a plugin proposes save files for one emulated game and emulator user
 - **THEN** the user reviews the actual locations before activation and unrelated profiles/history remain unchanged
+
+#### Scenario: Separate emulator save directories
+- **WHEN** two plugins declare different approved save directories and naming rules for the same ROM
+- **THEN** both profiles remain associated with the same game and their runtime contexts without assuming either directory is beside the ROM
+
+### Requirement: Runtime save descriptors preserve optional compatibility
+Save contracts SHALL support optional versioned descriptors for artifact kind, format/version, content binding, naming and runtime compatibility with attributed evidence. Unknown metadata SHALL remain unknown. Format declarations SHALL NOT authorize conversion or execution. Rich save browsing, platform parsers and converters SHALL remain future capabilities rather than required Core implementations in this delivery.
+
+#### Scenario: Different save artifact kinds
+- **WHEN** a plugin describes an in-game save and a save state for the same content
+- **THEN** their formats and runtime/version compatibility remain distinct; extension or byte size alone does not establish interchangeability
+
+#### Scenario: Future conversion workflow
+- **WHEN** a future negotiated plugin capability proposes converting a save for another runtime
+- **THEN** it requires approved input/output scopes, explicit review, backup of originals, result validation and preserved provenance; descriptive metadata alone cannot trigger it
+
+#### Scenario: Future per-runtime selection
+- **WHEN** a future supported selector associates a compatible discovered save with a game/runtime
+- **THEN** loading follows declared runtime capabilities and required import/naming steps, with no silent copy, rename, overwrite or assumption that every runtime supports arbitrary save selection
 
 ### Requirement: Common scoped location inspection
 Installation, save and runtime locations SHALL expose size, access, modification dates, fingerprint/comparison and availability through approved resource handles. Metadata SHALL distinguish read-only attributes from effective read/write/create/delete access and unknown states. Inspection SHALL NOT change files or grant writes.
@@ -276,7 +295,7 @@ The API SHALL accept bounded timestamped FPS, CPU and RAM batches with original 
 - **THEN** the API records the gap/sequence condition without fabricating zero FPS
 
 ### Requirement: Paired inter-plugin dataset access
-Every shareable data-ingestion family SHALL expose projected get/list/watch through typed endpoints or the common Data broker. Access SHALL require explicit source-to-recipient field/resource consent, independent from publication permission. Credentials, raw secrets and administrative commands SHALL NOT be exposed by mirroring RPC payloads.
+Every shareable data-ingestion family SHALL expose projected get/list/watch. Domain catalogs SHALL use user-approved resource-read grants without mandatory pairwise transfer. Sensitive/custom datasets SHALL require source-to-recipient field/resource consent independent of publication permission. Credentials, raw secrets and administrative commands SHALL NOT be exposed by mirroring RPC payloads.
 
 #### Scenario: Plugin talks to another plugin
 - **WHEN** the user approves one plugin to receive selected records from another
@@ -309,3 +328,85 @@ storage.persist SHALL permit a plugin to configure automatic retention and reque
 #### Scenario: Own cleanup policy
 - **WHEN** a permitted plugin requests pruning its unprotected performance samples older than its approved retention limit
 - **THEN** the host removes only eligible entries in that plugin namespace and reports the result without disclosing physical paths
+
+### Requirement: Shared domain catalog lookup
+A plugin SHALL be able to register an owned domain resource and another plugin SHALL discover it through the domain get/list/watch methods under explicit resource-read scope. Such lookup SHALL NOT require Data APIs or a second source-to-recipient agreement. Read access SHALL not confer mutation or access to private/sensitive fields.
+
+#### Scenario: A registers B reads
+- **WHEN** A registers a runtime and the user grants B read access to that runtime catalog projection
+- **THEN** B finds the resource through Runtimes.List/Get/Watch with A provenance and cannot update it
+
+### Requirement: Typed authority and operation fields
+Every RPC SHALL keep identity, provenance, permissions, scopes, handles, executable targets, arguments, paths, quotas, revisions, filters, outcomes and standard metric semantics in typed validated fields. A Struct or opaque payload SHALL NOT override these values, introduce a host operation or grant new authority.
+
+#### Scenario: Executable hidden in metadata
+- **WHEN** a runtime metadata extension contains an executable path or grant-like key
+- **THEN** Core does not use it as an executable target or permission and launches only through approved typed fields
+
+### Requirement: Versioned namespaced resource extensions
+Designated resources/reports SHALL support typed stable fields plus namespaced versioned Struct metadata. Extension envelopes SHALL identify schema and version and retain authenticated provenance. Core SHALL validate structure and bounds without requiring a Core-specific field for each plugin annotation or interpreting unknown metadata as behavior.
+
+#### Scenario: Custom runtime annotations
+- **WHEN** A registers a declared runtime extension understood by B but not semantically modeled by Core
+- **THEN** authorized B can read it through the regular runtime API without changing the GameNode protobuf schema
+
+### Requirement: Opaque content inside typed envelopes
+Files, images, HTTP bodies, private storage and secret contents SHALL use bounded byte payloads with typed context/metadata. Core SHALL NOT deserialize arbitrary blobs into commands or generic permissions. Generic custom datasets SHALL use a typed dataset/schema/resource envelope with a declared Struct payload.
+
+#### Scenario: Custom dataset is not runtime registration
+- **WHEN** a client publishes custom JSON describing a runtime through Data.Publish
+- **THEN** the data can be retained within its authorized custom dataset but cannot register a runtime or bypass Runtimes validation
+
+### Requirement: Bounded declared extension schemas
+Extension schemas SHALL be versioned declarative package assets with field classification and no executable hooks or external schema retrieval. The host SHALL enforce size/depth/key limits and schema shape. Unsupported optional metadata SHALL not invalidate usable base fields or acquire visibility by default.
+
+#### Scenario: Unknown optional namespace
+- **WHEN** a reader does not support an optional metadata namespace on an approved resource
+- **THEN** it can use the typed base while the unknown namespace remains unexecuted and subject to its own projection
+
+### Requirement: Revision-safe extension patches
+Resource updates SHALL require expected revisions and explicit field/namespace patches within creator scope or an explicit delegated domain-write grant. Unselected or unsupported extension namespaces SHALL be retained. Stale updates, unauthorized namespace changes and creator-provenance forgery SHALL fail without overwriting existing data.
+
+#### Scenario: Older writer preserves unfamiliar metadata
+- **WHEN** an authorized older client patches one typed field without selecting an extension namespace
+- **THEN** the host preserves that extension instead of deleting it through full-object replacement
+
+### Requirement: Endpoint field-policy coverage
+Every public RPC and stream operation SHALL document which fields are typed, opaque or extension-bearing and its catalog/private/sensitive access model. SDK and direct gRPC clients SHALL observe equivalent validation, unknown-extension behavior and compatibility. Existing official API contracts SHALL remain compatible.
+
+#### Scenario: New RPC without classification
+- **WHEN** a proposed method lacks an operation/schema/access classification
+- **THEN** contract conformance rejects its publication until that policy is specified
+
+### Requirement: Immutable host launch plans
+Customized execution SHALL resolve to a typed immutable host launch plan covering game/profile, source/version, effective executable/URI, runtime/mod components, argv, cwd, environment and current approval/resource revisions. Approval SHALL reference that exact plan. Dispatch SHALL revalidate it and refuse changed/replayed/expired plans rather than accept substituted execution fields.
+
+#### Scenario: Plan substitution
+- **WHEN** a plugin obtains approval for one plan and submits different execution parameters
+- **THEN** the host refuses dispatch under the old approval
+
+#### Scenario: Resource changes before dispatch
+- **WHEN** a reviewed executable/runtime/mod component or grant changes before execution
+- **THEN** the old approval is invalidated and the host requests a fresh review or reports an actionable error
+
+### Requirement: Uniform execution customization consent
+The same typed launch-plan approval contract SHALL cover runtime/emulator, mod-loader/layer and custom target/parameter changes mediated by GameNode. Native programs SHALL not be certified safe by approval. Launch approval SHALL not authorize mod installation, game-file mutation or otherwise forbidden API behavior.
+
+#### Scenario: Both client implementations
+- **WHEN** SDK and direct gRPC clients propose equivalent modded/runtime custom launches
+- **THEN** both use the same host plan, user intent and refusal semantics rather than their own confirmation UI
+
+### Requirement: Common runtime content-session contract
+The API SHALL accept negotiated typed runtime-session observations under default-deny game.sessions.report scoped to approved games and runtime instances. Events SHALL carry content, instance, session correlation, sequence, time and lifecycle state with explicit acceptance or refusal. Plugin adapters SHALL own runtime-specific detection; a plugin SHALL be allowed to support several runtimes. Descriptive presence SHALL NOT establish gameplay sessions.
+
+#### Scenario: Several emulator adapters in one plugin
+- **WHEN** an authorized plugin supports several emulators using different observation mechanisms
+- **THEN** each adapter reports through the same session contract without emulator-specific detection logic in Core
+
+#### Scenario: Unapproved game
+- **WHEN** a plugin reports gameplay for a game outside its approved reporting scope
+- **THEN** the host explicitly refuses the observation without changing accounting
+
+#### Scenario: Shared session observations
+- **WHEN** another plugin queries runtime-session observations through Data.Get/List/Watch
+- **THEN** only its explicitly consented sensitive-data projection is returned without process handles, credentials or launch tokens

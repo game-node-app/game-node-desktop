@@ -3,22 +3,26 @@
 ## MODIFIED Requirements
 
 ### Requirement: Bundled provider manifests
-The application SHALL embed the TOML provider manifests from the repository's `providers/` directory at build time. It SHALL load a manifest only on the platforms it lists. Bundled identities SHALL NOT be loaded or overridden from user-writable locations. Separate third-party identities SHALL load only from validated, installed and enabled managed packages.
+The application SHALL embed trusted bundled TOML provider manifests at build time and load them only on declared platforms. Plugin-backed manifests SHALL identify the packaged plugin and its supported operations. Bundled identities SHALL NOT be loaded or overridden from user-writable locations. Separate third-party identities SHALL load only from validated, installed, enabled and compatible managed packages.
 
 #### Scenario: Steam manifest on a supported platform
-- **WHEN** the application starts on Windows or Linux
-- **THEN** the bundled Steam provider is available without any file outside the application binary
+- **WHEN** the packaged application starts on Windows or Linux
+- **THEN** the bundled Steam provider and its compatible external plugin are available without manual plugin installation
 
 #### Scenario: Manifest for another platform
 - **WHEN** a bundled manifest does not list the current platform
 - **THEN** that provider is not loaded and not shown as a filter
+
+#### Scenario: Declared plugin is missing
+- **WHEN** the Steam plugin executable is absent or incompatible
+- **THEN** the desktop reports its unavailability, preserves cached data and does not run an in-process Steam substitute
 
 #### Scenario: Third-party package registers a distinct provider
 - **WHEN** an enabled managed package contains a validated provider manifest with an unreserved unique identity
 - **THEN** the host registers that provider through the third-party registry without replacing bundled manifest data
 
 ### Requirement: Manifest validation isolates failures
-The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, an unknown catalog backend, an unknown playtime counter, a duplicate provider id, malformed placeholders, and invalid action declarations. Executable launch SHALL be restricted to the bundled manual provider or an explicitly approved managed game target; unapproved providers SHALL retain declared URI actions. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
+The application SHALL validate every manifest when it loads. Validation SHALL reject unknown fields, missing required fields, an unknown native scanner, an unknown catalog backend, an unknown playtime counter, a duplicate provider id, malformed placeholders, and invalid action declarations. Registered plugin operations SHALL be valid scanner, catalog and counter backends only within their approved descriptor. Executable launch SHALL be restricted to the bundled manual provider or an explicitly approved managed game target; unapproved providers SHALL retain declared URI actions. An invalid manifest SHALL be skipped and logged, and the other manifests SHALL still load.
 
 #### Scenario: One manifest is invalid
 - **WHEN** one bundled manifest fails validation
@@ -30,8 +34,8 @@ The application SHALL validate every manifest when it loads. Validation SHALL re
 - **THEN** that manifest is rejected and no scan runs for it
 
 #### Scenario: Unknown catalog backend
-- **WHEN** a manifest names a catalog backend the application does not have
-- **THEN** that manifest is rejected with a diagnostic naming the backend and no catalog sync runs for it
+- **WHEN** a manifest names a catalog backend that is neither available natively nor authorized through its registered plugin
+- **THEN** that manifest is rejected with a diagnostic naming the backend and other providers remain usable
 
 #### Scenario: Unknown playtime counter
 - **WHEN** a manifest names a playtime counter the application does not have
@@ -40,6 +44,14 @@ The application SHALL validate every manifest when it loads. Validation SHALL re
 #### Scenario: Undeclared executable action
 - **WHEN** a non-manual provider declares an executable action without an approved managed target
 - **THEN** it is rejected and no executable can be launched through that declaration
+
+#### Scenario: Valid plugin backend
+- **WHEN** a manifest selects a scanner, catalog or counter capability from its registered plugin descriptor
+- **THEN** the host accepts that operation without requiring a Steam-specific native backend
+
+#### Scenario: Plugin capability exceeds its descriptor
+- **WHEN** the manifest requests an operation or permission not approved for that plugin
+- **THEN** the host rejects it and other valid providers remain usable
 
 ### Requirement: Approved URI and executable game launch
 URI Play and Install SHALL open only a filled URI whose scheme is the scheme of the manifest's own template, passed as one argument without a shell. The bundled manual provider and approved managed game targets SHALL additionally permit Play through a user-approved executable inside its registered game folder, with a stored argument list and working directory. Explicitly approved custom recipes SHALL also permit alternate targets and runtime wrappers in their separately approved resource scopes. Manual entries SHALL have no Install action. Executable targets and custom recipes SHALL be revalidated before each launch; custom overlays SHALL preserve original provider data and game identity.
@@ -108,6 +120,38 @@ An approved emulator/interpreter/engine runtime SHALL be reusable by multiple in
 #### Scenario: Runtime updated
 - **WHEN** the shared runtime version/path changes
 - **THEN** game identities remain distinct and affected launch approvals are revalidated without merging their entries
+
+### Requirement: One game with selectable runtime bindings
+Runtime-hosted content SHALL reference its GameNode game identity independently of runtime and discovering plugin. Several approved runtimes SHALL be selectable for the same game/content without duplicating the game or resetting history. Content resources SHALL retain separate file/variant identities. Removing a runtime binding SHALL NOT delete games, ROMs, saves or history.
+
+#### Scenario: One ROM with two emulators
+- **WHEN** authorized ZSNES and bsnes discoveries identify the same registered ROM and GameNode game
+- **THEN** the library retains one game with two selectable runtime bindings and preserves its playtime and saves
+
+#### Scenario: Migrate from DeSmuME to melonDS
+- **WHEN** the user authorizes reading the existing game/content references and selects a newly registered melonDS runtime
+- **THEN** only the approved runtime binding changes, the original game identity/history remain and saves are not silently converted or overwritten
+
+### Requirement: Runtime plugin discovery is separately authorized
+Runtime plugins SHALL be able to request library.discovery for approved content roots, including negotiated runtime-content contexts without provider impersonation. Core SHALL reconcile observations into game/content identities rather than using runtime ownership as game identity. Discovery SHALL NOT imply runtime mutation, launch, file writes or broader library reads.
+
+#### Scenario: Discovery by a runtime extension
+- **WHEN** an authorized emulator extension submits scoped content observations without owning a store provider
+- **THEN** Core reconciles those observations and candidate runtime bindings without granting a foreign provider context or executing the content
+
+### Requirement: Runtime metadata preserves typed launch contracts
+Runtime/content records SHALL permit optional versioned descriptive plugin metadata while keeping validated executable/content references and launch parameters in typed fields. Reading metadata SHALL not authorize execution. Unknown descriptive extensions SHALL not merge identities or alter approved launch semantics.
+
+#### Scenario: Recommendation becomes a launch proposal
+- **WHEN** a plugin reads preferred runtime information in an extension
+- **THEN** it must submit a typed custom-launch recipe for approval before that recommendation affects execution
+
+### Requirement: Launch overlays share one review boundary
+Approved runtime and mod-related overlays SHALL preserve original game/provider identity and use the common host launch-plan review. Unchanged official default launching SHALL keep its baseline behavior. Known/declared components SHALL not be presented as an exhaustive inventory of everything the native program can execute.
+
+#### Scenario: Overlay without official plugin changes
+- **WHEN** a mod-loader/runtime customization is selected for an official provider game
+- **THEN** the host reviews the overlay plan while leaving that official provider implementation and original detected launch target intact
 
 ## RENAMED Requirements
 

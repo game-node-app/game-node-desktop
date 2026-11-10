@@ -151,6 +151,19 @@ pub trait SteamWebApi: Send + Sync {
     /// the short-lived token and the (possibly rotated) minimal cookie header.
     async fn session(&self, cookie: &SessionCredential) -> Result<SteamSession, SteamError>;
 
+    /// Exchanges the long-lived `steamRefresh_steam` cookie for a fresh store access cookie.
+    ///
+    /// The account service persists the returned header before validating it, so a renewal that
+    /// rotates the refresh cookie is never lost. `None` means the credential has no refresh
+    /// cookie and cannot be renewed without a new sign-in.
+    async fn renew_session(
+        &self,
+        cookie: &SessionCredential,
+    ) -> Result<Option<SessionCredential>, SteamError> {
+        let _ = cookie;
+        Ok(None)
+    }
+
     /// Every game the account owns, using the session's web API token.
     async fn owned_games(&self, session: &SteamSession) -> Result<Vec<SteamOwnedGame>, SteamError>;
 

@@ -90,7 +90,7 @@ fn policy() -> Arc<LoginPolicy> {
 fn cookie_free_policy() -> Arc<LoginPolicy> {
     Arc::new(LoginPolicy {
         start_url: "https://store.example.test/login".into(),
-        cookie_url: None,
+        cookie_urls: vec![],
         probe_origin: "https://store.example.test".into(),
         title: "Fixture".into(),
         allowed_hosts: vec!["example.test".into()],
@@ -467,6 +467,41 @@ fn collections_reject_unapproved_duplicate_oversized_and_malformed_data_safely()
     assert!(validate_collection(&reply, &policy()).is_err());
     reply.page_result_json = Some(format!("\"{}\"", "x".repeat(MAX_RESULT)));
     assert!(validate_collection(&reply, &policy()).is_err());
+}
+
+#[test]
+fn the_steam_policy_collects_the_store_and_refresh_cookies_together() {
+    let policy = policy();
+    assert!(
+        policy
+            .cookie_urls
+            .iter()
+            .any(|url| url.contains("store.steampowered.com"))
+    );
+    assert!(
+        policy
+            .cookie_urls
+            .iter()
+            .any(|url| url.contains("login.steampowered.com"))
+    );
+    let reply = LoginReply {
+        cookies: vec![
+            LoginCookie {
+                name: "steamLoginSecure".into(),
+                value: "access".into(),
+            },
+            LoginCookie {
+                name: "sessionid".into(),
+                value: "session".into(),
+            },
+            LoginCookie {
+                name: "steamRefresh_steam".into(),
+                value: "refresh".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(validate_collection(&reply, &policy).is_ok());
 }
 
 #[test]

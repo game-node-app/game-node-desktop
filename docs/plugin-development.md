@@ -123,8 +123,9 @@ invalidates an in-flight result.
 
 A policy may read cookies or only approve a page probe:
 
-- `cookie_url` is optional. When present, `cookie_names` must be non-empty; when absent,
-  `cookie_names` must be empty.
+- `cookie_urls` is an optional list of URLs to read cookies from. When non-empty,
+  `cookie_names` must be non-empty; when empty, `cookie_names` must be empty. Several URLs let a
+  policy capture a session whose cookies Steam scopes to different hosts.
 - `auth.webview.cookies.read` is valid only with a policy that declares cookie names. A
   cookie-free policy does not grant it.
 - A login `Read` on a cookie-free policy skips cookie collection entirely and returns only

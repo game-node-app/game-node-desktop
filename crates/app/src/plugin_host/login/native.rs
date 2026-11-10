@@ -301,12 +301,6 @@ impl LoginWindow for NativeWindow {
             let window = self.window.clone();
             let close_gate = self.close_gate.clone();
             let close_requested = self.close_requested.clone();
-            let cookie_url = policy
-                .cookie_url
-                .as_deref()
-                .ok_or_else(|| Status::failed_precondition("invalid login policy"))?;
-            let cookie_url = Url::parse(cookie_url)
-                .map_err(|_| Status::failed_precondition("invalid login policy"))?;
             let cookie_policy = policy.clone();
             let cookies = worker(move || {
                 let _guard = close_gate
@@ -315,25 +309,30 @@ impl LoginWindow for NativeWindow {
                 if close_requested.load(Ordering::Acquire) {
                     return Ok(None);
                 }
-                window
-                    .cookies_for_url(cookie_url)
-                    .map(|cookies| {
-                        cookie_policy
-                            .cookie_names
+                let mut collected: Vec<LoginCookie> = Vec::new();
+                for cookie_url in &cookie_policy.cookie_urls {
+                    let cookie_url = Url::parse(cookie_url)
+                        .map_err(|_| Status::failed_precondition("invalid login policy"))?;
+                    let stored = window
+                        .cookies_for_url(cookie_url)
+                        .map_err(|_| Status::unavailable("login cookies unavailable"))?;
+                    for name in &cookie_policy.cookie_names {
+                        // One physical cookie per name: the first URL that exposes it wins.
+                        if collected.iter().any(|cookie| cookie.name == *name) {
+                            continue;
+                        }
+                        if let Some(cookie) = stored
                             .iter()
-                            .filter_map(|name| {
-                                cookies.iter().find(|cookie| {
-                                    cookie.name() == name && !cookie.value().is_empty()
-                                })
-                            })
-                            .map(|cookie| LoginCookie {
+                            .find(|cookie| cookie.name() == name && !cookie.value().is_empty())
+                        {
+                            collected.push(LoginCookie {
                                 name: cookie.name().to_owned(),
                                 value: cookie.value().to_owned(),
-                            })
-                            .collect()
-                    })
-                    .map(Some)
-                    .map_err(|_| Status::unavailable("login cookies unavailable"))
+                            });
+                        }
+                    }
+                }
+                Ok(Some(collected))
             })
             .await?;
             let Some(cookies) = cookies else {

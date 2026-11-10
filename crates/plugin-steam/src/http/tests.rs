@@ -482,6 +482,131 @@ async fn an_empty_array_config_fallback_means_expired() {
 }
 
 #[tokio::test]
+async fn an_expired_access_cookie_is_renewed_from_the_refresh_cookie() {
+    let server = MockServer::start_async().await;
+    let stored = "steamLoginSecure=76561198000000001%7C%7Cold; sessionid=session-secret; \
+                  steamRefresh_steam=76561198000000001%7C%7Crefresh-secret";
+    let renewed = "steamLoginSecure=76561198000000001%7C%7Cnew; sessionid=session-secret; \
+                   steamRefresh_steam=76561198000000001%7C%7Crefreshed-secret";
+    let expired = server.mock(|when, then| {
+        when.method(GET)
+            .path("/explore/")
+            .header_includes("cookie", "steamLoginSecure=76561198000000001%7C%7Cold");
+        then.status(200).body(page(
+            "{&quot;logged_in&quot;:false,&quot;steamid&quot;:&quot;76561198000000001&quot;}",
+            "{}",
+        ));
+    });
+    let finalize = server.mock(|when, then| {
+        when.method(POST)
+            .path("/jwt/finalizelogin")
+            .body_includes("nonce=refresh-secret")
+            .body_includes("sessionid=session-secret");
+        then.status(200).json_body(json!({
+            "steamID": STEAM_ID,
+            "transfer_info": [{
+                "url": format!("{}/login/settoken", server.base_url()),
+                "params": {"nonce": "transfer-nonce", "auth": "transfer-auth"}
+            }]
+        }));
+    });
+    let settoken = server.mock(|when, then| {
+        when.method(POST)
+            .path("/login/settoken")
+            .header_includes("cookie", "sessionid=session-secret")
+            .body_includes("steamID=76561198000000001")
+            .body_includes("nonce=transfer-nonce")
+            .body_includes("auth=transfer-auth");
+        then.status(200)
+            .header(
+                "set-cookie",
+                "steamLoginSecure=76561198000000001%7C%7Cnew; Path=/; Secure; HttpOnly",
+            )
+            .header(
+                "set-cookie",
+                "steamRefresh_steam=76561198000000001%7C%7Crefreshed-secret; Path=/; Secure; \
+                 HttpOnly",
+            );
+    });
+    let fresh = server.mock(|when, then| {
+        when.method(GET)
+            .path("/explore/")
+            .header_includes("cookie", "steamLoginSecure=76561198000000001%7C%7Cnew");
+        then.status(200).body(logged_in_page());
+    });
+
+    let expired_error = client(&server).session(&cred(stored)).await.unwrap_err();
+    assert_eq!(expired_error, SteamError::Expired);
+    let renewed_cookie = client(&server)
+        .renew_session(&cred(stored))
+        .await
+        .unwrap()
+        .expect("a renewal cookie");
+    let session = client(&server).session(&renewed_cookie).await.unwrap();
+
+    expired.assert_async().await;
+    finalize.assert_async().await;
+    settoken.assert_async().await;
+    fresh.assert_async().await;
+    assert_eq!(session.token.expose(), TOKEN);
+    assert_eq!(session.cookie.expose(), renewed);
+}
+
+#[tokio::test]
+async fn a_valid_access_cookie_never_calls_the_login_host() {
+    let server = MockServer::start_async().await;
+    let store = server.mock(|when, then| {
+        when.method(GET).path("/explore/");
+        then.status(200).body(logged_in_page());
+    });
+    let finalize = server.mock(|when, then| {
+        when.method(POST).path("/jwt/finalizelogin");
+        then.status(500);
+    });
+
+    let session = client(&server).session(&cred(COOKIE)).await.unwrap();
+
+    store.assert_async().await;
+    finalize.assert_calls_async(0).await;
+    assert_eq!(session.token.expose(), TOKEN);
+}
+
+#[tokio::test]
+async fn a_session_without_a_refresh_cookie_cannot_be_renewed() {
+    let server = MockServer::start_async().await;
+    let finalize = server.mock(|when, then| {
+        when.method(POST).path("/jwt/finalizelogin");
+        then.status(500);
+    });
+
+    let renewed = client(&server).renew_session(&cred(COOKIE)).await.unwrap();
+
+    assert!(renewed.is_none());
+    finalize.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn a_rejected_refresh_cookie_means_the_session_is_expired() {
+    let server = MockServer::start_async().await;
+    let stored = "steamLoginSecure=76561198000000001%7C%7Cold; sessionid=session-secret; \
+                  steamRefresh_steam=76561198000000001%7C%7Cdead-refresh";
+    let finalize = server.mock(|when, then| {
+        when.method(POST)
+            .path("/jwt/finalizelogin")
+            .body_includes("nonce=dead-refresh");
+        then.status(403);
+    });
+
+    let error = client(&server)
+        .renew_session(&cred(stored))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, SteamError::Expired);
+    finalize.assert_async().await;
+}
+
+#[tokio::test]
 async fn the_owned_catalog_keeps_numeric_ids_with_clean_names() {
     let server = MockServer::start_async().await;
     let owned = server.mock(|when, then| {

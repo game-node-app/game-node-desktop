@@ -32,6 +32,9 @@ pub struct ClientError;
 
 /// The store front.
 const STORE_BASE: &str = "https://store.steampowered.com/";
+/// The login host that renews the short-lived store access cookie from the long-lived
+/// `steamRefresh_steam` cookie.
+const LOGIN_BASE: &str = "https://login.steampowered.com/";
 /// The Web API host. It is never logged with its query string.
 const API_BASE: &str = "https://api.steampowered.com/";
 
@@ -39,6 +42,9 @@ const STORE_CONFIG_PATH: &str = "/pointssummary/ajaxgetasyncconfig";
 const STORE_EXPLORE_PATH: &str = "/explore/";
 /// The store home page. Tried when the recommendation queue no longer carries the config.
 const STORE_HOME_PATH: &str = "/";
+const FINALIZE_LOGIN_PATH: &str = "/jwt/finalizelogin";
+/// The redirect a browser lands on after login. The store token transfer follows it.
+const FINALIZE_LOGIN_REDIRECT: &str = "https://store.steampowered.com/login/?redir=&redir_ssl=1";
 const OWNED_GAMES_PATH: &str = "/IPlayerService/GetOwnedGames/v1/";
 const FAMILY_GROUP_PATH: &str = "/IFamilyGroupsService/GetFamilyGroupForUser/v1/";
 const SHARED_LIBRARY_PATH: &str = "/IFamilyGroupsService/GetSharedLibraryApps/v1/";
@@ -75,6 +81,7 @@ pub struct SteamClient {
     http: Client,
     store: Url,
     api: Url,
+    login: Url,
 }
 
 impl SteamClient {
@@ -87,10 +94,11 @@ impl SteamClient {
     pub fn with_timeout(timeout: Duration) -> Result<Self, ClientError> {
         let store = Url::parse(STORE_BASE).map_err(|_| ClientError)?;
         let api = Url::parse(API_BASE).map_err(|_| ClientError)?;
-        Self::build(store, api, timeout)
+        let login = Url::parse(LOGIN_BASE).map_err(|_| ClientError)?;
+        Self::build(store, api, login, timeout)
     }
 
-    fn build(store: Url, api: Url, timeout: Duration) -> Result<Self, ClientError> {
+    fn build(store: Url, api: Url, login: Url, timeout: Duration) -> Result<Self, ClientError> {
         let http = Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
@@ -98,12 +106,17 @@ impl SteamClient {
             .redirect(redirect_policy())
             .build()
             .map_err(|_| ClientError)?;
-        Ok(Self { http, store, api })
+        Ok(Self {
+            http,
+            store,
+            api,
+            login,
+        })
     }
 
     #[cfg(test)]
     fn with_bases(store: Url, api: Url, timeout: Duration) -> Result<Self, ClientError> {
-        Self::build(store, api, timeout)
+        Self::build(store.clone(), api, store, timeout)
     }
 
     async fn get_with_retry<F>(
@@ -346,6 +359,205 @@ impl SteamClient {
             response.stored_cookie,
         )
     }
+
+    /// Exchanges the long-lived `steamRefresh_steam` cookie for a fresh store access cookie.
+    ///
+    /// A store login keeps the browser signed in by renewing the roughly one-day
+    /// `steamLoginSecure` access cookie from the roughly two-hundred-day refresh cookie.
+    /// GameNode does not have a browser cookie jar, so it performs the same transfer
+    /// (`/jwt/finalizelogin` followed by the store's `/login/settoken`) itself. `Ok(None)`
+    /// means the credential predates this flow or the user refused "remember me".
+    async fn refresh_cookie_header(
+        &self,
+        cookie: &SessionCredential,
+    ) -> Result<Option<SessionCredential>, SteamError> {
+        let pairs = cookie_pairs(cookie.expose());
+        let Some((_, refresh_value)) = pairs
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("steamRefresh_steam"))
+        else {
+            return Ok(None);
+        };
+        if refresh_value.is_empty() {
+            return Ok(None);
+        }
+        // The cookie is `<steamid>%7C%7C<refresh token>`; the login host expects only the
+        // token as its nonce.
+        let refresh_token = refresh_token_from_cookie(refresh_value);
+        let session_id = pairs
+            .iter()
+            .find(|(name, value)| name.eq_ignore_ascii_case("sessionid") && !value.is_empty())
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(random_session_id);
+        let url = endpoint_url(&self.login, FINALIZE_LOGIN_PATH);
+        let form = [
+            ("nonce", refresh_token),
+            ("sessionid", session_id.clone()),
+            ("redir", FINALIZE_LOGIN_REDIRECT.to_owned()),
+        ];
+        let refresh_cookie = format!("steamRefresh_steam={refresh_value}; sessionid={session_id}");
+        let response = self
+            .get_with_retry("steam.login.finalize", || {
+                self.http
+                    .post(url.clone())
+                    .header(ACCEPT, STORE_ACCEPT_JSON)
+                    .header(COOKIE, refresh_cookie.clone())
+                    .form(&form)
+            })
+            .await?;
+        let status = response.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            tracing::warn!("Steam rejected the saved login renewal token");
+            return Err(SteamError::Expired);
+        }
+        if status != StatusCode::OK {
+            tracing::warn!(status = status.as_u16(), "Steam login renewal failed");
+            return Err(request_error(status));
+        }
+        // The renewal may rotate the refresh cookie too; keep every pair Steam updated.
+        let renewed = rotated_cookie_header(cookie.expose(), response.headers());
+        let body = read_capped(response, API_BODY_LIMIT).await?;
+        let finalize: FinalizeLogin =
+            serde_json::from_slice(&body).map_err(|_| SteamError::Changed)?;
+        if finalize.error.is_some_and(|error| !error.is_null()) {
+            tracing::warn!("Steam rejected the saved login renewal token");
+            return Err(SteamError::Expired);
+        }
+        let steam_id = finalize
+            .steam_id
+            .as_ref()
+            .and_then(numeric_id)
+            .or_else(|| steam_id_from_cookie(&renewed))
+            .or_else(|| steam_id_from_named_cookie(&renewed, "steamRefresh_steam"))
+            .ok_or(SteamError::Changed)?;
+        // The store has its own session token now, so use the store transfer rather than
+        // reusing a community token that the store would reject.
+        let transfer = finalize
+            .transfer_info
+            .iter()
+            .find(|transfer| {
+                transfer
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| self.is_store_transfer(url))
+            })
+            .ok_or(SteamError::Changed)?;
+        let transfer_url = Url::parse(transfer.url.as_deref().ok_or(SteamError::Changed)?)
+            .map_err(|_| SteamError::Changed)?;
+        let host = transfer_url.host_str().unwrap_or_default();
+        if transfer_url.scheme() != "https" && !is_loopback_host(host) {
+            return Err(SteamError::Changed);
+        }
+        if !is_steam_host(host) && !is_loopback_host(host) {
+            return Err(SteamError::Changed);
+        }
+        let mut fields: Vec<(&str, String)> = vec![("steamID", steam_id)];
+        let params = transfer.params.as_ref();
+        for (name, value) in [
+            ("nonce", params.and_then(|params| params.nonce.as_ref())),
+            ("auth", params.and_then(|params| params.auth.as_ref())),
+        ] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                fields.push((name, value.clone()));
+            }
+        }
+        let session_cookie = format!("sessionid={session_id}");
+        let response = self
+            .get_with_retry("steam.login.settoken", || {
+                self.http
+                    .post(transfer_url.clone())
+                    .header(ACCEPT, STORE_ACCEPT_JSON)
+                    .header(COOKIE, session_cookie.clone())
+                    .form(&fields)
+            })
+            .await?;
+        let status = response.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Err(SteamError::Expired);
+        }
+        if !status.is_success() {
+            tracing::warn!(
+                status = status.as_u16(),
+                "Steam store token transfer failed"
+            );
+            return Err(request_error(status));
+        }
+        let renewed = rotated_cookie_header(&renewed, response.headers());
+        if cookie_pairs(&renewed)
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("steamLoginSecure"))
+            .is_none_or(|(_, value)| value.is_empty())
+        {
+            return Err(SteamError::Expired);
+        }
+        SessionCredential::new(renewed)
+            .map(Some)
+            .ok_or(SteamError::InvalidCookies)
+    }
+
+    fn is_store_transfer(&self, value: &str) -> bool {
+        let Ok(url) = Url::parse(value) else {
+            return false;
+        };
+        let host = url.host_str().unwrap_or_default();
+        let scheme_ok = url.scheme() == "https" || is_loopback_host(host);
+        scheme_ok
+            && (is_loopback_host(host)
+                || host.eq_ignore_ascii_case(self.store.host_str().unwrap_or_default()))
+            && url.path() == "/login/settoken"
+    }
+
+    async fn read_store_session(
+        &self,
+        cookie: &SessionCredential,
+    ) -> Result<SteamSession, SteamError> {
+        let mut stored_cookie = cookie.expose().to_owned();
+        let mut request_cookie = stored_cookie.clone();
+        // Playnite reads the config from the store page Playnite navigates to. The recommendation
+        // queue is that page; the home page carries the same contract if the queue changes shape.
+        for path in [STORE_EXPLORE_PATH, STORE_HOME_PATH] {
+            let page = match self
+                .get_store(path, STORE_ACCEPT, None, &stored_cookie, &request_cookie)
+                .await
+            {
+                Ok(page) => page,
+                // A page shape we do not know: the other store page may still serve the config.
+                Err(SteamError::Changed) => continue,
+                Err(error) => return Err(error),
+            };
+            stored_cookie = page.stored_cookie;
+            request_cookie = page.request_cookie;
+            let text = match String::from_utf8(page.body) {
+                Ok(text) => text,
+                Err(error) => {
+                    let body = error.as_bytes();
+                    log_unparsed_store_page(
+                        path,
+                        page.status,
+                        &page.content_type,
+                        &page.content_encoding,
+                        Some(body),
+                    );
+                    continue;
+                }
+            };
+            match parse_store_page(&text) {
+                Ok(page) => return make_session(page, stored_cookie),
+                Err(SteamError::Expired) => return Err(SteamError::Expired),
+                Err(_) => {
+                    log_unparsed_store_page(
+                        path,
+                        page.status,
+                        &page.content_type,
+                        &page.content_encoding,
+                        Some(text.as_bytes()),
+                    );
+                }
+            }
+        }
+        self.store_session_fallback(&stored_cookie, &request_cookie)
+            .await
+    }
 }
 
 /// A store response before parsing, with the rotated persistable cookie and the full request-local
@@ -422,52 +634,14 @@ impl SteamClient {
 #[async_trait]
 impl SteamWebApi for SteamClient {
     async fn session(&self, cookie: &SessionCredential) -> Result<SteamSession, SteamError> {
-        let mut stored_cookie = cookie.expose().to_owned();
-        let mut request_cookie = stored_cookie.clone();
-        // Playnite reads the config from the store page Playnite navigates to. The recommendation
-        // queue is that page; the home page carries the same contract if the queue changes shape.
-        for path in [STORE_EXPLORE_PATH, STORE_HOME_PATH] {
-            let page = match self
-                .get_store(path, STORE_ACCEPT, None, &stored_cookie, &request_cookie)
-                .await
-            {
-                Ok(page) => page,
-                // A page shape we do not know: the other store page may still serve the config.
-                Err(SteamError::Changed) => continue,
-                Err(error) => return Err(error),
-            };
-            stored_cookie = page.stored_cookie;
-            request_cookie = page.request_cookie;
-            let text = match String::from_utf8(page.body) {
-                Ok(text) => text,
-                Err(error) => {
-                    let body = error.as_bytes();
-                    log_unparsed_store_page(
-                        path,
-                        page.status,
-                        &page.content_type,
-                        &page.content_encoding,
-                        Some(body),
-                    );
-                    continue;
-                }
-            };
-            match parse_store_page(&text) {
-                Ok(page) => return make_session(page, stored_cookie),
-                Err(SteamError::Expired) => return Err(SteamError::Expired),
-                Err(_) => {
-                    log_unparsed_store_page(
-                        path,
-                        page.status,
-                        &page.content_type,
-                        &page.content_encoding,
-                        Some(text.as_bytes()),
-                    );
-                }
-            }
-        }
-        self.store_session_fallback(&stored_cookie, &request_cookie)
-            .await
+        self.read_store_session(cookie).await
+    }
+
+    async fn renew_session(
+        &self,
+        cookie: &SessionCredential,
+    ) -> Result<Option<SessionCredential>, SteamError> {
+        self.refresh_cookie_header(cookie).await
     }
 
     async fn owned_games(&self, session: &SteamSession) -> Result<Vec<SteamOwnedGame>, SteamError> {
@@ -992,6 +1166,36 @@ struct FallbackData {
     webapi_token: Option<String>,
 }
 
+/// The login host's answer to a saved refresh cookie.
+///
+/// `steamID` is a JSON string in Steam's answer, but older captures used a number; both are
+/// accepted. `transfer_info` names the per-domain endpoints that mint the new session cookies.
+#[derive(Deserialize)]
+struct FinalizeLogin {
+    #[serde(default, rename = "steamID")]
+    steam_id: Option<serde_json::Value>,
+    #[serde(default)]
+    transfer_info: Vec<LoginTransfer>,
+    #[serde(default)]
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct LoginTransfer {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    params: Option<LoginTransferParams>,
+}
+
+#[derive(Default, Deserialize)]
+struct LoginTransferParams {
+    #[serde(default)]
+    nonce: Option<String>,
+    #[serde(default)]
+    auth: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct OwnedResponse {
     #[serde(default)]
@@ -1238,8 +1442,8 @@ fn merge_set_cookies(current: &str, headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Rebuilds the minimal cookie header with the rotated `steamLoginSecure`/`sessionid` values Steam
-/// sent, preserving every other stored pair.
+/// Rebuilds the minimal cookie header with the rotated `steamLoginSecure`, `sessionid` and
+/// `steamRefresh_steam` values Steam sent, preserving every other stored pair.
 fn rotated_cookie_header(current: &str, headers: &HeaderMap) -> String {
     let mut updates = Vec::new();
     for value in headers.get_all(SET_COOKIE).iter() {
@@ -1256,7 +1460,8 @@ fn rotated_cookie_header(current: &str, headers: &HeaderMap) -> String {
         let value = value.trim();
         if value.is_empty()
             || !(name.eq_ignore_ascii_case("steamLoginSecure")
-                || name.eq_ignore_ascii_case("sessionid"))
+                || name.eq_ignore_ascii_case("sessionid")
+                || name.eq_ignore_ascii_case("steamRefresh_steam"))
         {
             continue;
         }
@@ -1283,13 +1488,57 @@ fn rotated_cookie_header(current: &str, headers: &HeaderMap) -> String {
         .join("; ")
 }
 
-fn steam_id_from_cookie(header: &str) -> Option<String> {
+/// A numeric SteamID from the login answer's `steamID`, whether it was typed as a string or a
+/// number.
+fn numeric_id(value: &serde_json::Value) -> Option<String> {
+    let id = match value {
+        serde_json::Value::String(id) => id.trim().to_owned(),
+        serde_json::Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then_some(id)
+}
+
+/// The refresh token from a `steamRefresh_steam` cookie value (`<steamid>%7C%7C<token>`). A
+/// value without the separator is assumed to already be the token.
+fn refresh_token_from_cookie(value: &str) -> String {
+    let decoded = percent_decode_str(value)
+        .decode_utf8()
+        .map_or_else(|_| value.to_owned(), |decoded| decoded.into_owned());
+    match decoded.split_once("||") {
+        Some((_, token)) => token.to_owned(),
+        None => decoded,
+    }
+}
+
+/// An ID-shaped value from `login.steampowered.com`, which sets the refresh cookie as
+/// `<steamid>%7C%7C<token>`.
+fn steam_id_from_named_cookie(header: &str, name: &str) -> Option<String> {
     let (_, value) = cookie_pairs(header)
         .into_iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("steamLoginSecure"))?;
+        .find(|(existing, _)| existing.eq_ignore_ascii_case(name))?;
     let decoded = percent_decode_str(&value).decode_utf8().ok()?;
     let id = decoded.split("||").next()?.trim();
     (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_owned())
+}
+
+fn steam_id_from_cookie(header: &str) -> Option<String> {
+    steam_id_from_named_cookie(header, "steamLoginSecure")
+}
+
+/// The CSRF value for the transfer request. Steam treats it as opaque; only its presence matters.
+fn random_session_id() -> String {
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes).expect("operating system randomness is unavailable");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn request_error(status: StatusCode) -> SteamError {
+    match status {
+        StatusCode::TOO_MANY_REQUESTS => SteamError::RateLimited,
+        status if status.is_server_error() => SteamError::Server,
+        _ => SteamError::Changed,
+    }
 }
 
 #[cfg(test)]

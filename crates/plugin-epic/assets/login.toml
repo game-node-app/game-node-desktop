@@ -1,6 +1,6 @@
 # Trusted Epic Games login data, consumed through the generic host broker.
 #
-# Epic uses an authorization-code flow, so this policy is cookie-free: there is no `cookie_url` and
+# Epic uses an authorization-code flow, so this policy is cookie-free: `cookie_urls` is empty and
 # `cookie_names` is empty. The host approves navigation to Epic's own login hosts and reads only a
 # bounded page probe on the exact origin below. The probe returns Epic's one-time authorization
 # code, which the plugin exchanges and then drops. The login window never hands cookies to the

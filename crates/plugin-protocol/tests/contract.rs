@@ -79,7 +79,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     use gamenode_plugin_protocol::login::LoginPolicy;
     let policy = LoginPolicy {
         start_url: "https://store.example.test/login".into(),
-        cookie_url: Some("https://store.example.test/".into()),
+        cookie_urls: vec!["https://store.example.test/".into()],
         probe_origin: "https://store.example.test".into(),
         title: "Example".into(),
         allowed_hosts: vec!["example.test".into()],
@@ -103,7 +103,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     }
     assert!(
         LoginPolicy {
-            cookie_url: None,
+            cookie_urls: vec![],
             cookie_names: vec![],
             ..policy.clone()
         }
@@ -112,7 +112,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     );
     assert!(
         LoginPolicy {
-            cookie_url: None,
+            cookie_urls: vec![],
             ..policy.clone()
         }
         .validate()
@@ -136,7 +136,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     );
     assert!(
         LoginPolicy {
-            cookie_url: Some("https://other.test/".into()),
+            cookie_urls: vec!["https://other.test/".into()],
             ..policy.clone()
         }
         .validate()

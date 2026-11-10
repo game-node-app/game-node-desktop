@@ -181,6 +181,9 @@ pub struct SteamAccount {
     observer: Mutex<StatusObserver>,
     inner: Arc<Mutex<Inner>>,
     validity: Arc<AtomicBool>,
+    /// Serializes store validations so two operations cannot rotate the session cookie at the
+    /// same time and overwrite each other's refresh value.
+    session: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SteamAccount {
@@ -194,6 +197,7 @@ impl SteamAccount {
             observer: Mutex::new(Arc::new(observer)),
             inner: Arc::new(Mutex::new(Inner::new())),
             validity: Arc::new(AtomicBool::new(true)),
+            session: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -205,6 +209,7 @@ impl SteamAccount {
             observer: Mutex::new(Arc::new(|_| {})),
             inner: self.inner.clone(),
             validity,
+            session: self.session.clone(),
         }
     }
 
@@ -501,7 +506,7 @@ impl SteamAccount {
         if self.superseded(generation) {
             return self.achievements_outcome(Vec::new(), true);
         }
-        let session = match self.validate_session(&credential).await {
+        let session = match self.validate_session(generation, &credential).await {
             Ok(session) => session,
             Err(error) => {
                 if self.superseded(generation) {
@@ -512,6 +517,24 @@ impl SteamAccount {
                     .achievements_outcome(all_failed(game_ids, error.catalog_error()), false);
             }
         };
+        // The check that just ran may have renewed the access cookie (and Steam may have
+        // rotated the refresh cookie with it). Persist the renewed header before using the
+        // short-lived token; otherwise the next operation would renew the same cookie again.
+        if self.cookie_rotated(&session) {
+            if self.superseded(generation) {
+                return self.achievements_outcome(Vec::new(), true);
+            }
+            let saved = self.save_credential(&session.cookie).await;
+            if self.superseded(generation) {
+                if saved {
+                    self.discard_saved_if_signed_out().await;
+                }
+                return self.achievements_outcome(Vec::new(), true);
+            }
+            let mut inner = self.lock();
+            inner.credential = Some(session.cookie.clone());
+            inner.credential_save_failed = !saved;
+        }
         let language = steam_language(locale);
         let client = self.ports.client.clone();
         let mut outcomes = Vec::with_capacity(game_ids.len());
@@ -707,7 +730,7 @@ impl SteamAccount {
         }
         self.notify();
 
-        let session = match self.validate_session(&credential).await {
+        let session = match self.validate_session(generation, &credential).await {
             Ok(session) => session,
             Err(error) => {
                 if self.superseded(generation) {
@@ -801,7 +824,7 @@ impl SteamAccount {
         }
         self.notify();
 
-        let session = match self.validate_session(&credential).await {
+        let session = match self.validate_session(generation, &credential).await {
             Ok(session) => session,
             Err(error) => {
                 if self.superseded(generation) {
@@ -882,14 +905,6 @@ impl SteamAccount {
         if self.superseded(generation) {
             return self.superseded_outcome();
         }
-        let delete_failed = if expired {
-            Some(!self.delete_credential().await)
-        } else {
-            None
-        };
-        if self.superseded(generation) {
-            return self.superseded_outcome();
-        }
 
         let Some(mut inner) = self.commit_if_current(generation) else {
             return self.superseded_outcome();
@@ -902,12 +917,9 @@ impl SteamAccount {
         } else {
             SteamAccountState::Connected
         };
-        if expired {
-            inner.credential = None;
-            if delete_failed == Some(true) {
-                inner.credential_save_failed = true;
-            }
-        }
+        // The store session was just validated; a rejected catalog token is not proof that the
+        // long-lived refresh cookie is dead. Keep it so the next check can renew the access token
+        // instead of forcing a full sign-in.
         inner.catalog_error = match &owned {
             Ok(_) => None,
             Err(error) => Some(*error),
@@ -1226,12 +1238,57 @@ impl SteamAccount {
 
     async fn validate_session(
         &self,
+        generation: u64,
         credential: &SessionCredential,
     ) -> Result<SteamSession, SteamError> {
+        // Store validation can rotate both the access and refresh cookies. Serialize it so a
+        // concurrent achievement read cannot mint a second token that invalidates this one.
+        let _session = self.session.lock().await;
         let client = self.ports.client.clone();
         let credential = credential.clone();
         match tokio::time::timeout(REQUEST_TIMEOUT, client.session(&credential)).await {
-            Ok(result) => result,
+            Ok(Ok(session)) => Ok(session),
+            Ok(Err(SteamError::Expired)) => {
+                // Steam's access cookie lives about a day; the saved refresh cookie can mint a
+                // new one. Persist the renewal before validating it because Steam may rotate the
+                // refresh cookie in the same exchange.
+                let renewed =
+                    match tokio::time::timeout(REQUEST_TIMEOUT, client.renew_session(&credential))
+                        .await
+                    {
+                        Ok(result) => result?,
+                        Err(_) => return Err(SteamError::Unreachable),
+                    };
+                let Some(renewed) = renewed else {
+                    return Err(SteamError::Expired);
+                };
+                if self.superseded(generation) {
+                    return Err(SteamError::Expired);
+                }
+                let saved = self.save_credential(&renewed).await;
+                if self.superseded(generation) {
+                    if saved {
+                        self.discard_saved_if_signed_out().await;
+                    }
+                    return Err(SteamError::Expired);
+                }
+                {
+                    let mut inner = self.lock();
+                    inner.credential = Some(renewed.clone());
+                    inner.credential_save_failed = !saved;
+                }
+                tracing::info!("Steam renewed the expired store access cookie");
+                match tokio::time::timeout(REQUEST_TIMEOUT, client.session(&renewed)).await {
+                    Ok(Ok(session)) => Ok(session),
+                    // The refresh token was accepted, so the saved credential is not dead. A
+                    // store page that still refuses it is a temporary rejection, not a reason
+                    // to discard the long-lived cookie.
+                    Ok(Err(SteamError::Expired)) => Err(SteamError::Changed),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(SteamError::Unreachable),
+                }
+            }
+            Ok(Err(error)) => Err(error),
             Err(_) => Err(SteamError::Unreachable),
         }
     }
@@ -1617,6 +1674,9 @@ mod tests {
 
     struct FakeClient {
         session: Mutex<Option<Result<SteamSession, SteamError>>>,
+        sessions: Mutex<std::collections::VecDeque<Result<SteamSession, SteamError>>>,
+        renew: Mutex<Option<Result<Option<SessionCredential>, SteamError>>>,
+        renew_calls: AtomicUsize,
         owned: Mutex<Option<Result<Vec<SteamOwnedGame>, SteamError>>>,
         family: Mutex<Option<Result<SteamFamily, SteamError>>>,
         definitions: Mutex<
@@ -1636,6 +1696,9 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 session: Mutex::new(None),
+                sessions: Mutex::new(std::collections::VecDeque::new()),
+                renew: Mutex::new(None),
+                renew_calls: AtomicUsize::new(0),
                 owned: Mutex::new(None),
                 family: Mutex::new(None),
                 definitions: Mutex::new(None),
@@ -1652,6 +1715,14 @@ mod tests {
 
         fn set_session(&self, value: Result<SteamSession, SteamError>) {
             *self.session.lock().unwrap() = Some(value);
+        }
+
+        fn queue_session(&self, value: Result<SteamSession, SteamError>) {
+            self.sessions.lock().unwrap().push_back(value);
+        }
+
+        fn set_renew(&self, value: Result<Option<SessionCredential>, SteamError>) {
+            *self.renew.lock().unwrap() = Some(value);
         }
 
         fn set_owned(&self, value: Result<Vec<SteamOwnedGame>, SteamError>) {
@@ -1694,11 +1765,20 @@ mod tests {
         async fn session(&self, _cookie: &SessionCredential) -> Result<SteamSession, SteamError> {
             self.session_calls.fetch_add(1, Ordering::SeqCst);
             self.hold().await;
-            self.session
+            self.sessions
                 .lock()
                 .unwrap()
-                .clone()
+                .pop_front()
+                .or_else(|| self.session.lock().unwrap().clone())
                 .unwrap_or(Err(SteamError::Unreachable))
+        }
+
+        async fn renew_session(
+            &self,
+            _cookie: &SessionCredential,
+        ) -> Result<Option<SessionCredential>, SteamError> {
+            self.renew_calls.fetch_add(1, Ordering::SeqCst);
+            self.renew.lock().unwrap().clone().unwrap_or(Ok(None))
         }
 
         async fn owned_games(
@@ -1984,6 +2064,63 @@ mod tests {
         assert_eq!(harness.credentials.deletes.load(Ordering::SeqCst), 1);
         assert!(outcome.status.can_sign_in());
         assert!(outcome.status.can_sign_out());
+    }
+
+    #[tokio::test]
+    async fn an_expired_access_cookie_is_renewed_and_saved_before_the_check_continues() {
+        let harness = harness(
+            Some(cred(
+                "steamLoginSecure=old; steamRefresh_steam=refresh-token",
+            )),
+            Some(stored("76561198000000001", "Ana", 900)),
+        );
+        harness.client.queue_session(Err(SteamError::Expired));
+        harness.client.queue_session(Ok(session(
+            "76561198000000001",
+            "Ana",
+            "steamLoginSecure=new; steamRefresh_steam=refresh-token",
+        )));
+        harness.client.set_renew(Ok(Some(cred(
+            "steamLoginSecure=new; steamRefresh_steam=refresh-token",
+        ))));
+
+        harness.account.startup().await;
+        let outcome = harness.account.check().await;
+
+        assert_eq!(outcome.status.state, SteamAccountState::Connected);
+        assert_eq!(harness.client.renew_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            harness.credentials.stored().as_deref(),
+            Some("steamLoginSecure=new; steamRefresh_steam=refresh-token")
+        );
+        assert_eq!(harness.credentials.deletes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_renewal_is_saved_even_when_the_store_page_still_fails() {
+        let harness = harness(
+            Some(cred(
+                "steamLoginSecure=old; steamRefresh_steam=refresh-token",
+            )),
+            None,
+        );
+        harness.client.queue_session(Err(SteamError::Expired));
+        harness.client.queue_session(Err(SteamError::Expired));
+        harness.client.set_renew(Ok(Some(cred(
+            "steamLoginSecure=new; steamRefresh_steam=rotated-refresh",
+        ))));
+
+        harness.account.startup().await;
+        let outcome = harness.account.check().await;
+
+        assert_eq!(outcome.status.state, SteamAccountState::Unreachable);
+        // The refresh token was accepted, so a store page that still refuses the new access
+        // cookie must not discard the long-lived credential.
+        assert_eq!(
+            harness.credentials.stored().as_deref(),
+            Some("steamLoginSecure=new; steamRefresh_steam=rotated-refresh")
+        );
+        assert_eq!(harness.credentials.deletes.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -2311,6 +2448,29 @@ mod tests {
         assert_eq!(outcome.owned, Some(Err(CatalogError::Expired)));
         assert!(outcome.family.is_none());
         assert_eq!(harness.credentials.stored(), None);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_catalog_token_keeps_the_long_lived_credential() {
+        let harness = harness(Some(cred("steamLoginSecure=old")), None);
+        harness.client.set_session(Ok(session(
+            "76561198000000001",
+            "Ana",
+            "steamLoginSecure=old",
+        )));
+        harness.client.set_owned(Err(SteamError::Expired));
+        harness.account.startup().await;
+        let outcome = harness.account.sync().await;
+
+        assert_eq!(outcome.status.state, SteamAccountState::Expired);
+        assert_eq!(outcome.owned, Some(Err(CatalogError::Expired)));
+        // The store session validated, so the token rejection must not discard the refresh
+        // cookie; the next check can mint a new access token from it.
+        assert_eq!(harness.credentials.deletes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            harness.credentials.stored().as_deref(),
+            Some("steamLoginSecure=old")
+        );
     }
 
     #[tokio::test]
@@ -2825,6 +2985,33 @@ mod tests {
             outcome.outcomes[0].1,
             Err(CatalogError::Privacy),
             "definitions alone must not become a ready result"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewed_achievement_session_cookie_is_persisted() {
+        let harness = harness(
+            Some(cred("steamLoginSecure=old; steamRefresh_steam=refresh")),
+            None,
+        );
+        harness.client.set_session(Ok(session(
+            "A",
+            "cassi",
+            "steamLoginSecure=new; steamRefresh_steam=refresh",
+        )));
+        harness.client.set_definitions(Ok(None));
+        harness.account.startup().await;
+
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "en")
+            .await;
+
+        assert_eq!(outcome.outcomes[0].1, Ok(None));
+        assert_eq!(
+            harness.credentials.stored().as_deref(),
+            Some("steamLoginSecure=new; steamRefresh_steam=refresh"),
+            "the achievement read must not discard a rotated session cookie"
         );
     }
 

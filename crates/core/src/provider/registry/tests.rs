@@ -706,7 +706,7 @@ fn the_epic_plugin_descriptor_is_windows_only_and_loads_its_manifest() {
 struct EpicLoginPolicy {
     start_url: String,
     #[serde(default)]
-    cookie_url: Option<String>,
+    cookie_urls: Vec<String>,
     probe_origin: String,
     title: String,
     allowed_hosts: Vec<String>,
@@ -723,7 +723,7 @@ fn the_epic_login_policy_is_cookie_free_and_reads_only_the_authorization_code() 
         "../../../../../crates/plugin-epic/assets/login.toml"
     ))
     .unwrap();
-    assert_eq!(policy.cookie_url, None);
+    assert!(policy.cookie_urls.is_empty());
     assert!(policy.cookie_names.is_empty());
     assert_eq!(policy.probe_origin, "https://www.epicgames.com");
     assert_eq!(policy.title, "Epic Games");

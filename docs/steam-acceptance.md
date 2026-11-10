@@ -71,7 +71,9 @@ With `VITE_UI_MOCK=1`, `?library=large&steam=expired` was checked in the preview
 Suggested manual pass (when available):
 
 1. Windows: sign in with Steam Guard, import a real library, verify the three counts, toggle the
-   Installed filter, Play/Install an uninstalled game, restart, sign out and sign in again.
+   Installed filter, Play/Install an uninstalled game, restart, sign out and sign in again. Sign in
+   once with "remember me" checked, then verify after the access cookie expires (about a day) that
+   the app reconnects without asking for a new login.
 2. Linux: repeat the sign-in with WebKitGTK; verify Secret Service storage, then the 0600
    private-file fallback and its warning when no Secret Service exists; restart offline and recover
    an expired session.

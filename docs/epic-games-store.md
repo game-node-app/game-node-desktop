@@ -73,7 +73,7 @@ allowed_hosts = ["epicgames.com", "epicgames.dev", "unrealengine.com", "hcaptcha
 cookie_names = []
 ```
 
-- The policy has no `cookie_url`. The host therefore skips cookie collection entirely; the login
+- The policy has no `cookie_urls`. The host therefore skips cookie collection entirely; the login
   window never returns cookies to the plugin.
 - Navigation stays in the window only on the allowed Epic hosts. A link to any other host, which is
   how social sign-in providers are reached, opens in the system browser and cannot complete the

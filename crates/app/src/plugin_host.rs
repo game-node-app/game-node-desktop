@@ -840,7 +840,7 @@ timeout_seconds = 600
         let loaded = load(&text);
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
         let policy = loaded.descriptors[0].approved_login().unwrap().unwrap();
-        assert!(policy.cookie_url.is_none());
+        assert!(policy.cookie_urls.is_empty());
         assert!(policy.cookie_names.is_empty());
     }
 

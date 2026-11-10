@@ -270,12 +270,17 @@ fn authenticated_session(reply: LoginReply) -> Option<SteamSession> {
         .iter()
         .find(|c| c.name == "steamLoginSecure" && !c.value.is_empty())?;
     let mut cookie = format!("steamLoginSecure={}", login.value);
-    if let Some(session) = reply
-        .cookies
-        .iter()
-        .find(|c| c.name == "sessionid" && !c.value.is_empty())
-    {
-        cookie.push_str(&format!("; sessionid={}", session.value));
+    // `sessionid` is the store's CSRF cookie; `steamRefresh_steam` is the
+    // long-lived renewal cookie set on login.steampowered.com. Persist both when
+    // the window exposed them so a short-lived access token can be renewed.
+    for name in ["sessionid", "steamRefresh_steam"] {
+        if let Some(value) = reply
+            .cookies
+            .iter()
+            .find(|c| c.name == name && !c.value.is_empty())
+        {
+            cookie.push_str(&format!("; {}={}", value.name, value.value));
+        }
     }
     Some(SteamSession {
         steam_id: page.steam_id,
@@ -291,7 +296,7 @@ mod tests {
     use gamenode_plugin_protocol::proto::LoginCookie;
 
     fn reply() -> LoginReply {
-        LoginReply { cookies: vec![LoginCookie { name: "steamLoginSecure".into(), value: "cookie-secret".into() }, LoginCookie { name: "sessionid".into(), value: "session-secret".into() }, LoginCookie { name: "unrelated".into(), value: "excluded".into() }], page_result_json: Some(r#"{"steam_id":"76561198000000001","account_name":"player","token":"temporary-token-secret"}"#.into()), ..Default::default() }
+        LoginReply { cookies: vec![LoginCookie { name: "steamLoginSecure".into(), value: "cookie-secret".into() }, LoginCookie { name: "sessionid".into(), value: "session-secret".into() }, LoginCookie { name: "steamRefresh_steam".into(), value: "refresh-secret".into() }, LoginCookie { name: "unrelated".into(), value: "excluded".into() }], page_result_json: Some(r#"{"steam_id":"76561198000000001","account_name":"player","token":"temporary-token-secret"}"#.into()), ..Default::default() }
     }
 
     #[test]
@@ -299,13 +304,15 @@ mod tests {
         let session = authenticated_session(reply()).unwrap();
         assert_eq!(
             session.cookie.expose(),
-            "steamLoginSecure=cookie-secret; sessionid=session-secret"
+            "steamLoginSecure=cookie-secret; sessionid=session-secret; \
+             steamRefresh_steam=refresh-secret"
         );
         assert_eq!(session.token.expose(), "temporary-token-secret");
         let debug = format!("{session:?}");
         for secret in [
             "cookie-secret",
             "session-secret",
+            "refresh-secret",
             "temporary-token-secret",
             "excluded",
         ] {
@@ -324,5 +331,16 @@ mod tests {
         invalid_identity.page_result_json =
             Some(r#"{"steam_id":"not-an-id","token":"secret"}"#.into());
         assert!(authenticated_session(invalid_identity).is_none());
+    }
+
+    #[test]
+    fn a_login_without_remember_me_stores_only_the_session_cookies() {
+        let mut reply = reply();
+        reply.cookies.retain(|c| c.name != "steamRefresh_steam");
+        let session = authenticated_session(reply).unwrap();
+        assert_eq!(
+            session.cookie.expose(),
+            "steamLoginSecure=cookie-secret; sessionid=session-secret"
+        );
     }
 }

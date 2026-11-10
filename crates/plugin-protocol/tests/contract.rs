@@ -162,6 +162,43 @@ fn negotiation_preserves_discovery_clients_without_granting_account_access() {
 }
 
 #[test]
+fn achievements_require_the_new_api_minor() {
+    use gamenode_plugin_protocol::{API_MAJOR, API_MINOR, capability::*};
+    assert_eq!(
+        negotiate(API_MAJOR, 3, &[ACHIEVEMENTS.into()], &[ACHIEVEMENTS]),
+        Err(NegotiationError::Unsupported)
+    );
+    assert_eq!(
+        negotiate(
+            API_MAJOR,
+            ACHIEVEMENTS_API_MINOR,
+            &[ACHIEVEMENTS.into()],
+            &[ACHIEVEMENTS]
+        ),
+        Ok(ACHIEVEMENTS_API_MINOR)
+    );
+    assert_eq!(API_MINOR, ACHIEVEMENTS_API_MINOR);
+}
+
+#[test]
+fn achievement_outcomes_reject_unrequested_ids_and_oversized_batches() {
+    use gamenode_plugin_protocol::achievements::{MAX_GAMES, parse_outcomes};
+    let requested: std::collections::BTreeSet<String> = ["10".to_owned()].into();
+    let outcome = AchievementOutcome {
+        game_id: "11".into(),
+        outcome: Some(achievement_outcome::Outcome::None(true)),
+    };
+    assert!(parse_outcomes(&[outcome], &requested, false).is_err());
+    let oversized = (0..=MAX_GAMES)
+        .map(|index| AchievementOutcome {
+            game_id: index.to_string(),
+            outcome: Some(achievement_outcome::Outcome::None(true)),
+        })
+        .collect::<Vec<_>>();
+    assert!(parse_outcomes(&oversized, &requested, false).is_err());
+}
+
+#[test]
 fn catalog_wire_distinguishes_empty_failure_and_unchanged() {
     let outcomes = [
         catalog_completion::Outcome::CompletedRecords(0),
@@ -280,6 +317,7 @@ fn commands_preserve_operation_and_account_profile_fences() {
         operation: ProviderOperation::CancelSignIn as i32,
         target_operation_id: "login-6".into(),
         settings: None,
+        achievements: None,
     };
     assert_eq!(
         ProviderCommand::decode(command.encode_to_vec().as_slice()).unwrap(),

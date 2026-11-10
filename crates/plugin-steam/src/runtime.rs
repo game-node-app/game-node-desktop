@@ -8,7 +8,7 @@ use crate::{
     http::SteamClient,
 };
 use gamenode_plugin_protocol::{models, proto::*};
-use gamenode_plugin_sdk::{Error, HostClient, ProviderPlugin};
+use gamenode_plugin_sdk::{Error, HostClient, ProviderPlugin, achievements};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -126,6 +126,9 @@ impl ProviderPlugin for SteamPlugin {
         host: HostClient,
     ) -> Result<OperationResult, Error> {
         let kind = ProviderOperation::try_from(command.operation).map_err(|_| Error::Protocol)?;
+        let achievements = (kind == ProviderOperation::ReadAchievements)
+            .then(|| host.achievements_request(&command))
+            .transpose()?;
         let valid = if matches!(
             kind,
             ProviderOperation::Discover | ProviderOperation::ReadCounter
@@ -308,6 +311,47 @@ impl ProviderPlugin for SteamPlugin {
                         account_changed: result.account_changed,
                         observed_at: result.now,
                         catalogs,
+                        ..success()
+                    }
+                }
+                ProviderOperation::ReadAchievements => {
+                    let request = achievements.ok_or(Error::Protocol)?;
+                    let result = account
+                        .achievements(&request.game_ids, &request.language)
+                        .await;
+                    if result.superseded {
+                        return Ok(superseded());
+                    }
+                    OperationResult {
+                        status: Some(result.status.into()),
+                        achievements: result
+                            .outcomes
+                            .into_iter()
+                            .map(|(game_id, outcome)| {
+                                achievements::outcome_to_proto(match outcome {
+                                    Ok(Some(achievements)) => models::AchievementOutcome::Ready {
+                                        game_id,
+                                        achievements: achievements
+                                            .into_iter()
+                                            .map(|achievement| models::Achievement {
+                                                id: achievement.id,
+                                                name: achievement.name,
+                                                description: achievement.description,
+                                                hidden: achievement.hidden,
+                                                icon_url: achievement.icon_url,
+                                                icon_gray_url: achievement.icon_gray_url,
+                                                unlocked: achievement.unlocked,
+                                                unlocked_at: achievement.unlocked_at,
+                                            })
+                                            .collect(),
+                                    },
+                                    Ok(None) => models::AchievementOutcome::None { game_id },
+                                    Err(error) => {
+                                        models::AchievementOutcome::Failed { game_id, error }
+                                    }
+                                })
+                            })
+                            .collect(),
                         ..success()
                     }
                 }

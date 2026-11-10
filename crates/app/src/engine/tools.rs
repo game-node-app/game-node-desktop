@@ -104,7 +104,10 @@ impl Engine {
             let mut state = engine.lock();
             state.tools.installed_by_entry = installed_by_entry;
             state.tools.catalog = catalog_items;
-            state.tools.total_cache_bytes = bytes;
+            state.tools.total_cache_bytes = bytes
+                + gamenode_platform::achievement_icons::achievement_icon_usage(
+                    &engine.shared.ports.covers_dir,
+                );
             state.tools.total_cache_archives = archives;
             engine.publish(&mut state);
         });
@@ -282,7 +285,10 @@ impl Engine {
                         state
                             .tool_last_fetch
                             .insert((tool_id.clone(), channel), Instant::now());
-                        state.tools.total_cache_bytes = bytes;
+                        state.tools.total_cache_bytes = bytes
+                            + gamenode_platform::achievement_icons::achievement_icon_usage(
+                                &engine.shared.ports.covers_dir,
+                            );
                         state.tools.total_cache_archives = archives;
 
                         if let Some(modal) = &mut state.tools.modal
@@ -372,7 +378,10 @@ impl Engine {
                         state
                             .tool_last_fetch
                             .insert((tool_id.clone(), channel), Instant::now());
-                        state.tools.total_cache_bytes = bytes;
+                        state.tools.total_cache_bytes = bytes
+                            + gamenode_platform::achievement_icons::achievement_icon_usage(
+                                &engine.shared.ports.covers_dir,
+                            );
                         state.tools.total_cache_archives = archives;
 
                         if let Some(modal) = &mut state.tools.modal
@@ -427,7 +436,10 @@ impl Engine {
                     state
                         .tool_last_fetch
                         .insert((tool_id.clone(), channel), Instant::now());
-                    state.tools.total_cache_bytes = bytes;
+                    state.tools.total_cache_bytes = bytes
+                        + gamenode_platform::achievement_icons::achievement_icon_usage(
+                            &engine.shared.ports.covers_dir,
+                        );
                     state.tools.total_cache_archives = archives;
 
                     if let Some(modal) = &mut state.tools.modal
@@ -748,6 +760,7 @@ impl Engine {
             self.shared.ports.tools.clone(),
         );
         let engine = self.clone();
+        let covers_dir = self.shared.ports.covers_dir.clone();
         self.shared.storage.submit(move || {
             if let Some(catalog) = &catalog {
                 let _ = catalog.clear_cache();
@@ -755,6 +768,7 @@ impl Engine {
             if let Some(store) = &store {
                 let _ = store.clear_cached_archives_metadata();
             }
+            gamenode_platform::achievement_icons::clear_achievement_icons(&covers_dir);
             let mut state = engine.lock();
             state.tools.total_cache_bytes = 0;
             state.tools.total_cache_archives = 0;
@@ -810,7 +824,10 @@ impl Engine {
 
         let mut state = self.lock();
         state.tools.installed_by_entry = map;
-        state.tools.total_cache_bytes = bytes;
+        state.tools.total_cache_bytes = bytes
+            + gamenode_platform::achievement_icons::achievement_icon_usage(
+                &self.shared.ports.covers_dir,
+            );
         state.tools.total_cache_archives = archives;
 
         if let Some(modal) = &mut state.tools.modal

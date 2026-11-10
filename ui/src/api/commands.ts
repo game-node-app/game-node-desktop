@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getMockHost, mockEnabled } from './mock';
 import type {
+  AchievementFilter,
+  AchievementListView,
   AppInfo,
   AuthInput,
   LaunchKind,
@@ -121,6 +123,14 @@ export const commands = {
 
   providerCheck: (providerId: string) =>
     safeInvoke<void>('provider_check', { providerId }, () => undefined),
+
+  /** The full achievement list, read from the local cache (no GameNode request). */
+  achievementList: (key: string, filter: AchievementFilter) =>
+    safeInvoke<AchievementListView | null>(
+      'achievement_list',
+      { key, filter },
+      () => ({ connected: false, achievements: [] }),
+    ),
 
   removeEntry: (key: string, allowRediscovery: boolean) =>
     safeInvoke<void>('remove_entry', { key, allowRediscovery }, () => undefined),

@@ -148,6 +148,97 @@ GET https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/
 - A family failure is isolated: owned catalog updates still apply, and the app records the family
   error as `familyUnavailable`.
 
+## Achievements
+
+Achievement definitions and the connected account's unlock state are read for one Steam app at a
+time with the same session, as described in design D2 of the achievement change:
+
+```http
+GET https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/
+    ?access_token=<webapi_token>
+    &key=
+    &appid=<app id>
+    &l=<english|brazilian>
+    &format=json
+```
+
+```http
+GET https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/
+    ?access_token=<webapi_token>
+    &key=
+    &steamid=<steamid>
+    &appid=<app id>
+    &l=<english|brazilian>
+    &format=json
+```
+
+`access_token` alone is not accepted by these two endpoints: Steam answers HTTP 400 HTML with
+"Required parameter 'key' is missing", and `key=<token>` alone answers HTTP 403 HTML. A request
+that carries both the derived `access_token` and an empty `key` parameter succeeds. This is
+undocumented Steam behavior; the plugin sends the empty `key` and treats an unexpected 400/403
+HTML answer as a categorized failure rather than assuming the shape.
+
+### Observed response shapes
+
+Sanitized with `l=english&format=json`; no cookie, token or SteamID is recorded here.
+
+Normal game with achievements:
+
+```json
+{
+  "game": {
+    "gameName": "str",
+    "gameVersion": "str",
+    "availableGameStats": {
+      "stats": [{ "name": "str", "defaultvalue": 0, "displayName": "str" }],
+      "achievements": [{
+        "name": "str",
+        "defaultvalue": 0,
+        "displayName": "str",
+        "hidden": 0,
+        "description": "str",
+        "icon": "str",
+        "icongray": "str"
+      }]
+    }
+  }
+}
+```
+
+```json
+{
+  "playerstats": {
+    "steamID": "str",
+    "gameName": "str",
+    "achievements": [{
+      "apiname": "str",
+      "achieved": 1,
+      "unlocktime": 1760000000,
+      "name": "str",
+      "description": "str"
+    }],
+    "success": true
+  }
+}
+```
+
+The player payload's `name` and `description` are localized by `l`; definitions and unlocks are
+joined by the schema `name` and the player `apiname`.
+
+| Case | Schema | Player | Meaning |
+| --- | --- | --- | --- |
+| App with no stats at all | 200 `{"game":{}}` | 400 JSON `{"playerstats":{"error":"Requested app has no stats","success":false}}` | none |
+| Nonexistent app id | 400 JSON `{}` | 400 JSON with the same no-stats error | none |
+| Stats but no achievements | 200 with `availableGameStats.stats` only, no `achievements` key | 200 `{"playerstats":{"steamID","gameName","success":true}}`, no `achievements` key | none |
+| Private profile / undisclosed game details | 403 JSON `{"game":{}}` | 403 JSON `{"playerstats":{"error":"Profile is not public","success":false}}` | privacy |
+| Invalid or expired token | 403 `text/html`, body starts `<html><head><title>Forbidden</title>... Access is denied. Retrying will not help.` | same | expired |
+| Rate limiting / server error | 429 or 5xx after the shared bounded retries | same | rateLimited / server |
+| Unexpected body or shape | 200 with an unparseable or incomplete body | any | changed |
+
+An unlocked achievement with `unlocktime` 0 was not reproduced live in the first 100 games of the
+probed account. The "no time" behavior is implemented from the specification and covered by a
+fixture; it is not a captured response.
+
 ## Token lifetime
 
 The `webapi_token` is short-lived (roughly one day, and Steam may rotate it sooner). GameNode never

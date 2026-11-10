@@ -63,5 +63,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+httpmock = "0.9.0"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

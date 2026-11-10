@@ -217,3 +217,15 @@ upgraded schema without modifying it.
 Catalog and overlay data are not credentials and contain no GameNode account or device
 identifier. The tables belong to the OS user and are shared across GameNode accounts.
 
+
+## Achievements (migration `0009_achievements.sql`)
+
+| Table | Holds |
+| --- | --- |
+| `achievement_games` | One row per `(provider, store_account_id, entry_id)` ever read: `state` (`ready`, `none` or `failed`), the `language` of the last successful read, `last_success_at`, `last_attempt_at` and the last failure category. A failed read keeps a previous success's state and data. |
+| `achievements` | The complete definitions of one game, keyed by `(provider, store_account_id, entry_id, achievement_id)`: name, description, hidden flag, icon URLs, unlocked state, optional unlock time and the store's schema `position`. Each complete read replaces a game's rows in one transaction. |
+
+The cache is keyed by the connected store account, independently of any GameNode
+account, and contains no credential. Explicit store sign-out and replacement by a
+different store account delete that account's rows; session expiry and an
+unreachable store keep them.

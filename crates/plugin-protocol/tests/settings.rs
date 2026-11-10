@@ -78,7 +78,7 @@ fn values(form: &Form) -> Values {
 #[test]
 fn optional_settings_negotiation_does_not_expand_existing_grants() {
     assert!(!cap::ALL.contains(&cap::SETTINGS));
-    assert_eq!(cap::ALL.len(), 13);
+    assert_eq!(cap::ALL.len(), 14);
     assert_eq!(
         cap::negotiate(1, 3, &[cap::SETTINGS.into()], &[cap::SETTINGS]),
         Ok(3)

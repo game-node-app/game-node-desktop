@@ -197,6 +197,26 @@ impl ProviderProcesses {
         result
     }
 
+    pub async fn execute_achievements(
+        &self,
+        provider_id: &str,
+        request: gamenode_plugin_protocol::models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        self.ensure_started(provider_id).await?;
+        let result = self
+            .inner
+            .api
+            .execute_achievements(provider_id, request)
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|e| e.code() == tonic::Code::DeadlineExceeded)
+        {
+            self.stop_provider(provider_id).await;
+        }
+        result
+    }
+
     pub async fn stop_provider(&self, provider_id: &str) {
         if let Some(slot) = self.inner.slots.get(provider_id) {
             let mut child = slot.child.lock().await;

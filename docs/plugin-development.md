@@ -17,8 +17,9 @@ the async `ProviderPlugin` trait. `run(session, Arc::new(plugin))` dispatches ho
 the SDK. Do not retain a command's client to authorize later work: operation, account and profile
 generations fence stale requests.
 
-The public API currently defines discovery, account, catalog, login, secret, counter and action
-operations. A provider should request only the capabilities it actually needs. The host compares
+The public API currently defines discovery, account, catalog, login, secret, counter, action and
+achievement operations. A provider should request only the capabilities it actually needs. The host
+compares
 the request with trusted packaged metadata and grants the intersection; a plugin cannot grant
 itself additional access. API major/minor negotiation and unknown or duplicate permission checks
 are implemented in `gamenode-plugin-protocol`.
@@ -42,6 +43,7 @@ The complete capability identifiers currently defined by the public protocol are
 | `secrets.delete` | Delete this provider's logical secret slot. |
 | `playtime.counter` | Return provider-local total-playtime and last-played observations. Core retains tracking, attribution, deduplication and submission policy. |
 | `provider.actions.declare` | Declare approved provider actions that the host validates against trusted URI schemes and templates. It does not authorize arbitrary commands, shells or filesystem changes. |
+| `achievements.read` | Return bounded per-game achievement definitions and the connected account's unlock state for this provider. The host rejects unrequested game ids, oversized batches and strings, and results fenced by an account change. Available from API minor 4. |
 
 Secret read, write and delete are independent grants. The host uses Windows Credential Manager on
 Windows and the existing Secret Service/private-file policy on Linux. For Steam, the logical
@@ -51,8 +53,9 @@ session remains in its separate `Session` slot. Windows has no plaintext fallbac
 not treat a reported storage method as proof that a secret has been persisted successfully.
 
 The Steam plugin uses the full capability set above to provide installed discovery, account
-sign-in/check/sign-out, owned and Family catalog sync, Steam playtime observations and Play/Install
-actions. Its trusted descriptor also contains Steam-specific native-access declarations described
+sign-in/check/sign-out, owned and Family catalog sync, Steam playtime observations, Play/Install
+actions and achievement reads. Its trusted descriptor also contains Steam-specific native-access
+declarations described
 below. Optional settings capability `ui.settings` exists in the protocol crate, but is outside the
 Steam integration scope and is not part of Steam's grant. There is no plugin-provided catalog
 browsing UI or PC ports installation service in this integration.

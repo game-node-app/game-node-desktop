@@ -25,6 +25,7 @@ use url::Url;
 
 use super::{Engine, PortProgressPublisher, Ports};
 
+mod achievements;
 mod drm_free;
 mod favorites;
 mod library;
@@ -34,6 +35,15 @@ pub(super) mod provider_runtime;
 mod steam;
 mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
+
+/// A real in-memory achievement cache for engine fixtures.
+pub(crate) fn test_achievement_store() -> Arc<dyn gamenode_core::achievements::AchievementStore> {
+    Arc::new(
+        gamenode_platform::achievement_db::SqliteAchievementStore::new(Arc::new(Mutex::new(
+            gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+        ))),
+    )
+}
 
 fn ana() -> User {
     User {
@@ -384,6 +394,7 @@ struct Harness {
     files: Arc<SlowFiles>,
     uri: Arc<FakeUri>,
     covers: tempfile::TempDir,
+    achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
 }
 
 fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
@@ -426,7 +437,9 @@ fn harness_with_steam(
         gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
     );
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
+    let achievements = test_achievement_store();
     let ports = Ports {
+        achievements: achievements.clone(),
         backups: None,
         local_games: None,
         installations: None,
@@ -508,6 +521,7 @@ fn harness_with_steam(
         files,
         uri,
         covers,
+        achievements,
     }
 }
 

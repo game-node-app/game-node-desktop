@@ -13,6 +13,10 @@ pub const SECRET_WRITE: &str = "secrets.write";
 pub const SECRET_DELETE: &str = "secrets.delete";
 pub const COUNTER: &str = "playtime.counter";
 pub const ACTIONS: &str = "provider.actions.declare";
+/// Per-game achievement definitions and the connected account's unlock state.
+pub const ACHIEVEMENTS: &str = "achievements.read";
+/// Achievement reads negotiate a new operation and bounded payload at this minor.
+pub const ACHIEVEMENTS_API_MINOR: u32 = 4;
 /// Optional feature. Deliberately excluded from ALL so existing bundled grants
 /// cannot silently gain configuration authority when the protocol is updated.
 pub const SETTINGS: &str = "ui.settings";
@@ -32,6 +36,7 @@ pub const ALL: &[&str] = &[
     SECRET_DELETE,
     COUNTER,
     ACTIONS,
+    ACHIEVEMENTS,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -68,6 +73,9 @@ pub fn negotiate(
             return Err(NegotiationError::Capability);
         }
         if name != DISCOVERY && selected < 2 {
+            return Err(NegotiationError::Unsupported);
+        }
+        if name == ACHIEVEMENTS && selected < ACHIEVEMENTS_API_MINOR {
             return Err(NegotiationError::Unsupported);
         }
         if name == SETTINGS && selected < SETTINGS_API_MINOR {

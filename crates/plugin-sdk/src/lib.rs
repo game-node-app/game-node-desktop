@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use gamenode_plugin_protocol::{capability, models, proto, settings};
+pub use gamenode_plugin_protocol::{achievements, capability, models, proto, settings};
 use proto::{plugin_host_client::PluginHostClient, provider_host_client::ProviderHostClient, *};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -167,6 +167,26 @@ impl HostClient {
         {
             return Err(Error::Protocol);
         }
+        Ok(request)
+    }
+
+    /// Validate the host-issued achievement request before any provider I/O. The request is
+    /// bounded and must be scoped to this immutable service context.
+    pub fn achievements_request(
+        &self,
+        command: &ProviderCommand,
+    ) -> Result<models::AchievementsRequest, Error> {
+        if command.operation != ProviderOperation::ReadAchievements as i32
+            || command.context.as_ref() != Some(&self.context)
+            || command.settings.is_some()
+        {
+            return Err(Error::Protocol);
+        }
+        let request: models::AchievementsRequest = command
+            .achievements
+            .clone()
+            .ok_or(Error::Protocol)?
+            .try_into()?;
         Ok(request)
     }
 
@@ -393,6 +413,11 @@ impl Session {
         }
         let settings_supported = capabilities.contains(&capability::SETTINGS);
         if settings_supported && reply.api_minor < capability::SETTINGS_API_MINOR {
+            return Err(Error::Protocol);
+        }
+        if capabilities.contains(&capability::ACHIEVEMENTS)
+            && reply.api_minor < capability::ACHIEVEMENTS_API_MINOR
+        {
             return Err(Error::Protocol);
         }
         let context = ServiceContext {

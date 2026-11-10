@@ -236,6 +236,37 @@ function providerCounts(filtered: Row[], raw: Row[]): ProviderCount[] {
   ];
 }
 
+const MOCK_ACHIEVEMENTS = [
+  { id: 'ACH_FIRST', name: 'First steps', description: 'Finish the opening chapter.', hidden: false, unlocked: true, unlockedAt: NOW - 300, position: 0 },
+  { id: 'ACH_COLLECT', name: 'Collector', description: 'Find every hidden relic.', hidden: false, unlocked: true, unlockedAt: NOW - 7_200, position: 1 },
+  { id: 'ACH_HIDDEN', name: 'A secret', description: 'A spoiler description.', hidden: true, unlocked: false, unlockedAt: null, position: 2 },
+  { id: 'ACH_BOSS', name: 'Boss rush', description: 'Defeat every boss.', hidden: false, unlocked: false, unlockedAt: null, position: 3 },
+  { id: 'ACH_NIGHT', name: 'Night owl', description: 'Play after midnight.', hidden: false, unlocked: false, unlockedAt: null, position: 4 },
+];
+
+function mockAchievementList(filter: string) {
+  const records = MOCK_ACHIEVEMENTS
+    .map((achievement) => ({
+      ...achievement,
+      iconUrl: '',
+      iconGrayUrl: '',
+    }))
+    .filter((achievement) =>
+      filter === 'unlocked'
+        ? achievement.unlocked
+        : filter === 'locked'
+          ? !achievement.unlocked
+          : true,
+    );
+  return {
+    connected: true,
+    state: 'ready' as const,
+    lastSuccessAt: NOW - 60,
+    failure: null,
+    achievements: records,
+  };
+}
+
 function createLibrary(source: Row[]): LibraryView {
   return {
     generation: 1, layout: { view: 'grid', sort: { key: 'title', direction: 'ascending' }, filter: 'all', filters: createDefaultFilters(), sidebarWidth: 248, sidebarCollapsed: false, detailWidth: 320, detailOpen: false },
@@ -1108,7 +1139,29 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     const disabled = { disabled: 'nothingSelected' as const };
     lib.actions = { selected: selected.length, play: one ? 'available' : disabled, install: disabled,
       matchGame: one ? 'available' : disabled, addToGamenode: selected.some((row) => typeof row.status === 'object') ? 'available' : disabled, changeMatch: !!one };
-    lib.detail = one ? { row: one, running: false, installDir: `/games/${one.title}`, releaseYear: one.releaseYear ?? 2022, hasArtwork: true, membership: 'notInLibrary' } : null;
+    lib.detail = one ? {
+      row: one,
+      running: false,
+      installDir: `/games/${one.title}`,
+      releaseYear: one.releaseYear ?? 2022,
+      hasArtwork: true,
+      membership: 'notInLibrary',
+      achievementBackend: one.provider === 'steam',
+      achievements: one.provider === 'steam'
+        ? {
+            state: 'ready',
+            unlocked: MOCK_ACHIEVEMENTS.filter((achievement) => achievement.unlocked).length,
+            total: MOCK_ACHIEVEMENTS.length,
+            latestUnlock: {
+              id: 'ACH_FIRST',
+              name: 'First steps',
+              unlockedAt: NOW - 300,
+            },
+            lastSuccessAt: NOW - 60,
+            failure: null,
+          }
+        : null,
+    } : null;
   }
   function publish() { updateLibrary(); const next = copy(); listeners.forEach((listener) => listener(next)); }
   function libraryInput(input: LibraryInput) {
@@ -1261,6 +1314,11 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
         }
       } else if (cmd === 'ports_refresh') {
         refreshPortCatalog();
+      } else if (cmd === 'achievement_list') {
+        const key = (args.key as string | undefined) ?? '';
+        const filter = (args.filter as string | undefined) ?? 'all';
+        if (!key.startsWith('steam:')) return null;
+        return mockAchievementList(filter);
       } else if (cmd === 'ports_detail') {
         const entry = ports.entries.find((item) => item.catalogId === args.catalogId);
         return entry ? mockDetailFor(entry) : null;

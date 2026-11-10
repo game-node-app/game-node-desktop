@@ -10,7 +10,10 @@
 
 use std::time::Duration;
 
-use crate::steam::{SteamError, SteamFamily, SteamOwnedGame, SteamSession, SteamWebApi};
+use crate::steam::{
+    SteamAchievementDefinition, SteamAchievementState, SteamError, SteamFamily, SteamOwnedGame,
+    SteamSession, SteamWebApi,
+};
 use async_trait::async_trait;
 use gamenode_plugin_protocol::models::SessionCredential;
 use percent_encoding::percent_decode_str;
@@ -39,6 +42,8 @@ const STORE_HOME_PATH: &str = "/";
 const OWNED_GAMES_PATH: &str = "/IPlayerService/GetOwnedGames/v1/";
 const FAMILY_GROUP_PATH: &str = "/IFamilyGroupsService/GetFamilyGroupForUser/v1/";
 const SHARED_LIBRARY_PATH: &str = "/IFamilyGroupsService/GetSharedLibraryApps/v1/";
+const ACHIEVEMENT_SCHEMA_PATH: &str = "/ISteamUserStats/GetSchemaForGame/v2/";
+const PLAYER_ACHIEVEMENTS_PATH: &str = "/ISteamUserStats/GetPlayerAchievements/v1/";
 
 /// How many times one store request may follow Steam's cookie-setting redirect back to itself.
 const MAX_COOKIE_BOUNCES: u32 = 3;
@@ -355,6 +360,65 @@ struct StoreResponse {
     request_cookie: String,
 }
 
+impl SteamClient {
+    async fn achievement_body(
+        &self,
+        endpoint: &'static str,
+        url: Url,
+    ) -> Result<Option<Vec<u8>>, SteamError> {
+        let response = self
+            .get_with_retry(endpoint, || self.http.get(url.clone()))
+            .await?;
+        let status = response.status();
+        let content_type = header_text(response.headers(), CONTENT_TYPE);
+        let body = read_capped(response, API_BODY_LIMIT).await?;
+        match status {
+            StatusCode::OK => Ok(Some(body)),
+            StatusCode::BAD_REQUEST => {
+                // A game without stats (and an unknown app id) answers 400 JSON. Anything else
+                // means the endpoint changed shape.
+                let value: serde_json::Value =
+                    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                let no_stats = value
+                    .pointer("/playerstats/error")
+                    .and_then(|error| error.as_str())
+                    .is_some_and(|error| error.to_ascii_lowercase().contains("no stats"))
+                    || value.as_object().is_some_and(|object| object.is_empty());
+                if no_stats {
+                    tracing::debug!(endpoint, "Steam reports no stats for this app");
+                    Ok(None)
+                } else {
+                    tracing::warn!(
+                        endpoint,
+                        status = status.as_u16(),
+                        "unexpected achievement response"
+                    );
+                    Err(SteamError::Changed)
+                }
+            }
+            StatusCode::UNAUTHORIZED => Err(SteamError::Expired),
+            StatusCode::FORBIDDEN => {
+                // A JSON 403 is a privacy refusal; the invalid-token answer is HTML.
+                let json = content_type.to_ascii_lowercase().contains("json")
+                    || body
+                        .iter()
+                        .copied()
+                        .find(|byte| !byte.is_ascii_whitespace())
+                        == Some(b'{');
+                if json {
+                    tracing::warn!(endpoint, "Steam does not disclose these achievements");
+                    Err(SteamError::Privacy)
+                } else {
+                    Err(SteamError::Expired)
+                }
+            }
+            StatusCode::TOO_MANY_REQUESTS => Err(SteamError::RateLimited),
+            status if status.is_server_error() => Err(SteamError::Server),
+            _ => Err(SteamError::Server),
+        }
+    }
+}
+
 #[async_trait]
 impl SteamWebApi for SteamClient {
     async fn session(&self, cookie: &SessionCredential) -> Result<SteamSession, SteamError> {
@@ -496,6 +560,118 @@ impl SteamWebApi for SteamClient {
             group_id: Some(group_id),
             games,
         })
+    }
+
+    async fn achievement_definitions(
+        &self,
+        session: &SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<SteamAchievementDefinition>>, SteamError> {
+        let url = api_url(
+            &self.api,
+            ACHIEVEMENT_SCHEMA_PATH,
+            &[
+                ("access_token", session.token.expose()),
+                ("key", ""),
+                ("appid", app_id),
+                ("l", language),
+                ("format", "json"),
+            ],
+        );
+        let Some(body) = self.achievement_body(ACHIEVEMENT_SCHEMA_PATH, url).await? else {
+            return Ok(None);
+        };
+        let parsed: SchemaResponse =
+            serde_json::from_slice(&body).map_err(|_| SteamError::Changed)?;
+        let Some(game) = parsed.game else {
+            return Err(SteamError::Changed);
+        };
+        let Some(stats) = game.available_game_stats else {
+            return Ok(None);
+        };
+        let Some(achievements) = stats.achievements else {
+            return Ok(None);
+        };
+        let definitions = achievements
+            .into_iter()
+            .filter_map(|achievement| {
+                let api_name = achievement.name?.trim().to_owned();
+                if api_name.is_empty() {
+                    return None;
+                }
+                Some(SteamAchievementDefinition {
+                    api_name,
+                    display_name: crate::steam::clean_achievement_text(
+                        &achievement.display_name.unwrap_or_default(),
+                    ),
+                    description: crate::steam::clean_achievement_text(
+                        &achievement.description.unwrap_or_default(),
+                    ),
+                    hidden: achievement.hidden.unwrap_or(0) != 0,
+                    icon: achievement.icon.unwrap_or_default(),
+                    icon_gray: achievement.icongray.unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(Some(definitions))
+    }
+
+    async fn achievement_states(
+        &self,
+        session: &SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<SteamAchievementState>>, SteamError> {
+        let url = api_url(
+            &self.api,
+            PLAYER_ACHIEVEMENTS_PATH,
+            &[
+                ("access_token", session.token.expose()),
+                ("key", ""),
+                ("steamid", &session.steam_id),
+                ("appid", app_id),
+                ("l", language),
+                ("format", "json"),
+            ],
+        );
+        let Some(body) = self.achievement_body(PLAYER_ACHIEVEMENTS_PATH, url).await? else {
+            return Ok(None);
+        };
+        let parsed: PlayerAchievementsResponse =
+            serde_json::from_slice(&body).map_err(|_| SteamError::Changed)?;
+        let Some(stats) = parsed.playerstats else {
+            return Err(SteamError::Changed);
+        };
+        if !stats.success {
+            return Err(SteamError::Privacy);
+        }
+        let Some(achievements) = stats.achievements else {
+            return Ok(None);
+        };
+        let states = achievements
+            .into_iter()
+            .filter_map(|achievement| {
+                let api_name = achievement.apiname?.trim().to_owned();
+                if api_name.is_empty() {
+                    return None;
+                }
+                let achieved = achievement.achieved.unwrap_or(0) != 0;
+                let unlock_time = achievement.unlocktime.filter(|time| *time > 0 && achieved);
+                Some(SteamAchievementState {
+                    api_name,
+                    achieved,
+                    unlock_time,
+                    display_name: crate::steam::clean_achievement_text(
+                        &achievement.name.unwrap_or_default(),
+                    ),
+                    description: crate::steam::clean_achievement_text(
+                        &achievement.description.unwrap_or_default(),
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(Some(states))
     }
 }
 
@@ -852,6 +1028,68 @@ struct SharedLibraryResponse {
 struct SharedLibraryBody {
     #[serde(default)]
     apps: Option<Vec<ApiGame>>,
+}
+
+#[derive(Deserialize)]
+struct SchemaResponse {
+    #[serde(default)]
+    game: Option<SchemaGame>,
+}
+
+#[derive(Deserialize)]
+struct SchemaGame {
+    #[serde(default, rename = "availableGameStats")]
+    available_game_stats: Option<SchemaStats>,
+}
+
+#[derive(Deserialize)]
+struct SchemaStats {
+    #[serde(default)]
+    achievements: Option<Vec<SchemaAchievement>>,
+}
+
+#[derive(Deserialize)]
+struct SchemaAchievement {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    hidden: Option<i64>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    icongray: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PlayerAchievementsResponse {
+    #[serde(default)]
+    playerstats: Option<PlayerAchievements>,
+}
+
+#[derive(Deserialize)]
+struct PlayerAchievements {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    achievements: Option<Vec<PlayerAchievement>>,
+}
+
+#[derive(Deserialize)]
+struct PlayerAchievement {
+    #[serde(default)]
+    apiname: Option<String>,
+    #[serde(default)]
+    achieved: Option<i64>,
+    #[serde(default)]
+    unlocktime: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]

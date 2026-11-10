@@ -6,6 +6,7 @@ source = "steam"
 scan = { plugin = "org.gamenode.plugin.steam-discovery" }
 # Owned and Steam Family games, read with the connected account's web session.
 catalog = { plugin = "org.gamenode.plugin.steam-discovery" }
+achievements = { plugin = "org.gamenode.plugin.steam-discovery" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }
 match = { external_category = 1 }

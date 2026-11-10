@@ -15,6 +15,7 @@ pub(crate) fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProvid
             catalog: true,
             counter: true,
             actions: true,
+            achievements: true,
         }],
     )
 }
@@ -50,6 +51,7 @@ launch = { uri = "example://run/{id}" }
         catalog: true,
         counter: true,
         actions: true,
+        achievements: true,
     };
     let loaded = load_with_plugins(
         &[("example.toml", text)],
@@ -116,6 +118,10 @@ fn loads_the_bundled_steam_manifest() {
     assert!(steam.has_launch() && steam.has_install());
     assert!(steam.has_catalog());
     assert_eq!(
+        steam.achievement_plugin(),
+        Some("org.gamenode.plugin.steam-discovery")
+    );
+    assert_eq!(
         steam.catalog_backend(),
         Some("org.gamenode.plugin.steam-discovery")
     );
@@ -181,6 +187,7 @@ scan = { plugin = "org.gamenode.plugin.packagekit-discovery" }
         catalog: false,
         counter: false,
         actions: false,
+        achievements: false,
     }];
     let windows = load_with_plugins(&[("packagekit.toml", packagekit)], Platform::Windows, &[]);
     assert!(windows.providers.is_empty());
@@ -441,4 +448,58 @@ fn foreign_platform_manifests_validate_structure_without_requiring_local_plugins
         super::load_with_plugins(&[("packagekit.toml", &invalid)], Platform::Windows, &[]);
     assert_eq!(invalid.diagnostics.len(), 1);
     assert!(invalid.diagnostics[0].problem.contains("name"));
+}
+
+#[test]
+fn achievement_backend_requires_a_registered_granted_plugin() {
+    let text = minimal("example") + "\nachievements = { plugin = \"org.example.provider\" }\n";
+    let approved = PluginBackend {
+        plugin_id: "org.example.provider".into(),
+        provider_id: "example".into(),
+        discovery: false,
+        catalog: false,
+        counter: false,
+        actions: false,
+        achievements: true,
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        std::slice::from_ref(&approved),
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("example").unwrap().achievement_plugin(),
+        Some("org.example.provider")
+    );
+
+    let unregistered = PluginBackend {
+        provider_id: "other".into(),
+        ..approved.clone()
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        &[unregistered],
+    );
+    assert!(loaded.providers.is_empty());
+    assert_eq!(loaded.diagnostics.len(), 1);
+
+    let unauthorized = PluginBackend {
+        achievements: false,
+        ..approved
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        &[unauthorized],
+    );
+    assert!(loaded.providers.is_empty());
+
+    let without = load(
+        &[("example.toml", minimal("example").as_str())],
+        Platform::Windows,
+    );
+    assert!(without.diagnostics.is_empty(), "{:?}", without.diagnostics);
+    assert_eq!(without.get("example").unwrap().achievement_plugin(), None);
 }

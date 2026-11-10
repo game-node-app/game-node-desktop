@@ -44,6 +44,13 @@ pub trait ProviderRuntime: Send + Sync {
         provider: &str,
         operation: ProviderOperation,
     ) -> Result<Completion, Status>;
+    async fn execute_achievements(
+        &self,
+        _provider: &str,
+        _request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        Err(Status::unimplemented("achievement reads are unavailable"))
+    }
     async fn shutdown(&self);
 }
 
@@ -204,6 +211,32 @@ impl HostedProviders {
         Ok(())
     }
 
+    fn record_result(&self, id: &str, result: &Result<Completion, Status>) {
+        match result {
+            Ok(_) => {
+                lock(&self.failures).remove(id);
+            }
+            Err(error)
+                if !matches!(
+                    error.code(),
+                    tonic::Code::FailedPrecondition | tonic::Code::Cancelled
+                ) =>
+            {
+                lock(&self.failures).insert(
+                    id.into(),
+                    if error.code() == tonic::Code::Unimplemented {
+                        "incompatible"
+                    } else {
+                        "provider_unavailable"
+                    }
+                    .into(),
+                );
+            }
+            Err(_) => {}
+        }
+        self.notify();
+    }
+
     fn notify(&self) {
         if let Some(observer) = lock(&self.observer).clone() {
             observer();
@@ -254,29 +287,20 @@ impl ProviderRuntime for HostedProviders {
             self.processes.execute(id, operation).await
         }
         .await;
-        match &result {
-            Ok(_) => {
-                lock(&self.failures).remove(id);
-            }
-            Err(error)
-                if !matches!(
-                    error.code(),
-                    tonic::Code::FailedPrecondition | tonic::Code::Cancelled
-                ) =>
-            {
-                lock(&self.failures).insert(
-                    id.into(),
-                    if error.code() == tonic::Code::Unimplemented {
-                        "incompatible"
-                    } else {
-                        "provider_unavailable"
-                    }
-                    .into(),
-                );
-            }
-            Err(_) => {}
+        self.record_result(id, &result);
+        result
+    }
+    async fn execute_achievements(
+        &self,
+        id: &str,
+        request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        let result = async {
+            self.initialized(id).await?;
+            self.processes.execute_achievements(id, request).await
         }
-        self.notify();
+        .await;
+        self.record_result(id, &result);
         result
     }
     async fn shutdown(&self) {

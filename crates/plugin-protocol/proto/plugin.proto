@@ -91,6 +91,7 @@ enum ProviderOperation {
   PROVIDER_OPERATION_SETTINGS_DESCRIBE_READ = 13;
   PROVIDER_OPERATION_SETTINGS_SUBMIT = 14;
   PROVIDER_OPERATION_SETTINGS_CANCEL = 15;
+  PROVIDER_OPERATION_READ_ACHIEVEMENTS = 16;
 }
 
 message ProviderCommand {
@@ -98,6 +99,7 @@ message ProviderCommand {
   ProviderOperation operation = 2;
   string target_operation_id = 3;
   optional SettingsRequest settings = 4;
+  optional AchievementsRequest achievements = 5;
 }
 
 message ProviderContext {
@@ -320,6 +322,38 @@ message OperationResult {
   optional AccountLoginOutcome login_outcome = 10;
   optional bool focused = 11;
   optional SettingsReply settings = 12;
+  repeated AchievementOutcome achievements = 13;
+}
+
+// One bounded batch of provider game ids whose achievements are requested.
+message AchievementsRequest {
+  repeated string game_ids = 1;
+  string language = 2;
+}
+
+message Achievement {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool hidden = 4;
+  string icon_url = 5;
+  string icon_gray_url = 6;
+  bool unlocked = 7;
+  optional int64 unlocked_at = 8;
+}
+
+message AchievementGame {
+  repeated Achievement achievements = 1;
+}
+
+// Per-game result: ready, a successful "no achievements", or a failure category.
+message AchievementOutcome {
+  string game_id = 1;
+  oneof outcome {
+    AchievementGame ready = 2;
+    bool none = 3;
+    CatalogFailure failed = 4;
+  }
 }
 
 // Optional ui.settings, negotiated independently at API 1.3. This closed schema

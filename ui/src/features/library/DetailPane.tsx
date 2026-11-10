@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  IconChevronRight,
   IconDownload,
   IconPlayerPlay,
   IconStar,
@@ -20,6 +21,7 @@ import {
 import { useUiStore, uiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { CoverImage } from './CoverImage';
+import { AchievementListModal } from './AchievementListModal';
 import {
   formatI18n,
   formatReason,
@@ -37,6 +39,8 @@ export const DetailPane: React.FC = () => {
   const tools = useTools();
   const ports = usePortsView();
   const { data: launch } = useSnapshot((s) => s.launch);
+  const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
+  const [achievementsOpen, setAchievementsOpen] = React.useState(false);
   const detailDragWidth = useUiStore((s) => s.detailDragWidth);
   const { t, locale } = useI18n();
 
@@ -159,6 +163,23 @@ export const DetailPane: React.FC = () => {
     return null;
   };
 
+  const providerAccount = storeAccounts.find(
+    (account) => account.provider === detail?.row.provider,
+  );
+  const achievementConnected = providerAccount?.state === 'connected';
+  const achievementSummary = detail?.achievements;
+
+  const formatAchievementTime = (at: number | null | undefined): string | null => {
+    if (at == null) return null;
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(at * 1000));
+  };
+
+  const achievementUpdatedAt = formatAchievementTime(
+    achievementSummary?.lastSuccessAt,
+  );
   const isPlayAvailable = actions?.play === 'available';
   const isInstallAvailable = actions?.install === 'available';
   const isRunning = detail?.running || detail?.row.running;
@@ -446,6 +467,152 @@ export const DetailPane: React.FC = () => {
                     : t('Library::Internal counter')}
                 </span>
               </div>
+
+              {/* Achievements */}
+              {detail.achievementBackend && (
+                <div data-testid="detail-achievements" className="flex flex-col gap-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.5px] text-text-dimmed">
+                    {t('Library::Achievements')}
+                  </span>
+                  <div className="flex flex-col gap-compact rounded-sm bg-raised px-sm py-compact">
+                    {achievementSummary?.state === 'ready' ? (
+                      <>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-text-default">
+                            {formatI18n(
+                              t('Library::{} of {} unlocked'),
+                              achievementSummary.unlocked,
+                              achievementSummary.total,
+                            )}
+                          </span>
+                          <span className="text-xs text-text-dimmed">
+                            {achievementSummary.total > 0
+                              ? `${Math.round(
+                                  (achievementSummary.unlocked / achievementSummary.total) * 100,
+                                )}%`
+                              : '—'}
+                          </span>
+                        </div>
+                        <div
+                          data-testid="detail-achievement-progress"
+                          role="progressbar"
+                          aria-label={t('Library::Achievement progress')}
+                          aria-valuemin={0}
+                          aria-valuemax={achievementSummary.total}
+                          aria-valuenow={achievementSummary.unlocked}
+                          className="h-1.5 w-full overflow-hidden rounded-full bg-surface"
+                        >
+                          <div
+                            className="h-full rounded-full bg-brand"
+                            style={{
+                              width: `${
+                                achievementSummary.total > 0
+                                  ? (achievementSummary.unlocked / achievementSummary.total) * 100
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
+                        {achievementSummary.latestUnlock && (
+                          <div
+                            data-testid="detail-achievement-latest"
+                            className="text-xs text-text-dimmed"
+                          >
+                            {t('Library::Latest unlock')}:{' '}
+                            <span className="text-text-default">
+                              {achievementSummary.latestUnlock.name}
+                            </span>
+                            {formatAchievementTime(
+                              achievementSummary.latestUnlock.unlockedAt,
+                            ) && (
+                              <span>
+                                {' '}
+                                ·{' '}
+                                {formatAchievementTime(
+                                  achievementSummary.latestUnlock.unlockedAt,
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {achievementSummary.failure && (
+                          <div
+                            data-testid="detail-achievement-error"
+                            className="text-xs text-warning"
+                          >
+                            {achievementSummary.failure === 'privacy'
+                              ? t(
+                                  'Library::Steam privacy settings prevent reading these achievements.',
+                                )
+                              : t(
+                                  'Library::Achievements could not be updated. Showing the last saved data.',
+                                )}
+                          </div>
+                        )}
+                        {achievementUpdatedAt && (
+                          <div
+                            data-testid="detail-achievement-updated"
+                            className="text-[11px] text-text-dimmed"
+                          >
+                            {formatI18n(
+                              t('Library::Updated {}'),
+                              achievementUpdatedAt,
+                            )}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          data-testid="detail-achievements-open"
+                          onClick={() => setAchievementsOpen(true)}
+                          className="mt-1 flex items-center justify-between rounded-xs border border-border-subtle bg-transparent px-2 py-1 text-left text-xs text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                        >
+                          {t('Library::View all achievements')}
+                          <IconChevronRight size={14} stroke={1.75} aria-hidden />
+                        </button>
+                      </>
+                    ) : achievementSummary?.state === 'none' ? (
+                      <div
+                        data-testid="detail-achievements-none"
+                        className="text-sm text-text-dimmed"
+                      >
+                        {t('Library::This game has no achievements.')}
+                      </div>
+                    ) : achievementSummary?.state === 'failed' ? (
+                      <div
+                        data-testid="detail-achievements-failed"
+                        className="text-sm text-warning"
+                      >
+                        {achievementSummary.failure === 'privacy'
+                          ? t(
+                              'Library::Steam privacy settings prevent reading these achievements.',
+                            )
+                          : t('Library::Achievements could not be loaded.')}
+                      </div>
+                    ) : achievementConnected ? (
+                      <div
+                        data-testid="detail-achievements-loading"
+                        className="text-sm text-text-dimmed"
+                      >
+                        {t('Library::Loading achievements…')}
+                      </div>
+                    ) : providerAccount?.state === 'expired' ? (
+                      <div
+                        data-testid="detail-achievements-expired"
+                        className="text-sm text-text-dimmed"
+                      >
+                        {t('Library::Sign in to Steam again to see achievements.')}
+                      </div>
+                    ) : (
+                      <div
+                        data-testid="detail-achievements-not-connected"
+                        className="text-sm text-text-dimmed"
+                      >
+                        {t('Library::Connect Steam to see achievements.')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* GameNode Card */}
               <div className="flex flex-col gap-1.5">
@@ -738,6 +905,14 @@ export const DetailPane: React.FC = () => {
           )}
         </div>
       </div>
+      {detail?.achievementBackend && (
+        <AchievementListModal
+          opened={achievementsOpen}
+          onClose={() => setAchievementsOpen(false)}
+          entryKey={detail.row.key}
+          gameTitle={detail.row.title}
+        />
+      )}
     </div>
   );
 };

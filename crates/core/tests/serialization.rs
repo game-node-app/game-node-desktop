@@ -96,6 +96,8 @@ fn test_detail_view_serialization_and_artwork_omission() {
         has_artwork: true,
         artwork: Some(artwork_arc),
         membership: Membership::InLibrary(Some(EntryStatus::Playing)),
+        achievement_backend: false,
+        achievements: None,
     };
 
     let json_val = serde_json::to_value(&detail).expect("serialize DetailView");

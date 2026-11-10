@@ -399,6 +399,16 @@ pub async fn provider_check(
     Ok(())
 }
 
+/// The full achievement list, read from the local cache with no GameNode request.
+#[tauri::command]
+pub async fn achievement_list(
+    engine: tauri::State<'_, Engine>,
+    key: String,
+    filter: gamenode_core::achievements::AchievementFilter,
+) -> Result<Option<gamenode_core::achievements::AchievementListView>, String> {
+    engine.achievement_list(key, filter).await
+}
+
 /// Opens Steam's isolated sign-in window and waits for the attempt to end.
 #[tauri::command]
 pub async fn steam_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {

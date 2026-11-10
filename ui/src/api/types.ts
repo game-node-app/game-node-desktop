@@ -113,6 +113,45 @@ export interface Row {
   isFavorite: boolean;
 }
 
+export type AchievementGameState = 'ready' | 'none' | 'failed';
+
+export interface AchievementUnlock {
+  id: string;
+  name: string;
+  unlockedAt?: number | null;
+}
+
+export interface AchievementSummary {
+  state: AchievementGameState;
+  unlocked: number;
+  total: number;
+  latestUnlock?: AchievementUnlock | null;
+  lastSuccessAt?: number | null;
+  failure?: CatalogError | null;
+}
+
+export interface AchievementRecord {
+  id: string;
+  name: string;
+  description: string;
+  hidden: boolean;
+  iconUrl: string;
+  iconGrayUrl: string;
+  unlocked: boolean;
+  unlockedAt?: number | null;
+  position: number;
+}
+
+export type AchievementFilter = 'all' | 'unlocked' | 'locked';
+
+export interface AchievementListView {
+  connected: boolean;
+  state?: AchievementGameState | null;
+  lastSuccessAt?: number | null;
+  failure?: CatalogError | null;
+  achievements: AchievementRecord[];
+}
+
 export interface DetailView {
   running: boolean;
   row: Row;
@@ -120,6 +159,8 @@ export interface DetailView {
   releaseYear?: number | null;
   hasArtwork: boolean;
   membership: Membership;
+  achievementBackend?: boolean;
+  achievements?: AchievementSummary | null;
 }
 
 export type EmptyState =
@@ -805,6 +846,21 @@ export function artworkAssetUrl(gameId: number | null | undefined, rev?: number 
   if (mockEnabled) return `/mock-covers/mock-${(gameId - 1) % 12}.svg`;
   const suffix = rev !== undefined ? `?rev=${encodeURIComponent(String(rev))}` : '';
   return `${assetProtocolBase()}/artwork/${gameId}${suffix}`;
+}
+
+/**
+ * The host returns the canonical `gamenode-asset://localhost/achievement/<hash>` route. Rewrite
+ * its base to the form this webview loads, like `coverAssetUrl` and `artworkAssetUrl` do, because
+ * WebView2 on Windows cannot load the bare custom scheme.
+ */
+export function achievementIconAssetUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const marker = '/achievement/';
+  const at = url.indexOf(marker);
+  if (at < 0) return null;
+  const hash = url.slice(at + marker.length).split(/[?#]/, 1)[0];
+  if (!hash) return null;
+  return `${assetProtocolBase()}${marker}${hash}`;
 }
 
 /**

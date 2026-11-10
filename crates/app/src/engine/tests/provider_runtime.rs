@@ -8,7 +8,12 @@ use crate::plugin_host::{
 };
 use gamenode_plugin_protocol::{models, proto::*};
 use gamenode_plugin_steam::discovery;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use tonic::Status;
+
+static ACHIEVEMENT_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static ACHIEVEMENT_MAX_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static ACHIEVEMENT_FAIL_NEXT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct Runtime {
     account: Option<Arc<SteamAccount>>,
@@ -153,6 +158,37 @@ impl ProviderRuntime for Runtime {
         }
     }
     async fn shutdown(&self) {}
+    async fn execute_achievements(
+        &self,
+        _: &str,
+        request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        if ACHIEVEMENT_FAIL_NEXT.swap(false, AtomicOrdering::SeqCst) {
+            return Err(Status::unavailable("fixture achievement failure"));
+        }
+        let active = ACHIEVEMENT_ACTIVE.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        ACHIEVEMENT_MAX_ACTIVE.fetch_max(active, AtomicOrdering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let outcomes = request
+            .game_ids
+            .iter()
+            .map(|game_id| models::AchievementOutcome::Ready {
+                game_id: game_id.clone(),
+                achievements: vec![models::Achievement {
+                    id: "ACH_WIN".into(),
+                    name: "Win".into(),
+                    description: "Win once".into(),
+                    hidden: false,
+                    icon_url: "https://cdn.example/a.jpg".into(),
+                    icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
+                    unlocked: true,
+                    unlocked_at: Some(1_700_000_000),
+                }],
+            })
+            .collect();
+        ACHIEVEMENT_ACTIVE.fetch_sub(1, AtomicOrdering::SeqCst);
+        Ok(Completion::fixture_achievements(outcomes))
+    }
     async fn execute(&self, _: &str, operation: ProviderOperation) -> Result<Completion, Status> {
         let mut result = OperationResult {
             disposition: OperationDisposition::Completed as i32,

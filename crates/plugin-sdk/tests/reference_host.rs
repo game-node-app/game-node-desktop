@@ -116,6 +116,7 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                 operation: operation as i32,
                 target_operation_id: String::new(),
                 settings: None,
+                achievements: None,
             };
             for (operation, id) in [
                 (ProviderOperation::Initialize, "initialize"),

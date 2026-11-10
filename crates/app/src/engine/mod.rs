@@ -31,6 +31,7 @@ use gamenode_core::{
 use gamenode_platform::covers::{artwork_dir, write_cover};
 use tokio::runtime::Handle;
 
+mod achievements;
 mod artwork;
 mod drm_free;
 pub mod pc_ports;
@@ -90,6 +91,8 @@ pub struct Ports {
     /// Where downloaded covers are stored.
     pub covers_dir: PathBuf,
     pub platform: Platform,
+    /// The local achievement cache, keyed by provider and store account.
+    pub achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
 }
 
 /// The Steam store-account adapters: a credential slot separate from the GameNode session, the
@@ -187,6 +190,13 @@ struct State {
     published_selection: Option<Vec<String>>,
     /// The PC ports projection built by the service on a worker thread.
     ports_view: gamenode_core::ports::PortsView,
+    /// Cached achievement summaries for the connected store accounts.
+    achievement_summaries: std::collections::BTreeMap<
+        (String, String),
+        gamenode_core::achievements::StoredAchievementSummary,
+    >,
+    /// The UI locale Steam achievement text is requested in.
+    achievement_language: String,
 }
 
 struct Shared {
@@ -207,6 +217,8 @@ struct Shared {
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
+    /// One serialized achievement worker and its priority queue per provider.
+    achievement_queues: Mutex<std::collections::HashMap<String, achievements::Queue>>,
     /// A cover completion is waiting for the coalescing flush task to publish it.
     cover_flush_pending: AtomicBool,
     /// A task is scheduled (or running) to publish the newest cover completions.
@@ -272,6 +284,11 @@ impl Engine {
                 library_loading: false,
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
+                achievement_summaries: Default::default(),
+                achievement_language: crate::commands::normalize_locale(
+                    &crate::commands::system_locale(),
+                )
+                .to_owned(),
             }),
             local_views: Mutex::new(()),
             ports,
@@ -280,6 +297,7 @@ impl Engine {
             providers: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
+            achievement_queues: Mutex::new(std::collections::HashMap::new()),
             cover_flush_pending: AtomicBool::new(false),
             cover_flush_scheduled: AtomicBool::new(false),
             publish: Box::new(publish),
@@ -374,6 +392,24 @@ impl Engine {
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
         self.update_playtime_view(state, unix_now());
         let library = state.library.view();
+        // Achievements live in the engine cache, not in the library machine. The detail snapshot
+        // carries only the compact summary; the full list comes from the async command.
+        let library = library.map(|mut view| {
+            if let Some(detail) = &mut view.detail {
+                let provider = detail.row.provider.clone();
+                detail.achievement_backend = state
+                    .library
+                    .provider(&provider)
+                    .is_some_and(|provider| provider.achievement_plugin().is_some());
+                if let Some((_, entry_id)) = detail.row.key.split_once(':') {
+                    detail.achievements = state
+                        .achievement_summaries
+                        .get(&(provider, entry_id.to_owned()))
+                        .map(gamenode_core::achievements::AchievementSummaryView::from);
+                }
+            }
+            view
+        });
         let store_accounts = self.store_accounts(library.as_ref());
         // Details loaded for the previous selection do not belong to the new one.
         let selection = library.as_ref().map(|view| view.selected.clone());
@@ -427,6 +463,8 @@ impl Engine {
         self.refresh_local_games();
         self.start_local_discovery();
         self.start_local_manifest_updates();
+        self.load_achievement_cache();
+        self.start_achievement_reconciliation();
         self.recover_and_load_tools();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
@@ -677,6 +715,14 @@ impl Engine {
             );
         }
         self.sync_tracker(&mut state);
+        let selected_achievement_key =
+            state
+                .library
+                .view()
+                .and_then(|view| match view.selected.as_slice() {
+                    [key] => Some(key.clone()),
+                    _ => None,
+                });
         if read_trigger {
             self.read_counters(&mut state);
         }
@@ -687,6 +733,14 @@ impl Engine {
             self.publish_cover(&mut state);
         } else {
             self.publish(&mut state);
+        }
+        drop(state);
+        if finished_loading {
+            self.load_achievement_cache();
+            self.request_import_achievements();
+        }
+        if let Some(key) = selected_achievement_key {
+            self.refresh_selected_achievements(key);
         }
     }
 

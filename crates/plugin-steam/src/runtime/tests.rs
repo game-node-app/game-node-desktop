@@ -339,6 +339,43 @@ impl crate::steam::SteamWebApi for Client {
     ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
         Err(crate::steam::SteamError::Server)
     }
+    async fn achievement_definitions(
+        &self,
+        _: &crate::steam::SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, crate::steam::SteamError>
+    {
+        if app_id == "none" {
+            return Ok(None);
+        }
+        assert_eq!(language, "english");
+        Ok(Some(vec![crate::steam::SteamAchievementDefinition {
+            api_name: "ACH_WIN".into(),
+            display_name: "Win".into(),
+            description: "Win once".into(),
+            hidden: false,
+            icon: "https://cdn.example/a.jpg".into(),
+            icon_gray: "https://cdn.example/a_gray.jpg".into(),
+        }]))
+    }
+    async fn achievement_states(
+        &self,
+        _: &crate::steam::SteamSession,
+        app_id: &str,
+        _language: &str,
+    ) -> Result<Option<Vec<crate::steam::SteamAchievementState>>, crate::steam::SteamError> {
+        if app_id == "none" {
+            return Ok(None);
+        }
+        Ok(Some(vec![crate::steam::SteamAchievementState {
+            api_name: "ACH_WIN".into(),
+            achieved: true,
+            unlock_time: Some(1_700_000_000),
+            display_name: "Vitória".into(),
+            description: "Vença uma vez".into(),
+        }]))
+    }
 }
 
 async fn execute(
@@ -377,6 +414,40 @@ async fn execute(
     })
     .await
     .expect("provider operation completes without retaining an observer queue")
+}
+
+async fn execute_achievements(
+    commands: &mpsc::Sender<Result<ProviderCommand, Status>>,
+    events: &mut mpsc::Receiver<ProviderEvent>,
+    epoch: u64,
+    id: &str,
+    request: models::AchievementsRequest,
+) -> OperationResult {
+    commands
+        .send(Ok(ProviderCommand {
+            context: Some(ServiceContext {
+                session_id: "reference".into(),
+                session_credential: vec![9; 32],
+                provider_id: "steam".into(),
+                operation_id: id.into(),
+                account_epoch: epoch,
+                profile_epoch: 1,
+            }),
+            operation: ProviderOperation::ReadAchievements as i32,
+            achievements: Some(request.into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("provider operation completes")
+            .expect("plugin stream alive");
+        if let Some(provider_event::Event::Result(result)) = event.event {
+            return result;
+        }
+    }
 }
 
 #[tokio::test]
@@ -455,6 +526,36 @@ async fn full_provider_restores_logs_in_syncs_and_handles_failed_then_successful
     assert_eq!(
         lock(&host.credential).as_deref(),
         Some(b"saved-cookie-secret".as_slice())
+    );
+    let achievements = execute_achievements(
+        &commands,
+        &mut results,
+        1,
+        "achievements",
+        models::AchievementsRequest {
+            game_ids: vec!["620".into(), "none".into()],
+            language: "en".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        achievements.achievements[0].outcome,
+        Some(achievement_outcome::Outcome::Ready(AchievementGame {
+            achievements: vec![Achievement {
+                id: "ACH_WIN".into(),
+                name: "Vitória".into(),
+                description: "Vença uma vez".into(),
+                hidden: false,
+                icon_url: "https://cdn.example/a.jpg".into(),
+                icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
+                unlocked: true,
+                unlocked_at: Some(1_700_000_000),
+            }],
+        }))
+    );
+    assert_eq!(
+        achievements.achievements[1].outcome,
+        Some(achievement_outcome::Outcome::None(true))
     );
     let (signed_in, _) = execute(
         &commands,

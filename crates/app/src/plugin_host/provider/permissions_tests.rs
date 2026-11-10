@@ -123,6 +123,7 @@ enum Access {
     SecretDelete,
     Counter,
     Actions,
+    Achievements,
 }
 
 const CASES: &[Access] = &[
@@ -140,6 +141,7 @@ const CASES: &[Access] = &[
     Access::SecretDelete,
     Access::Counter,
     Access::Actions,
+    Access::Achievements,
 ];
 
 impl Access {
@@ -158,6 +160,7 @@ impl Access {
             Self::SecretDelete => cap::SECRET_DELETE,
             Self::Counter => cap::COUNTER,
             Self::Actions => cap::ACTIONS,
+            Self::Achievements => cap::ACHIEVEMENTS,
         }
     }
     fn operation(self) -> ProviderOperation {
@@ -167,13 +170,14 @@ impl Access {
             Self::Login | Self::Cookies | Self::Page => ProviderOperation::SignIn,
             Self::Counter => ProviderOperation::ReadCounter,
             Self::Actions => ProviderOperation::Initialize,
+            Self::Achievements => ProviderOperation::ReadAchievements,
             _ => ProviderOperation::Check,
         }
     }
     fn required_to_dispatch(self) -> bool {
         matches!(
             self,
-            Self::Discovery | Self::Catalog | Self::Login | Self::Counter
+            Self::Discovery | Self::Catalog | Self::Login | Self::Counter | Self::Achievements
         )
     }
 
@@ -271,6 +275,15 @@ impl Access {
                 })))
                 .await
             }
+            Self::Achievements => {
+                let mut result = completed();
+                result.achievements = vec![AchievementOutcome {
+                    game_id: "42".into(),
+                    outcome: Some(achievement_outcome::Outcome::None(true)),
+                }];
+                api.event(event(provider_event::Event::Result(result)))
+                    .await
+            }
             Self::Discovery | Self::Counter => {
                 let mut result = completed();
                 if matches!(self, Self::Discovery) {
@@ -325,11 +338,23 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
         }
         let (mut h, entered) = Harness::with_grants(&grants).await;
         if case.required_to_dispatch() {
-            let error = h
-                .api
-                .execute("fixture", case.operation())
-                .await
-                .unwrap_err();
+            let error = if matches!(case, Access::Achievements) {
+                h.api
+                    .execute_achievements(
+                        "fixture",
+                        models::AchievementsRequest {
+                            game_ids: vec!["42".into()],
+                            language: "en".into(),
+                        },
+                    )
+                    .await
+                    .unwrap_err()
+            } else {
+                h.api
+                    .execute("fixture", case.operation())
+                    .await
+                    .unwrap_err()
+            };
             assert_eq!(error.code(), tonic::Code::Unimplemented, "{case:?}");
             assert!(
                 tokio::time::timeout(Duration::from_millis(10), h.client.commands.message())

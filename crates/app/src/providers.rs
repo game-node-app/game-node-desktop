@@ -23,6 +23,7 @@ pub(crate) fn load_bundled_for_tests(platform: Platform) -> LoadedProviders {
         catalog: true,
         counter: true,
         actions: true,
+        achievements: true,
     }];
     if platform == Platform::Linux {
         plugins.push(PluginBackend {
@@ -32,6 +33,7 @@ pub(crate) fn load_bundled_for_tests(platform: Platform) -> LoadedProviders {
             catalog: false,
             counter: false,
             actions: false,
+            achievements: false,
         });
     }
     load_bundled_with_plugins(platform, &plugins)
@@ -63,6 +65,10 @@ mod tests {
             assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
             let steam = loaded.get("steam").expect("steam loads");
             assert!(steam.has_catalog());
+            assert_eq!(
+                steam.achievement_plugin(),
+                Some("org.gamenode.plugin.steam-discovery")
+            );
             assert_eq!(
                 steam.catalog_backend(),
                 Some("org.gamenode.plugin.steam-discovery")

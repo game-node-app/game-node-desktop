@@ -23,7 +23,10 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::steam::{SteamError, SteamFamily, SteamOwnedGame, SteamSession, SteamWebApi};
+use crate::steam::{
+    SteamAchievement, SteamAchievementDefinition, SteamAchievementState, SteamError, SteamFamily,
+    SteamOwnedGame, SteamSession, SteamWebApi,
+};
 use gamenode_plugin_protocol::models::SessionCredential;
 #[cfg(test)]
 use gamenode_plugin_protocol::models::StorageMethod;
@@ -80,6 +83,29 @@ pub struct SteamAccountPorts {
 /// Called after every status transition. It must be cheap and must not call back into the service:
 /// the engine uses it to publish a snapshot from the operation's background thread.
 pub type StatusObserver = Arc<dyn Fn(&SteamAccountStatus) + Send + Sync>;
+
+/// One requested game's achievement result: ready, confirmed none, or a failure category.
+pub type SteamAchievementResult = Result<Option<Vec<SteamAchievement>>, CatalogError>;
+
+/// The result of an achievement read. Each requested game has one outcome: `Ok(Some(_))` is
+/// ready, `Ok(None)` is a confirmed no-achievements game, and `Err(_)` leaves cached data intact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamAchievementsOutcome {
+    pub status: SteamAccountStatus,
+    pub outcomes: Vec<(String, SteamAchievementResult)>,
+    pub superseded: bool,
+}
+
+/// Steam's language code for an application locale. Steam falls back to English text when a
+/// translation is missing, so an unsupported locale reads English.
+pub fn steam_language(locale: &str) -> &'static str {
+    let locale = locale.trim().to_ascii_lowercase();
+    if locale == "pt" || locale.starts_with("pt-") || locale.starts_with("pt_") {
+        "brazilian"
+    } else {
+        "english"
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OperationKind {
@@ -452,6 +478,110 @@ impl SteamAccount {
             now: outcome.now,
             account_changed: outcome.account_changed,
             superseded: outcome.superseded,
+        }
+    }
+
+    /// Reads achievement definitions and unlock state for a bounded batch. No request is made
+    /// without a stored credential. Every requested game gets its own outcome, so one failure
+    /// never discards another game's data.
+    pub async fn achievements(
+        &self,
+        game_ids: &[String],
+        locale: &str,
+    ) -> SteamAchievementsOutcome {
+        self.ensure_loaded().await;
+        let Some((generation, credential)) = self.begin_operation() else {
+            return self
+                .achievements_outcome(all_failed(game_ids, CatalogError::Unreachable), true);
+        };
+        let Some(credential) = credential else {
+            // No connected account: make no request and leave every cached row untouched.
+            return self.achievements_outcome(Vec::new(), false);
+        };
+        if self.superseded(generation) {
+            return self.achievements_outcome(Vec::new(), true);
+        }
+        let session = match self.validate_session(&credential).await {
+            Ok(session) => session,
+            Err(error) => {
+                if self.superseded(generation) {
+                    return self.achievements_outcome(Vec::new(), true);
+                }
+                self.apply_session_failure(generation, error).await;
+                return self
+                    .achievements_outcome(all_failed(game_ids, error.catalog_error()), false);
+            }
+        };
+        let language = steam_language(locale);
+        let client = self.ports.client.clone();
+        let mut outcomes = Vec::with_capacity(game_ids.len());
+        for game_id in game_ids {
+            if self.superseded(generation) {
+                return self.achievements_outcome(Vec::new(), true);
+            }
+            let definitions = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                client.achievement_definitions(&session, game_id, language),
+            )
+            .await;
+            let definitions = match definitions {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => {
+                    outcomes.push((game_id.clone(), Err(error.catalog_error())));
+                    continue;
+                }
+                Err(_) => {
+                    outcomes.push((game_id.clone(), Err(CatalogError::Unreachable)));
+                    continue;
+                }
+            };
+            let Some(definitions) = definitions.filter(|definitions| !definitions.is_empty())
+            else {
+                outcomes.push((game_id.clone(), Ok(None)));
+                continue;
+            };
+            let states = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                client.achievement_states(&session, game_id, language),
+            )
+            .await;
+            let states = match states {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => {
+                    // Definitions succeeded but unlock state failed: the whole game is a failure
+                    // and its previous rows stay unchanged.
+                    outcomes.push((game_id.clone(), Err(error.catalog_error())));
+                    continue;
+                }
+                Err(_) => {
+                    outcomes.push((game_id.clone(), Err(CatalogError::Unreachable)));
+                    continue;
+                }
+            };
+            let Some(states) = states else {
+                outcomes.push((game_id.clone(), Ok(None)));
+                continue;
+            };
+            outcomes.push((
+                game_id.clone(),
+                Ok(Some(join_achievements(definitions, states))),
+            ));
+        }
+        if self.superseded(generation) {
+            return self.achievements_outcome(Vec::new(), true);
+        }
+        self.achievements_outcome(outcomes, false)
+    }
+
+    fn achievements_outcome(
+        &self,
+        outcomes: Vec<(String, SteamAchievementResult)>,
+        superseded: bool,
+    ) -> SteamAchievementsOutcome {
+        SteamAchievementsOutcome {
+            status: self.status(),
+            outcomes,
+            superseded,
         }
     }
 
@@ -1260,6 +1390,53 @@ impl SteamAccount {
     }
 }
 
+fn all_failed(game_ids: &[String], error: CatalogError) -> Vec<(String, SteamAchievementResult)> {
+    game_ids.iter().map(|id| (id.clone(), Err(error))).collect()
+}
+
+/// Joins schema definitions with unlock state by Steam's API name. Definitions keep Steam's
+/// order; a missing state is a locked achievement, and the player payload's localized text wins
+/// when it is present.
+fn join_achievements(
+    definitions: Vec<SteamAchievementDefinition>,
+    states: Vec<SteamAchievementState>,
+) -> Vec<SteamAchievement> {
+    let mut states: std::collections::HashMap<_, _> = states
+        .into_iter()
+        .map(|state| (state.api_name.clone(), state))
+        .collect();
+    definitions
+        .into_iter()
+        .map(|definition| {
+            let state = states.remove(&definition.api_name);
+            let name = crate::steam::clean_achievement_text(
+                state
+                    .as_ref()
+                    .map(|state| state.display_name.trim())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&definition.display_name),
+            );
+            let description = crate::steam::clean_achievement_text(
+                state
+                    .as_ref()
+                    .map(|state| state.description.trim())
+                    .filter(|description| !description.is_empty())
+                    .unwrap_or(&definition.description),
+            );
+            SteamAchievement {
+                id: definition.api_name,
+                name,
+                description,
+                hidden: definition.hidden,
+                icon_url: definition.icon,
+                icon_gray_url: definition.icon_gray,
+                unlocked: state.as_ref().is_some_and(|state| state.achieved),
+                unlocked_at: state.and_then(|state| state.unlock_time),
+            }
+        })
+        .collect()
+}
+
 fn owned_records(games: &[SteamOwnedGame]) -> Vec<CatalogRecord> {
     games
         .iter()
@@ -1445,9 +1622,15 @@ mod tests {
         session: Mutex<Option<Result<SteamSession, SteamError>>>,
         owned: Mutex<Option<Result<Vec<SteamOwnedGame>, SteamError>>>,
         family: Mutex<Option<Result<SteamFamily, SteamError>>>,
+        definitions: Mutex<
+            Option<Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, SteamError>>,
+        >,
+        states: Mutex<Option<Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError>>>,
         session_calls: AtomicUsize,
         owned_calls: AtomicUsize,
         family_calls: AtomicUsize,
+        definition_calls: AtomicUsize,
+        state_calls: AtomicUsize,
         started: Arc<Semaphore>,
         release: Mutex<Option<Arc<Semaphore>>>,
     }
@@ -1458,9 +1641,13 @@ mod tests {
                 session: Mutex::new(None),
                 owned: Mutex::new(None),
                 family: Mutex::new(None),
+                definitions: Mutex::new(None),
+                states: Mutex::new(None),
                 session_calls: AtomicUsize::new(0),
                 owned_calls: AtomicUsize::new(0),
                 family_calls: AtomicUsize::new(0),
+                definition_calls: AtomicUsize::new(0),
+                state_calls: AtomicUsize::new(0),
                 started: Arc::new(Semaphore::new(0)),
                 release: Mutex::new(None),
             })
@@ -1476,6 +1663,20 @@ mod tests {
 
         fn set_family(&self, value: Result<SteamFamily, SteamError>) {
             *self.family.lock().unwrap() = Some(value);
+        }
+
+        fn set_definitions(
+            &self,
+            value: Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, SteamError>,
+        ) {
+            *self.definitions.lock().unwrap() = Some(value);
+        }
+
+        fn set_states(
+            &self,
+            value: Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError>,
+        ) {
+            *self.states.lock().unwrap() = Some(value);
         }
 
         fn hold_until(&self, release: Arc<Semaphore>) {
@@ -1520,6 +1721,26 @@ mod tests {
                 .unwrap()
                 .clone()
                 .unwrap_or(Ok(SteamFamily::default()))
+        }
+
+        async fn achievement_definitions(
+            &self,
+            _session: &SteamSession,
+            _app_id: &str,
+            _language: &str,
+        ) -> Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, SteamError> {
+            self.definition_calls.fetch_add(1, Ordering::SeqCst);
+            self.definitions.lock().unwrap().clone().unwrap_or(Ok(None))
+        }
+
+        async fn achievement_states(
+            &self,
+            _session: &SteamSession,
+            _app_id: &str,
+            _language: &str,
+        ) -> Result<Option<Vec<crate::steam::SteamAchievementState>>, SteamError> {
+            self.state_calls.fetch_add(1, Ordering::SeqCst);
+            self.states.lock().unwrap().clone().unwrap_or(Ok(None))
         }
     }
 
@@ -2505,5 +2726,233 @@ mod tests {
             harness.account.sync().await.status.state,
             SteamAccountState::Expired
         );
+    }
+
+    fn definitions() -> Vec<crate::steam::SteamAchievementDefinition> {
+        vec![
+            crate::steam::SteamAchievementDefinition {
+                api_name: "ACH_WIN".into(),
+                display_name: "Win".into(),
+                description: "Win once".into(),
+                hidden: false,
+                icon: "https://cdn.example/a.jpg".into(),
+                icon_gray: "https://cdn.example/a_gray.jpg".into(),
+            },
+            crate::steam::SteamAchievementDefinition {
+                api_name: "ACH_SECRET".into(),
+                display_name: "Secret".into(),
+                description: "A secret".into(),
+                hidden: true,
+                icon: String::new(),
+                icon_gray: String::new(),
+            },
+        ]
+    }
+
+    fn states() -> Vec<crate::steam::SteamAchievementState> {
+        vec![
+            crate::steam::SteamAchievementState {
+                api_name: "ACH_WIN".into(),
+                achieved: true,
+                unlock_time: Some(900),
+                display_name: "Vitória".into(),
+                description: "Vença uma vez".into(),
+            },
+            crate::steam::SteamAchievementState {
+                api_name: "ACH_SECRET".into(),
+                achieved: true,
+                unlock_time: None,
+                display_name: String::new(),
+                description: String::new(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn achievements_join_definitions_and_unlocks_by_api_name() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(definitions())));
+        harness.client.set_states(Ok(Some(states())));
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "pt-BR")
+            .await;
+        assert!(!outcome.superseded);
+        let Ok(Some(achievements)) = &outcome.outcomes[0].1 else {
+            panic!("expected ready");
+        };
+        assert_eq!(achievements.len(), 2);
+        assert_eq!(achievements[0].name, "Vitória");
+        assert!(achievements[0].unlocked);
+        assert_eq!(achievements[0].unlocked_at, Some(900));
+        assert!(achievements[1].hidden, "the schema hidden flag is kept");
+        assert!(achievements[1].unlocked);
+        assert_eq!(
+            achievements[1].unlocked_at, None,
+            "an unlock without a time stays unlocked with no date"
+        );
+        assert_eq!(harness.client.definition_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.client.state_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_partial_achievement_failure_is_a_failed_outcome() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(definitions())));
+        harness.client.set_states(Err(SteamError::Privacy));
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "en")
+            .await;
+        assert_eq!(
+            outcome.outcomes[0].1,
+            Err(CatalogError::Privacy),
+            "definitions alone must not become a ready result"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_connected_account_makes_no_achievement_request() {
+        let harness = harness(None, None);
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "en")
+            .await;
+        assert!(outcome.outcomes.is_empty());
+        assert_eq!(harness.client.session_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.client.definition_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(harness.client.state_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_expired_session_fails_every_game_and_stops_on_expiry() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness.client.set_session(Err(SteamError::Expired));
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned(), "70".to_owned()], "en")
+            .await;
+        assert_eq!(outcome.status.state, SteamAccountState::Expired);
+        assert_eq!(outcome.outcomes.len(), 2);
+        assert!(
+            outcome
+                .outcomes
+                .iter()
+                .all(|(_, result)| *result == Err(CatalogError::Expired))
+        );
+        assert_eq!(harness.credentials.stored(), None);
+    }
+
+    #[tokio::test]
+    async fn achievements_do_not_depend_on_local_steam_stats_files() {
+        // The achievement path has no file port and must never reach Steam's per-account
+        // appcache/stats files; this source check fails if a future edit adds one.
+        let source = include_str!("account.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        assert!(!source.contains(concat!("app", "cache")));
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(definitions())));
+        harness.client.set_states(Ok(Some(states())));
+        harness.account.startup().await;
+        assert!(
+            harness
+                .account
+                .achievements(&["620".to_owned()], "en")
+                .await
+                .outcomes[0]
+                .1
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn locales_map_to_steam_languages() {
+        assert_eq!(steam_language("en"), "english");
+        assert_eq!(steam_language("en-US"), "english");
+        assert_eq!(steam_language("pt-BR"), "brazilian");
+        assert_eq!(steam_language("pt_BR"), "brazilian");
+        assert_eq!(steam_language("pt"), "brazilian");
+        assert_eq!(steam_language("fr-FR"), "english");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_achievement_read_returns_no_outcomes_and_makes_no_request() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(definitions())));
+        harness.client.set_states(Ok(Some(states())));
+        harness.account.startup().await;
+        let scoped = harness.account.for_operation(
+            harness.account.ports.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let outcome = scoped.achievements(&["620".to_owned()], "en").await;
+        assert!(outcome.superseded);
+        assert!(outcome.outcomes.is_empty());
+        assert_eq!(harness.client.definition_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn achievement_text_with_tabs_and_c1_controls_is_sanitized() {
+        let harness = harness(Some(cred("stored-cookie")), None);
+        harness
+            .client
+            .set_session(Ok(session("A", "cassi", "stored-cookie")));
+        harness.client.set_definitions(Ok(Some(vec![
+            crate::steam::SteamAchievementDefinition {
+                api_name: "ACH_CONTROL".into(),
+                display_name: "Alpha\tBeta\u{85}Gamma".into(),
+                description: "Line\tone\u{85}\u{85}two ".into(),
+                hidden: false,
+                icon: String::new(),
+                icon_gray: String::new(),
+            },
+            crate::steam::SteamAchievementDefinition {
+                api_name: "ACH_DEF".into(),
+                display_name: "Definition\tname".into(),
+                description: "Definition\u{85}description".into(),
+                hidden: false,
+                icon: String::new(),
+                icon_gray: String::new(),
+            },
+        ])));
+        harness
+            .client
+            .set_states(Ok(Some(vec![crate::steam::SteamAchievementState {
+                api_name: "ACH_CONTROL".into(),
+                achieved: false,
+                unlock_time: None,
+                display_name: "Player\tname\u{85}".into(),
+                description: "Player\tdescription\u{85}".into(),
+            }])));
+        harness.account.startup().await;
+        let outcome = harness
+            .account
+            .achievements(&["620".to_owned()], "en")
+            .await;
+        let Ok(Some(achievements)) = &outcome.outcomes[0].1 else {
+            panic!("expected a ready outcome");
+        };
+        assert_eq!(achievements[0].name, "Player name");
+        assert_eq!(achievements[0].description, "Player description");
+        assert_eq!(achievements[1].name, "Definition name");
+        assert_eq!(achievements[1].description, "Definition description");
     }
 }

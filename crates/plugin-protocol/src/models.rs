@@ -118,6 +118,55 @@ pub struct CatalogRecord {
     pub name: String,
 }
 
+/// A bounded achievement read: up to [`crate::achievements::MAX_GAMES`] provider game ids and the
+/// UI language the store should localize to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AchievementsRequest {
+    pub game_ids: Vec<String>,
+    pub language: String,
+}
+
+/// One achievement definition joined with the connected account's unlock state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Achievement {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub hidden: bool,
+    pub icon_url: String,
+    pub icon_gray_url: String,
+    pub unlocked: bool,
+    /// Unix seconds Steam reported. An unlocked achievement without a time has `None`.
+    pub unlocked_at: Option<i64>,
+}
+
+/// One game's complete achievement result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AchievementOutcome {
+    Ready {
+        game_id: String,
+        achievements: Vec<Achievement>,
+    },
+    /// The provider confirmed the game has no achievements.
+    None { game_id: String },
+    Failed {
+        game_id: String,
+        error: CatalogError,
+    },
+}
+
+impl AchievementOutcome {
+    pub fn game_id(&self) -> &str {
+        match self {
+            Self::Ready { game_id, .. } | Self::None { game_id } | Self::Failed { game_id, .. } => {
+                game_id
+            }
+        }
+    }
+}
+
 /// A catalog sync result: `None` means that fact set was not attempted, `Ok` replaces it and
 /// `Err` keeps it and records the failure category.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

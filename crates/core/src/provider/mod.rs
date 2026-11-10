@@ -13,7 +13,7 @@ pub mod record;
 pub mod registry;
 pub mod template;
 
-pub use manifest::{CatalogSpec, Manifest, Platform};
+pub use manifest::{AchievementsSpec, CatalogSpec, Manifest, Platform};
 pub use record::{RawRecord, Record};
 pub use registry::{
     ActionError, Diagnostic, LoadedProviders, PluginBackend, Provider, ScanError, ScanInput, load,

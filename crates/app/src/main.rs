@@ -22,6 +22,9 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+/// The longest the post-event-loop shutdown may take before ending the process anyway.
+const SHUTDOWN_WATCHDOG: Duration = Duration::from_secs(20);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartupArguments {
     pub background: bool,
@@ -273,8 +276,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let pub_clone = publisher.clone();
+    let achievement_store = store.achievement_store();
     let engine = Engine::new(
         Ports {
+            achievements: Arc::new(achievement_store),
             backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
                 paths.data_dir(),
             )?)),
@@ -403,6 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::provider_cancel_sign_in,
         commands::provider_sign_out,
         commands::provider_check,
+        commands::achievement_list,
         commands::steam_sign_in,
         commands::steam_focus_sign_in,
         commands::steam_cancel_sign_in,
@@ -635,8 +641,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = builder.build(tauri::generate_context!())?;
     let exit_code = app.run_return(|_app_handle, _event| {});
 
-    // The engine flushes storage and may wait; keep it off UI callbacks.
-    if let Err(error) = runtime.block_on(tokio::task::spawn_blocking(move || engine.shutdown())) {
+    // Quit must always end the process. If a provider or plugin task wedges shutdown, the
+    // watchdog ends it after the bounded shutdown windows instead of leaving a background
+    // process (and a ghost tray icon) behind.
+    if let Err(error) = std::thread::Builder::new()
+        .name("gamenode-exit-watchdog".into())
+        .spawn(move || {
+            std::thread::sleep(SHUTDOWN_WATCHDOG);
+            std::process::exit(exit_code);
+        })
+    {
+        tracing::warn!(%error, "could not start the exit watchdog");
+    }
+
+    // The engine flushes storage and may wait; keep it off the main thread. Call the runtime
+    // method: the free `tokio::task::spawn_blocking` uses `Handle::current()`, which panics
+    // here because the Tauri event loop has already returned and no runtime is entered.
+    let shutdown = runtime.spawn_blocking(move || engine.shutdown());
+    if let Err(error) = runtime.block_on(shutdown) {
         tracing::error!(%error, "engine shutdown failed");
     }
 

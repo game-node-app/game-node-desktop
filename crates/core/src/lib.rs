@@ -6,6 +6,7 @@
 //! `gamenode-platform` and `gamenode-api` implement the [`ports`], and `gamenode-app` wires
 //! everything together.
 
+pub mod achievements;
 pub mod auth;
 pub mod callback;
 pub mod credential;

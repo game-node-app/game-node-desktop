@@ -10,7 +10,7 @@ use gamenode_plugin_protocol::{
 
 /// This port is called only on provider storage workers. Waiting here preserves
 /// the Engine's database queue order without blocking a command or UI callback.
-struct EngineAccounts(std::sync::Weak<Shared>);
+pub(super) struct EngineAccounts(pub(super) std::sync::Weak<Shared>);
 
 impl EngineAccounts {
     fn queued<T: Send + 'static>(
@@ -48,9 +48,25 @@ impl AccountPersistence for EngineAccounts {
     ) -> Result<(), tonic::Status> {
         self.queued(move |engine, accounts| {
             let provider = account.provider.clone();
-            let result = accounts.save(account, clear_ownership);
+            let previous = clear_ownership
+                .then(|| accounts.load(&provider).ok().flatten())
+                .flatten();
+            let result = accounts.save(account.clone(), clear_ownership);
             if clear_ownership {
+                if previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.account_id != account.account_id)
+                    && let Some(previous) = previous
+                    && let Err(error) = engine
+                        .shared
+                        .ports
+                        .achievements
+                        .delete_account(&provider, &previous.account_id)
+                {
+                    tracing::warn!(%error, "could not delete the previous account's achievements");
+                }
                 engine.clear_store_catalog_memory(&provider);
+                engine.clear_achievement_memory(&provider);
             }
             result
         })
@@ -59,8 +75,19 @@ impl AccountPersistence for EngineAccounts {
     fn clear(&self, provider: &str) -> Result<(), tonic::Status> {
         let provider = provider.to_owned();
         self.queued(move |engine, accounts| {
+            let previous = accounts.load(&provider).ok().flatten();
             let result = accounts.clear(&provider);
+            if let Some(previous) = previous
+                && let Err(error) = engine
+                    .shared
+                    .ports
+                    .achievements
+                    .delete_account(&provider, &previous.account_id)
+            {
+                tracing::warn!(%error, "could not delete the account's achievements");
+            }
             engine.clear_store_catalog_memory(&provider);
+            engine.clear_achievement_memory(&provider);
             result
         })
     }
@@ -280,13 +307,19 @@ impl Engine {
                 }
                 if result.login_outcome == Some(AccountLoginOutcome::Connected as i32)
                     || (result.account_changed
-                        && result.status.is_some_and(|s| {
+                        && result.status.as_ref().is_some_and(|s| {
                             s.state
                                 == gamenode_plugin_protocol::proto::AccountConnection::Connected
                                     as i32
                         }))
                 {
                     engine.request_catalog();
+                }
+                if result.status.as_ref().is_some_and(|status| {
+                    status.state
+                        == gamenode_plugin_protocol::proto::AccountConnection::Connected as i32
+                }) {
+                    engine.resume_achievements(&provider);
                 }
                 engine.publish_current();
             })
@@ -474,8 +507,12 @@ impl Engine {
                 if result.is_err() {
                     fallback();
                 }
+                self.request_import_achievements();
             }
-            Err(_) => fallback(),
+            Err(_) => {
+                fallback();
+                self.request_import_achievements();
+            }
         }
     }
 }

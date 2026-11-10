@@ -33,6 +33,12 @@ pub struct DetailView {
     pub artwork: Option<Arc<[u8]>>,
     /// Whether the matched game is in the user's GameNode library (`NotChecked` without a match).
     pub membership: Membership,
+    /// Whether this entry's provider declares an achievement backend.
+    #[serde(default)]
+    pub achievement_backend: bool,
+    /// The compact achievement summary, present when a cache row exists.
+    #[serde(default)]
+    pub achievements: Option<crate::achievements::AchievementSummaryView>,
 }
 
 impl DetailView {
@@ -234,6 +240,8 @@ impl LibraryMachine {
             has_artwork,
             artwork,
             membership: game_id.map_or(Membership::NotChecked, |id| self.membership(id)),
+            achievement_backend: false,
+            achievements: None,
         }
     }
 }

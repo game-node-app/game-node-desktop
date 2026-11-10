@@ -204,6 +204,7 @@ pub fn backends(
             catalog: plugin.capabilities.contains(&capability::CATALOG),
             counter: plugin.capabilities.contains(&capability::COUNTER),
             actions: plugin.capabilities.contains(&capability::ACTIONS),
+            achievements: plugin.capabilities.contains(&capability::ACHIEVEMENTS),
         })
         .collect()
 }

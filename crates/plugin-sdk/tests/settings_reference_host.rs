@@ -185,6 +185,7 @@ impl Harness {
                 operation: settings.operation() as i32,
                 target_operation_id: String::new(),
                 settings: Some(settings.clone().into()),
+                achievements: None,
             }))
             .await
             .unwrap();

@@ -182,6 +182,7 @@ impl Engine {
                     play_period,
                     last_gameplay_exit,
                 } => {
+                    self.schedule_exited_game_achievements(&key);
                     self.queue_local_backup(state, key, play_period, last_gameplay_exit);
                 }
                 TrackEffect::Watch(process) => {

@@ -123,6 +123,9 @@ pub enum ParsedAsset {
         catalog_id: String,
         kind: PortArtKind,
     },
+    AchievementIcon {
+        hash: String,
+    },
     Invalid,
 }
 
@@ -184,6 +187,33 @@ pub fn parse_asset_uri_parts(host: Option<&str>, path: &str) -> Option<ParsedAss
             return Some(ParsedAsset::Invalid);
         };
         return Some(ParsedAsset::Cover { filename: decoded });
+    }
+
+    if host_str == "achievement" {
+        let raw = path_without_query.trim_start_matches('/');
+        let Some(decoded) = percent_decode(raw) else {
+            return Some(ParsedAsset::Invalid);
+        };
+        return Some(
+            if gamenode_platform::achievement_icons::valid_icon_hash(&decoded) {
+                ParsedAsset::AchievementIcon { hash: decoded }
+            } else {
+                ParsedAsset::Invalid
+            },
+        );
+    }
+
+    if let Some(rest) = path_without_query.strip_prefix("/achievement/") {
+        let Some(decoded) = percent_decode(rest) else {
+            return Some(ParsedAsset::Invalid);
+        };
+        return Some(
+            if gamenode_platform::achievement_icons::valid_icon_hash(&decoded) {
+                ParsedAsset::AchievementIcon { hash: decoded }
+            } else {
+                ParsedAsset::Invalid
+            },
+        );
     }
 
     if host_str == "artwork" || host_str == "artworks" {
@@ -502,6 +532,26 @@ impl PortArtState {
     }
 }
 
+/// Serves a cached achievement icon by its URL hash. The request never supplies a URL and a
+/// missing file is a 404, so the list shows its placeholder.
+async fn handle_achievement_icon(hash: &str, covers_dir: &Path) -> Response<Vec<u8>> {
+    if !gamenode_platform::achievement_icons::valid_icon_hash(hash) {
+        return build_response(StatusCode::BAD_REQUEST, None, None, Vec::new());
+    }
+    let path = gamenode_platform::achievement_icons::achievement_icon_dir(covers_dir)
+        .join(format!("{hash}.img"));
+    let read = tokio::task::spawn_blocking(move || std::fs::read(path)).await;
+    match read {
+        Ok(Ok(bytes)) => build_response(
+            StatusCode::OK,
+            Some(detect_image_mime(&bytes, hash)),
+            Some("public, max-age=31536000, immutable"),
+            bytes,
+        ),
+        _ => build_response(StatusCode::NOT_FOUND, None, None, Vec::new()),
+    }
+}
+
 /// Cache policy of port art. The WebView URL is stable while the upstream URL recorded in the
 /// snapshot can change, so the image must not be immutable.
 const PORT_ART_CACHE_CONTROL: &str = "public, max-age=3600";
@@ -614,6 +664,9 @@ where
         Some(ParsedAsset::PortArt { catalog_id, kind }) => {
             handle_port_art(&catalog_id, kind, port_art).await
         }
+        Some(ParsedAsset::AchievementIcon { hash }) => {
+            handle_achievement_icon(&hash, covers_dir).await
+        }
         Some(ParsedAsset::Invalid) => {
             build_response(StatusCode::BAD_REQUEST, None, None, Vec::new())
         }
@@ -640,6 +693,19 @@ where
         }
         Some(ParsedAsset::PortArt { .. }) => {
             build_response(StatusCode::NOT_FOUND, None, None, Vec::new())
+        }
+        Some(ParsedAsset::AchievementIcon { hash }) => {
+            let path = gamenode_platform::achievement_icons::achievement_icon_dir(covers_dir)
+                .join(format!("{hash}.img"));
+            match std::fs::read(path) {
+                Ok(bytes) => build_response(
+                    StatusCode::OK,
+                    Some(detect_image_mime(&bytes, &hash)),
+                    Some("public, max-age=31536000, immutable"),
+                    bytes,
+                ),
+                Err(_) => build_response(StatusCode::NOT_FOUND, None, None, Vec::new()),
+            }
         }
         Some(ParsedAsset::Invalid) => {
             build_response(StatusCode::BAD_REQUEST, None, None, Vec::new())
@@ -1485,6 +1551,8 @@ mod tests {
             has_artwork: true,
             artwork: Some(artwork_bytes.clone()),
             membership: Membership::NotChecked,
+            achievement_backend: false,
+            achievements: None,
         };
 
         // Snapshot without library returns None
@@ -1525,5 +1593,86 @@ mod tests {
         // Non-matching game_id returns None
         let missing = extract_artwork_from_snapshot(&snapshot, 999);
         assert_eq!(missing, None);
+    }
+}
+
+#[cfg(test)]
+mod achievement_icon_tests {
+    use super::*;
+    use gamenode_platform::achievement_icons::{achievement_icon_dir, achievement_icon_hash};
+
+    const URL: &str =
+        "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg";
+
+    #[tokio::test]
+    async fn a_cached_icon_is_served_and_a_missing_one_is_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = achievement_icon_hash(URL);
+        let icons = achievement_icon_dir(dir.path());
+        std::fs::create_dir_all(&icons).unwrap();
+        let bytes = [0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+        std::fs::write(icons.join(format!("{hash}.img")), bytes).unwrap();
+        let uri = format!("gamenode-asset://localhost/achievement/{hash}");
+        let res = handle_asset_uri_str(&uri, dir.path(), &|_| None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.body(), &bytes);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        let sync = handle_asset_uri_str_sync(&uri, dir.path(), &|_| None);
+        assert_eq!(sync.status(), StatusCode::OK);
+
+        let missing = achievement_icon_hash("https://cdn.akamai.steamstatic.com/missing.jpg");
+        let res = handle_asset_uri_str(
+            &format!("gamenode-asset://localhost/achievement/{missing}"),
+            dir.path(),
+            &|_| None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn path_traversal_and_malformed_hashes_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for uri in [
+            "gamenode-asset://localhost/achievement/../secret",
+            "gamenode-asset://localhost/achievement/%2e%2e%2fsecret",
+            "gamenode-asset://localhost/achievement/short",
+            "gamenode-asset://localhost/achievement/gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        ] {
+            let res = handle_asset_uri_str(uri, dir.path(), &|_| None).await;
+            assert!(
+                matches!(
+                    res.status(),
+                    StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+                ),
+                "{uri}: {}",
+                res.status()
+            );
+            let sync = handle_asset_uri_str_sync(uri, dir.path(), &|_| None);
+            assert!(
+                matches!(
+                    sync.status(),
+                    StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+                ),
+                "{uri}: {}",
+                sync.status()
+            );
+        }
+    }
+
+    #[test]
+    fn the_route_parses_only_the_hash() {
+        let hash = achievement_icon_hash(URL);
+        assert_eq!(
+            parse_asset_uri_parts(Some("localhost"), &format!("/achievement/{hash}")),
+            Some(ParsedAsset::AchievementIcon { hash: hash.clone() })
+        );
+        assert_eq!(
+            parse_asset_uri_parts(Some("achievement"), &format!("/{hash}")),
+            Some(ParsedAsset::AchievementIcon { hash })
+        );
     }
 }

@@ -42,6 +42,9 @@ pub struct Manifest {
     pub catalog: Option<CatalogSpec>,
     #[serde(default)]
     pub playtime: Option<PlaytimeSpec>,
+    /// A provider plugin that reads achievements for this provider's games.
+    #[serde(default)]
+    pub achievements: Option<AchievementsSpec>,
     #[serde(default)]
     pub launch: Option<UriAction>,
     #[serde(default)]
@@ -123,4 +126,12 @@ pub struct PlaytimeSpec {
     pub counter: String,
     #[serde(default)]
     pub plugin: Option<String>,
+}
+
+/// `achievements = { plugin = "<id>" }`. Only a registered, achievement-authorized plugin is a
+/// valid backend; there is no native achievement reader.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AchievementsSpec {
+    pub plugin: String,
 }

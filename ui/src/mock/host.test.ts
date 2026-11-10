@@ -45,6 +45,38 @@ describe('UI mock host', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('serves achievement summaries and filtered lists', async () => {
+    const host = createMockHost();
+    const snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const row = snapshot.library!.rows.find((entry) => entry.provider === 'steam')!;
+    await host.invoke('library_input', {
+      input: { select: { key: row.key, mode: 'replace' } },
+    });
+    const selected = await host.invoke('get_snapshot') as Snapshot;
+    expect(selected.library?.detail?.achievementBackend).toBe(true);
+    expect(selected.library?.detail?.achievements?.state).toBe('ready');
+    expect(selected.library?.detail?.achievements?.total).toBe(5);
+
+    const all = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'all',
+    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
+    expect(all.achievements).toHaveLength(5);
+    const unlocked = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'unlocked',
+    }) as { achievements: Array<{ unlocked: boolean }> };
+    expect(unlocked.achievements).toHaveLength(2);
+    expect(unlocked.achievements.every((entry) => entry.unlocked)).toBe(true);
+    const locked = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'locked',
+    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
+    expect(locked.achievements).toHaveLength(3);
+    expect(locked.achievements.some((entry) => entry.hidden)).toBe(true);
+    expect(await host.invoke('achievement_list', { key: 'gog:2', filter: 'all' })).toBeNull();
+  });
+
   it('does not route unsupported commands to any real service', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const host = createMockHost();

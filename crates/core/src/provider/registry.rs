@@ -50,6 +50,7 @@ pub struct PluginBackend {
     pub catalog: bool,
     pub counter: bool,
     pub actions: bool,
+    pub achievements: bool,
 }
 
 fn plugin_scan(_: &ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError> {
@@ -163,6 +164,14 @@ impl Provider {
             .playtime
             .as_ref()
             .and_then(|p| p.plugin.as_deref())
+    }
+
+    /// The plugin that reads this provider's achievements, if the manifest declares one.
+    pub fn achievement_plugin(&self) -> Option<&str> {
+        self.manifest
+            .achievements
+            .as_ref()
+            .map(|achievements| achievements.plugin.as_str())
     }
 
     pub fn is_manual_executable(&self) -> bool {
@@ -328,6 +337,7 @@ fn validate(
         catalog: true,
         counter: true,
         actions: true,
+        achievements: true,
     };
     let plugin = |id: &str| -> Result<&PluginBackend, String> {
         if !active {
@@ -362,6 +372,11 @@ fn validate(
             None if counter(&playtime.counter).is_some() => {}
             None => return Err(format!("unknown playtime counter `{}`", playtime.counter)),
         }
+    }
+    if let Some(achievements) = &manifest.achievements
+        && (achievements.plugin.is_empty() || !plugin(&achievements.plugin)?.achievements)
+    {
+        return Err("invalid or unauthorized achievement backend declaration".into());
     }
     if let Some(id) = &manifest.scan.plugin
         && (manifest.launch.is_some() || manifest.install.is_some())

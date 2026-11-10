@@ -25,7 +25,6 @@ import {
   IconAdjustmentsHorizontal,
   IconAlertTriangle,
   IconBooks,
-  IconBrandSteam,
   IconChevronLeft,
   IconChevronRight,
   IconCompass,
@@ -181,13 +180,8 @@ function SidebarItem({
   );
 }
 
-function providerIcon(id: string): ReactNode {
-  // Provider ids are compared case-insensitively so host variants still map correctly.
-  // @tabler/icons-react 3.50 ships no GOG brand glyph, so GOG shares the generic gamepad.
-  const normalized = id.toLowerCase();
-  if (normalized === 'steam') {
-    return <IconBrandSteam size={20} stroke={1.75} aria-hidden="true" />;
-  }
+function providerIcon(_id: string): ReactNode {
+  // Every provider shares a generic glyph so host crates and the UI never branch on a store id.
   return <IconDeviceGamepad2 size={20} stroke={1.75} aria-hidden="true" />;
 }
 

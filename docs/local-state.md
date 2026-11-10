@@ -5,14 +5,29 @@ The platform `DataPaths` adapter resolves these locations for the current user:
 | Platform | Application data | Settings database | Linux-only fallback credential |
 | --- | --- | --- | --- |
 | Windows | `%LOCALAPPDATA%\GameNode\Desktop` | `gamenode.sqlite3` below application data | None; Windows Credential Manager only |
-| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token` and `private/steam-token` below application data |
+| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token`, `private/provider-<provider id>.secret` and the legacy `private/steam-token` alias below application data |
 
-The Linux fallback directory has mode `0700` and the credential files `0600`. The GameNode
-session and the Steam session cookie use separate keyring accounts and separate fallback files;
-deleting one never touches the other.
+The Linux fallback directory has mode `0700` and the credential files `0600`.
 Only an absent Secret Service permits fallback; locked or failing services
 produce an error. Credentials are never settings. The keyring/fallback adapter
 handles tokens separately from SQLite.
+
+Credential slots are named by the host, never by a plugin:
+
+- The GameNode account session uses the `session` keyring account and
+  `private/session-token` on Linux.
+- Each provider's plugin sees the logical key `session`, mapped to that provider's own physical
+  slot: keyring account `provider.<provider id>` and Linux file
+  `private/provider-<provider id>.secret`. A provider cannot address another provider's slot or the
+  GameNode session.
+- Trusted descriptor data may name an existing physical slot instead. Steam keeps its historical
+  `steam` keyring account and `private/steam-token` file, so existing Steam credentials need no
+  migration or new sign-in.
+
+Isolated sign-in profiles live under `private/login/<provider>` and are removed when each attempt
+ends. Startup also removes the legacy profile directories listed by trusted descriptors, such as
+`private/steam-login`.
+
 
 The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys

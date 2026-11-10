@@ -43,7 +43,7 @@ class PackageLayout(unittest.TestCase):
         header[:2] = b"MZ"
         struct.pack_into("<I", header, 60, 64)
         header[64:] = b"PE\x00\x00\x64\x86"
-        for name in ("gamenode.exe", "gamenode-plugin-steam.exe"):
+        for name in ("gamenode.exe", "gamenode-plugin-steam.exe", "gamenode-plugin-epic.exe"):
             (self.root / name).write_bytes(header)
         self._resources(windows=True)
 
@@ -65,6 +65,15 @@ class PackageLayout(unittest.TestCase):
         (self.root / "gamenode-plugin-steam.exe").unlink()
         self.assertIn("missing regular binary", package_check.verify(self.root, "windows")[0])
 
+    def test_windows_requires_adjacent_epic_plugin(self):
+        self._windows()
+        self.assertEqual(package_check.verify(self.root, "windows"), [])
+        (self.root / "gamenode-plugin-epic.exe").unlink()
+        errors = package_check.verify(self.root, "windows")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("missing regular binary", errors[0])
+        self.assertIn("gamenode-plugin-epic.exe", errors[0])
+
     def test_windows_rejects_wrong_target_and_linux_only_plugin(self):
         self._windows()
         (self.root / "gamenode-plugin-steam.exe").write_bytes(b"\x7fELF")
@@ -85,6 +94,25 @@ class PackageLayout(unittest.TestCase):
         self.assertIn("not executable", errors[0])
         plugin.unlink()
         self.assertIn("missing regular binary", package_check.verify(self.root, "linux")[0])
+
+    def test_linux_does_not_require_epic_plugin(self):
+        self._linux()
+        self.assertEqual(package_check.verify(self.root, "linux"), [])
+        self.assertFalse((self.root / "libexec/gamenode-plugin-epic").exists())
+
+    def test_linux_forbids_epic_plugin_binaries(self):
+        self._linux()
+        epic = self.root / "libexec/gamenode-plugin-epic"
+        epic.write_bytes(b"\x7fELF")
+        epic.chmod(0o755)
+        errors = package_check.verify(self.root, "linux")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Windows-only Epic plugin", errors[0])
+        epic.unlink()
+        (self.root / "libexec/gamenode-plugin-epic.exe").write_bytes(b"MZ")
+        errors = package_check.verify(self.root, "linux")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("gamenode-plugin-epic.exe", errors[0])
 
     def test_existing_license_and_pc_ports_resources_are_required(self):
         self._windows()

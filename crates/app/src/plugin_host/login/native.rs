@@ -294,41 +294,52 @@ impl LoginWindow for NativeWindow {
             .map_err(|_| Status::deadline_exceeded("login probe timed out"))?
             .ok_or_else(|| Status::unavailable("login collection unavailable"))?
             .ok_or_else(|| Status::resource_exhausted("login result limit exceeded"))?;
-        let window = self.window.clone();
-        let close_gate = self.close_gate.clone();
-        let close_requested = self.close_requested.clone();
-        let cookie_url = Url::parse(&policy.cookie_url)
-            .map_err(|_| Status::failed_precondition("invalid login policy"))?;
-        let cookies = worker(move || {
-            let _guard = close_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if close_requested.load(Ordering::Acquire) {
-                return Ok(None);
-            }
-            window
-                .cookies_for_url(cookie_url)
-                .map(|cookies| {
-                    policy
-                        .cookie_names
-                        .iter()
-                        .filter_map(|name| {
-                            cookies
-                                .iter()
-                                .find(|cookie| cookie.name() == name && !cookie.value().is_empty())
-                        })
-                        .map(|cookie| LoginCookie {
-                            name: cookie.name().to_owned(),
-                            value: cookie.value().to_owned(),
-                        })
-                        .collect()
-                })
-                .map(Some)
-                .map_err(|_| Status::unavailable("login cookies unavailable"))
-        })
-        .await?;
-        let Some(cookies) = cookies else {
-            return Ok(LoginReply::default());
+        let cookies = if policy.cookie_names.is_empty() {
+            // Probe-only policies (for example an authorization-code flow) declare no cookies.
+            Vec::new()
+        } else {
+            let window = self.window.clone();
+            let close_gate = self.close_gate.clone();
+            let close_requested = self.close_requested.clone();
+            let cookie_url = policy
+                .cookie_url
+                .as_deref()
+                .ok_or_else(|| Status::failed_precondition("invalid login policy"))?;
+            let cookie_url = Url::parse(cookie_url)
+                .map_err(|_| Status::failed_precondition("invalid login policy"))?;
+            let cookie_policy = policy.clone();
+            let cookies = worker(move || {
+                let _guard = close_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if close_requested.load(Ordering::Acquire) {
+                    return Ok(None);
+                }
+                window
+                    .cookies_for_url(cookie_url)
+                    .map(|cookies| {
+                        cookie_policy
+                            .cookie_names
+                            .iter()
+                            .filter_map(|name| {
+                                cookies.iter().find(|cookie| {
+                                    cookie.name() == name && !cookie.value().is_empty()
+                                })
+                            })
+                            .map(|cookie| LoginCookie {
+                                name: cookie.name().to_owned(),
+                                value: cookie.value().to_owned(),
+                            })
+                            .collect()
+                    })
+                    .map(Some)
+                    .map_err(|_| Status::unavailable("login cookies unavailable"))
+            })
+            .await?;
+            let Some(cookies) = cookies else {
+                return Ok(LoginReply::default());
+            };
+            cookies
         };
         let check = self.window.clone();
         let check_guard = guard.clone();

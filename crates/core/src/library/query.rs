@@ -76,9 +76,8 @@ impl LibraryMachine {
             };
         }
         let auto = self
-            .provider(&entry.provider)
-            .and_then(|provider| provider.external_category())
-            .and_then(|category| self.auto_matches.get(&(category, entry.store_id.clone())));
+            .lookup_key(entry)
+            .and_then(|(category, uid)| self.auto_matches.get(&(category, uid)));
         matching::resolve(self.chosen.get(&entry.key), auto)
     }
 

@@ -1,0 +1,11 @@
+{
+  "AppName": "GameAlphaDLC",
+  "DisplayName": "Alpha Adventure — Bonus Pack",
+  "CatalogNamespace": "0123456789abcdef0123456789abcdef",
+  "CatalogItemId": "catalog-alpha-dlc",
+  "AppCategories": ["public", "games", "addons"],
+  "bIsIncompleteInstall": false,
+  "InstallLocation": "C:\\Games\\Alpha\\Bonus",
+  "MainGameAppName": "GameAlpha",
+  "Namespace": "alpha"
+}

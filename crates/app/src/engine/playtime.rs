@@ -2,7 +2,7 @@
 use super::*;
 use gamenode_core::playtime::{
     PlaytimeSource, Total,
-    submitter::{Candidate, Effect as SubmitEffect, Submitter},
+    submitter::{Candidate, Effect as SubmitEffect, Submitter, group_candidates},
 };
 use gamenode_core::ports::ProcessError;
 use gamenode_core::sync::SyncPreferences;
@@ -539,7 +539,7 @@ impl Engine {
                                     rejected_seconds: None,
                                 });
                         total.total_seconds = value.seconds;
-                        total.last_played_at = Some(value.last_played);
+                        total.last_played_at = value.last_played;
                         store.save_total(&total)?;
                     }
                     Ok(())
@@ -588,19 +588,23 @@ impl Engine {
                 state.playtime.submitting = false;
                 return;
             };
-            let candidates = totals
-                .into_iter()
+            let candidates: Vec<Candidate> = totals
+                .iter()
                 .filter_map(|total| {
                     let entry = state.library.entry(&total.entry_key)?;
                     let provider = state.library.provider(&entry.provider)?;
                     provider.manifest().playtime.as_ref()?;
                     Some(Candidate {
+                        provider: entry.provider.clone(),
                         game_id: state.library.match_status(entry).game_id(),
                         source: provider.source().into(),
-                        total,
+                        total: total.clone(),
                     })
                 })
                 .collect();
+            // Entries of one provider matched to the same game are submitted as one total, so
+            // their values replace each other on the server instead of overwriting.
+            let candidates = group_candidates(candidates, &totals);
             let preferences = state.playtime.preferences;
             let effects = state.playtime.submitter.start_for_source(
                 PlaytimeSource::Store,

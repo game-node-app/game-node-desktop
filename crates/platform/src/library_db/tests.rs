@@ -581,6 +581,18 @@ fn catalog(id: &str, name: &str) -> CatalogRecord {
     CatalogRecord {
         id: id.into(),
         name: name.into(),
+        fields: BTreeMap::new(),
+    }
+}
+
+fn catalog_with(id: &str, name: &str, fields: &[(&str, &str)]) -> CatalogRecord {
+    CatalogRecord {
+        id: id.into(),
+        name: name.into(),
+        fields: fields
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect(),
     }
 }
 
@@ -590,6 +602,67 @@ fn catalog_update(
     now: i64,
 ) -> CatalogUpdate {
     CatalogUpdate { owned, family, now }
+}
+
+#[test]
+fn catalog_fields_fill_missing_keys_and_survive_a_restart() {
+    let dir = TempDir::new().unwrap();
+    {
+        let store = open(&dir).library_store();
+        store
+            .save_scan("steam", &[record("620", "Portal 2")], 100)
+            .unwrap();
+        store
+            .save_catalog(
+                "steam",
+                &catalog_update(
+                    Some(Ok(vec![
+                        catalog_with(
+                            "620",
+                            "Portal 2",
+                            &[
+                                ("namespace", "catalog-ns"),
+                                ("state_flags", "catalog-flags"),
+                                ("catalog_item_id", "item-620"),
+                            ],
+                        ),
+                        catalog_with(
+                            "730",
+                            "Counter-Strike 2",
+                            &[("namespace", "catalog-only-ns")],
+                        ),
+                    ])),
+                    None,
+                    200,
+                ),
+            )
+            .unwrap();
+    }
+
+    // A fresh store on the same file is a restart: fields must come from `fields_json`.
+    let cache = open(&dir).library_store().load_cache(None).unwrap();
+    let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
+    assert_eq!(
+        portal.fields.get("state_flags").map(String::as_str),
+        Some("4"),
+        "installed discovery fields are never erased by the catalog"
+    );
+    assert_eq!(
+        portal.fields.get("namespace").map(String::as_str),
+        Some("catalog-ns"),
+        "the catalog fills a key the installed scan did not report"
+    );
+    assert_eq!(
+        portal.fields.get("catalog_item_id").map(String::as_str),
+        Some("item-620")
+    );
+
+    let cs = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
+    assert_eq!(
+        cs.fields.get("namespace").map(String::as_str),
+        Some("catalog-only-ns")
+    );
+    assert_eq!(cs.install_dir, "");
 }
 
 #[test]

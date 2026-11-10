@@ -644,6 +644,26 @@ describe('SettingsModal Feature Suite', () => {
             changeMatch: false,
           },
         },
+        storeAccounts: [{
+          provider: 'steam',
+          state: 'connected',
+          accountId: '76561198000000000',
+          accountName: 'cassi',
+          ownedCount: 0,
+          familyCount: 0,
+          installedCount: 5,
+          lastCheckedAt: null,
+          storage: 'secretService',
+          persistFailed: false,
+          catalogError: null,
+          familyError: null,
+          canSignIn: false,
+          canCancelSignIn: false,
+          canFocusSignIn: false,
+          canSignOut: true,
+          canCheck: true,
+          canRemoveCredential: false,
+        }],
       });
 
       expect(screen.getByRole('heading', { name: 'Steam account' })).toBeInTheDocument();

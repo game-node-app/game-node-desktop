@@ -139,7 +139,7 @@ enum CatalogFailure {
   CATALOG_FAILURE_EXPIRED = 4;
   CATALOG_FAILURE_PRIVACY = 5;
   CATALOG_FAILURE_CHANGED = 6;
-  CATALOG_FAILURE_INVALID_COOKIES = 7;
+  CATALOG_FAILURE_INVALID_CREDENTIAL = 7;
   CATALOG_FAILURE_FAMILY_UNAVAILABLE = 8;
 }
 
@@ -262,6 +262,9 @@ message ActionReply {
 message CatalogGame {
   string id = 1;
   string name = 2;
+  // Named facts for matching and actions. The host bounds this to 16 entries
+  // with keys of at most 64 and values of at most 256 bytes.
+  map<string, string> fields = 3;
 }
 
 enum CatalogCategory {
@@ -288,7 +291,9 @@ message CatalogCompletion {
 message CounterObservation {
   string id = 1;
   int64 seconds = 2;
-  int64 last_played = 3;
+  // Absent when the provider cannot report a last-played time. proto3 field
+  // presence is wire-compatible with the previous plain int64 value.
+  optional int64 last_played = 3;
 }
 
 enum OperationDisposition {

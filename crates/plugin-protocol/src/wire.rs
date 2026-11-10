@@ -54,7 +54,7 @@ enum_wire!(
     Expired,
     Privacy,
     Changed,
-    InvalidCookies,
+    InvalidCredential,
     FamilyUnavailable
 );
 
@@ -63,6 +63,7 @@ impl From<CatalogRecord> for proto::CatalogGame {
         Self {
             id: record.id,
             name: record.name,
+            fields: record.fields.into_iter().collect(),
         }
     }
 }
@@ -79,10 +80,13 @@ impl TryFrom<proto::CatalogGame> for CatalogRecord {
         {
             return Err(WireError);
         }
-        Ok(Self {
+        let catalog = Self {
             id: record.id,
             name: record.name,
-        })
+            fields: record.fields.into_iter().collect(),
+        };
+        catalog.validate_fields()?;
+        Ok(catalog)
     }
 }
 

@@ -1,0 +1,29 @@
+# Trusted descriptor for the bundled Steam plugin. The host embeds this file at build time and
+# derives its inventory entry, backends, login policy and credential slot from it.
+provider_id = "steam"
+plugin_id = "org.gamenode.plugin.steam-discovery"
+name = "Steam"
+platforms = ["linux", "windows"]
+capabilities = [
+    "provider.context.read",
+    "library.discovery",
+    "library.catalog",
+    "account.state.read",
+    "account.state.publish",
+    "auth.webview",
+    "auth.webview.cookies.read",
+    "auth.webview.page.read",
+    "secrets.read",
+    "secrets.write",
+    "secrets.delete",
+    "playtime.counter",
+    "provider.actions.declare",
+    "achievements.read",
+]
+executable = "gamenode-plugin-steam"
+provider_manifest = "steam"
+login_policy = "crates/plugin-steam/assets/login.toml"
+# Existing physical Steam credential, preserved without migration.
+credential_alias = { keyring_account = "steam", private_file = "steam-token" }
+native_access = ["files", "network", "registry"]
+legacy_login_profiles = ["steam-login"]

@@ -174,7 +174,7 @@ fn child_name(candidate: &str, dir: &str) -> Option<String> {
     Some(rest.to_owned())
 }
 
-/// A resolver with fixed answers.
+/// A resolver with fixed answers. Registry keys use the manifest's full `HIVE\subkey` form.
 #[derive(Clone, Debug, Default)]
 pub struct FixedRoots {
     pub home: Option<String>,
@@ -285,14 +285,26 @@ mod tests {
 
     #[test]
     fn fixed_roots_expand_home_only_for_a_leading_tilde() {
-        let roots = FixedRoots::with_home("/home/me").with_registry("k", "v", "C:/Steam");
+        let roots = FixedRoots::with_home("/home/me").with_registry(
+            r"HKCU\Software\Valve\Steam",
+            "SteamPath",
+            "C:/Steam",
+        );
         assert_eq!(
             roots.expand_home("~/.steam/steam").unwrap(),
             "/home/me/.steam/steam"
         );
         assert_eq!(roots.expand_home("/opt/steam").unwrap(), "/opt/steam");
         assert_eq!(roots.expand_home("~other/x"), None);
-        assert_eq!(roots.registry_string("k", "v").unwrap(), "C:/Steam");
-        assert_eq!(roots.registry_string("k", "missing"), None);
+        assert_eq!(
+            roots
+                .registry_string(r"HKCU\Software\Valve\Steam", "SteamPath")
+                .unwrap(),
+            "C:/Steam"
+        );
+        assert_eq!(
+            roots.registry_string(r"HKCU\Software\Valve\Steam", "missing"),
+            None
+        );
     }
 }

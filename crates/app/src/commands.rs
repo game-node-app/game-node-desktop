@@ -354,13 +354,45 @@ pub async fn plugin_inventory(
     .map_err(|_| "plugin inventory worker failed".to_owned())
 }
 
+/// Whether `provider_id` names a provider the host loaded with an account and catalog.
+pub(crate) fn catalog_provider_loaded(
+    runtime: Option<&Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>,
+    provider_id: &str,
+) -> bool {
+    runtime.is_some_and(|runtime| runtime.accounts().iter().any(|id| id == provider_id))
+}
+
+/// Runs one provider-scoped command after the host confirmed the provider is loaded.
+async fn run_provider_command<F, Fut>(
+    loaded: bool,
+    provider_id: &str,
+    action: F,
+) -> Result<(), String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    if !loaded {
+        return Err(format!("unknown provider: {provider_id}"));
+    }
+    action(provider_id.to_owned()).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn provider_sign_in(
     engine: tauri::State<'_, Engine>,
     provider_id: String,
 ) -> Result<(), String> {
-    engine.provider_sign_in(&provider_id).await;
-    Ok(())
+    let engine = engine.inner();
+    run_provider_command(
+        engine.has_catalog_provider(&provider_id),
+        &provider_id,
+        |id| async move {
+            engine.provider_sign_in(&id).await;
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -368,8 +400,15 @@ pub async fn provider_focus_sign_in(
     engine: tauri::State<'_, Engine>,
     provider_id: String,
 ) -> Result<(), String> {
-    engine.provider_focus_sign_in(&provider_id).await;
-    Ok(())
+    let engine = engine.inner();
+    run_provider_command(
+        engine.has_catalog_provider(&provider_id),
+        &provider_id,
+        |id| async move {
+            engine.provider_focus_sign_in(&id).await;
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -377,8 +416,15 @@ pub async fn provider_cancel_sign_in(
     engine: tauri::State<'_, Engine>,
     provider_id: String,
 ) -> Result<(), String> {
-    engine.provider_cancel_sign_in(&provider_id).await;
-    Ok(())
+    let engine = engine.inner();
+    run_provider_command(
+        engine.has_catalog_provider(&provider_id),
+        &provider_id,
+        |id| async move {
+            engine.provider_cancel_sign_in(&id).await;
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -386,8 +432,15 @@ pub async fn provider_sign_out(
     engine: tauri::State<'_, Engine>,
     provider_id: String,
 ) -> Result<(), String> {
-    engine.provider_sign_out(&provider_id).await;
-    Ok(())
+    let engine = engine.inner();
+    run_provider_command(
+        engine.has_catalog_provider(&provider_id),
+        &provider_id,
+        |id| async move {
+            engine.provider_sign_out(&id).await;
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -395,8 +448,15 @@ pub async fn provider_check(
     engine: tauri::State<'_, Engine>,
     provider_id: String,
 ) -> Result<(), String> {
-    engine.provider_check(&provider_id).await;
-    Ok(())
+    let engine = engine.inner();
+    run_provider_command(
+        engine.has_catalog_provider(&provider_id),
+        &provider_id,
+        |id| async move {
+            engine.provider_check(&id).await;
+        },
+    )
+    .await
 }
 
 /// The full achievement list, read from the local cache with no GameNode request.
@@ -407,41 +467,6 @@ pub async fn achievement_list(
     filter: gamenode_core::achievements::AchievementFilter,
 ) -> Result<Option<gamenode_core::achievements::AchievementListView>, String> {
     engine.achievement_list(key, filter).await
-}
-
-/// Opens Steam's isolated sign-in window and waits for the attempt to end.
-#[tauri::command]
-pub async fn steam_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.provider_sign_in("steam").await;
-    Ok(())
-}
-
-/// Brings the open Steam sign-in window to the front.
-#[tauri::command]
-pub async fn steam_focus_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.provider_focus_sign_in("steam").await;
-    Ok(())
-}
-
-/// Cancels the open Steam sign-in window without saving a credential.
-#[tauri::command]
-pub async fn steam_cancel_sign_in(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.provider_cancel_sign_in("steam").await;
-    Ok(())
-}
-
-/// Signs out of Steam, keeping installed games, matches and covers.
-#[tauri::command]
-pub async fn steam_sign_out(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.provider_sign_out("steam").await;
-    Ok(())
-}
-
-/// Validates the Steam session and, with an open library, refreshes the catalog.
-#[tauri::command]
-pub async fn steam_check(engine: tauri::State<'_, Engine>) -> Result<(), String> {
-    engine.provider_check("steam").await;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,5 +1118,74 @@ mod tests {
         assert!(matches!(error, PortCommandError::InstallInProgress));
         let json = serde_json::to_value(&error).unwrap();
         assert_eq!(json["code"], "installInProgress");
+    }
+
+    /// A provider host with the given loaded catalog providers and no account work.
+    struct FakeRuntime {
+        providers: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::plugin_host::runtime::ProviderRuntime for FakeRuntime {
+        fn accounts(&self) -> Vec<String> {
+            self.providers.clone()
+        }
+        fn has_provider(&self, provider: &str) -> bool {
+            self.providers.iter().any(|id| id == provider)
+        }
+        fn status(&self, _: &str) -> Option<gamenode_plugin_protocol::models::AccountStatus> {
+            None
+        }
+        fn available(&self, _: &str) -> bool {
+            true
+        }
+        fn set_observer(&self, _: crate::plugin_host::runtime::Observer) {}
+        async fn shutdown(&self) {}
+        async fn execute(
+            &self,
+            provider: &str,
+            _: gamenode_plugin_protocol::proto::ProviderOperation,
+        ) -> Result<crate::plugin_host::provider::Completion, tonic::Status> {
+            Err(tonic::Status::not_found(provider))
+        }
+    }
+
+    fn fake_runtime(providers: &[&str]) -> Arc<dyn crate::plugin_host::runtime::ProviderRuntime> {
+        Arc::new(FakeRuntime {
+            providers: providers.iter().map(|id| (*id).to_owned()).collect(),
+        })
+    }
+
+    #[tokio::test]
+    async fn provider_commands_reject_an_unknown_provider_without_touching_the_host() {
+        let runtime = fake_runtime(&["steam", "epic"]);
+        assert!(catalog_provider_loaded(Some(&runtime), "steam"));
+        assert!(catalog_provider_loaded(Some(&runtime), "epic"));
+        assert!(!catalog_provider_loaded(Some(&runtime), "gog"));
+        assert!(!catalog_provider_loaded(None, "steam"));
+
+        let called = std::sync::Mutex::new(Vec::new());
+        let error = run_provider_command(false, "gog", |id| {
+            called.lock().unwrap().push(id);
+            async {}
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, "unknown provider: gog");
+        assert!(called.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_commands_route_the_named_provider_to_the_action() {
+        let called = std::sync::Mutex::new(Vec::new());
+        for provider in ["steam", "epic"] {
+            run_provider_command(true, provider, |id| {
+                called.lock().unwrap().push(id);
+                async {}
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(*called.lock().unwrap(), ["steam", "epic"]);
     }
 }

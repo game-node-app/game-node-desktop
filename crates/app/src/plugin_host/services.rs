@@ -115,35 +115,36 @@ fn storage(method: StorageMethod) -> SecretStorage {
 }
 
 impl ProviderServices {
-    /// Open only the credential alias approved by the distribution registry.
-    /// OS credential initialization and descriptor parsing run on a worker.
+    /// Open only the credential slot approved by the trusted descriptor. OS credential
+    /// initialization and descriptor parsing run on a worker.
     pub async fn bundled(
         provider_id: &str,
         paths: gamenode_platform::paths::DataPaths,
         library: Arc<dyn LibraryStore>,
         login: Option<Arc<LoginBroker>>,
     ) -> Result<Self, Status> {
-        let descriptor = *super::descriptor_for_provider(provider_id)
+        let descriptor = super::descriptor_for_provider(provider_id)
             .ok_or_else(|| Status::unavailable("provider is not registered"))?;
+        if descriptor.provider_manifest != descriptor.provider_id {
+            return Err(Status::failed_precondition(
+                "provider manifest does not match the descriptor",
+            ));
+        }
         if gamenode_core::provider::Platform::current()
-            .is_none_or(|platform| !descriptor.platforms.contains(&platform))
+            .is_none_or(|platform| !descriptor.supports(platform))
         {
             return Err(Status::unavailable("provider platform unavailable"));
         }
         tokio::task::spawn_blocking(move || {
-            let credentials = descriptor
-                .credential_alias
-                .map(|alias| gamenode_platform::credentials::open_store(&paths, alias));
+            let credentials = descriptor.uses_secrets().then(|| {
+                gamenode_platform::credentials::open_store(&paths, descriptor.credential_slot())
+            });
             Self::new(
                 ProviderContext {
-                    provider_id: descriptor.provider_id.into(),
+                    provider_id: descriptor.provider_id.clone(),
                     platform: std::env::consts::OS.into(),
-                    manifest_toml: descriptor.provider_manifest.into(),
-                    granted_capabilities: descriptor
-                        .capabilities
-                        .iter()
-                        .map(|c| (*c).into())
-                        .collect(),
+                    manifest_toml: descriptor.manifest_toml.clone(),
+                    granted_capabilities: descriptor.capabilities.clone(),
                     ..Default::default()
                 },
                 credentials,
@@ -464,6 +465,12 @@ impl HostServices for ProviderServices {
         if let Some(broker) = &self.login {
             broker.session_closed(session_id).await;
         }
+    }
+
+    fn login_reads_cookies(&self) -> bool {
+        self.login_policy
+            .as_ref()
+            .is_some_and(|policy| !policy.cookie_names.is_empty())
     }
 }
 

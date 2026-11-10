@@ -2,6 +2,7 @@
 //! supplies URLs, cookie names and a probe; runtime requests supply handles only.
 
 use super::provider::Lease;
+use gamenode_platform::paths::LOGIN_DIR;
 use gamenode_plugin_protocol::{
     login::LoginPolicy,
     proto::{LoginOperation, LoginReply, LoginRequest, LoginState, ServiceContext},
@@ -109,15 +110,17 @@ impl Attempt {
         }
         *slot = None;
         let profile = self.profile.clone();
-        let removed = tokio::task::spawn_blocking(move || remove_with_retry(&profile)).await;
-        if !matches!(removed, Ok(Ok(()))) {
+        let handle = self.handle.clone();
+        let removed =
+            tokio::task::spawn_blocking(move || remove_owned_profile(&profile, &handle)).await;
+        if !matches!(removed, Ok(Ok(_))) {
             tracing::warn!("plugin login profile cleanup failed");
         }
     }
 }
 
-/// One active attempt per provider/session; no profile path or page material is
-/// exposed through snapshots. Construct once after acquiring profile ownership.
+/// One active attempt per provider; no profile path or page material is exposed
+/// through snapshots. Construct once after acquiring profile ownership.
 pub struct LoginBroker {
     root: PathBuf,
     windows: Arc<dyn LoginWindows>,
@@ -144,11 +147,11 @@ impl LoginBroker {
                 || name == "."
                 || name == ".."
                 || name.contains(['/', '\\'])
-                || name == "plugin-login"
+                || name == LOGIN_DIR
         }) {
             return Err(Status::invalid_argument("invalid legacy profile alias"));
         }
-        let root = private_dir.join("plugin-login");
+        let root = private_dir.join(LOGIN_DIR);
         let recovery = root.clone();
         tokio::task::spawn_blocking(move || {
             private_directory(&private_dir)?;
@@ -178,10 +181,13 @@ impl LoginBroker {
         lease.check()?;
         let scope = Scope::from(&lease.context);
         let extracting = request.operation == LoginOperation::Read as i32;
+        let needs_cookies = !policy.cookie_names.is_empty();
         let valid: Valid = Arc::new(move || {
             lease.check()?;
             if extracting {
-                lease.require(gamenode_plugin_protocol::capability::COOKIES)?;
+                if needs_cookies {
+                    lease.require(gamenode_plugin_protocol::capability::COOKIES)?;
+                }
                 lease.require(gamenode_plugin_protocol::capability::PAGE)?;
             }
             Ok(())
@@ -203,13 +209,14 @@ impl LoginBroker {
             if !request.handle.is_empty() {
                 return Err(Status::invalid_argument("unexpected login handle"));
             }
+            let provider = profile_component(&scope.provider)?;
             policy
                 .validate()
                 .map_err(|_| Status::failed_precondition("login policy unavailable"))?;
             let handle = super::random_session_id()?;
             let attempt = Arc::new(Attempt {
                 scope: scope.clone(),
-                profile: self.root.join(&handle),
+                profile: self.root.join(provider),
                 handle,
                 policy,
                 valid,
@@ -223,10 +230,9 @@ impl LoginBroker {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let key = (scope.session.clone(), scope.provider.clone());
-                if attempts
-                    .get(&key)
-                    .is_some_and(|a| a.state() == LoginState::Open)
-                {
+                if attempts.values().any(|attempt| {
+                    attempt.state() == LoginState::Open && attempt.scope.provider == scope.provider
+                }) {
                     return Err(Status::already_exists("login already open"));
                 }
                 if !attempts.contains_key(&key) && attempts.len() >= MAX_WINDOWS {
@@ -249,14 +255,15 @@ impl LoginBroker {
                         return Err(Status::cancelled("login cancelled"));
                     }
                     let path = opened.profile.clone();
-                    tokio::task::spawn_blocking(move || private_directory(&path))
+                    let handle = opened.handle.clone();
+                    tokio::task::spawn_blocking(move || prepare_profile(&path, &handle))
                         .await
                         .map_err(|_| Status::unavailable("login profile unavailable"))?
                         .map_err(|_| Status::unavailable("login profile unavailable"))?;
                     *window = Some(
                         windows
                             .open(
-                                format!("plugin-login-{}", opened.handle),
+                                format!("login-{}", opened.handle),
                                 opened.profile.clone(),
                                 opened.policy.clone(),
                             )
@@ -415,6 +422,39 @@ fn validate_collection(reply: &LoginReply, policy: &LoginPolicy) -> Result<(), S
         return Err(Status::data_loss("invalid login collection"));
     }
     Ok(())
+}
+
+fn profile_component(provider: &str) -> Result<&str, Status> {
+    if provider.is_empty() || provider == "." || provider == ".." || provider.contains(['/', '\\'])
+    {
+        return Err(Status::permission_denied("invalid login provider"));
+    }
+    Ok(provider)
+}
+
+const PROFILE_OWNER: &str = ".gamenode-owner";
+
+/// Prepares the provider's ephemeral profile. A stale directory from an interrupted attempt is
+/// removed first, and the owner marker lets a late cleanup avoid deleting a newer attempt.
+fn prepare_profile(path: &Path, handle: &str) -> std::io::Result<()> {
+    remove_path(path)?;
+    private_directory(path)?;
+    std::fs::write(path.join(PROFILE_OWNER), handle)
+}
+
+fn remove_owned_profile(path: &Path, handle: &str) -> std::io::Result<bool> {
+    match std::fs::read_to_string(path.join(PROFILE_OWNER)) {
+        Ok(owner) if owner.trim() == handle => {
+            remove_with_retry(path)?;
+            Ok(true)
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            remove_with_retry(path)?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn private_directory(path: &Path) -> std::io::Result<()> {

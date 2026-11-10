@@ -653,6 +653,10 @@ struct Harness {
 
 impl Harness {
     async fn open(connected: bool) -> Self {
+        Self::open_with(connected, Arc::new(Client)).await
+    }
+
+    async fn open_with(connected: bool, client: Arc<dyn crate::steam::SteamWebApi>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let endpoint = temp.path().join("reference.sock");
         let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
@@ -696,7 +700,7 @@ impl Harness {
         .await
         .unwrap();
         let plugin = Arc::new(SteamPlugin {
-            client: Arc::new(Client),
+            client,
             account: Mutex::new(None),
             login: LoginAttempt::default(),
             contexts: Mutex::new(Contexts::default()),
@@ -933,5 +937,116 @@ async fn real_plugin_does_not_resurrect_a_signed_out_account_from_a_late_login_p
     assert!(lock(&h.host.credential).is_none());
     assert!(lock(&h.host.account).is_none());
     assert!(lock(&h.host.login.handle).is_none());
+    h.close().await;
+}
+
+/// A saved session whose cookie matches the reference host's stored credential.
+fn saved_session() -> crate::steam::SteamSession {
+    crate::steam::SteamSession {
+        steam_id: "76561198000000001".into(),
+        account_name: Some("player".into()),
+        token: models::SessionCredential::new("temporary-token-secret").unwrap(),
+        cookie: models::SessionCredential::new("saved-cookie-secret").unwrap(),
+    }
+}
+
+/// Steam rotated the cookie while validating the saved session.
+struct Rotating;
+
+#[async_trait::async_trait]
+impl crate::steam::SteamWebApi for Rotating {
+    async fn session(
+        &self,
+        _: &models::SessionCredential,
+    ) -> Result<crate::steam::SteamSession, crate::steam::SteamError> {
+        Ok(crate::steam::SteamSession {
+            steam_id: "76561198000000001".into(),
+            account_name: Some("player".into()),
+            token: models::SessionCredential::new("temporary-token-secret").unwrap(),
+            cookie: models::SessionCredential::new("steamLoginSecure=rotated; sessionid=abc")
+                .unwrap(),
+        })
+    }
+    async fn owned_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<Vec<crate::steam::SteamOwnedGame>, crate::steam::SteamError> {
+        Ok(vec![])
+    }
+    async fn family_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
+        Ok(crate::steam::SteamFamily::default())
+    }
+}
+
+/// A restore check that can answer with a session or one categorized failure.
+struct Switchable(Mutex<Result<crate::steam::SteamSession, crate::steam::SteamError>>);
+
+impl Switchable {
+    fn new(answer: Result<crate::steam::SteamSession, crate::steam::SteamError>) -> Self {
+        Self(Mutex::new(answer))
+    }
+    fn set(&self, answer: Result<crate::steam::SteamSession, crate::steam::SteamError>) {
+        *self.0.lock().unwrap() = answer;
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::steam::SteamWebApi for Switchable {
+    async fn session(
+        &self,
+        _: &models::SessionCredential,
+    ) -> Result<crate::steam::SteamSession, crate::steam::SteamError> {
+        self.0.lock().unwrap().clone()
+    }
+    async fn owned_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<Vec<crate::steam::SteamOwnedGame>, crate::steam::SteamError> {
+        Ok(vec![])
+    }
+    async fn family_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
+        Ok(crate::steam::SteamFamily::default())
+    }
+}
+
+#[tokio::test]
+async fn real_plugin_persists_a_rotated_cookie_before_reporting_connected() {
+    let h = Harness::open_with(true, Arc::new(Rotating)).await;
+    assert_eq!(
+        lock(&h.host.credential).as_deref(),
+        Some(b"steamLoginSecure=rotated; sessionid=abc".as_slice())
+    );
+    assert_eq!(h.host.login.writes.load(Ordering::Acquire), 1);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn real_plugin_removes_an_expired_credential_but_keeps_an_unreachable_one() {
+    let client = Arc::new(Switchable::new(Ok(saved_session())));
+    let mut h = Harness::open_with(true, client.clone()).await;
+
+    client.set(Err(crate::steam::SteamError::Unreachable));
+    h.send(ProviderOperation::Check, 2, "unreachable").await;
+    let unreachable = h.result("unreachable").await;
+    assert_eq!(
+        unreachable.status.unwrap().state,
+        AccountConnection::Unreachable as i32
+    );
+    assert!(lock(&h.host.credential).is_some());
+
+    client.set(Err(crate::steam::SteamError::Expired));
+    h.send(ProviderOperation::Check, 3, "expired").await;
+    let expired = h.result("expired").await;
+    assert_eq!(
+        expired.status.unwrap().state,
+        AccountConnection::Expired as i32
+    );
+    assert!(lock(&h.host.credential).is_none());
     h.close().await;
 }

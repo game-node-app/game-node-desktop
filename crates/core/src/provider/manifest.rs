@@ -90,6 +90,9 @@ pub enum UriAction {
 pub struct MatchSpec {
     /// The GameNode external-game category the provider's ids belong to.
     pub external_category: u32,
+    /// A record field holding the external id to look up instead of the store id.
+    #[serde(default)]
+    pub uid_field: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]

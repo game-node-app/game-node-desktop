@@ -108,9 +108,9 @@ function makeLibrary(
   };
 }
 
-function makeStoreAccount(state: StoreAccountState): StoreAccountView {
+function makeStoreAccount(state: StoreAccountState, provider = 'steam'): StoreAccountView {
   return {
-    provider: 'steam',
+    provider,
     state,
     accountId: state === 'notConnected' ? null : '76561198000000000',
     accountName: state === 'notConnected' ? null : 'cassi',
@@ -499,14 +499,14 @@ describe('Steam library UI', () => {
 
       renderSnapshot(<LibraryToolbar />, snapshot);
 
-      expect(screen.getByTestId('banner-steam-expired')).toHaveTextContent(
+      expect(screen.getByTestId('banner-store-expired')).toHaveTextContent(
         'Steam sign-in expired. Showing your saved Steam library.',
       );
-      expect(screen.queryByTestId('banner-steam-unreachable')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('banner-store-unreachable')).not.toBeInTheDocument();
       // The toolbar stays usable behind the banner.
       expect(screen.getByTestId('library-rescan-btn')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByTestId('banner-steam-fix-btn'));
+      fireEvent.click(screen.getByTestId('banner-store-fix-btn'));
       expect(uiStore.state.settingsOpen).toBe(true);
       expect(uiStore.state.settingsTopic).toBe('stores');
     });
@@ -518,12 +518,27 @@ describe('Steam library UI', () => {
 
       renderSnapshot(<LibraryToolbar />, snapshot);
 
-      expect(screen.getByTestId('banner-steam-unreachable')).toHaveTextContent(
+      expect(screen.getByTestId('banner-store-unreachable')).toHaveTextContent(
         'Steam cannot be reached. Showing your saved Steam library.',
       );
-      expect(screen.queryByTestId('banner-steam-expired')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('banner-store-expired')).not.toBeInTheDocument();
 
-      fireEvent.click(screen.getByTestId('banner-steam-fix-btn'));
+      fireEvent.click(screen.getByTestId('banner-store-fix-btn'));
+      expect(uiStore.state.settingsOpen).toBe(true);
+      expect(uiStore.state.settingsTopic).toBe('stores');
+    });
+
+    it('shows the expired banner for any provider without a store-specific branch', () => {
+      const snapshot = createDefaultSnapshot();
+      snapshot.library = makeLibrary([]);
+      snapshot.storeAccounts = [makeStoreAccount('expired', 'epic')];
+
+      renderSnapshot(<LibraryToolbar />, snapshot);
+
+      expect(screen.getByTestId('banner-store-expired')).toHaveTextContent(
+        'Epic sign-in expired. Showing your saved Epic library.',
+      );
+      fireEvent.click(screen.getByTestId('banner-store-fix-btn'));
       expect(uiStore.state.settingsOpen).toBe(true);
       expect(uiStore.state.settingsTopic).toBe('stores');
     });
@@ -534,7 +549,7 @@ describe('Steam library UI', () => {
       snapshot.storeAccounts = [makeStoreAccount('expired')];
 
       const { rerender, queryClient } = renderSnapshot(<LibraryToolbar />, snapshot);
-      expect(screen.getByTestId('banner-steam-expired')).toBeInTheDocument();
+      expect(screen.getByTestId('banner-store-expired')).toBeInTheDocument();
 
       act(() => {
         queryClient.setQueryData(SNAPSHOT_QUERY_KEY, {
@@ -549,8 +564,8 @@ describe('Steam library UI', () => {
           </I18nProvider>
         </QueryClientProvider>,
       );
-      expect(screen.queryByTestId('banner-steam-expired')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('banner-steam-unreachable')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('banner-store-expired')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('banner-store-unreachable')).not.toBeInTheDocument();
 
       act(() => {
         queryClient.setQueryData(SNAPSHOT_QUERY_KEY, {
@@ -565,7 +580,7 @@ describe('Steam library UI', () => {
           </I18nProvider>
         </QueryClientProvider>,
       );
-      expect(screen.queryByTestId('banner-steam-expired')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('banner-store-expired')).not.toBeInTheDocument();
     });
   });
 

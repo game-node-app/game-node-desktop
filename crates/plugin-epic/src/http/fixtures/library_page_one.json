@@ -1,0 +1,25 @@
+{
+  "responseMetadata": {
+    "nextCursor": "cursor-page-2"
+  },
+  "records": [
+    {
+      "appName": "GameAlpha",
+      "artifactId": "artifact-alpha",
+      "namespace": "0123456789abcdef0123456789abcdef",
+      "catalogItemId": "catalog-alpha",
+      "productId": "product-alpha",
+      "sandboxName": "alpha",
+      "recordId": "record-alpha"
+    },
+    {
+      "appName": "GameBeta",
+      "artifactId": "artifact-beta",
+      "namespace": "fedcba9876543210fedcba9876543210",
+      "catalogItemId": "catalog-beta",
+      "productId": "product-beta",
+      "sandboxName": "beta",
+      "recordId": "record-beta"
+    }
+  ]
+}

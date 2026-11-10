@@ -81,8 +81,8 @@ impl Harness {
                 ProviderContext {
                     provider_id: "steam".into(),
                     platform: std::env::consts::OS.into(),
-                    manifest_toml: descriptor.provider_manifest.into(),
-                    granted_capabilities: cap::ALL.iter().map(|c| (*c).into()).collect(),
+                    manifest_toml: descriptor.manifest_toml.clone(),
+                    granted_capabilities: descriptor.capabilities.clone(),
                     ..Default::default()
                 },
                 Some(credentials),
@@ -551,10 +551,15 @@ async fn storage_outcomes_override_false_persistence_and_plaintext_claims() {
         h.services.status().unwrap().state,
         models::AccountState::Connected
     );
-    assert!(matches!(
-        client.secret(SecretOperation::Read, "gamenode", None).await,
-        Err(gamenode_plugin_sdk::Error::Denied | gamenode_plugin_sdk::Error::Protocol)
-    ));
+    for key in ["gamenode", "provider.other", "other-provider-token"] {
+        assert!(
+            matches!(
+                client.secret(SecretOperation::Read, key, None).await,
+                Err(gamenode_plugin_sdk::Error::Denied | gamenode_plugin_sdk::Error::Protocol)
+            ),
+            "a plugin must not read the `{key}` secret"
+        );
+    }
     client.finish(completed()).await.unwrap();
     operation.await.unwrap().unwrap();
 }
@@ -572,7 +577,7 @@ async fn legacy_private_credential_alias_is_used_without_copy_and_deleted_author
         .unwrap();
     let steam = Arc::new(FileCredentialStore::new(
         paths.private_dir(),
-        paths.steam_credential_file(),
+        paths.private_dir().join("steam-token"),
     ));
     steam
         .save(&SessionCredential::new("legacy-steam-cookie").unwrap())
@@ -598,12 +603,12 @@ async fn legacy_private_credential_alias_is_used_without_copy_and_deleted_author
         .await
         .unwrap();
     assert_eq!(
-        std::fs::read_to_string(paths.steam_credential_file()).unwrap(),
+        std::fs::read_to_string(paths.private_dir().join("steam-token")).unwrap(),
         "rotated-cookie"
     );
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
-        std::fs::metadata(paths.steam_credential_file())
+        std::fs::metadata(paths.private_dir().join("steam-token"))
             .unwrap()
             .permissions()
             .mode()
@@ -614,7 +619,7 @@ async fn legacy_private_credential_alias_is_used_without_copy_and_deleted_author
         .secret(SecretOperation::Delete, "session", None)
         .await
         .unwrap();
-    assert!(!paths.steam_credential_file().exists());
+    assert!(!paths.private_dir().join("steam-token").exists());
     assert!(matches!(
         client
             .secret(SecretOperation::Read, "session", None)

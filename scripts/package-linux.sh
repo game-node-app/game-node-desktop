@@ -69,6 +69,7 @@ pnpm --dir ui build
 GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-app --locked
 GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-plugin-steam --locked
 GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-plugin-packagekit --locked
+# The Epic plugin is Windows-only and is intentionally not built into Linux packages.
 cp "$binary" "$package/libexec/gamenode"
 cp "$steam_binary" "$package/libexec/gamenode-plugin-steam"
 cp "$packagekit_binary" "$package/libexec/gamenode-plugin-packagekit"
@@ -80,6 +81,11 @@ cp -R licenses "$package/licenses"
 chmod 755 "$package/libexec/gamenode" "$package/libexec/gamenode-plugin-steam" \
     "$package/libexec/gamenode-plugin-packagekit" \
     "$package/install.sh" "$package/uninstall.sh" "$package/gamenode.sh"
+# Epic is a Windows-only provider. Refuse a Linux package that somehow carries its executable.
+if [[ -e "$package/libexec/gamenode-plugin-epic" || -e "$package/libexec/gamenode-plugin-epic.exe" ]]; then
+    echo 'Refusing to package the Windows-only Epic plugin in the Linux package.' >&2
+    exit 1
+fi
 python3 scripts/verify-plugin-package.py --platform linux "$package"
 
 mkdir -p dist/linux

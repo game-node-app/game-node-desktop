@@ -32,7 +32,6 @@ mod library;
 mod pc_ports;
 mod playtime;
 pub(super) mod provider_runtime;
-mod steam;
 mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
@@ -417,16 +416,6 @@ fn harness_over(
     creds: Arc<FakeCreds>,
     remote: Option<Arc<gamenode_api::GameNodeClient>>,
 ) -> Harness {
-    harness_with_steam(api, creds, remote, None)
-}
-
-/// Like [`harness_over`], with Steam store-account adapters when given.
-fn harness_with_steam(
-    api: Arc<FakeApi>,
-    creds: Arc<FakeCreds>,
-    remote: Option<Arc<gamenode_api::GameNodeClient>>,
-    steam: Option<super::SteamPorts>,
-) -> Harness {
     let browser = Arc::new(FakeBrowser::default());
     let settings = Arc::new(FakeSettings::default());
     let store = Arc::new(FakeLibrary::default());
@@ -464,7 +453,6 @@ fn harness_with_steam(
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
-        steam,
         pc_ports: None,
         port_store: None,
         port_progress: Arc::new(PortProgressPublisher::disabled(

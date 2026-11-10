@@ -15,10 +15,8 @@ pub const COVERS_DIR: &str = "covers";
 pub const PRIVATE_DIR: &str = "private";
 /// File name of the Linux fallback credential file inside [`PRIVATE_DIR`].
 pub const CREDENTIAL_FILE: &str = "session-token";
-/// File name of the Linux fallback Steam cookie file inside [`PRIVATE_DIR`].
-pub const STEAM_CREDENTIAL_FILE: &str = "steam-token";
-/// Directory inside [`PRIVATE_DIR`] for the ephemeral Steam login webview profile.
-pub const STEAM_LOGIN_PROFILE_DIR: &str = "steam-login";
+/// Directory inside [`PRIVATE_DIR`] for isolated provider login profiles.
+pub const LOGIN_DIR: &str = "login";
 /// Directory that holds the application log files.
 pub const LOGS_DIR: &str = "logs";
 /// Prefix and suffix of a rotated log file: `gamenode.YYYY-MM-DD.log`.
@@ -54,6 +52,28 @@ fn owner_only_dir(path: &Path) -> std::io::Result<()> {
             }
             std::fs::DirBuilder::new().mode(0o700).create(path)
         }
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_provider_component(provider: &str) -> std::io::Result<()> {
+    if provider.is_empty() || provider == "." || provider == ".." || provider.contains(['/', '\\'])
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid provider id",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path)
+        }
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -106,24 +126,25 @@ impl DataPaths {
         self.private_dir().join(CREDENTIAL_FILE)
     }
 
-    /// The Linux fallback file for the Steam session cookie, separate from the GameNode
-    /// session token.
-    pub fn steam_credential_file(&self) -> PathBuf {
-        self.private_dir().join(STEAM_CREDENTIAL_FILE)
+    /// The root of the isolated provider login profiles.
+    pub fn login_dir(&self) -> PathBuf {
+        self.private_dir().join(LOGIN_DIR)
     }
 
-    /// The ephemeral profile directory of the isolated Steam sign-in webview.
-    pub fn steam_login_profile_dir(&self) -> PathBuf {
-        self.private_dir().join(STEAM_LOGIN_PROFILE_DIR)
+    /// The ephemeral sign-in profile directory of one provider, below [`LOGIN_DIR`].
+    pub fn login_profile_dir(&self, provider: &str) -> PathBuf {
+        self.login_dir().join(provider)
     }
 
-    /// Creates the Steam login profile directory with owner-only permissions (mode `0700` on
+    /// Creates the provider login profile directory with owner-only permissions (mode `0700` on
     /// Unix), tightening an existing directory when needed.
-    pub fn ensure_steam_login_profile_dir(&self) -> std::io::Result<PathBuf> {
-        let path = self.steam_login_profile_dir();
+    pub fn ensure_login_profile_dir(&self, provider: &str) -> std::io::Result<PathBuf> {
+        validate_provider_component(provider)?;
+        let path = self.login_profile_dir(provider);
         #[cfg(unix)]
         {
             owner_only_dir(&self.private_dir())?;
+            owner_only_dir(&self.login_dir())?;
             owner_only_dir(&path)?;
         }
         #[cfg(not(unix))]
@@ -133,18 +154,11 @@ impl DataPaths {
         Ok(path)
     }
 
-    /// Removes the Steam login profile directory and its contents. A missing directory is
+    /// Removes one provider's login profile directory and its contents. A missing directory is
     /// success, and a symlink is removed itself, never followed.
-    pub fn remove_steam_login_profile_dir(&self) -> std::io::Result<()> {
-        let path = self.steam_login_profile_dir();
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
-                std::fs::remove_dir_all(path)
-            }
-            Ok(_) => std::fs::remove_file(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
+    pub fn remove_login_profile_dir(&self, provider: &str) -> std::io::Result<()> {
+        validate_provider_component(provider)?;
+        remove_path(&self.login_profile_dir(provider))
     }
 
     /// The directory of rotating application logs.
@@ -194,18 +208,13 @@ mod tests {
             paths.private_dir().join("session-token")
         );
         assert_eq!(
-            paths.steam_credential_file(),
-            paths.private_dir().join("steam-token")
-        );
-        assert_eq!(
-            paths.steam_login_profile_dir(),
-            paths.private_dir().join("steam-login")
+            paths.login_profile_dir("steam"),
+            paths.private_dir().join("login/steam")
         );
         assert!(paths.credential_file().starts_with(paths.data_dir()));
-        assert!(paths.steam_credential_file().starts_with(paths.data_dir()));
         assert!(
             paths
-                .steam_login_profile_dir()
+                .login_profile_dir("steam")
                 .starts_with(paths.data_dir())
         );
         assert_eq!(paths.covers_dir(), paths.data_dir().join("covers"));
@@ -222,11 +231,11 @@ mod tests {
     }
 
     #[test]
-    fn the_steam_login_profile_is_owner_only_and_removable() {
+    fn a_provider_login_profile_is_owner_only_and_removable() {
         let dir = tempfile::TempDir::new().unwrap();
         let paths = DataPaths::at(dir.path().join("data"));
-        let profile = paths.ensure_steam_login_profile_dir().unwrap();
-        assert_eq!(profile, paths.steam_login_profile_dir());
+        let profile = paths.ensure_login_profile_dir("fixture").unwrap();
+        assert_eq!(profile, paths.login_profile_dir("fixture"));
         assert!(profile.is_dir());
         #[cfg(unix)]
         {
@@ -239,11 +248,19 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(private, 0o700, "the containing private directory is 0700");
+            let login = std::fs::metadata(paths.login_dir())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(login, 0o700, "the login root is 0700");
         }
         std::fs::write(profile.join("Cookies"), "profile data").unwrap();
 
-        paths.remove_steam_login_profile_dir().unwrap();
-        assert!(!paths.steam_login_profile_dir().exists());
-        paths.remove_steam_login_profile_dir().unwrap(); // already gone
+        paths.remove_login_profile_dir("fixture").unwrap();
+        assert!(!paths.login_profile_dir("fixture").exists());
+        paths.remove_login_profile_dir("fixture").unwrap(); // already gone
+        assert!(paths.ensure_login_profile_dir("../escape").is_err());
+        assert!(paths.remove_login_profile_dir("other/provider").is_err());
     }
 }

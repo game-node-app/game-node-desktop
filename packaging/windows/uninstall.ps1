@@ -21,9 +21,11 @@ if (Test-Path -LiteralPath $shortcutPath) {
     $shell = New-Object -ComObject WScript.Shell
     if ($shell.CreateShortcut($shortcutPath).TargetPath -eq (Join-Path $installDir 'gamenode.exe')) { Remove-Item -LiteralPath $shortcutPath }
 }
-foreach ($name in @('gamenode.exe', 'gamenode-plugin-steam.exe', 'LICENSE', 'README.md', 'licenses', 'backup-assets', 'install.ps1', 'uninstall.ps1', 'previous-uri-handler.reg', '.gamenode-desktop-install.json')) {
+foreach ($name in @('gamenode.exe', 'gamenode-plugin-steam.exe', 'gamenode-plugin-epic.exe', 'LICENSE', 'README.md', 'licenses', 'backup-assets', 'install.ps1', 'uninstall.ps1', 'previous-uri-handler.reg', '.gamenode-desktop-install.json')) {
     $path = Join-Path $installDir $name
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 if (!(Get-ChildItem -LiteralPath $installDir -Force)) { Remove-Item -LiteralPath $installDir }
+# Keep-data policy: user data and provider credentials (including the `provider.epic` Windows
+# Credential Manager entry) are preserved. Uninstall adds no new data-destruction path.
 Write-Output 'Removed GameNode Desktop integration. User data was preserved.'

@@ -1,0 +1,16 @@
+{
+  "responseMetadata": {
+    "nextCursor": null
+  },
+  "records": [
+    {
+      "appName": "GameGamma",
+      "artifactId": "artifact-gamma",
+      "namespace": "00112233445566778899aabbccddeeff",
+      "catalogItemId": "catalog-gamma",
+      "productId": "product-gamma",
+      "sandboxName": "gamma",
+      "recordId": "record-gamma"
+    }
+  ]
+}

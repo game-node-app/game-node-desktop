@@ -127,7 +127,7 @@ impl SteamError {
             Self::Expired => CatalogError::Expired,
             Self::Privacy => CatalogError::Privacy,
             Self::Changed => CatalogError::Changed,
-            Self::InvalidCookies => CatalogError::InvalidCookies,
+            Self::InvalidCookies => CatalogError::InvalidCredential,
         }
     }
 
@@ -252,7 +252,7 @@ mod tests {
         );
         assert_eq!(
             CatalogError::from(SteamError::InvalidCookies),
-            CatalogError::InvalidCookies
+            CatalogError::InvalidCredential
         );
         assert_eq!(
             SteamError::Server.family_catalog_error(),

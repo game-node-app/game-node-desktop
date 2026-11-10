@@ -1,0 +1,11 @@
+{
+  "AppName": "GameIncomplete",
+  "DisplayName": "Half Installed",
+  "CatalogNamespace": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "CatalogItemId": "catalog-incomplete",
+  "AppCategories": ["public", "games"],
+  "bIsIncompleteInstall": true,
+  "InstallLocation": "C:\\Games\\Incomplete",
+  "MainGameAppName": "",
+  "Namespace": "incomplete"
+}

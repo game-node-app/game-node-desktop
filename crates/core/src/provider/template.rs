@@ -193,6 +193,43 @@ mod tests {
     }
 
     #[test]
+    fn the_epic_play_and_install_uris_keep_the_launcher_scheme() {
+        let play = Template::parse("com.epicgames.launcher://apps/{id}?action=launch&silent=true")
+            .unwrap();
+        let install = Template::parse("com.epicgames.launcher://apps/{id}?action=install").unwrap();
+        for template in [&play, &install] {
+            assert_eq!(template.scheme(), "com.epicgames.launcher");
+        }
+
+        let launched = play.fill(&record("Fortnite")).unwrap();
+        assert_eq!(launched.scheme(), "com.epicgames.launcher");
+        assert_eq!(
+            launched.as_str(),
+            "com.epicgames.launcher://apps/Fortnite?action=launch&silent=true"
+        );
+        assert_eq!(launched.query(), Some("action=launch&silent=true"));
+
+        let installed = install.fill(&record("Fortnite")).unwrap();
+        assert_eq!(installed.scheme(), "com.epicgames.launcher");
+        assert_eq!(
+            installed.as_str(),
+            "com.epicgames.launcher://apps/Fortnite?action=install"
+        );
+
+        // A hostile application name stays one encoded path segment and cannot change the
+        // scheme, host, query or fragment.
+        let hostile = play.fill(&record("a/../b?action=install#x")).unwrap();
+        assert_eq!(hostile.scheme(), "com.epicgames.launcher");
+        assert_eq!(hostile.host_str(), Some("apps"));
+        assert_eq!(hostile.query(), Some("action=launch&silent=true"));
+        assert_eq!(hostile.fragment(), None);
+        assert_eq!(
+            hostile.as_str(),
+            "com.epicgames.launcher://apps/a%2F..%2Fb%3Faction%3Dinstall%23x?action=launch&silent=true"
+        );
+    }
+
+    #[test]
     fn encodes_reserved_characters_so_structure_cannot_change() {
         let template = Template::parse("steam://rungameid/{id}").unwrap();
         for (value, expected) in [

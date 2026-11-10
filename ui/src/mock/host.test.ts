@@ -93,23 +93,46 @@ describe('UI mock host', () => {
 
     for (const scenario of scenarios) {
       const snapshot = await createMockHost({ storeAccount: scenario }).invoke('get_snapshot') as Snapshot;
-      expect(snapshot.storeAccounts).toHaveLength(1);
-      expect(snapshot.storeAccounts[0].provider).toBe('steam');
-      expect(snapshot.storeAccounts[0].state).toBe(scenario === 'persistFailed' ? 'connected' : scenario);
-      expect(snapshot.storeAccounts[0].persistFailed).toBe(scenario === 'persistFailed');
+      expect(snapshot.storeAccounts).toHaveLength(2);
+      expect(snapshot.storeAccounts.map((account) => account.provider)).toEqual(['steam', 'epic']);
+      const steam = snapshot.storeAccounts[0];
+      expect(steam.state).toBe(scenario === 'persistFailed' ? 'connected' : scenario);
+      expect(steam.persistFailed).toBe(scenario === 'persistFailed');
     }
   });
 
+  it('keeps Epic connected and without family data while a Steam card action runs', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const epic = snapshot.storeAccounts.find((account) => account.provider === 'epic')!;
+    expect(epic.state).toBe('connected');
+    expect(epic.familyCount).toBe(0);
+    expect(epic.familyError).toBeNull();
+
+    await host.invoke('provider_sign_out', { providerId: 'epic' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')!.state).toBe('notConnected');
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'steam')!.state).toBe('connected');
+    expect(snapshot.library!.providers.find((provider) => provider.id === 'steam')!.ownedCount).toBe(5);
+  });
+
   it('returns trusted plugin inventory without credential data and respects the mock platform', async () => {
-    const windowsPlugin = (await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])[0];
+    const windowsPlugins = await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[];
+    const windowsPlugin = windowsPlugins[0];
     expect(windowsPlugin.source).toBe('official');
     expect(windowsPlugin.status).toBe('installed');
     expect(windowsPlugin.capabilities).toContain('library.discovery');
     expect(windowsPlugin.nativeAccess).toContain('registry');
     expect(JSON.stringify(windowsPlugin)).not.toMatch(/token|cookieValue|password|credentialValue/i);
 
+    const epicPlugin = windowsPlugins.find((plugin) => plugin.providerId === 'epic');
+    expect(epicPlugin?.name).toBe('Epic Games Store');
+    expect(epicPlugin?.capabilities).toContain('playtime.counter');
+    expect(epicPlugin?.capabilities).not.toContain('auth.webview.cookies.read');
+
     const linuxPlugins = await createMockHost({ platform: 'linux' }).invoke('plugin_inventory') as PluginInfo[];
     expect(linuxPlugins[0].nativeAccess).not.toContain('registry');
+    expect(linuxPlugins.some((plugin) => plugin.providerId === 'epic')).toBe(false);
     const packagePlugin = linuxPlugins.find((plugin) => plugin.providerId === 'packagekit');
     expect(packagePlugin?.name).toBe('Gerenciador de pacotes Linux');
     expect(packagePlugin?.capabilities).toEqual(['provider.context.read', 'library.discovery']);

@@ -27,11 +27,39 @@ async fn settled(h: &mut Harness) {
     }
 }
 fn set_counter(h: &Harness, minutes: i64) {
+    set_counter_with_last(h, minutes, 100);
+}
+fn set_counter_with_last(h: &Harness, minutes: i64, last_played: i64) {
     let text = format!(
-        r#""UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{ "620" {{ "Playtime" "{minutes}" "LastPlayed" "100" }} }} }} }} }} }}"#
+        r#""UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{ "620" {{ "Playtime" "{minutes}" "LastPlayed" "{last_played}" }} }} }} }} }} }}"#
     );
     let mut files = h.files.inner.lock().unwrap();
     *files = files.clone().with_file(CONFIG, &text);
+}
+fn set_counters(h: &Harness, entries: &[(&str, i64, i64)]) {
+    let apps = entries
+        .iter()
+        .map(|(id, minutes, last_played)| {
+            format!(r#""{id}" {{ "Playtime" "{minutes}" "LastPlayed" "{last_played}" }}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = format!(
+        r#""UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{ {apps} }} }} }} }} }}"#
+    );
+    let mut files = h.files.inner.lock().unwrap();
+    *files = files.clone().with_file(CONFIG, &text);
+}
+/// Adds a second installed Steam app next to Portal 2.
+fn add_second_install(h: &Harness) {
+    let mut files = h.files.inner.lock().unwrap();
+    *files = files
+        .clone()
+        .with_file(
+            &format!("{ROOT}/steamapps/appmanifest_621.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"621\"\n\t\"name\"\t\t\"Portal 2: Second App\"\n\t\"StateFlags\"\t\t\"4\"\n\t\"installdir\"\t\t\"Portal 2 Second\"\n}\n",
+        )
+        .with_dir(&format!("{ROOT}/steamapps/common/Portal 2 Second"));
 }
 async fn ready() -> Harness {
     ready_with_source(PlaytimeSource::Store).await
@@ -269,6 +297,148 @@ async fn newer_counter_read_survives_an_older_submission_completing() {
     assert_eq!(
         h.engine.shared.ports.playtime.totals("u1").unwrap()[0].total_seconds,
         45300
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_last_played_is_unknown_and_the_total_is_still_submitted() {
+    let mut h = ready().await;
+    h.engine.set_sync(true);
+    h.engine.dismiss_sync_explanation();
+    eventually(|| h.api.playtimes.lock().unwrap().len() == 1).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap()[0].last_played_at,
+        Some(100),
+        "the known date is submitted first"
+    );
+
+    // LastPlayed 0 means Steam has never recorded a date; it must not become 1970.
+    set_counter_with_last(&h, 760, 0);
+    h.engine.rescan();
+    eventually(|| {
+        h.engine
+            .shared
+            .ports
+            .playtime
+            .totals("u1")
+            .unwrap()
+            .iter()
+            .any(|t| {
+                t.entry_key == "steam:620"
+                    && t.total_seconds == 45_600
+                    && t.last_played_at.is_none()
+            })
+    })
+    .await;
+    eventually(|| h.api.playtimes.lock().unwrap().len() == 2).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap()[1].last_played_at,
+        None,
+        "an absent counter date is submitted as unknown, not as a date"
+    );
+    assert_eq!(h.api.playtimes.lock().unwrap()[1].total_seconds, 45_600);
+    h.until("unknown last played shown", |s| {
+        s.library.as_ref().is_some_and(|library| {
+            library.rows.iter().any(|row| {
+                row.status.game_id() == Some(7)
+                    && row.playtime.seconds == Some(45_600)
+                    && row.playtime.last_played_at.is_none()
+            })
+        })
+    })
+    .await;
+    h.engine.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_entries_of_one_game_submit_one_summed_total_and_do_not_ping_pong() {
+    let mut h = ready().await;
+    add_second_install(&h);
+    set_counters(&h, &[("620", 754, 100), ("621", 30, 200)]);
+    *h.api.lookup_result.lock().unwrap() = Some(Ok(vec![
+        ExternalMatch {
+            uid: "620".into(),
+            game: GameSummary {
+                id: 7,
+                name: "Portal 2".into(),
+                release_year: None,
+                cover_url: None,
+            },
+        },
+        ExternalMatch {
+            uid: "621".into(),
+            game: GameSummary {
+                id: 7,
+                name: "Portal 2".into(),
+                release_year: None,
+                cover_url: None,
+            },
+        },
+    ]));
+
+    h.engine.rescan();
+    h.until("both entries matched to one game", |s| {
+        s.library.as_ref().is_some_and(|library| {
+            library
+                .rows
+                .iter()
+                .filter(|row| row.status.game_id() == Some(7))
+                .count()
+                == 2
+        })
+    })
+    .await;
+    eventually(|| {
+        let totals = h.engine.shared.ports.playtime.totals("u1").unwrap();
+        totals
+            .iter()
+            .any(|t| t.entry_key == "steam:620" && t.total_seconds == 45_240)
+            && totals
+                .iter()
+                .any(|t| t.entry_key == "steam:621" && t.total_seconds == 1_800)
+    })
+    .await;
+
+    h.engine.set_sync(true);
+    h.engine.dismiss_sync_explanation();
+    eventually(|| h.api.playtimes.lock().unwrap().len() == 1).await;
+    let submitted = h.api.playtimes.lock().unwrap()[0].clone();
+    assert_eq!(submitted.game_id, 7);
+    assert_eq!(
+        submitted.total_seconds, 47_040,
+        "one summed total, not two competing totals"
+    );
+    assert_eq!(
+        submitted.last_played_at,
+        Some(200),
+        "the latest known date of the group is submitted"
+    );
+
+    eventually(|| {
+        h.engine
+            .shared
+            .ports
+            .playtime
+            .totals("u1")
+            .unwrap()
+            .iter()
+            .any(|t| {
+                t.entry_key == "steam:game:7"
+                    && t.accepted_seconds == Some(47_040)
+                    && t.accepted_game_id == Some(7)
+            })
+    })
+    .await;
+
+    // The same sum on a later read must not send anything again.
+    h.engine.rescan();
+    eventually(|| !h.engine.snapshot().library.unwrap().scanning).await;
+    settled(&mut h).await;
+    h.engine.shutdown();
+    assert_eq!(
+        h.api.playtimes.lock().unwrap().len(),
+        1,
+        "an unchanged sum must not be submitted again"
     );
 }
 

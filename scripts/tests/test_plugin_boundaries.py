@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -34,6 +35,7 @@ def fixture_metadata(extra_packages=(), extra_nodes=(), *, app_dependencies=()):
         "gamenode-plugin-sdk",
         "gamenode-plugin-steam",
         "gamenode-plugin-packagekit",
+        "gamenode-plugin-epic",
         "gamenode-app",
         *extra_packages,
     ]
@@ -43,6 +45,7 @@ def fixture_metadata(extra_packages=(), extra_nodes=(), *, app_dependencies=()):
         node("gamenode-plugin-sdk", [("gamenode-plugin-protocol", None, None)]),
         node("gamenode-plugin-steam", [("gamenode-plugin-sdk", None, None)]),
         node("gamenode-plugin-packagekit", [("gamenode-plugin-sdk", None, None)]),
+        node("gamenode-plugin-epic", [("gamenode-plugin-sdk", None, None)]),
         node("gamenode-app", app_dependencies),
         *extra_nodes,
     ]
@@ -108,6 +111,143 @@ class PluginBoundaryTests(unittest.TestCase):
             app_dependencies=[("gamenode-plugin-packagekit", "dev", None)],
         )
         self.assertEqual(checker.check_metadata(metadata), [])
+
+    def test_epic_is_a_public_and_forbidden_host_crate(self):
+        self.assertIn("gamenode-plugin-epic", checker.PUBLIC_PLUGIN_CRATES)
+        self.assertIn("gamenode-plugin-epic", checker.FORBIDDEN_HOST_PLUGIN_CRATES)
+
+        public = fixture_metadata(
+            ["gamenode-platform"],
+            [node("gamenode-plugin-epic", [("gamenode-platform", None, None)])],
+        )
+        errors = checker.check_metadata(public)
+        self.assertTrue(
+            any("gamenode-plugin-epic" in error and "gamenode-platform" in error for error in errors)
+        )
+
+        host = fixture_metadata(
+            app_dependencies=[("gamenode-plugin-epic", None, None)],
+        )
+        errors = checker.check_metadata(host)
+        self.assertTrue(
+            any("gamenode-plugin-epic" in error and "production graph" in error for error in errors)
+        )
+
+
+class StoreBoundarySourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="plugin store boundaries ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.allowlist = self.root / checker.ALLOWLIST_PATH
+        self.allowlist.parent.mkdir(parents=True, exist_ok=True)
+        self.allowlist.write_text("", encoding="utf-8")
+
+    def write_source(self, relative, content):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def scan(self):
+        return checker.check_store_sources(self.root)
+
+    def test_production_violations_fail_every_rule(self):
+        cases = {
+            "crates/api/src/client.rs": (
+                'const BASE: &str = "https://store.steampowered.com/";\n',
+                "store-host",
+            ),
+            "crates/core/src/provider.rs": (
+                "use crate::steam::Client;\n",
+                "store-module-path",
+            ),
+            "crates/app/src/commands.rs": (
+                'if provider == "steam" { }\n',
+                "provider-id-literal",
+            ),
+            "crates/platform/src/paths.rs": (
+                "fn steam_credential_file() { }\n",
+                "store-identifier",
+            ),
+        }
+        for relative, (content, _) in cases.items():
+            self.write_source(relative, content)
+
+        errors = self.scan()
+        for relative, (_, rule) in cases.items():
+            with self.subTest(rule=rule):
+                self.assertTrue(
+                    any(f"{relative}:1" in error and rule in error for error in errors),
+                    errors,
+                )
+
+    def test_allowlist_excuses_an_exact_reviewed_line(self):
+        self.write_source(
+            "crates/core/src/drm_free/identity.rs",
+            'steam: id("steam"),\n',
+        )
+        self.allowlist.write_text(
+            "crates/core/src/drm_free/identity.rs:1 provider-id-literal -- "
+            "Ludusavi manifest identity field, not a provider branch.\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.scan(), [])
+
+    def test_test_only_code_is_ignored(self):
+        self.write_source(
+            "crates/core/src/lib.rs",
+            """pub fn production() {}
+
+#[cfg(test)]
+mod tests {
+    const HOST: &str = "https://store.steampowered.com/";
+
+    #[test]
+    fn compares_provider() {
+        assert_eq!("steam", "steam");
+    }
+}
+""",
+        )
+        self.write_source(
+            "crates/core/src/provider_tests.rs",
+            'const PROVIDER: &str = "steam";\n',
+        )
+        self.write_source(
+            "crates/core/src/tests/fixture.rs",
+            'const PROVIDER: &str = "steam";\n',
+        )
+        self.write_source(
+            "ui/src/features/settings/StoreCard.test.tsx",
+            "const provider = 'steam';\n",
+        )
+        self.write_source("ui/src/mock/host.ts", "const provider = 'steam';\n")
+
+        self.assertEqual(self.scan(), [])
+
+    def test_cfg_any_test_is_not_treated_as_test_only(self):
+        self.write_source(
+            "crates/platform/src/host.rs",
+            '#[cfg(any(windows, test))]\nconst PROVIDER: &str = "steam";\n',
+        )
+        errors = self.scan()
+        self.assertTrue(any("provider-id-literal" in error for error in errors), errors)
+
+    def test_stale_allowlist_entries_fail(self):
+        self.allowlist.write_text(
+            "crates/core/src/drm_free/identity.rs:1 provider-id-literal -- removed code.\n",
+            encoding="utf-8",
+        )
+        errors = self.scan()
+        self.assertTrue(any("stale store boundary allowlist entry" in error for error in errors))
+
+    def test_malformed_allowlist_entries_fail(self):
+        self.allowlist.write_text("not an allowlist entry\n", encoding="utf-8")
+        errors = self.scan()
+        self.assertTrue(
+            any("malformed store boundary allowlist entry" in error for error in errors)
+        )
 
 
 if __name__ == "__main__":

@@ -39,8 +39,11 @@ integration runs only through the plugin system and no store code connects to Co
   time, and the host stores it as unknown instead of the Unix epoch.
 - **Field-based matching.** A provider manifest may declare which record field is its GameNode
   external id (`match.uid_field`), and owned catalog games may carry named fields. Epic is matched
-  by catalog namespace, the identifier GameNode stores for the `EpicGamesNamespace` category,
-  while its entry key stays `epic:<appName>`.
+  by catalog namespace under GameNode's `EpicGamesNamespace` category (1001, a GameNode-only
+  value, not IGDB's 26), while its entry key stays `epic:<appName>`.
+- **Store totals summed per game.** When several entries of one provider match the same GameNode
+  game, their counter totals are submitted as one summed total. This matches how
+  `game-node-server` aggregates Epic apps per namespace.
 - **Data-driven anti-cheat blocklist.** The Steam app-id blocklist used by game tools becomes data
   keyed by provider entry key.
 - **Boundary enforcement.** An automated check fails when non-plugin crates (`core`, `api`,
@@ -54,7 +57,8 @@ integration runs only through the plugin system and no store code connects to Co
   - The rotating refresh token is stored in the provider's secret slot; the access token stays in
     memory only.
   - Owned-library sync.
-  - Epic playtime totals through `playtime.counter`.
+  - Epic playtime totals through `playtime.counter`, submitted with source `epicgames`, the
+    value `game-node-server` already uses for its own Epic connection.
   - Matching through GameNode external lookups with the Epic Games Store category.
 
 ## Capabilities
@@ -75,6 +79,8 @@ integration runs only through the plugin system and no store code connects to Co
     host crates.
   - Matching may use a declared record field, and catalog entries carry fields.
   - Per-store data in host features is keyed by entry key.
+- `desktop-playtime`: Store totals of entries matched to the same GameNode game are summed into
+  one submission.
 - `desktop-plugins` and `desktop-plugin-services`: These capabilities are introduced by the
   unarchived `integrate-steam-plugin-into-main` change. This change adds requirements only:
   - Data-driven trusted descriptors.
@@ -116,6 +122,11 @@ integration runs only through the plugin system and no store code connects to Co
   - No schema migration is expected. Entry keys are `epic:<appName>`.
   - Store accounts, scans and catalog columns are already keyed by provider.
   - Existing Steam credentials, accounts, matches and favorites are preserved.
+- **GameNode server:** no server change is needed.
+  - `GET /v1/game/external` already accepts category 1001 with namespace uids.
+  - `epicgames` is an existing playtime source.
+  - The server's own Epic connection (`src/sync/epic`) reports the same per-game totals under the
+    same source, so a user with both connections gets idempotent writes, not double counting.
 - **Sequencing:**
   - Builds on the Steam plugin code merged in `5e9a8824` and on the in-progress
     `add-achievement-tracking` working tree.

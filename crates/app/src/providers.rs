@@ -16,27 +16,7 @@ pub fn load_bundled_with_plugins(platform: Platform, plugins: &[PluginBackend]) 
 
 #[cfg(test)]
 pub(crate) fn load_bundled_for_tests(platform: Platform) -> LoadedProviders {
-    let mut plugins = vec![PluginBackend {
-        plugin_id: "org.gamenode.plugin.steam-discovery".into(),
-        provider_id: "steam".into(),
-        discovery: true,
-        catalog: true,
-        counter: true,
-        actions: true,
-        achievements: true,
-    }];
-    if platform == Platform::Linux {
-        plugins.push(PluginBackend {
-            plugin_id: "org.gamenode.plugin.packagekit-discovery".into(),
-            provider_id: "packagekit".into(),
-            discovery: true,
-            catalog: false,
-            counter: false,
-            actions: false,
-            achievements: false,
-        });
-    }
-    load_bundled_with_plugins(platform, &plugins)
+    load_bundled_with_plugins(platform, &crate::plugin_host::backends(platform))
 }
 
 #[cfg(test)]
@@ -56,6 +36,22 @@ mod tests {
         assert_eq!(embedded, on_disk);
         assert!(embedded.contains(&"steam.toml"));
         assert!(embedded.contains(&"packagekit.toml"));
+    }
+
+    #[test]
+    fn bundled_plugin_backends_come_from_descriptors() {
+        for platform in [Platform::Windows, Platform::Linux] {
+            let loaded = load_bundled_for_tests(platform);
+            assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+            for descriptor in crate::plugin_host::descriptors() {
+                assert_eq!(
+                    loaded.get(&descriptor.provider_id).is_some(),
+                    descriptor.platforms.contains(&platform),
+                    "{} on {platform:?}",
+                    descriptor.provider_id
+                );
+            }
+        }
     }
 
     #[test]

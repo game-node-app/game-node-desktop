@@ -48,7 +48,36 @@ pub fn strip_verbatim_prefix(path: String) -> String {
     }
 }
 
-/// [`RootResolver`] over the user's home folder and, on Windows, `HKEY_CURRENT_USER`.
+/// The Windows registry hive a [`RootResolver`] key belongs to.
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hive {
+    CurrentUser,
+    LocalMachine,
+}
+
+/// Splits a registry key into its hive and subkey. `HKCU\`, `HKEY_CURRENT_USER\`, `HKLM\` and
+/// `HKEY_LOCAL_MACHINE\` name a hive. A key without one keeps the historical current-user meaning,
+/// which the autostart adapter relies on.
+#[cfg(any(test, windows))]
+fn split_hive(key: &str) -> Option<(Hive, &str)> {
+    match key.split_once('\\') {
+        Some((hive, subkey)) => {
+            if subkey.is_empty() {
+                return None;
+            }
+            match hive.to_ascii_uppercase().as_str() {
+                "HKCU" | "HKEY_CURRENT_USER" => Some((Hive::CurrentUser, subkey)),
+                "HKLM" | "HKEY_LOCAL_MACHINE" => Some((Hive::LocalMachine, subkey)),
+                _ => Some((Hive::CurrentUser, key)),
+            }
+        }
+        None => (!key.is_empty()).then_some((Hive::CurrentUser, key)),
+    }
+}
+
+/// [`RootResolver`] over the user's home folder and, on Windows, the current-user and local-machine
+/// registry hives.
 #[derive(Clone, Debug)]
 pub struct SystemRoots {
     home: Option<String>,
@@ -89,22 +118,31 @@ impl RootResolver for SystemRoots {
     }
 
     fn registry_string(&self, key: &str, value: &str) -> Option<String> {
-        registry::read_current_user_string(key, value)
+        registry::read_string(key, value)
     }
 }
 
 #[cfg(windows)]
 mod registry {
-    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
+    };
+
+    use super::{Hive, split_hive};
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub(super) fn read_current_user_string(key: &str, value: &str) -> Option<String> {
+    pub(super) fn read_string(key: &str, value: &str) -> Option<String> {
         if key.contains('\0') || value.contains('\0') {
             return None;
         }
+        let (hive, key) = split_hive(key)?;
+        let hive = match hive {
+            Hive::CurrentUser => HKEY_CURRENT_USER,
+            Hive::LocalMachine => HKEY_LOCAL_MACHINE,
+        };
         let key = wide(key);
         let value = wide(value);
         let mut bytes: u32 = 0;
@@ -112,7 +150,7 @@ mod registry {
         // a size pointer asks only for the required size.
         let status = unsafe {
             RegGetValueW(
-                HKEY_CURRENT_USER,
+                hive,
                 key.as_ptr(),
                 value.as_ptr(),
                 RRF_RT_REG_SZ,
@@ -129,7 +167,7 @@ mod registry {
         // SAFETY: `buffer` is writable for `capacity` bytes and the strings are as above.
         let status = unsafe {
             RegGetValueW(
-                HKEY_CURRENT_USER,
+                hive,
                 key.as_ptr(),
                 value.as_ptr(),
                 RRF_RT_REG_SZ,
@@ -182,7 +220,7 @@ mod registry {
 
 #[cfg(not(windows))]
 mod registry {
-    pub(super) fn read_current_user_string(_key: &str, _value: &str) -> Option<String> {
+    pub(super) fn read_string(_key: &str, _value: &str) -> Option<String> {
         None
     }
 }
@@ -266,11 +304,44 @@ mod tests {
         assert_eq!(strip_verbatim_prefix("/home/me".to_owned()), "/home/me");
     }
 
+    #[test]
+    fn registry_keys_name_their_hive() {
+        assert_eq!(
+            split_hive(r"HKCU\Software\Valve\Steam"),
+            Some((Hive::CurrentUser, r"Software\Valve\Steam"))
+        );
+        assert_eq!(
+            split_hive(r"HKLM\SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher"),
+            Some((
+                Hive::LocalMachine,
+                r"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher"
+            ))
+        );
+        assert_eq!(
+            split_hive(r"HKEY_LOCAL_MACHINE\X"),
+            Some((Hive::LocalMachine, "X"))
+        );
+        assert_eq!(
+            split_hive(r"Software\Valve\Steam"),
+            Some((Hive::CurrentUser, r"Software\Valve\Steam")),
+            "a key without a hive keeps the historical current-user meaning"
+        );
+        assert_eq!(split_hive(r"HKLM\"), None);
+        assert_eq!(split_hive(""), None);
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn there_is_no_registry_off_windows() {
         assert_eq!(
             SystemRoots::new().registry_string("Software\\Valve\\Steam", "SteamPath"),
+            None
+        );
+        assert_eq!(
+            SystemRoots::new().registry_string(
+                r"HKLM\SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher",
+                "AppDataPath"
+            ),
             None
         );
     }
@@ -283,11 +354,16 @@ mod tests {
 
         let roots = SystemRoots::new();
         let found = roots.registry_string(&key, "SteamPath");
+        let qualified = roots.registry_string(&format!("HKCU\\{key}"), "SteamPath");
         let missing = roots.registry_string(&key, "Missing");
+        let machine_missing =
+            roots.registry_string(r"HKLM\Software\GameNodeDesktopTest\Missing", "AppDataPath");
         registry::test_support::delete_tree(&key);
 
         assert_eq!(found.as_deref(), Some("c:/program files (x86)/steam"));
+        assert_eq!(qualified, found);
         assert_eq!(missing, None);
+        assert_eq!(machine_missing, None);
         assert_eq!(roots.registry_string(&key, "SteamPath"), None);
     }
 }

@@ -99,12 +99,32 @@ pub(crate) fn catalog_record(id: &str, name: &str) -> CatalogRecord {
     CatalogRecord {
         id: id.to_owned(),
         name: name.to_owned(),
+        fields: Default::default(),
+    }
+}
+
+fn catalog_record_with(id: &str, name: &str, fields: &[(&str, &str)]) -> CatalogRecord {
+    CatalogRecord {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        fields: fields
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect(),
     }
 }
 
 /// A machine for account "a" whose cache has been loaded, with the startup scan still running.
 pub(crate) fn loaded(with_shop: bool, cache: LibraryCache) -> (LibraryMachine, Vec<Effect>) {
-    let mut machine = LibraryMachine::new(providers(with_shop), LibraryLayout::default());
+    loaded_with(providers(with_shop), cache)
+}
+
+/// Like [`loaded`], with an explicit provider list.
+pub(crate) fn loaded_with(
+    providers: Vec<Provider>,
+    cache: LibraryCache,
+) -> (LibraryMachine, Vec<Effect>) {
+    let mut machine = LibraryMachine::new(providers, LibraryLayout::default());
     let effects = machine.handle(Input::AccountChanged(Some(account("a"))));
     let op = load_op(&effects);
     let effects = machine.handle(Input::Loaded {
@@ -727,6 +747,104 @@ fn a_catalog_sync_adds_owned_only_entries() {
     assert_eq!(state.last_catalog_at, Some(10));
     assert_eq!(state.catalog_error, None);
     assert_eq!(state.last_family_at, None);
+}
+
+#[test]
+fn catalog_fields_fill_missing_keys_and_never_erase_installed_ones() {
+    let cache = LibraryCache {
+        entries: vec![stored("steam", "620", "Portal 2", true)],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    let mut installed = record("620", "Portal 2", "/p");
+    installed
+        .fields
+        .insert("namespace".to_owned(), "installed-ns".to_owned());
+    installed
+        .fields
+        .insert("catalog_item_id".to_owned(), "installed-item".to_owned());
+    finish_scan(&mut machine, vec![installed], 5);
+
+    let (op, _) = request_catalog(&mut machine);
+    catalog_synced(
+        &mut machine,
+        op,
+        Some(Ok(vec![
+            catalog_record_with(
+                "620",
+                "Portal 2 (catalog)",
+                &[
+                    ("namespace", "catalog-ns"),
+                    ("catalog_item_id", "catalog-item"),
+                    ("new_field", "catalog-value"),
+                ],
+            ),
+            catalog_record_with("621", "Catalog only", &[("namespace", "catalog-only-ns")]),
+        ])),
+        None,
+        20,
+    );
+
+    let installed_entry = machine.entry("steam:620").unwrap();
+    assert!(installed_entry.installed && installed_entry.owned);
+    assert_eq!(
+        installed_entry.fields.get("namespace").map(String::as_str),
+        Some("installed-ns"),
+        "installed discovery fields win"
+    );
+    assert_eq!(
+        installed_entry
+            .fields
+            .get("catalog_item_id")
+            .map(String::as_str),
+        Some("installed-item")
+    );
+    assert_eq!(
+        installed_entry.fields.get("new_field").map(String::as_str),
+        Some("catalog-value"),
+        "the catalog fills only missing keys"
+    );
+
+    let catalog_only = machine.entry("steam:621").unwrap();
+    assert_eq!(
+        catalog_only.fields.get("namespace").map(String::as_str),
+        Some("catalog-only-ns")
+    );
+    assert_eq!(
+        catalog_only.record().fields,
+        catalog_only.fields,
+        "a catalog-only entry keeps its fields for matching and templates"
+    );
+}
+
+#[test]
+fn a_failed_catalog_sync_keeps_previously_stored_fields() {
+    let mut machine = ready(LibraryCache::default());
+    let (op, _) = request_catalog(&mut machine);
+    catalog_synced(
+        &mut machine,
+        op,
+        Some(Ok(vec![catalog_record_with(
+            "621",
+            "Catalog only",
+            &[("namespace", "catalog-only-ns")],
+        )])),
+        None,
+        10,
+    );
+    let (op, _) = request_catalog(&mut machine);
+    catalog_synced(
+        &mut machine,
+        op,
+        Some(Err(CatalogError::Unreachable)),
+        None,
+        30,
+    );
+    let entry = machine.entry("steam:621").unwrap();
+    assert_eq!(
+        entry.fields.get("namespace").map(String::as_str),
+        Some("catalog-only-ns")
+    );
 }
 
 #[test]

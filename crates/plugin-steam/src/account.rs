@@ -873,7 +873,7 @@ impl SteamAccount {
         let now = self.ports.clock.now();
         let expired = matches!(
             &owned,
-            Err(CatalogError::Expired | CatalogError::InvalidCookies)
+            Err(CatalogError::Expired | CatalogError::InvalidCredential)
         );
         let unreachable = matches!(
             &owned,
@@ -1440,10 +1440,7 @@ fn join_achievements(
 fn owned_records(games: &[SteamOwnedGame]) -> Vec<CatalogRecord> {
     games
         .iter()
-        .map(|game| CatalogRecord {
-            id: game.app_id.clone(),
-            name: game.name.clone(),
-        })
+        .map(|game| CatalogRecord::new(game.app_id.clone(), game.name.clone()))
         .collect()
 }
 
@@ -2005,6 +2002,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_changed_store_response_keeps_the_credential() {
+        // "Steam changed its response" is not an authentication failure: the saved cookie must
+        // survive so the next check can use it once Steam serves the expected page again.
+        let harness = harness(Some(cred("steamLoginSecure=old")), None);
+        harness.client.set_session(Err(SteamError::Changed));
+        harness.account.startup().await;
+        let outcome = harness.account.check().await;
+        assert_eq!(outcome.status.state, SteamAccountState::Unreachable);
+        assert_eq!(
+            harness.credentials.stored().as_deref(),
+            Some("steamLoginSecure=old")
+        );
+        assert_eq!(harness.credentials.deletes.load(Ordering::SeqCst), 0);
+        assert!(outcome.status.can_check());
+        assert!(outcome.status.can_sign_in());
+    }
+
+    #[tokio::test]
     async fn a_rotated_cookie_replaces_the_stored_one() {
         let harness = harness(Some(cred("steamLoginSecure=old")), None);
         harness.client.set_session(Ok(session(
@@ -2233,17 +2248,11 @@ mod tests {
         assert_eq!(outcome.status.last_synced_at, Some(2_000));
         assert_eq!(
             outcome.owned,
-            Some(Ok(vec![CatalogRecord {
-                id: "620".to_owned(),
-                name: "Portal 2".to_owned(),
-            }]))
+            Some(Ok(vec![CatalogRecord::new("620", "Portal 2")]))
         );
         assert_eq!(
             outcome.family,
-            Some(Ok(vec![CatalogRecord {
-                id: "400".to_owned(),
-                name: "Portal".to_owned(),
-            }]))
+            Some(Ok(vec![CatalogRecord::new("400", "Portal")]))
         );
         assert_eq!(outcome.status.family_error, None);
     }

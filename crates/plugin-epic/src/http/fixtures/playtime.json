@@ -1,0 +1,14 @@
+[
+  {
+    "artifactId": "artifact-alpha",
+    "totalTime": 7200
+  },
+  {
+    "artifactId": "artifact-beta",
+    "totalTime": 0
+  },
+  {
+    "artifactId": "artifact-gamma",
+    "totalTime": 61
+  }
+]

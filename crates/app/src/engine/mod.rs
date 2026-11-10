@@ -23,8 +23,6 @@ use gamenode_core::ports::{
 };
 use gamenode_core::provider::Platform;
 use gamenode_core::snapshot::StoreAccountView;
-#[cfg(test)]
-use gamenode_core::steam::SteamWebApi;
 use gamenode_core::{
     AuthMachine, Effect, Input, SessionCredential, Settings, SignInFailure, Snapshot,
 };
@@ -37,18 +35,9 @@ mod drm_free;
 pub mod pc_ports;
 mod playtime;
 mod providers;
-#[cfg(test)]
-pub mod steam_account;
-#[cfg(test)]
-pub mod steam_login;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
-
-#[cfg(test)]
-use steam_account::{Clock, SteamAccountPorts, StoreAccountStore};
-#[cfg(test)]
-use steam_login::SteamLoginWindow;
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,10 +66,6 @@ pub struct Ports {
     pub files: Arc<dyn HostFiles>,
     pub roots: Arc<dyn RootResolver>,
     pub uri: Arc<dyn UriOpener>,
-    /// Test-only adapter used by legacy Engine regression fixtures. Production Steam access is
-    /// provided by `ProviderRuntime` and never links the in-process Steam implementation.
-    #[cfg(test)]
-    pub steam: Option<SteamPorts>,
     /// The PC ports service; `None` on builds without port installs and in tests that do not
     /// exercise PC ports.
     pub pc_ports: Option<Arc<PortsService>>,
@@ -93,31 +78,6 @@ pub struct Ports {
     pub platform: Platform,
     /// The local achievement cache, keyed by provider and store account.
     pub achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
-}
-
-/// The Steam store-account adapters: a credential slot separate from the GameNode session, the
-/// non-secret account row, the web client and the isolated sign-in window.
-#[cfg(test)]
-#[derive(Clone)]
-pub struct SteamPorts {
-    pub credentials: Arc<dyn CredentialStore>,
-    pub accounts: Arc<dyn StoreAccountStore>,
-    pub client: Arc<dyn SteamWebApi>,
-    pub login: Arc<dyn SteamLoginWindow>,
-    pub clock: Arc<dyn Clock>,
-}
-
-#[cfg(test)]
-impl SteamPorts {
-    fn into_account_ports(self) -> SteamAccountPorts {
-        SteamAccountPorts {
-            credentials: self.credentials,
-            accounts: self.accounts,
-            client: self.client,
-            login: self.login,
-            clock: self.clock,
-        }
-    }
 }
 
 fn unix_now() -> i64 {
@@ -478,33 +438,6 @@ impl Engine {
             engine.lock().last_account = account;
             engine.dispatch(Input::Start);
         });
-    }
-
-    /// Test-only compatibility wrappers preserve the Steam regression suite while production
-    /// commands use the provider-neutral operations below.
-    #[cfg(test)]
-    pub async fn steam_sign_in(&self) {
-        self.provider_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_focus_sign_in(&self) {
-        self.provider_focus_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_cancel_sign_in(&self) {
-        self.provider_cancel_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_sign_out(&self) {
-        self.provider_sign_out("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_check(&self) {
-        self.provider_check("steam").await;
     }
 
     fn library_is_active(&self) -> bool {

@@ -695,6 +695,8 @@ export type CatalogError =
   | 'expired'
   | 'privacy'
   | 'changed'
+  /** Both strings are accepted for one release while hosts are updated. */
+  | 'invalidCredential'
   | 'invalidCookies'
   | 'familyUnavailable';
 

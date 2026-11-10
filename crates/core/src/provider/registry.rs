@@ -30,7 +30,8 @@ pub enum ScanError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CounterValue {
     pub seconds: i64,
-    pub last_played: i64,
+    /// `None` when the store has no date for the total, which is different from a known zero.
+    pub last_played: Option<i64>,
 }
 pub type CounterFn = fn(&ScanInput<'_>) -> std::collections::BTreeMap<String, CounterValue>;
 
@@ -140,6 +141,15 @@ impl Provider {
     /// The GameNode external-game category used to match this provider's ids, if any.
     pub fn external_category(&self) -> Option<u32> {
         self.manifest.matching.as_ref().map(|m| m.external_category)
+    }
+
+    /// The record field that holds this provider's external id, when the manifest names one.
+    pub fn uid_field(&self) -> Option<&str> {
+        self.manifest
+            .matching
+            .as_ref()
+            .and_then(|matching| matching.uid_field.as_deref())
+            .filter(|field| !field.trim().is_empty())
     }
 
     /// Whether the provider can read an owned/family catalog beyond installed games.
@@ -280,11 +290,18 @@ fn convert_root(platform: Platform, spec: &RootSpec) -> Result<Root, String> {
             if platform != Platform::Windows {
                 return Err("a registry root is only valid under `roots.windows`".to_owned());
             }
-            let Some(relative) = key.strip_prefix("HKCU\\").filter(|rest| !rest.is_empty()) else {
-                return Err(format!("registry root `{key}` must start with `HKCU\\`"));
-            };
+            // The hive stays in the key so resolvers can read either a per-user or a
+            // machine-wide value. Steam's existing `HKCU\Software\Valve\Steam` is unchanged.
+            let recognized = key
+                .split_once('\\')
+                .is_some_and(|(hive, rest)| !rest.is_empty() && matches!(hive, "HKCU" | "HKLM"));
+            if !recognized {
+                return Err(format!(
+                    "registry root `{key}` must start with `HKCU\\` or `HKLM\\`"
+                ));
+            }
             Ok(Root::Registry {
-                key: relative.to_owned(),
+                key: key.clone(),
                 value: value.clone(),
             })
         }

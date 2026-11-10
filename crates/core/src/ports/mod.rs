@@ -158,7 +158,8 @@ pub trait HostFiles: Send + Sync {
 pub trait RootResolver: Send + Sync {
     /// Replaces a leading `~` with the user's home folder. `None` if the home folder is unknown.
     fn expand_home(&self, path: &str) -> Option<String>;
-    /// A string value under `HKEY_CURRENT_USER\<key>`. Always `None` where there is no registry.
+    /// A string value under a Windows registry key. `key` names its hive as `HKCU\subkey` or
+    /// `HKLM\subkey`. Always `None` where there is no registry.
     fn registry_string(&self, key: &str, value: &str) -> Option<String>;
 }
 

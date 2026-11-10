@@ -257,7 +257,7 @@ fn catalog_errors_keep_their_stored_categories() {
         (CatalogError::Expired, "expired"),
         (CatalogError::Privacy, "privacy"),
         (CatalogError::Changed, "changed"),
-        (CatalogError::InvalidCookies, "invalidCookies"),
+        (CatalogError::InvalidCredential, "invalidCredential"),
         (CatalogError::FamilyUnavailable, "familyUnavailable"),
     ] {
         assert_eq!(error.to_string(), category);
@@ -268,6 +268,15 @@ fn catalog_errors_keep_their_stored_categories() {
         );
         assert_eq!(category.parse::<CatalogError>(), Ok(error));
     }
+    // Stored rows keep parsing after the provider-neutral rename.
+    assert_eq!(
+        "invalidCookies".parse::<CatalogError>(),
+        Ok(CatalogError::InvalidCredential)
+    );
+    assert_eq!(
+        serde_json::from_str::<CatalogError>("\"invalidCookies\"").unwrap(),
+        CatalogError::InvalidCredential
+    );
     assert_eq!("not-a-category".parse::<CatalogError>(), Err(()));
 
     let empty = EmptyState::NoInstalled {

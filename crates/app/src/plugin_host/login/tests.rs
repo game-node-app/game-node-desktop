@@ -24,21 +24,50 @@ impl LoginWindow for FakeWindow {
     fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
-    async fn collect(&self, _: Arc<LoginPolicy>) -> Result<LoginReply, Status> {
+    async fn collect(&self, policy: Arc<LoginPolicy>) -> Result<LoginReply, Status> {
         if self.delay.load(Ordering::Acquire) {
             self.collecting.notify_one();
             self.release.notified().await;
         }
         Ok(LoginReply {
-            cookies: vec![LoginCookie {
-                name: "steamLoginSecure".into(),
-                value: "private-cookie".into(),
-            }],
+            cookies: if policy.cookie_names.is_empty() {
+                Vec::new()
+            } else {
+                vec![LoginCookie {
+                    name: "steamLoginSecure".into(),
+                    value: "private-cookie".into(),
+                }]
+            },
             page_result_json: Some(
                 r#"{"steam_id":"76561198000000001","token":"temporary-token"}"#.into(),
             ),
             ..Default::default()
         })
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogs;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
     }
 }
 
@@ -57,6 +86,20 @@ impl LoginWindows for FakeWindows {
 
 fn policy() -> Arc<LoginPolicy> {
     Arc::new(toml::from_str(include_str!("../../../../plugin-steam/assets/login.toml")).unwrap())
+}
+fn cookie_free_policy() -> Arc<LoginPolicy> {
+    Arc::new(LoginPolicy {
+        start_url: "https://store.example.test/login".into(),
+        cookie_url: None,
+        probe_origin: "https://store.example.test".into(),
+        title: "Fixture".into(),
+        allowed_hosts: vec!["example.test".into()],
+        cookie_names: vec![],
+        probe_script: "null".into(),
+        width: 600,
+        height: 760,
+        timeout_seconds: 600,
+    })
 }
 fn scope() -> Scope {
     Scope {
@@ -239,7 +282,7 @@ async fn focus_and_cancel_bypass_a_pending_read_and_discard_its_late_secrets() {
     let late = pending.await.unwrap().unwrap();
     assert!(late.cookies.is_empty());
     assert!(late.page_result_json.is_none());
-    assert!(!broker.root.join(&opened.handle).exists());
+    assert!(!broker.root.join("p1").exists());
 }
 
 #[tokio::test]
@@ -254,11 +297,11 @@ async fn invalidated_operation_and_process_exit_close_and_remove_private_profile
             Err(Status::cancelled("stale login"))
         }
     });
-    let opened = broker
+    let _opened = broker
         .call(scope(), check, request(LoginOperation::Open, ""), policy())
         .await
         .unwrap();
-    let profile = broker.root.join(&opened.handle);
+    let profile = broker.root.join("p1");
     assert!(profile.is_dir());
     #[cfg(unix)]
     {
@@ -344,13 +387,13 @@ async fn repeated_login_is_rejected_and_old_handle_cannot_reach_the_next_attempt
 async fn crash_recovery_removes_abandoned_profiles_without_following_links() {
     let dir = tempfile::TempDir::new().unwrap();
     let private = dir.path().join("private");
-    std::fs::create_dir_all(private.join("plugin-login/abandoned")).unwrap();
-    std::fs::write(private.join("plugin-login/abandoned/Cookies"), "not logged").unwrap();
+    std::fs::create_dir_all(private.join("login/abandoned")).unwrap();
+    std::fs::write(private.join("login/abandoned/Cookies"), "not logged").unwrap();
     let outside = dir.path().join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("keep"), "keep").unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside, private.join("plugin-login/linked")).unwrap();
+    std::os::unix::fs::symlink(&outside, private.join("login/linked")).unwrap();
     let broker = LoginBroker::new(
         private,
         Arc::new(FakeWindows(Arc::new(FakeWindow::default()))),
@@ -370,6 +413,10 @@ async fn upgrade_removes_only_approved_legacy_profiles_without_following_links()
     std::fs::write(private.join("session-token"), "keep-session").unwrap();
     let windows = Arc::new(FakeWindows(Arc::new(FakeWindow::default())));
     LoginBroker::recover(private.clone(), windows.clone(), vec!["../outside".into()])
+        .await
+        .err()
+        .unwrap();
+    LoginBroker::recover(private.clone(), windows.clone(), vec![LOGIN_DIR.into()])
         .await
         .err()
         .unwrap();
@@ -443,7 +490,7 @@ async fn timeout_and_user_close_expire_the_attempt_and_remove_profiles() {
             )
             .await
             .unwrap();
-        let profile = broker.root.join(&opened.handle);
+        let profile = broker.root.join("p1");
         if user_close {
             window.closed.store(true, Ordering::Release);
         } else {
@@ -480,6 +527,203 @@ async fn timeout_and_user_close_expire_the_attempt_and_remove_profiles() {
     }
 }
 
+#[tokio::test]
+async fn successful_and_cancelled_attempts_remove_their_profiles() {
+    for (operation, read) in [
+        (LoginOperation::Close, true),
+        (LoginOperation::Cancel, false),
+    ] {
+        let (_dir, broker, _) = fixture().await;
+        let opened = broker
+            .call(
+                scope(),
+                valid(),
+                request(LoginOperation::Open, ""),
+                policy(),
+            )
+            .await
+            .unwrap();
+        let profile = broker.root.join("p1");
+        assert!(profile.is_dir());
+        if read {
+            let reply = broker
+                .call(
+                    scope(),
+                    valid(),
+                    request(LoginOperation::Read, &opened.handle),
+                    policy(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply.cookies[0].value, "private-cookie");
+        }
+        let ended = broker
+            .call(
+                scope(),
+                valid(),
+                request(operation, &opened.handle),
+                policy(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ended.state,
+            if operation == LoginOperation::Close {
+                LoginState::Closed
+            } else {
+                LoginState::Cancelled
+            } as i32
+        );
+        assert!(!profile.exists());
+        broker.session_closed("s1").await;
+    }
+}
+
+#[tokio::test]
+async fn two_providers_use_separate_login_profiles() {
+    let (_dir, broker, _) = fixture().await;
+    let first = Scope {
+        provider: "provider-a".into(),
+        ..scope()
+    };
+    let second = Scope {
+        provider: "provider-b".into(),
+        ..scope()
+    };
+    let first_attempt = broker
+        .call(
+            first.clone(),
+            valid(),
+            request(LoginOperation::Open, ""),
+            policy(),
+        )
+        .await
+        .unwrap();
+    let second_attempt = broker
+        .call(
+            second.clone(),
+            valid(),
+            request(LoginOperation::Open, ""),
+            policy(),
+        )
+        .await
+        .unwrap();
+    let first_profile = broker.root.join("provider-a");
+    let second_profile = broker.root.join("provider-b");
+    assert!(first_profile.is_dir());
+    assert!(second_profile.is_dir());
+    assert_ne!(first_profile, second_profile);
+
+    broker
+        .call(
+            first,
+            valid(),
+            request(LoginOperation::Cancel, &first_attempt.handle),
+            policy(),
+        )
+        .await
+        .unwrap();
+    broker
+        .call(
+            second,
+            valid(),
+            request(LoginOperation::Cancel, &second_attempt.handle),
+            policy(),
+        )
+        .await
+        .unwrap();
+    assert!(!first_profile.exists());
+    assert!(!second_profile.exists());
+    broker.session_closed("s1").await;
+}
+
+#[tokio::test]
+async fn cookie_free_reads_return_only_the_probe_result() {
+    let (_dir, broker, _) = fixture().await;
+    let opened = broker
+        .call(
+            scope(),
+            valid(),
+            request(LoginOperation::Open, ""),
+            cookie_free_policy(),
+        )
+        .await
+        .unwrap();
+    let reply = broker
+        .call(
+            scope(),
+            valid(),
+            request(LoginOperation::Read, &opened.handle),
+            cookie_free_policy(),
+        )
+        .await
+        .unwrap();
+    assert!(reply.cookies.is_empty());
+    assert!(
+        reply
+            .page_result_json
+            .as_deref()
+            .is_some_and(|json| json.contains("temporary-token"))
+    );
+    broker
+        .call(
+            scope(),
+            valid(),
+            request(LoginOperation::Close, &opened.handle),
+            cookie_free_policy(),
+        )
+        .await
+        .unwrap();
+    broker.session_closed("s1").await;
+}
+
+#[tokio::test]
+async fn probe_results_and_cookies_never_reach_logs_or_snapshots() {
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let (_dir, broker, _) = fixture().await;
+    let opened = broker
+        .call(
+            scope(),
+            valid(),
+            request(LoginOperation::Open, ""),
+            policy(),
+        )
+        .await
+        .unwrap();
+    let reply = broker
+        .call(
+            scope(),
+            valid(),
+            request(LoginOperation::Read, &opened.handle),
+            policy(),
+        )
+        .await
+        .unwrap();
+    let snapshot = format!("{reply:?}");
+    assert!(!snapshot.contains("temporary-token"));
+    assert!(!snapshot.contains("private-cookie"));
+    assert!(!snapshot.contains("76561198000000001"));
+
+    drop(guard);
+    let output = String::from_utf8(
+        logs.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone(),
+    )
+    .unwrap();
+    assert!(!output.contains("temporary-token"));
+    assert!(!output.contains("private-cookie"));
+    assert!(!output.contains("76561198000000001"));
+    broker.session_closed("s1").await;
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_cleans_up() {
@@ -489,7 +733,7 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
     };
     use gamenode_plugin_protocol::{capability as cap, proto::*};
     use gamenode_plugin_sdk::{Launch, Session};
-    struct Services(Arc<LoginBroker>);
+    struct Services(Arc<LoginBroker>, Arc<LoginPolicy>);
     #[tonic::async_trait]
     impl HostServices for Services {
         async fn context(&self, _: Lease) -> Result<ProviderContext, Status> {
@@ -509,27 +753,51 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
             Err(Status::unimplemented("fixture"))
         }
         async fn login(&self, lease: Lease, request: LoginRequest) -> Result<LoginReply, Status> {
-            self.0.request(lease, request, policy()).await
+            self.0.request(lease, request, self.1.clone()).await
         }
         async fn session_closed(&self, session: &str) {
             self.0.session_closed(session).await;
         }
+        fn login_reads_cookies(&self) -> bool {
+            !self.1.cookie_names.is_empty()
+        }
     }
-    for extraction_allowed in [false, true] {
+
+    #[derive(Clone, Copy)]
+    enum Expected {
+        Denied,
+        Cookies,
+        ProbeOnly,
+    }
+
+    for (cookie_free, capabilities, expected) in [
+        (false, vec![cap::CONTEXT, cap::LOGIN], Expected::Denied),
+        (
+            false,
+            vec![cap::CONTEXT, cap::LOGIN, cap::COOKIES, cap::PAGE],
+            Expected::Cookies,
+        ),
+        (
+            true,
+            vec![cap::CONTEXT, cap::LOGIN, cap::PAGE],
+            Expected::ProbeOnly,
+        ),
+    ] {
         let (dir, broker, window) = fixture().await;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let root = PluginApi::default();
         let api = root.providers.clone();
-        let mut capabilities = vec![cap::CONTEXT, cap::LOGIN];
-        if extraction_allowed {
-            capabilities.extend([cap::COOKIES, cap::PAGE]);
-        }
+        let login_policy = if cookie_free {
+            cookie_free_policy()
+        } else {
+            policy()
+        };
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.login".into(),
             capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
-            services: Arc::new(Services(broker.clone())),
+            services: Arc::new(Services(broker.clone(), login_policy)),
         })
         .unwrap();
         let launch = api.begin_launch("fixture").unwrap();
@@ -568,15 +836,23 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
         let client = session.host.for_command(&command).unwrap();
         let opened = client.login(LoginOperation::Open, "").await.unwrap();
         let read = client.login(LoginOperation::Read, &opened.handle).await;
-        if extraction_allowed {
-            assert_eq!(read.unwrap().cookies[0].value, "private-cookie");
-        } else {
-            assert!(matches!(read, Err(gamenode_plugin_sdk::Error::Denied)));
+        match expected {
+            Expected::Denied => {
+                assert!(matches!(read, Err(gamenode_plugin_sdk::Error::Denied)));
+            }
+            Expected::Cookies => {
+                assert_eq!(read.unwrap().cookies[0].value, "private-cookie");
+            }
+            Expected::ProbeOnly => {
+                let read = read.unwrap();
+                assert!(read.cookies.is_empty());
+                assert!(read.page_result_json.is_some());
+            }
         }
         api.disconnect("fixture").await;
         assert!(pending.await.unwrap().is_err());
         assert!(window.closed());
-        assert!(!broker.root.join(&opened.handle).exists());
+        assert!(!broker.root.join("fixture").exists());
         server.shutdown().await;
     }
 }

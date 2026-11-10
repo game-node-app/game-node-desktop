@@ -1,0 +1,51 @@
+# Bundled anti-cheat blocklist for game tools.
+#
+# Each entry is keyed by the full provider entry key, so a store can add its games here without a
+# host code change. Titles are informational and are shown as evidence; the title heuristics live
+# in `crates/core/src/tools/anticheat.rs`.
+#
+# Add a provider entry key (for example `epic:<appName>`) to block that title.
+
+[[blocked]]
+entry = "steam:1172470"
+title = "Apex Legends"
+
+[[blocked]]
+entry = "steam:1085660"
+title = "Destiny 2"
+
+[[blocked]]
+entry = "steam:578080"
+title = "PUBG: BATTLEGROUNDS"
+
+[[blocked]]
+entry = "steam:359550"
+title = "Tom Clancy's Rainbow Six Siege"
+
+[[blocked]]
+entry = "steam:252490"
+title = "Rust"
+
+[[blocked]]
+entry = "steam:1938090"
+title = "Call of Duty"
+
+[[blocked]]
+entry = "steam:1240440"
+title = "Halo Infinite"
+
+[[blocked]]
+entry = "steam:1517290"
+title = "Battlefield 2042"
+
+[[blocked]]
+entry = "steam:553850"
+title = "Helldivers 2"
+
+[[blocked]]
+entry = "steam:730"
+title = "Counter-Strike 2"
+
+[[blocked]]
+entry = "epic:Fortnite"
+title = "Fortnite"

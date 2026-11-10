@@ -35,6 +35,11 @@ pub trait HostServices: Send + Sync {
     ) -> Result<ActionReply, Status>;
     fn publish_status(&self, _status: models::AccountStatus) {}
     async fn session_closed(&self, _session_id: &str) {}
+    /// Whether this provider's trusted login policy reads cookies. The transport requires the
+    /// cookie grant only when it does; a probe-only policy needs just the page grant.
+    fn login_reads_cookies(&self) -> bool {
+        true
+    }
 }
 
 pub struct Registration {
@@ -678,6 +683,21 @@ impl ProviderApi {
         services.session_closed(session_id).await;
     }
 
+    /// Delivers the validation error that ended a provider event stream to the operation it
+    /// belongs to, instead of reporting only that the process disconnected.
+    fn fail_operation(&self, context: Option<&ServiceContext>, error: &Status) {
+        let Some(context) = context else {
+            return;
+        };
+        let mut state = lock(&self.state);
+        if let Some(operation) = state
+            .operations
+            .remove(&(context.session_id.clone(), context.operation_id.clone()))
+        {
+            let _ = operation.result.send(Err(error.clone()));
+        }
+    }
+
     fn authorize(
         &self,
         context: &ServiceContext,
@@ -1151,7 +1171,10 @@ impl ProviderApi {
                 }
                 if result.counters.len() > 50_000
                     || result.counters.iter().any(|c| {
-                        c.id.is_empty() || c.id.len() > 256 || c.seconds < 0 || c.last_played < 0
+                        c.id.is_empty()
+                            || c.id.len() > 256
+                            || c.seconds < 0
+                            || c.last_played.is_some_and(|last_played| last_played < 0)
                     })
                 {
                     return Err(Status::invalid_argument("invalid counter observations"));
@@ -1331,12 +1354,14 @@ impl provider_host_server::ProviderHost for ProviderApi {
                         .await;
                     break;
                 }
+                let event_context = event.context.clone();
                 if let Err(error) = api.event(event).await {
                     // Obsolete/duplicate results are ignored and cannot tear down
                     // newer work on this same persistent provider connection.
                     if error.code() == tonic::Code::FailedPrecondition {
                         continue;
                     }
+                    api.fail_operation(event_context.as_ref(), &error);
                     let _ = tx.send(Err(error)).await;
                     break;
                 }
@@ -1424,8 +1449,10 @@ impl provider_host_server::ProviderHost for ProviderApi {
         let request = request.into_inner();
         let (lease, services) = self.lease(request.context.clone(), cap::LOGIN)?;
         if request.operation == LoginOperation::Read as i32 {
-            self.authorize(&lease.context, cap::COOKIES)?;
             self.authorize(&lease.context, cap::PAGE)?;
+            if services.login_reads_cookies() {
+                self.authorize(&lease.context, cap::COOKIES)?;
+            }
         }
         Ok(Response::new(services.login(lease, request).await?))
     }

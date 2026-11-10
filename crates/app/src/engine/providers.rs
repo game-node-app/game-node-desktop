@@ -103,9 +103,27 @@ pub(super) fn catalog_error(error: models::CatalogError) -> gamenode_core::libra
         P::Expired => C::Expired,
         P::Privacy => C::Privacy,
         P::Changed => C::Changed,
-        P::InvalidCookies => C::InvalidCookies,
+        P::InvalidCredential => C::InvalidCredential,
         P::FamilyUnavailable => C::FamilyUnavailable,
     }
+}
+
+/// Keeps catalog fields within the host's bounds even if a future transport stops enforcing
+/// them. Out-of-bounds fields are ignored; they never panic or reach Core.
+fn catalog_fields(
+    fields: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    fields
+        .into_iter()
+        .filter(|(name, value)| {
+            !name.is_empty()
+                && name.len() <= models::MAX_CATALOG_FIELD_KEY
+                && value.len() <= models::MAX_CATALOG_FIELD_VALUE
+                && !name.chars().any(char::is_control)
+                && !value.chars().any(char::is_control)
+        })
+        .take(models::MAX_CATALOG_FIELDS)
+        .collect()
 }
 
 fn category(
@@ -120,6 +138,7 @@ fn category(
                     .map(|r| gamenode_core::library::CatalogRecord {
                         id: r.id,
                         name: r.name,
+                        fields: catalog_fields(r.fields),
                     })
                     .collect()
             })
@@ -164,6 +183,11 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Whether `id` names a provider the host loaded with an account and catalog.
+    pub fn has_catalog_provider(&self, id: &str) -> bool {
+        crate::commands::catalog_provider_loaded(self.provider_runtime().as_ref(), id)
     }
 
     pub(super) fn provider_account_views(

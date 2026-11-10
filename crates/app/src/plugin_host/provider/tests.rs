@@ -49,6 +49,15 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_extra_capabilities(&[]).await
+    }
+
+    /// A harness whose descriptor also grants the counter capability.
+    async fn with_counter() -> Self {
+        Self::with_extra_capabilities(&[cap::COUNTER]).await
+    }
+
+    async fn with_extra_capabilities(extra: &[&'static str]) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -56,7 +65,7 @@ impl Harness {
         let root = super::super::PluginApi::default();
         let api = root.providers.clone();
         let services = Arc::new(Services::default());
-        let capabilities = [
+        let mut capabilities = vec![
             cap::CONTEXT,
             cap::DISCOVERY,
             cap::CATALOG,
@@ -65,6 +74,7 @@ impl Harness {
             cap::SETTINGS,
             cap::ACHIEVEMENTS,
         ];
+        capabilities.extend_from_slice(extra);
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
@@ -239,6 +249,7 @@ async fn incomplete_catalog_cannot_complete_successfully() {
             vec![models::CatalogRecord {
                 id: "1".into(),
                 name: "A game".into(),
+                fields: Default::default(),
             }],
         )
         .await
@@ -254,6 +265,62 @@ async fn incomplete_catalog_cannot_complete_successfully() {
         tonic::Code::InvalidArgument
     );
     assert_eq!(h.services.publications.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn catalog_chunks_keep_bounded_fields_for_core() {
+    let mut h = Harness::new().await;
+    let operation = h.execute(ProviderOperation::SyncCatalog);
+    let client = h.next(ProviderOperation::SyncCatalog).await;
+    let record = models::CatalogRecord::new("1", "A game")
+        .with_field("namespace", "catalog-namespace")
+        .unwrap()
+        .with_field("catalog_item_id", "item-1")
+        .unwrap();
+    let completion = client
+        .catalog_chunks(CatalogCategory::Owned, vec![record.clone()])
+        .await
+        .unwrap();
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(1)),
+        ..completion
+    }];
+    client.finish(result).await.unwrap();
+
+    let completion = operation.await.unwrap().unwrap();
+    let owned = completion.catalog.owned.unwrap().unwrap();
+    assert_eq!(owned, vec![record]);
+}
+
+#[tokio::test]
+async fn counter_dates_accept_absence_and_reject_negative_values() {
+    let mut h = Harness::with_counter().await;
+    let operation = h.execute(ProviderOperation::ReadCounter);
+    let client = h.next(ProviderOperation::ReadCounter).await;
+    let mut result = completed();
+    result.counters = vec![CounterObservation {
+        id: "42".into(),
+        seconds: 60,
+        last_played: None,
+    }];
+    client.finish(result).await.unwrap();
+    let completion = operation.await.unwrap().unwrap();
+    assert_eq!(completion.result.counters[0].last_played, None);
+
+    let operation = h.execute(ProviderOperation::ReadCounter);
+    let client = h.next(ProviderOperation::ReadCounter).await;
+    let mut result = completed();
+    result.counters = vec![CounterObservation {
+        id: "42".into(),
+        seconds: 60,
+        last_played: Some(-1),
+    }];
+    client.finish(result).await.unwrap();
+    assert_eq!(
+        operation.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
 }
 
 #[tokio::test]

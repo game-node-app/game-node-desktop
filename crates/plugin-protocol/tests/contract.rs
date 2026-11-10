@@ -79,7 +79,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     use gamenode_plugin_protocol::login::LoginPolicy;
     let policy = LoginPolicy {
         start_url: "https://store.example.test/login".into(),
-        cookie_url: "https://store.example.test/".into(),
+        cookie_url: Some("https://store.example.test/".into()),
         probe_origin: "https://store.example.test".into(),
         title: "Example".into(),
         allowed_hosts: vec!["example.test".into()],
@@ -103,6 +103,31 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     }
     assert!(
         LoginPolicy {
+            cookie_url: None,
+            cookie_names: vec![],
+            ..policy.clone()
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        LoginPolicy {
+            cookie_url: None,
+            ..policy.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        LoginPolicy {
+            cookie_names: vec![],
+            ..policy.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        LoginPolicy {
             probe_origin: "https://store.example.test/path".into(),
             ..policy.clone()
         }
@@ -111,7 +136,7 @@ fn login_policy_scopes_https_hosts_cookies_and_probe_origin() {
     );
     assert!(
         LoginPolicy {
-            cookie_url: "https://other.test/".into(),
+            cookie_url: Some("https://other.test/".into()),
             ..policy.clone()
         }
         .validate()
@@ -177,7 +202,13 @@ fn achievements_require_the_new_api_minor() {
         ),
         Ok(ACHIEVEMENTS_API_MINOR)
     );
-    assert_eq!(API_MINOR, ACHIEVEMENTS_API_MINOR);
+    // Later additive minors keep achievements negotiable, and an older minor
+    // still selects the version it declared.
+    const { assert!(API_MINOR > ACHIEVEMENTS_API_MINOR) };
+    assert_eq!(
+        negotiate(API_MAJOR, 2, &[CATALOG.into()], &[CATALOG]),
+        Ok(2)
+    );
 }
 
 #[test]
@@ -196,6 +227,123 @@ fn achievement_outcomes_reject_unrequested_ids_and_oversized_batches() {
         })
         .collect::<Vec<_>>();
     assert!(parse_outcomes(&oversized, &requested, false).is_err());
+}
+
+#[test]
+fn counter_last_played_round_trips_absent_and_present_values() {
+    let absent = CounterObservation {
+        id: "620".into(),
+        seconds: 3_600,
+        last_played: None,
+    };
+    let present = CounterObservation {
+        id: "620".into(),
+        seconds: 3_600,
+        last_played: Some(1_700_000_000),
+    };
+    let decode = |observation: CounterObservation| -> CounterObservation {
+        CounterObservation::decode(observation.encode_to_vec().as_slice()).unwrap()
+    };
+    assert_eq!(decode(absent.clone()), absent);
+    assert_eq!(decode(absent).last_played, None);
+    assert_eq!(decode(present).last_played, Some(1_700_000_000));
+}
+
+#[test]
+fn catalog_games_carry_bounded_fields_and_reject_invalid_ones() {
+    use gamenode_plugin_protocol::models::{
+        CatalogRecord, MAX_CATALOG_FIELD_KEY, MAX_CATALOG_FIELD_VALUE, MAX_CATALOG_FIELDS,
+    };
+    let record = CatalogRecord::new("app", "Game")
+        .with_field("namespace", "0584d2013f0149a791e7b9bad0eec102")
+        .unwrap();
+    assert_eq!(
+        record.fields["namespace"],
+        "0584d2013f0149a791e7b9bad0eec102"
+    );
+    let wire = CatalogGame::from(record.clone());
+    assert_eq!(CatalogRecord::try_from(wire).unwrap(), record);
+    let empty = CatalogGame {
+        id: "app".into(),
+        name: "Game".into(),
+        fields: Default::default(),
+    };
+    let decoded = CatalogGame::decode(empty.encode_to_vec().as_slice()).unwrap();
+    assert!(decoded.fields.is_empty());
+
+    let valid = CatalogRecord::new("app", "Game");
+    let mut full = valid.clone();
+    for index in 0..MAX_CATALOG_FIELDS {
+        full = full.with_field(format!("k{index}"), "v").unwrap();
+    }
+    assert!(
+        full.clone().with_field("one-too-many", "v").is_err(),
+        "the field count is bounded"
+    );
+    assert!(
+        full.with_field("k0", "replacement").is_ok(),
+        "replacing a key does not grow the map"
+    );
+    assert!(valid.clone().with_field("", "v").is_err());
+    assert!(
+        valid
+            .clone()
+            .with_field("k".repeat(MAX_CATALOG_FIELD_KEY + 1), "v")
+            .is_err()
+    );
+    assert!(
+        valid
+            .clone()
+            .with_field("k", "v".repeat(MAX_CATALOG_FIELD_VALUE + 1))
+            .is_err()
+    );
+    assert!(valid.clone().with_field("k\n", "v").is_err());
+    assert!(valid.clone().with_field("k", "v\u{7}").is_err());
+    assert!(
+        valid
+            .clone()
+            .with_field(
+                "k".repeat(MAX_CATALOG_FIELD_KEY),
+                "v".repeat(MAX_CATALOG_FIELD_VALUE)
+            )
+            .is_ok()
+    );
+
+    // The host also rejects fields that bypassed the builder.
+    let mut smuggled = valid.clone();
+    smuggled.fields.insert("k\n".into(), "v".into());
+    assert!(CatalogRecord::try_from(CatalogGame::from(smuggled)).is_err());
+    let mut oversized = valid;
+    for index in 0..=MAX_CATALOG_FIELDS {
+        oversized.fields.insert(format!("k{index}"), "v".into());
+    }
+    assert!(oversized.validate_fields().is_err());
+}
+
+#[test]
+fn invalid_credential_keeps_wire_number_seven_and_reads_legacy_rows() {
+    assert_eq!(CatalogFailure::InvalidCredential as i32, 7);
+    assert_eq!(
+        CatalogFailure::try_from(7).unwrap(),
+        CatalogFailure::InvalidCredential
+    );
+    assert_eq!(
+        models::CatalogError::try_from(CatalogFailure::InvalidCredential).unwrap(),
+        models::CatalogError::InvalidCredential
+    );
+    assert_eq!(
+        CatalogFailure::from(models::CatalogError::InvalidCredential) as i32,
+        7
+    );
+    assert_eq!(
+        models::CatalogError::InvalidCredential.as_str(),
+        "invalidCredential"
+    );
+    // Rows written before the provider-neutral rename still load.
+    assert_eq!(
+        models::CatalogError::from_category("invalidCookies"),
+        Some(models::CatalogError::InvalidCredential)
+    );
 }
 
 #[test]
@@ -224,6 +372,7 @@ fn chunk(category: CatalogCategory, index: u32) -> CatalogChunk {
         games: vec![CatalogGame {
             id: "620".into(),
             name: "Portal 2".into(),
+            fields: Default::default(),
         }],
     }
 }
@@ -285,7 +434,8 @@ fn partial_duplicate_out_of_order_and_oversized_catalogs_are_rejected() {
     oversized.games = vec![
         CatalogGame {
             id: "1".into(),
-            name: "Game".into()
+            name: "Game".into(),
+            fields: Default::default(),
         };
         CHUNK_RECORDS + 1
     ];

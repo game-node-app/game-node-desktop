@@ -1,0 +1,20 @@
+# Reviewed exceptions for the production store-boundary source scan.
+#
+# Format: <repo-relative-path>:<line> <rule> -- <justification>
+#   Rules: store-host, store-module-path, provider-id-literal, store-identifier
+#
+# Keep this file small and reviewed. There is no way to exempt a directory, a pattern or a rule:
+# every entry excuses exactly one line and must carry a reason. The checker fails on stale entries,
+# so remove one when the code moves or the finding disappears.
+
+# Ludusavi's manifest uses `steam`/`gog` ids as data vocabulary to match DRM-free games. The parser
+# reads the id; it does not branch on a provider or talk to a store. DRM-free matching stays a Core
+# feature (proposal: "DRM-free/manual games ... stay Core features").
+crates/core/src/drm_free/identity.rs:194 provider-id-literal -- Ludusavi's `steam` manifest identity field (the paired `gog` field is the same kind of data vocabulary); read as a manifest id, never a provider branch.
+
+# The achievement icon cache owns a static trusted-host security list. These are image CDN hosts
+# for already-fetched URLs, not store discovery, catalog, HTTP interpretation or provider branches.
+crates/platform/src/achievement_icons.rs:25 store-host -- Trusted image CDN host for the host-owned achievement icon cache; static host metadata, not store integration.
+crates/platform/src/achievement_icons.rs:26 store-host -- Trusted image CDN host for the host-owned achievement icon cache; static host metadata, not store integration.
+crates/platform/src/achievement_icons.rs:27 store-host -- Trusted image CDN host for the host-owned achievement icon cache; static host metadata, not store integration.
+crates/platform/src/achievement_icons.rs:29 store-host -- Trusted image CDN host for the host-owned achievement icon cache; static host metadata, not store integration.

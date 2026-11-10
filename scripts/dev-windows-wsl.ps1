@@ -7,6 +7,10 @@ $plugin = Join-Path (Split-Path -Parent $ExecutablePath) 'gamenode-plugin-steam.
 if (!(Test-Path -LiteralPath $plugin -PathType Leaf)) {
     throw "Development Steam plugin not found beside the desktop: $plugin"
 }
+$epicPlugin = Join-Path (Split-Path -Parent $ExecutablePath) 'gamenode-plugin-epic.exe'
+if (!(Test-Path -LiteralPath $epicPlugin -PathType Leaf)) {
+    throw "Development Epic plugin not found beside the desktop: $epicPlugin"
+}
 $process = Start-Process -FilePath $ExecutablePath -WorkingDirectory (Split-Path -Parent $ExecutablePath) -PassThru
 $process.WaitForExit()
 exit $process.ExitCode

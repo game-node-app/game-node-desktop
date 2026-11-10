@@ -98,7 +98,6 @@ fn tools_harness() -> ToolsHarness {
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
-        steam: None,
         pc_ports: None,
         port_store: None,
         port_progress: Arc::new(crate::engine::PortProgressPublisher::disabled(

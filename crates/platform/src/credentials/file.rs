@@ -142,7 +142,9 @@ impl CredentialStore for FileCredentialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{Absent, BackendError, CredentialSlot, KeyringBackend, select_linux};
+    use crate::credentials::{
+        Absent, BackendError, CredentialAlias, CredentialSlot, KeyringBackend, select_linux,
+    };
     use crate::paths::DataPaths;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -150,6 +152,16 @@ mod tests {
     fn store(dir: &TempDir) -> FileCredentialStore {
         let paths = DataPaths::at(dir.path().join("data"));
         FileCredentialStore::new(paths.private_dir(), paths.credential_file())
+    }
+
+    fn steam_slot() -> CredentialSlot {
+        CredentialSlot::provider(
+            "steam",
+            Some(CredentialAlias {
+                keyring_account: "steam".into(),
+                private_file: "steam-token".into(),
+            }),
+        )
     }
 
     fn cred(v: &str) -> SessionCredential {
@@ -211,12 +223,10 @@ mod tests {
             paths.private_dir(),
             CredentialSlot::Session.private_file(&paths),
         );
-        let steam = FileCredentialStore::new(
-            paths.private_dir(),
-            CredentialSlot::Steam.private_file(&paths),
-        );
+        let steam =
+            FileCredentialStore::new(paths.private_dir(), steam_slot().private_file(&paths));
         assert_eq!(session.file, paths.credential_file());
-        assert_eq!(steam.file, paths.steam_credential_file());
+        assert_eq!(steam.file, paths.private_dir().join("steam-token"));
         assert!(
             session
                 .temp_path()
@@ -243,28 +253,26 @@ mod tests {
             "steamLoginSecure=abc"
         );
         assert_eq!(mode(&paths.credential_file()), 0o600);
-        assert_eq!(mode(&paths.steam_credential_file()), 0o600);
+        assert_eq!(mode(&paths.private_dir().join("steam-token")), 0o600);
 
-        // Deleting the Steam slot leaves the GameNode session alone.
+        // Deleting the provider slot leaves the GameNode session alone.
         steam.delete().unwrap();
         assert_eq!(session.load().unwrap().unwrap().expose(), "gamenode");
-        assert!(!paths.steam_credential_file().exists());
+        assert!(!paths.private_dir().join("steam-token").exists());
     }
 
     #[test]
-    fn a_symlinked_steam_credential_is_refused() {
+    fn a_symlinked_provider_credential_is_refused() {
         let dir = TempDir::new().unwrap();
         let paths = DataPaths::at(dir.path().join("data"));
-        let store = FileCredentialStore::new(
-            paths.private_dir(),
-            CredentialSlot::Steam.private_file(&paths),
-        );
+        let store =
+            FileCredentialStore::new(paths.private_dir(), steam_slot().private_file(&paths));
         paths.ensure_data_dir().unwrap();
         fs::create_dir(paths.private_dir()).unwrap();
         fs::set_permissions(paths.private_dir(), fs::Permissions::from_mode(0o700)).unwrap();
         let target = dir.path().join("elsewhere");
         fs::write(&target, "victim").unwrap();
-        std::os::unix::fs::symlink(&target, paths.steam_credential_file()).unwrap();
+        std::os::unix::fs::symlink(&target, paths.private_dir().join("steam-token")).unwrap();
 
         assert_eq!(store.load(), Err(CredentialError::Failed));
         store.save(&cred("fresh")).unwrap();
@@ -341,7 +349,7 @@ mod tests {
             || Ok(Arc::new(Locked) as Arc<dyn KeyringBackend>),
             &paths,
             StorageMethod::SecretService,
-            CredentialSlot::Steam,
+            CredentialSlot::provider("fixture", None),
         );
         assert_eq!(locked.method(), StorageMethod::SecretService);
         assert_eq!(locked.save(&cred("x")), Err(CredentialError::Locked));

@@ -8,8 +8,9 @@ import {
   useUiStore,
   type SettingsTopic,
 } from '../../store/uiStore';
-import { useAppInfo, useAuth, useLocalGames, useSnapshot } from '../../api';
+import { useAppInfo, useAuth, useLibraryView, useLocalGames, useSnapshot } from '../../api';
 import { useI18n } from '../../i18n';
+import { providerLabel } from '../../i18n/providerLabel';
 
 import { AccountPanel } from './panels/AccountPanel';
 import { StoresPanel } from './panels/StoresPanel';
@@ -71,10 +72,22 @@ export const SettingsModal: React.FC = () => {
   const { auth } = useAuth();
   const { data: appInfo } = useAppInfo();
   const localGames = useLocalGames();
+  const library = useLibraryView();
   const { data: storeAccounts } = useSnapshot((s) => s.storeAccounts);
-  const storesNeedsAttention = (storeAccounts ?? []).some(
+  const attentionAccount = (storeAccounts ?? []).find(
     (account) => account.state === 'expired' || account.state === 'credentialError' || account.persistFailed,
   );
+  const attentionProvider = attentionAccount
+    ? providerLabel(
+        attentionAccount.provider,
+        library?.providers.find((provider) => provider.id === attentionAccount.provider)?.name,
+        t,
+      )
+    : '';
+  const storesNeedsAttention = attentionAccount !== undefined;
+  const storesAttentionLabel = t('settings.storeNeedsAttention', {
+    provider: attentionProvider,
+  });
 
   const contentPaneRef = useRef<HTMLDivElement>(null);
   const showLicenseNoticesButtonRef = useRef<HTMLButtonElement>(null);
@@ -217,7 +230,7 @@ export const SettingsModal: React.FC = () => {
                     aria-current={isSelected ? 'page' : undefined}
                     aria-label={
                       needsAttention
-                        ? `${t(topic.titleKey) || topic.titleKey}: ${t('settings.storesNeedsAttention')}`
+                        ? `${t(topic.titleKey) || topic.titleKey}: ${storesAttentionLabel}`
                         : undefined
                     }
                     className={`flex w-full items-center gap-[10px] rounded-sm px-sm py-compact text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
@@ -231,7 +244,7 @@ export const SettingsModal: React.FC = () => {
                     {needsAttention && (
                       <span
                         role="img"
-                        aria-label={t('settings.storesNeedsAttention')}
+                        aria-label={storesAttentionLabel}
                         className="inline-flex shrink-0 items-center gap-[4px] rounded-full bg-warning-subtle px-compact py-[2px] text-[10px] font-semibold uppercase tracking-[0.04em] text-warning"
                       >
                         <IconAlertTriangle size={13} stroke={1.75} aria-hidden="true" />

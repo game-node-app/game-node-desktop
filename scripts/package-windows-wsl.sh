@@ -23,8 +23,9 @@ source_files = sorted(str(path) for base in ("crates", "providers", "packaging",
 
 binary = package / "gamenode.exe"
 steam_plugin = package / "gamenode-plugin-steam.exe"
-if not binary.is_file() or not steam_plugin.is_file():
-    raise SystemExit("Windows package is incomplete; build both host and Steam plugin before creating the ZIP")
+epic_plugin = package / "gamenode-plugin-epic.exe"
+if not binary.is_file() or not steam_plugin.is_file() or not epic_plugin.is_file():
+    raise SystemExit("Windows package is incomplete; build the host and Steam/Epic plugins before creating the ZIP")
 revision = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
 ).stdout.strip()
@@ -37,6 +38,7 @@ build_manifest = {
     "dirty": dirty,
     "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
     "steamPluginSha256": hashlib.sha256(steam_plugin.read_bytes()).hexdigest(),
+    "epicPluginSha256": hashlib.sha256(epic_plugin.read_bytes()).hexdigest(),
     "backupAssets": json.loads((package / "backup-assets/build-inputs.json").read_text()),
     "sourceSha256": {
         name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
@@ -47,8 +49,8 @@ build_manifest = {
     json.dumps(build_manifest, indent=2) + "\n", encoding="utf-8"
 )
 files = [package / name for name in (
-    "build-manifest.json", "gamenode.exe", "gamenode-plugin-steam.exe", "LICENSE", "README.md",
-    "install.ps1", "uninstall.ps1",
+    "build-manifest.json", "gamenode.exe", "gamenode-plugin-steam.exe", "gamenode-plugin-epic.exe",
+    "LICENSE", "README.md", "install.ps1", "uninstall.ps1",
 )]
 if any(not path.is_file() for path in files) or not (package / "licenses").is_dir():
     raise SystemExit("Windows package is incomplete; build it before creating the ZIP")

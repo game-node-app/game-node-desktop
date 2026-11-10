@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Enforce production dependency boundaries for the bundled provider architecture."""
+"""Enforce production dependency and store boundaries for the bundled provider architecture."""
 
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
-from collections import deque
+from typing import NamedTuple
 
 
 PUBLIC_PLUGIN_CRATES = (
@@ -16,6 +18,7 @@ PUBLIC_PLUGIN_CRATES = (
     "gamenode-plugin-sdk",
     "gamenode-plugin-steam",
     "gamenode-plugin-packagekit",
+    "gamenode-plugin-epic",
 )
 INTERNAL_APPLICATION_CRATES = {
     "gamenode-app",
@@ -27,7 +30,60 @@ FORBIDDEN_HOST_PLUGIN_CRATES = {
     "gamenode-plugin-sdk",
     "gamenode-plugin-steam",
     "gamenode-plugin-packagekit",
+    "gamenode-plugin-epic",
 }
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ALLOWLIST_PATH = "scripts/plugin-boundary-allowlist.txt"
+
+# Production sources that must stay store-agnostic. Stores reach the host only through plugin
+# descriptors, manifests, scoped services and test fixtures.
+STORE_SOURCE_ROOTS = (
+    "crates/core/src",
+    "crates/api/src",
+    "crates/platform/src",
+    "crates/app/src",
+    "ui/src",
+)
+SOURCE_SUFFIXES = frozenset({".rs", ".ts", ".tsx", ".js", ".jsx"})
+# Store provider ids from the bundled store descriptors. Extend this list when a store is added.
+STORE_PROVIDER_IDS = ("steam", "epic")
+TEST_PATH_SEGMENTS = frozenset({"tests", "test", "__tests__", "fixtures"})
+TEST_FILE_SUFFIXES = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx")
+
+STORE_HOST_PATTERN = re.compile(
+    r"steampowered|steamcommunity|steamstatic|epicgames", re.IGNORECASE
+)
+STORE_MODULE_PATH_PATTERN = re.compile(r"::(?:steam|epic)::")
+STORE_PROVIDER_LITERAL_PATTERN = re.compile(
+    r"""["'](?:%s)["']"""
+    % "|".join(re.escape(provider) for provider in STORE_PROVIDER_IDS)
+)
+STORE_IDENTIFIER_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:steam|epic)_[A-Za-z0-9_]", re.IGNORECASE
+)
+
+SOURCE_RULES = {
+    "store-host": STORE_HOST_PATTERN,
+    "store-module-path": STORE_MODULE_PATH_PATTERN,
+    "provider-id-literal": STORE_PROVIDER_LITERAL_PATTERN,
+    "store-identifier": STORE_IDENTIFIER_PATTERN,
+}
+
+# Only an exact `#[cfg(test)]` (or `cfg(all(test, ...))`) item is test-only. `cfg(any(..., test))`
+# also compiles production code and must stay visible to the scan.
+CFG_TEST_ATTRIBUTE_PATTERN = re.compile(r"^\s*#\[cfg\(\s*(?:all\()?\s*test\s*[,)]")
+ALLOWLIST_LINE_PATTERN = re.compile(
+    r"^(?P<path>[^:\s]+):(?P<line>[1-9][0-9]*)\s+"
+    r"(?P<rule>[a-z][a-z0-9-]*)\s+--\s+(?P<reason>\S.*)$"
+)
+
+
+class AllowlistEntry(NamedTuple):
+    path: str
+    line: int
+    rule: str
+    reason: str
 
 
 def _dependency_kinds(edge: dict) -> list[dict]:
@@ -116,6 +172,131 @@ def check_metadata(metadata: dict) -> list[str]:
     return errors
 
 
+def load_allowlist(path: Path) -> tuple[list[AllowlistEntry], list[str]]:
+    """Read reviewed path/line exceptions with a mandatory justification."""
+    if not path.is_file():
+        return [], [f"store boundary allowlist is missing: {path}"]
+    entries: list[AllowlistEntry] = []
+    errors: list[str] = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = ALLOWLIST_LINE_PATTERN.match(line)
+        if match is None:
+            errors.append(
+                f"{path}:{number}: malformed store boundary allowlist entry; "
+                "expected `<path>:<line> <rule> -- <justification>`"
+            )
+            continue
+        rule = match.group("rule")
+        if rule not in SOURCE_RULES:
+            errors.append(
+                f"{path}:{number}: unknown store boundary rule `{rule}`; "
+                f"expected one of {', '.join(sorted(SOURCE_RULES))}"
+            )
+            continue
+        entries.append(
+            AllowlistEntry(
+                path=match.group("path"),
+                line=int(match.group("line")),
+                rule=rule,
+                reason=match.group("reason"),
+            )
+        )
+    return entries, errors
+
+
+def _is_test_path(relative: Path) -> bool:
+    parts = relative.parts
+    if any(part in TEST_PATH_SEGMENTS for part in parts[:-1]):
+        return True
+    if relative.name in {"tests.rs", "fixtures.rs"}:
+        return True
+    if relative.stem.endswith(("_tests", "_test")):
+        return True
+    if relative.name.endswith(TEST_FILE_SUFFIXES):
+        return True
+    if len(parts) >= 3 and parts[0] == "ui" and parts[1] == "src" and parts[2] == "mock":
+        return True
+    return False
+
+
+def _production_lines(path: Path) -> list[tuple[int, str]]:
+    """Return the lines the store scan may inspect, hiding `#[cfg(test)]` items in Rust."""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if path.suffix != ".rs":
+        return list(enumerate(lines, 1))
+
+    visible: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not CFG_TEST_ATTRIBUTE_PATTERN.match(line):
+            visible.append((index + 1, line))
+            index += 1
+            continue
+
+        indent = len(line) - len(line.lstrip())
+        while index + 1 < len(lines):
+            index += 1
+            text = lines[index].strip()
+            if not text:
+                continue
+            current_indent = len(lines[index]) - len(lines[index].lstrip())
+            if current_indent <= indent and text.endswith((";", ",", "}")):
+                break
+        index += 1
+    return visible
+
+
+def _scan_source_file(repo_root: Path, path: Path) -> list[tuple[str, int, str, str]]:
+    relative = path.relative_to(repo_root).as_posix()
+    findings = []
+    for line_number, line in _production_lines(path):
+        for rule, pattern in SOURCE_RULES.items():
+            if pattern.search(line):
+                findings.append((relative, line_number, rule, line.strip()))
+    return findings
+
+
+def check_store_sources(repo_root: Path, allowlist_path: Path | None = None) -> list[str]:
+    """Fail on store-specific production code outside trusted plugin data and test fixtures."""
+    repo_root = Path(repo_root)
+    allowlist_path = Path(allowlist_path) if allowlist_path else repo_root / ALLOWLIST_PATH
+    entries, errors = load_allowlist(allowlist_path)
+    allowed = {(entry.path, entry.line, entry.rule) for entry in entries}
+    used: set[tuple[str, int, str]] = set()
+
+    for root_name in STORE_SOURCE_ROOTS:
+        root = repo_root / root_name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+                continue
+            relative = path.relative_to(repo_root)
+            if _is_test_path(relative):
+                continue
+            for relative_path, line_number, rule, text in _scan_source_file(repo_root, path):
+                key = (relative_path, line_number, rule)
+                if key in allowed:
+                    used.add(key)
+                    continue
+                errors.append(
+                    f"store boundary violation: {relative_path}:{line_number}: {rule}: {text}"
+                )
+
+    for entry in entries:
+        if (entry.path, entry.line, entry.rule) not in used:
+            errors.append(
+                "stale store boundary allowlist entry: "
+                f"{entry.path}:{entry.line}: {entry.rule} "
+                f"({entry.reason!r}) has no matching production finding"
+            )
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -129,19 +310,27 @@ def main() -> int:
     else:
         result = subprocess.run(
             ["cargo", "metadata", "--format-version", "1", "--locked"],
-            cwd=Path(__file__).resolve().parents[1],
-            check=True,
+            cwd=REPO_ROOT,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr)
+            return result.returncode
         metadata = json.loads(result.stdout)
 
     errors = check_metadata(metadata)
+    errors.extend(check_store_sources(REPO_ROOT))
     if errors:
         for error in errors:
-            print(f"plugin boundary violation: {error}", file=sys.stderr)
+            if error.startswith(
+                ("store boundary violation:", "stale store boundary allowlist entry:")
+            ):
+                print(error, file=sys.stderr)
+            else:
+                print(f"plugin boundary violation: {error}", file=sys.stderr)
         return 1
-    print("plugin dependency boundaries are valid")
+    print("plugin dependency and store boundaries are valid")
     return 0
 
 

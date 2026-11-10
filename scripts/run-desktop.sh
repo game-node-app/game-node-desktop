@@ -3,9 +3,19 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
+# Epic is Windows-only: only the Windows branch builds and requires its executable. Linux packages
+# and builds intentionally leave it out, so the launcher must not fail when it is absent.
 case "$(uname -s)" in
-    Linux) desktop_name=gamenode ; plugin_names=(gamenode-plugin-steam gamenode-plugin-packagekit) ;;
-    MINGW*|MSYS*|CYGWIN*) desktop_name=gamenode.exe ; plugin_names=(gamenode-plugin-steam.exe) ;;
+    Linux)
+        desktop_name=gamenode
+        plugin_names=(gamenode-plugin-steam gamenode-plugin-packagekit)
+        plugin_packages=(gamenode-plugin-steam gamenode-plugin-packagekit)
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        desktop_name=gamenode.exe
+        plugin_names=(gamenode-plugin-steam.exe gamenode-plugin-epic.exe)
+        plugin_packages=(gamenode-plugin-steam gamenode-plugin-epic)
+        ;;
     *) echo 'Native desktop development supports Linux and Windows.' >&2; exit 1 ;;
 esac
 
@@ -29,10 +39,10 @@ while (($#)); do
     shift
 done
 
-build_args=(-p gamenode-app -p gamenode-plugin-steam)
-if [[ "$(uname -s)" == Linux ]]; then
-    build_args+=(-p gamenode-plugin-packagekit)
-fi
+build_args=(-p gamenode-app)
+for package in "${plugin_packages[@]}"; do
+    build_args+=(-p "$package")
+done
 cargo build --locked --bins "${build_args[@]}" ${cargo_args[@]+"${cargo_args[@]}"}
 target_dir=$(cargo metadata --locked --no-deps --format-version 1 \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')

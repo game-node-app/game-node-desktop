@@ -1,6 +1,6 @@
 //! Public provider-account values. No application-internal types or OS access.
 
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +62,7 @@ pub enum CatalogError {
     Expired,
     Privacy,
     Changed,
-    InvalidCookies,
+    InvalidCredential,
     FamilyUnavailable,
 }
 
@@ -75,7 +75,7 @@ impl CatalogError {
             Self::Expired => "expired",
             Self::Privacy => "privacy",
             Self::Changed => "changed",
-            Self::InvalidCookies => "invalidCookies",
+            Self::InvalidCredential => "invalidCredential",
             Self::FamilyUnavailable => "familyUnavailable",
         }
     }
@@ -89,7 +89,8 @@ impl CatalogError {
             "expired" => Some(Self::Expired),
             "privacy" => Some(Self::Privacy),
             "changed" => Some(Self::Changed),
-            "invalidCookies" => Some(Self::InvalidCookies),
+            // Rows written before the provider-neutral rename still say "invalidCookies".
+            "invalidCredential" | "invalidCookies" => Some(Self::InvalidCredential),
             "familyUnavailable" => Some(Self::FamilyUnavailable),
             _ => None,
         }
@@ -111,11 +112,69 @@ impl FromStr for CatalogError {
 }
 
 /// One game from a provider's owned or family-shared catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogRecord {
     pub id: String,
     pub name: String,
+    /// Named facts used for matching and action templates. Construction through
+    /// [`CatalogRecord::with_field`] keeps them within the wire bounds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+}
+
+/// The most catalog fields one game may carry.
+pub const MAX_CATALOG_FIELDS: usize = 16;
+/// The longest catalog field key, in bytes.
+pub const MAX_CATALOG_FIELD_KEY: usize = 64;
+/// The longest catalog field value, in bytes.
+pub const MAX_CATALOG_FIELD_VALUE: usize = 256;
+
+fn bounded_field_text(value: &str, max: usize, allow_empty: bool) -> bool {
+    (allow_empty || !value.is_empty()) && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+impl CatalogRecord {
+    /// A record without fields. Add facts with [`CatalogRecord::with_field`].
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// Adds one bounded field, rejecting the whole record when it is invalid instead of
+    /// truncating or dropping the value. Replacing an existing key keeps one entry.
+    pub fn with_field(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, crate::WireError> {
+        let key = key.into();
+        let value = value.into();
+        if !bounded_field_text(&key, MAX_CATALOG_FIELD_KEY, false)
+            || !bounded_field_text(&value, MAX_CATALOG_FIELD_VALUE, true)
+            || (!self.fields.contains_key(&key) && self.fields.len() >= MAX_CATALOG_FIELDS)
+        {
+            return Err(crate::WireError);
+        }
+        self.fields.insert(key, value);
+        Ok(self)
+    }
+
+    /// Checks the same bounds the host applies when reading fields from the wire.
+    pub fn validate_fields(&self) -> Result<(), crate::WireError> {
+        if self.fields.len() > MAX_CATALOG_FIELDS
+            || self.fields.iter().any(|(key, value)| {
+                !bounded_field_text(key, MAX_CATALOG_FIELD_KEY, false)
+                    || !bounded_field_text(value, MAX_CATALOG_FIELD_VALUE, true)
+            })
+        {
+            return Err(crate::WireError);
+        }
+        Ok(())
+    }
 }
 
 /// A bounded achievement read: up to [`crate::achievements::MAX_GAMES`] provider game ids and the

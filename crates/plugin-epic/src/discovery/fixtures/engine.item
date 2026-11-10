@@ -1,0 +1,11 @@
+{
+  "AppName": "UE_5.5",
+  "DisplayName": "Unreal Engine 5.5",
+  "CatalogNamespace": "ue",
+  "CatalogItemId": "catalog-unreal",
+  "AppCategories": ["public", "games"],
+  "bIsIncompleteInstall": false,
+  "InstallLocation": "C:\\Program Files\\Epic Games\\UE_5.5",
+  "MainGameAppName": "",
+  "Namespace": "ue"
+}

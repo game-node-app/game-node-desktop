@@ -1,7 +1,8 @@
 //! Anti-cheat detection, folder marker inspection, and bundled blocklist rules.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::OnceLock;
 
 /// Known anti-cheat technologies and blocklist categories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -37,19 +38,37 @@ impl AntiCheatReport {
     }
 }
 
-/// Known Steam App IDs that feature strict kernel/client anti-cheat or ban modded DLLs.
-const BLOCKLISTED_STEAM_APP_IDS: &[(&str, &str)] = &[
-    ("1172470", "Apex Legends"),
-    ("1085660", "Destiny 2"),
-    ("578080", "PUBG: BATTLEGROUNDS"),
-    ("359550", "Tom Clancy's Rainbow Six Siege"),
-    ("252490", "Rust"),
-    ("1938090", "Call of Duty"),
-    ("1240440", "Halo Infinite"),
-    ("1517290", "Battlefield 2042"),
-    ("553850", "Helldivers 2"),
-    ("730", "Counter-Strike 2"),
-];
+/// Bundled blocklist rules for competitive titles that ship kernel/client anti-cheat or ban
+/// modded DLLs.
+///
+/// The rules are keyed by the full provider entry key (`steam:<appId>`, `epic:<appName>`, ...), so
+/// adding a store never needs a host code change.
+const BLOCKLISTED_ENTRIES_TOML: &str = include_str!("../../data/anticheat.toml");
+
+#[derive(Debug, Deserialize)]
+struct BlocklistFile {
+    #[serde(default)]
+    blocked: Vec<BlocklistEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlocklistEntry {
+    entry: String,
+    title: String,
+}
+
+/// Parses the bundled blocklist once and indexes it by full entry key.
+fn blocked_entries() -> &'static HashMap<String, String> {
+    static ENTRIES: OnceLock<HashMap<String, String>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let file: BlocklistFile = toml::from_str(BLOCKLISTED_ENTRIES_TOML)
+            .expect("bundled anti-cheat blocklist must be valid TOML");
+        file.blocked
+            .into_iter()
+            .map(|blocked| (blocked.entry, blocked.title))
+            .collect()
+    })
+}
 
 /// Known game titles (or keywords) that feature strict anti-cheat.
 const BLOCKLISTED_TITLES: &[&str] = &[
@@ -77,16 +96,12 @@ pub fn evaluate_anticheat<'a>(
     let mut detected_systems = BTreeSet::new();
     let mut evidence = Vec::new();
 
-    // 1. Steam App ID check from entry_key (e.g. "steam:1172470")
-    if let Some(app_id) = entry_key.strip_prefix("steam:") {
-        for (blocked_id, blocked_title) in BLOCKLISTED_STEAM_APP_IDS {
-            if app_id == *blocked_id {
-                detected_systems.insert(AntiCheatSystem::Blocklisted);
-                evidence.push(format!(
-                    "Steam App ID {app_id} matches known competitive title: {blocked_title}"
-                ));
-            }
-        }
+    // 1. Bundled blocklist check by full entry key (e.g. "steam:1172470").
+    if let Some(blocked_title) = blocked_entries().get(entry_key) {
+        detected_systems.insert(AntiCheatSystem::Blocklisted);
+        evidence.push(format!(
+            "Entry {entry_key} matches known competitive title: {blocked_title}"
+        ));
     }
 
     // 2. Title check
@@ -168,6 +183,35 @@ mod tests {
         assert!(report.has_warning());
         assert_eq!(report.detected, vec![AntiCheatSystem::Blocklisted]);
         assert!(!report.evidence.is_empty());
+    }
+
+    #[test]
+    fn test_epic_blocklist_entry_key() {
+        // The title deliberately does not match the title heuristics, so only the bundled
+        // `epic:` entry key can produce this warning.
+        let report = evaluate_anticheat("epic:Fortnite", "Launcher Item", []);
+        assert!(report.has_warning());
+        assert_eq!(report.detected, vec![AntiCheatSystem::Blocklisted]);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|evidence| evidence.contains("epic:Fortnite"))
+        );
+    }
+
+    #[test]
+    fn test_bundled_blocklist_is_keyed_by_full_entry_key() {
+        let entries = blocked_entries();
+        assert_eq!(
+            entries.get("steam:1172470").map(String::as_str),
+            Some("Apex Legends")
+        );
+        assert_eq!(
+            entries.get("epic:Fortnite").map(String::as_str),
+            Some("Fortnite")
+        );
+        assert!(!entries.contains_key("1172470"));
     }
 
     #[test]

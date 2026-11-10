@@ -132,8 +132,9 @@ enum CatalogFact {
 
 /// Applies one successful catalog phase inside the caller's transaction. The rules mirror
 /// `LibraryMachine::merge_catalog`: the phase's own fact set is replaced, installed facts,
-/// `install_dir`, `fields`, first-seen time, matches and covers are untouched, the installed name
-/// wins, and an existing non-empty name is only replaced when it is empty.
+/// `install_dir`, first-seen time, matches and covers are untouched, the installed name wins, and
+/// an existing non-empty name is only replaced when it is empty. Catalog fields only fill keys the
+/// entry does not have yet, so an installed scan's fields are never erased.
 fn apply_catalog_records(
     tx: &rusqlite::Transaction<'_>,
     provider: &str,
@@ -144,7 +145,7 @@ fn apply_catalog_records(
     const UPSERT_OWNED: &str = "INSERT INTO library_entries
             (key, provider, store_id, name, install_dir, fields_json, installed, owned,
              family_shared, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, '', '{}', 0, 1, 0, ?5, ?5)
+         VALUES (?1, ?2, ?3, ?4, '', ?6, 0, 1, 0, ?5, ?5)
          ON CONFLICT(key) DO UPDATE SET
             name = CASE
                 WHEN library_entries.installed THEN library_entries.name
@@ -152,12 +153,13 @@ fn apply_catalog_records(
                      AND trim(library_entries.name) <> '' THEN library_entries.name
                 ELSE excluded.name
             END,
+            fields_json = excluded.fields_json,
             owned = 1,
             last_seen = excluded.last_seen";
     const UPSERT_FAMILY: &str = "INSERT INTO library_entries
             (key, provider, store_id, name, install_dir, fields_json, installed, owned,
              family_shared, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, '', '{}', 0, 0, 1, ?5, ?5)
+         VALUES (?1, ?2, ?3, ?4, '', ?6, 0, 0, 1, ?5, ?5)
          ON CONFLICT(key) DO UPDATE SET
             name = CASE
                 WHEN library_entries.installed THEN library_entries.name
@@ -165,6 +167,7 @@ fn apply_catalog_records(
                      AND trim(library_entries.name) <> '' THEN library_entries.name
                 ELSE excluded.name
             END,
+            fields_json = excluded.fields_json,
             family_shared = CASE WHEN library_entries.owned THEN 0 ELSE 1 END,
             last_seen = excluded.last_seen";
 
@@ -183,8 +186,10 @@ fn apply_catalog_records(
             dropped += 1;
             continue;
         }
+        let key = entry_key(provider, id);
+        let fields = merge_catalog_fields(tx, &key, &record.fields)?;
         upsert
-            .execute(params![entry_key(provider, id), provider, id, name, now])
+            .execute(params![key, provider, id, name, now, fields])
             .map_err(failed)?;
     }
     if dropped > 0 {
@@ -195,6 +200,33 @@ fn apply_catalog_records(
         );
     }
     Ok(())
+}
+
+/// Fills the entry's missing field keys with the catalog's, keeping installed discovery values.
+fn merge_catalog_fields(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    incoming: &BTreeMap<String, String>,
+) -> Result<String, StorageError> {
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT fields_json FROM library_entries WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(failed)?;
+    let mut fields: BTreeMap<String, String> = existing
+        .and_then(|json| {
+            serde_json::from_str(&json)
+                .inspect_err(|error| tracing::warn!(%error, key, "ignored unreadable entry fields"))
+                .ok()
+        })
+        .unwrap_or_default();
+    for (name, value) in incoming {
+        fields.entry(name.clone()).or_insert_with(|| value.clone());
+    }
+    serde_json::to_string(&fields).map_err(failed)
 }
 
 fn save_catalog_fact(

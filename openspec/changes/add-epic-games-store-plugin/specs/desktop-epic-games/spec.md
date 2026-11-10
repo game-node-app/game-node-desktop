@@ -112,7 +112,7 @@ The Epic plugin SHALL report total playtime per application name through the cou
 
 #### Scenario: Store source selected
 - **WHEN** the Store playtime source is selected and a matched Epic game exits
-- **THEN** Epic's total for that game is read and submitted as the `epic` total, following the existing once-per-change rules
+- **THEN** Epic's total for that game is read and submitted with source `epicgames` and platform 6, following the existing once-per-change rules
 
 #### Scenario: No last-played date
 - **WHEN** Epic returns a total without a last-played time
@@ -123,7 +123,7 @@ The Epic plugin SHALL report total playtime per application name through the cou
 - **THEN** no Epic totals are read or submitted, and the previously accepted totals are not overwritten
 
 ### Requirement: Epic games match through GameNode
-Epic entries SHALL be matched automatically through GameNode's external lookup, using GameNode's Epic namespace category and the entry's Epic catalog namespace as the external id. Installed and owned Epic entries SHALL both carry that namespace. Entries with no answer SHALL stay unmatched for the user to resolve, and a user's manual match SHALL always win.
+Epic entries SHALL be matched automatically through GameNode's external lookup, using GameNode's `EpicGamesNamespace` external category (1001) and the entry's Epic catalog namespace as the external id. Installed and owned Epic entries SHALL both carry that namespace. Entries with no answer SHALL stay unmatched for the user to resolve, and a user's manual match SHALL always win.
 
 #### Scenario: External id known to GameNode
 - **WHEN** GameNode returns a game for an Epic entry's catalog namespace

@@ -42,10 +42,14 @@ target_dir="$repo_root/target/windows-hmr"
 binary_dir="$target_dir/x86_64-pc-windows-msvc/debug"
 echo 'Building the current Windows development executable...'
 XWIN_ARCH=x86_64 CARGO_TARGET_DIR="$target_dir" cargo xwin build \
-    --locked --bins -p gamenode-app -p gamenode-plugin-steam \
+    --locked --bins -p gamenode-app -p gamenode-plugin-steam -p gamenode-plugin-epic \
     --no-default-features --target x86_64-pc-windows-msvc
 [[ -f "$binary_dir/gamenode-plugin-steam.exe" ]] || {
     echo 'The Windows Steam plugin was not built beside the desktop executable.' >&2
+    exit 1
+}
+[[ -f "$binary_dir/gamenode-plugin-epic.exe" ]] || {
+    echo 'The Windows Epic plugin was not built beside the desktop executable.' >&2
     exit 1
 }
 

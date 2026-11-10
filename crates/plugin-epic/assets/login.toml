@@ -1,0 +1,34 @@
+# Trusted Epic Games login data, consumed through the generic host broker.
+#
+# Epic uses an authorization-code flow, so this policy is cookie-free: there is no `cookie_url` and
+# `cookie_names` is empty. The host approves navigation to Epic's own login hosts and reads only a
+# bounded page probe on the exact origin below. The probe returns Epic's one-time authorization
+# code, which the plugin exchanges and then drops. The login window never hands cookies to the
+# plugin.
+start_url = "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode"
+probe_origin = "https://www.epicgames.com"
+title = "Epic Games"
+allowed_hosts = ["epicgames.com", "epicgames.dev", "unrealengine.com", "hcaptcha.com"]
+cookie_names = []
+width = 600
+height = 760
+timeout_seconds = 600
+
+# Runs only on `probe_origin`. Epic's redirect endpoint answers with a JSON body; the code is
+# accepted only from `/id/api/redirect` and only when it is a non-empty string. Any other page,
+# any parse failure and any missing code produce `null`, so the host reports no result. The script
+# never reads cookies, local storage or the URL query.
+probe_script = '''
+(() => {
+  if (window.location.origin !== 'https://www.epicgames.com') return null;
+  if (window.location.pathname !== '/id/api/redirect') return null;
+  try {
+    const text = document.body ? document.body.innerText : '';
+    const body = JSON.parse(text);
+    if (!body || typeof body.authorizationCode !== 'string' || body.authorizationCode.length === 0) return null;
+    return { authorization_code: body.authorizationCode };
+  } catch (_) {
+    return null;
+  }
+})()
+'''

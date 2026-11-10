@@ -44,7 +44,7 @@ def verify(package: Path, platform: str) -> list[str]:
         )
     else:
         binary_dir = package
-        names = ("gamenode.exe", "gamenode-plugin-steam.exe")
+        names = ("gamenode.exe", "gamenode-plugin-steam.exe", "gamenode-plugin-epic.exe")
         resources = (
             "LICENSE", "README.md", "build-manifest.json", "install.ps1", "uninstall.ps1",
             "backup-assets/build-inputs.json",
@@ -72,6 +72,10 @@ def verify(package: Path, platform: str) -> list[str]:
             errors.append(f"obsolete prototype binary in package: {obsolete}")
     if platform == "windows" and (binary_dir / "gamenode-plugin-packagekit.exe").exists():
         errors.append("Linux package-manager plugin must not be shipped in the Windows package")
+    if platform == "linux":
+        for epic in ("gamenode-plugin-epic", "gamenode-plugin-epic.exe"):
+            if (binary_dir / epic).exists():
+                errors.append(f"Windows-only Epic plugin must not be shipped in the Linux package: {epic}")
     return errors
 
 

@@ -1,8 +1,11 @@
 use super::*;
-use crate::library::machine::tests::{finish_scan, loaded, record, stored};
+use crate::library::machine::tests::{finish_scan, loaded, loaded_with, record, stored};
 use crate::library::matching::{MatchSource, MatchStatus};
 use crate::library::store::{ChosenMatch, LibraryCache};
 use crate::library::{Input, entry_key};
+use crate::provider::Platform;
+use crate::provider::Record;
+use crate::provider::registry::{self, tests::STEAM_MANIFEST};
 
 const NOW: i64 = 1_000_000;
 
@@ -470,9 +473,185 @@ fn a_catalog_sync_looks_up_newly_visible_games() {
         owned: Some(Ok(vec![CatalogRecord {
             id: "70".to_owned(),
             name: "Half-Life".to_owned(),
+            fields: Default::default(),
         }])),
         family: Some(Err(CatalogError::FamilyUnavailable)),
         now: NOW + 1,
     });
     assert_eq!(lookups(&effects)[0].2, ["70"]);
+}
+
+const NAMESPACE_MANIFEST: &str = r#"
+id = "fixture"
+name = "Fixture"
+platforms = ["windows", "linux"]
+source = "fixture"
+scan = { native = "manual" }
+match = { external_category = 1001, uid_field = "namespace" }
+"#;
+
+fn namespaced(id: &str, namespace: &str) -> Record {
+    let mut record = record(id, id, "/games/fixture");
+    record
+        .fields
+        .insert("namespace".to_owned(), namespace.to_owned());
+    record
+}
+
+fn fixture_providers() -> Vec<crate::provider::Provider> {
+    let loaded = registry::tests::load(
+        &[
+            ("steam.toml", STEAM_MANIFEST),
+            ("fixture.toml", NAMESPACE_MANIFEST),
+        ],
+        Platform::Linux,
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    loaded.providers
+}
+
+#[test]
+fn a_declared_field_is_the_lookup_uid_and_covers_every_entry_with_it() {
+    let (mut machine, _) = loaded_with(fixture_providers(), LibraryCache::default());
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    let op = machine.scan.as_ref().expect("scan running").op;
+
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![]),
+        now: NOW,
+    });
+    assert!(lookups(&effects).is_empty(), "no steam entry to ask about");
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "fixture".to_owned(),
+        result: Ok(vec![
+            namespaced("app1", "ns1"),
+            namespaced("app2", "ns1"),
+            record("app3", "No namespace", "/games/fixture"),
+        ]),
+        now: NOW,
+    });
+
+    let mut asked = lookups(&effects);
+    assert_eq!(asked.len(), 1, "{effects:?}");
+    let ask = asked.remove(0);
+    assert_eq!(
+        (ask.1, ask.2.as_slice()),
+        (1001, &["ns1".to_owned()][..]),
+        "the field is the uid and one namespace is asked about once"
+    );
+
+    let effects = done(
+        &mut machine,
+        &ask,
+        Ok(vec![found("ns1", summary(42, "Shared game"))]),
+        NOW + 1,
+    );
+    let (_, matches) = persisted(&effects).expect("the answer is persisted");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        (matches[0].uid.as_str(), matches[0].game_ids.as_slice()),
+        ("ns1", &[42][..])
+    );
+
+    let matched = MatchStatus::Matched {
+        game_id: 42,
+        source: MatchSource::Automatic,
+    };
+    assert_eq!(
+        machine.match_status(&machine.entries["fixture:app1"]),
+        matched
+    );
+    assert_eq!(
+        machine.match_status(&machine.entries["fixture:app2"]),
+        matched
+    );
+    assert_eq!(
+        machine.match_status(&machine.entries["fixture:app3"]),
+        MatchStatus::Unmatched,
+        "an entry without the declared field is never looked up"
+    );
+    assert!(
+        machine.entries["fixture:app3"].fields.is_empty(),
+        "the missing field is not invented"
+    );
+}
+
+#[test]
+fn an_entry_without_the_declared_field_is_skipped() {
+    let (mut machine, _) = loaded_with(fixture_providers(), LibraryCache::default());
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    let op = machine.scan.as_ref().expect("scan running").op;
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![]),
+        now: NOW,
+    });
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "fixture".to_owned(),
+        result: Ok(vec![record("app3", "No namespace", "/games/fixture")]),
+        now: NOW,
+    });
+    assert!(
+        lookups(&effects).is_empty(),
+        "a declared field that the entry lacks cannot be looked up"
+    );
+}
+
+#[test]
+fn a_second_entry_with_a_known_namespace_does_not_ask_again() {
+    let (mut machine, _) = loaded_with(fixture_providers(), LibraryCache::default());
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    let op = machine.scan.as_ref().expect("scan running").op;
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![]),
+        now: NOW,
+    });
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "fixture".to_owned(),
+        result: Ok(vec![namespaced("app1", "ns1")]),
+        now: NOW,
+    });
+    let ask = lookups(&effects).remove(0);
+    done(&mut machine, &ask, Ok(vec![]), NOW + 1);
+
+    machine.handle(Input::ScanRequested);
+    let op = machine.scan.as_ref().expect("scan running").op;
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![]),
+        now: NOW + 2,
+    });
+    let effects = machine.handle(Input::ProviderScanned {
+        op,
+        provider: "fixture".to_owned(),
+        result: Ok(vec![namespaced("app1", "ns1"), namespaced("app2", "ns1")]),
+        now: NOW + 2,
+    });
+    assert!(
+        lookups(&effects).is_empty(),
+        "the cached namespace answer already covers the second entry"
+    );
+    assert_eq!(
+        machine.match_status(&machine.entries["fixture:app2"]),
+        MatchStatus::Unmatched,
+        "an empty cached answer applies to every entry with that namespace"
+    );
 }

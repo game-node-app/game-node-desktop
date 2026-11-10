@@ -15,7 +15,7 @@ pub mod settings;
 mod wire;
 
 pub const API_MAJOR: u32 = 1;
-pub const API_MINOR: u32 = 4;
+pub const API_MINOR: u32 = 5;
 pub const MIN_API_MINOR: u32 = 1;
 
 pub mod achievements;

@@ -316,6 +316,14 @@ impl HostClient {
         category: CatalogCategory,
         records: Vec<models::CatalogRecord>,
     ) -> Result<CatalogCompletion, Error> {
+        // Reject unbounded or malformed field maps instead of sending data the
+        // host would drop with the whole catalog category.
+        if records
+            .iter()
+            .any(|record| record.validate_fields().is_err())
+        {
+            return Err(Error::Protocol);
+        }
         let count = u32::try_from(records.len()).map_err(|_| Error::Protocol)?;
         for (index, chunk) in records.chunks(256).enumerate() {
             self.send(provider_event::Event::CatalogChunk(CatalogChunk {

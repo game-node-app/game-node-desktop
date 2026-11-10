@@ -1,0 +1,30 @@
+# Trusted descriptor for the official Epic Games Store provider plugin. The host embeds this file
+# at build time and validates it at startup; it is not read from a user-writable location.
+#
+# Epic is Windows-only and uses an authorization-code login: it declares `auth.webview` and
+# `auth.webview.page.read` but no cookies grant. It also has no achievements grant. The refresh
+# token lives in the provider's own secret slot (`session`), which has no alias, so the host uses
+# the default `provider.epic` keyring account and `provider-epic.secret` Linux file.
+provider_id = "epic"
+plugin_id = "org.gamenode.plugin.epic"
+name = "Epic Games Store"
+platforms = ["windows"]
+capabilities = [
+    "provider.context.read",
+    "library.discovery",
+    "library.catalog",
+    "account.state.read",
+    "account.state.publish",
+    "auth.webview",
+    "auth.webview.page.read",
+    "secrets.read",
+    "secrets.write",
+    "secrets.delete",
+    "playtime.counter",
+    "provider.actions.declare",
+]
+executable = "gamenode-plugin-epic"
+provider_manifest = "epic"
+login_policy = "crates/plugin-epic/assets/login.toml"
+native_access = ["files", "network", "registry"]
+legacy_login_profiles = []

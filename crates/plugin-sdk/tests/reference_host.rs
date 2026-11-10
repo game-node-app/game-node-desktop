@@ -277,7 +277,7 @@ impl ProviderPlugin for FixturePlugin {
                 counters: vec![CounterObservation {
                     id: "620".into(),
                     seconds: 3_600,
-                    last_played: 1_700_000_000,
+                    last_played: Some(1_700_000_000),
                 }],
                 ..Default::default()
             },
@@ -379,6 +379,10 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
         ))
     );
     assert_eq!(results["counter"].counters[0].seconds, 3_600);
+    assert_eq!(
+        results["counter"].counters[0].last_played,
+        Some(1_700_000_000)
+    );
     assert!(results["sign-out"].signed_out);
     let _ = shutdown.send(());
     server.await.unwrap().unwrap();

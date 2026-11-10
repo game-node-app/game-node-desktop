@@ -43,7 +43,14 @@ impl CatalogTransfer {
             .map(TryInto::try_into)
             .collect::<Result<Vec<CatalogRecord>, _>>()?;
         let bytes = games.iter().try_fold(self.bytes, |size, game| {
-            size.checked_add(game.id.len() + game.name.len())
+            let fields = game
+                .fields
+                .iter()
+                .try_fold(0usize, |total, (key, value)| {
+                    total.checked_add(key.len())?.checked_add(value.len())
+                })
+                .ok_or(WireError)?;
+            size.checked_add(game.id.len() + game.name.len() + fields)
                 .ok_or(WireError)
         })?;
         if bytes > MAX_TRANSFER_BYTES {

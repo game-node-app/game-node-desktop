@@ -92,18 +92,15 @@ impl HostedProviders {
         .ok_or_else(|| Status::unavailable("provider directory unavailable"))?;
         let mut entries = BTreeMap::new();
         let mut configs = vec![];
-        for descriptor in super::PLUGINS
-            .iter()
-            .filter(|p| p.capabilities.contains(&cap::CONTEXT))
-        {
+        for descriptor in super::descriptors().iter().filter(|p| p.has(cap::CONTEXT)) {
             if gamenode_core::provider::Platform::current()
-                .is_none_or(|platform| !descriptor.platforms.contains(&platform))
+                .is_none_or(|platform| !descriptor.supports(platform))
             {
                 continue;
             }
             let services = Arc::new(
                 ProviderServices::bundled(
-                    descriptor.provider_id,
+                    &descriptor.provider_id,
                     paths.clone(),
                     library.clone(),
                     login.clone(),
@@ -111,13 +108,9 @@ impl HostedProviders {
                 .await?,
             );
             api.register(Registration {
-                provider_id: descriptor.provider_id.into(),
-                plugin_id: descriptor.plugin_id.into(),
-                capabilities: descriptor
-                    .capabilities
-                    .iter()
-                    .map(|c| (*c).into())
-                    .collect(),
+                provider_id: descriptor.provider_id.clone(),
+                plugin_id: descriptor.plugin_id.clone(),
+                capabilities: descriptor.capabilities.clone(),
                 services: services.clone(),
             })?;
             let executable = executable_dir.join(descriptor.executable_name());
@@ -126,19 +119,19 @@ impl HostedProviders {
                 .await
                 .unwrap_or(false);
             configs.push(ProcessConfig {
-                provider_id: descriptor.provider_id.into(),
+                provider_id: descriptor.provider_id.clone(),
                 executable,
                 arguments: vec![],
                 environment: vec![],
                 startup_timeout: Duration::from_secs(10),
             });
             entries.insert(
-                descriptor.provider_id.into(),
+                descriptor.provider_id.clone(),
                 Entry {
                     services,
                     initialized: tokio::sync::Mutex::new(None),
                     packaged,
-                    initialize: descriptor.capabilities.contains(&cap::CONTEXT),
+                    initialize: descriptor.has(cap::CONTEXT),
                 },
             );
         }

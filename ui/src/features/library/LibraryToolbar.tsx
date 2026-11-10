@@ -31,6 +31,7 @@ import {
 import { appTheme } from '../../AppProviders';
 import { openSettingsModal } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { providerLabel } from '../../i18n/providerLabel';
 import { formatI18n } from './formatters';
 
 const bannerBase =
@@ -283,9 +284,16 @@ export const LibraryToolbar: React.FC = () => {
   const scanning = library?.scanning ?? false;
   const failedProviders = library?.failedProviders ?? [];
   const access = library?.access ?? 'verified';
-  const steamAccount = storeAccounts?.find((account) => account.provider === 'steam');
-  const steamExpired = steamAccount?.state === 'expired';
-  const steamUnreachable = steamAccount?.state === 'unreachable';
+  const storeWarning = storeAccounts?.find(
+    (account) => account.state === 'expired' || account.state === 'unreachable',
+  );
+  const storeWarningProvider = storeWarning
+    ? providerLabel(
+        storeWarning.provider,
+        library?.providers.find((provider) => provider.id === storeWarning.provider)?.name,
+        t,
+      )
+    : '';
 
   const chips = useMemo(() => activeChips(filters, t), [filters, t]);
 
@@ -405,36 +413,19 @@ export const LibraryToolbar: React.FC = () => {
         </div>
       )}
 
-      {steamExpired && (
+      {storeWarning && (
         <div
-          data-testid="banner-steam-expired"
+          data-testid={`banner-store-${storeWarning.state}`}
           className={`${bannerBase} flex flex-wrap items-center gap-compact bg-warning-subtle text-warning`}
         >
           <span>
-            {t('Library::Steam sign-in expired. Showing your saved Steam library.')}
+            {storeWarning.state === 'expired'
+              ? t('library.storeSignInExpired', { provider: storeWarningProvider })
+              : t('library.storeCannotBeReached', { provider: storeWarningProvider })}
           </span>
           <button
             type="button"
-            data-testid="banner-steam-fix-btn"
-            onClick={handleFixInSettings}
-            className="cursor-pointer rounded-xs border border-warning bg-transparent px-2 py-0.5 text-xs font-medium text-warning transition-colors hover:bg-surface"
-          >
-            {t('Library::Fix in Settings')}
-          </button>
-        </div>
-      )}
-
-      {steamUnreachable && (
-        <div
-          data-testid="banner-steam-unreachable"
-          className={`${bannerBase} flex flex-wrap items-center gap-compact bg-warning-subtle text-warning`}
-        >
-          <span>
-            {t('Library::Steam cannot be reached. Showing your saved Steam library.')}
-          </span>
-          <button
-            type="button"
-            data-testid="banner-steam-fix-btn"
+            data-testid="banner-store-fix-btn"
             onClick={handleFixInSettings}
             className="cursor-pointer rounded-xs border border-warning bg-transparent px-2 py-0.5 text-xs font-medium text-warning transition-colors hover:bg-surface"
           >

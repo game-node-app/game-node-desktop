@@ -271,6 +271,7 @@ impl Access {
                     games: vec![CatalogGame {
                         id: "42".into(),
                         name: "A game".into(),
+                        fields: Default::default(),
                     }],
                 })))
                 .await
@@ -295,7 +296,7 @@ impl Access {
                     result.counters = vec![CounterObservation {
                         id: "42".into(),
                         seconds: 60,
-                        last_played: 10,
+                        last_played: Some(10),
                     }];
                 }
                 api.event(event(provider_event::Event::Result(result)))

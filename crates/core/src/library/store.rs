@@ -92,7 +92,8 @@ pub enum CatalogError {
     Expired,
     Privacy,
     Changed,
-    InvalidCookies,
+    #[serde(alias = "invalidCookies")]
+    InvalidCredential,
     FamilyUnavailable,
 }
 
@@ -105,7 +106,7 @@ impl CatalogError {
             Self::Expired => "expired",
             Self::Privacy => "privacy",
             Self::Changed => "changed",
-            Self::InvalidCookies => "invalidCookies",
+            Self::InvalidCredential => "invalidCredential",
             Self::FamilyUnavailable => "familyUnavailable",
         }
     }
@@ -119,7 +120,8 @@ impl CatalogError {
             "expired" => Some(Self::Expired),
             "privacy" => Some(Self::Privacy),
             "changed" => Some(Self::Changed),
-            "invalidCookies" => Some(Self::InvalidCookies),
+            // Rows written before the provider-neutral rename still say "invalidCookies".
+            "invalidCredential" | "invalidCookies" => Some(Self::InvalidCredential),
             "familyUnavailable" => Some(Self::FamilyUnavailable),
             _ => None,
         }
@@ -146,6 +148,9 @@ impl FromStr for CatalogError {
 pub struct CatalogRecord {
     pub id: String,
     pub name: String,
+    /// Named facts the catalog reports, such as the matching uid or action-template values.
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
 }
 
 /// A catalog sync result: `None` means that fact set was not attempted, `Ok` replaces it and

@@ -6,7 +6,11 @@ import unittest
 WINDOWS_PACKAGING = Path(__file__).resolve().parents[2] / "packaging" / "windows"
 INSTALLER = WINDOWS_PACKAGING / "install.ps1"
 UNINSTALLER = WINDOWS_PACKAGING / "uninstall.ps1"
-REQUIRED_WINDOWS_BINARIES = ("gamenode.exe", "gamenode-plugin-steam.exe")
+REQUIRED_WINDOWS_BINARIES = (
+    "gamenode.exe",
+    "gamenode-plugin-steam.exe",
+    "gamenode-plugin-epic.exe",
+)
 COPY_LIST = re.compile(r"foreach \(\$name in @\((?P<items>.*?)\)\)", re.DOTALL)
 LIST_ENTRY = re.compile(r"'([^']+)'")
 

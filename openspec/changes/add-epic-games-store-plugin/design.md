@@ -44,9 +44,23 @@ These facts come from the working tree inspected on 2026-11-10, on top of `5e9a8
   - `CatalogGame` has only `id` and `name`.
 - `library_entries.fields_json` already persists per-entry fields. Lookups key auto-matches by
   `(external_category, store_id)`.
-- GameNode's external-games data identifies Epic titles by catalog namespace. Category
-  `EpicGamesNamespace` has 32-hex `source_id` values such as `0584d2013f0149a791e7b9bad0eec102`
-  for Grand Theft Auto V. It does not use the launcher `appName`.
+- **`game-node-server` (checked 2026-11-10):**
+  - `EGameExternalGameCategory.EpicGamesNamespace = 1001`, in
+    `src/game/game-repository/game-repository.constants.ts`. Values of 1000 and above are
+    GameNode-only. IGDB's `EpicGamesStore = 26` exists too, but uses store slugs and is not the
+    namespace category.
+  - Its uids are 32-hex catalog namespaces, for example GTA V
+    `0584d2013f0149a791e7b9bad0eec102`. It does not use the launcher `appName`.
+  - `GET /v1/game/external` validates `category` with `@IsEnum`, so 1001 is accepted for lookups
+    by any signed-in user.
+  - The server has its own Epic connection (`src/sync/epic`). It uses the same library-service
+    `items` (cursor paging, excluding namespace `ue`), `playtime/account/{id}/all` and catalog
+    `bulk/items` endpoints, and the launcher OAuth token endpoint with `token_type=eg1`.
+  - Its playtime watcher maps `artifactId` to `appName` to namespace to game, sums the seconds
+    per game, and saves them under `UserPlaytimeSource.EPICGAMES = "epicgames"`, platform 6.
+- The desktop submitter (`core/playtime/submitter.rs`) submits one total per entry key, using the
+  manifest `source`. Two entries matched to one game would overwrite each other's total on the
+  server.
 - `add-achievement-tracking` (uncommitted working tree) and `integrate-steam-plugin-into-main`
   (code merged, native acceptance pending) are in flight and touch the same files.
 
@@ -240,10 +254,9 @@ already runs in CI.
 - **Epic:** discovery and catalog both report `namespace` and `catalog_item_id`. The Epic manifest
   declares `match = { external_category = <EpicGamesNamespace id>, uid_field = "namespace" }`.
 
-GameNode's REST exposes category numbers, while the MCP tool shows the name `EpicGamesNamespace`.
-The implementation resolves the number from the server's enum. It is expected to be the IGDB
-`epic_game_store` value, 26, consistent with Steam = 1 and GOG = 5 already used. A task verifies
-the number before the manifest ships.
+The category is `1001` (`EpicGamesNamespace`), confirmed in `game-node-server`. Using IGDB's 26
+would silently produce no matches, because those uids are slugs. A manifest test pins 1001 with a
+comment pointing at the server enum.
 
 *Alternative:* use `namespace` as the entry key. Launch, install and playtime all key on
 `appName`, and several apps can share a namespace. The entry key must stay `epic:<appName>`.
@@ -333,6 +346,8 @@ The crate compiles and runs its unit tests on Linux, but its descriptor lists on
   - With a connected account, use the library-service playtime endpoint
     (`/playtime/account/{accountId}/all`), which returns `artifactId` and `totalTime` in seconds.
   - Report `id = artifactId`, `seconds = totalTime` and an absent `last_played`.
+  - The manifest sets `source = "epicgames"` so submissions use the server's existing Epic source.
+    The provider id stays `epic`.
   - Without a connected account or credential, return no observations.
 - **Logging:** log category, status code and body size only. Never log tokens, codes, account ids
   or URLs with query strings.
@@ -340,7 +355,28 @@ The crate compiles and runs its unit tests on Linux, but its descriptor lists on
 All Epic endpoints are unofficial, as Steam's are. They are isolated in `http.rs` with fixture
 tests based on recorded, scrubbed response shapes.
 
-### 11. Packaging
+### 11. Sum store totals per matched game
+
+Change the candidate building that feeds `Submitter`. Group counter totals by
+`(account, provider, matched game_id)` and emit one candidate per group, with
+`total_seconds = Σ` and `last_played_at = max` of the known values.
+
+The group's accepted and rejected state is stored on a synthetic key
+`<provider>:game:<game_id>` in the existing `playtime_totals` table. No schema change is needed
+because the table is keyed by `(account_id, entry_key)`, and per-entry rows remain for display.
+When a group contains a single entry, the candidate keeps that entry's own key and stored state,
+so existing Steam rows behave exactly as before and do not re-submit.
+
+When a second entry joins a group, the group switches to the synthetic key. Its first submission
+is the new sum, which the server accepts as a total replacement.
+
+This mirrors the server's own per-namespace summation, so desktop-only and server-connected Epic
+users converge on the same value.
+
+*Alternative:* submit only the largest entry. That under-reports games split into several apps,
+and it diverges from what the server's Epic connection writes.
+
+### 12. Packaging
 
 Add `gamenode-plugin-epic` to:
 
@@ -375,15 +411,22 @@ Add `gamenode-plugin-epic` to:
 - **[In-flight work conflicts in `engine/mod.rs`, `plugin_host.rs`, proto and UI]**: start
   implementation only after `add-achievement-tracking` is committed. Rebase the host refactor
   first, then add Epic.
-- **[A wrong external category number]**: verify against the server before shipping. A wrong
-  value yields no automatic matches but no wrong matches, and manual matching still works.
+- **[A wrong external category number]**: resolved. It is 1001, pinned by a manifest test
+  that references the server enum.
+- **[Both the desktop plugin and the server's Epic connection report Epic playtime]**: both
+  write Epic's own cumulative total, summed per game, under `epicgames` and platform 6, so the
+  writes are idempotent. The server's `lastPlayedDate` heuristic stays server-only; the desktop
+  sends no last-played date for Epic.
+- **[A game's entry set changes and the summed key switches]**: the first submission after the
+  switch is a full total, which the server treats as a replacement. Tests cover joining and
+  leaving a group.
 
 ## Migration Plan
 
-1. Land the host refactor (Decisions 1-9) with Steam and PackageKit only. Verify that Steam
+1. Land the host refactor (Decisions 1-9 and 11) with Steam and PackageKit only. Verify that Steam
    behavior, credential location, entry keys and data rows are unchanged, and run the full test
    suite.
-2. Add the Epic plugin, manifest, descriptor and packaging (Decisions 10-11), with fixture-tested
+2. Add the Epic plugin, manifest, descriptor and packaging (Decisions 10 and 12), with fixture-tested
    discovery, HTTP and account logic on Linux CI.
 3. Run Windows VM acceptance for Steam regression and Epic flows, after the user confirms VM
    availability.
@@ -395,7 +438,5 @@ uninstall cleanup removes it.
 
 ## Open Questions
 
-- The exact numeric value of GameNode's `EpicGamesNamespace` external category, expected to be 26.
-  Verified in a task; it changes only one manifest value.
 - Whether the `launch&silent=true` URI also starts games that require the launcher to finish an
   update first. Acceptance records the behavior; no design change is expected.

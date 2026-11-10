@@ -1141,6 +1141,13 @@ impl LibraryMachine {
                     if !entry.installed && name_is_empty {
                         entry.name = Some(catalog_name.to_owned());
                     }
+                    // Installed fields win; catalog fields only fill what is missing.
+                    for (name, value) in &record.fields {
+                        entry
+                            .fields
+                            .entry(name.clone())
+                            .or_insert_with(|| value.clone());
+                    }
                     entry.last_seen = now;
                 }
                 None => {
@@ -1153,7 +1160,7 @@ impl LibraryMachine {
                             name: Some(catalog_name.to_owned()),
                             // Catalog-only entries are not installed anywhere.
                             install_dir: String::new(),
-                            fields: BTreeMap::new(),
+                            fields: record.fields.clone(),
                             installed: false,
                             owned: fact == CatalogFact::Owned,
                             family_shared: fact == CatalogFact::Family,

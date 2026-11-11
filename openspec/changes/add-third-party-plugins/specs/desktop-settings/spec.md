@@ -97,15 +97,19 @@ GameNode SHALL let users review and select one approved custom recipe per game/p
 - **WHEN** the selected recipe depends on a disabled or revoked plugin
 - **THEN** the UI explains why that route is unavailable and offers an explicit choice of the detected default without silently starting it
 
-### Requirement: Data sharing source and recipient review
-Settings SHALL distinguish catalog resource-read grants from sensitive/custom dataset sharing. Both SHALL default disabled and show owner/consumer developer, origin, publisher and installed version. Sensitive sharing SHALL select source/recipient, fields/resources, delivery, history and persistence. Catalog grants SHALL select resources and metadata projections without requiring pairwise transfer.
+### Requirement: Shared-data permission and review controls
+Settings SHALL show common-data category read permissions granted during plugin activation, including their resource scope and whether they include history. These grants SHALL permit explicit per-operation queries across all publishers in the category without pairwise approval and SHALL NOT imply automatic plugin use. Sensitive/custom sharing SHALL retain source/recipient, field/resource, delivery, history and retention review. Secret data SHALL remain excluded from both flows.
 
-#### Scenario: Authorize hardware fields
-- **WHEN** the user selects GPU model and RAM capacity for a chosen consumer
-- **THEN** only those fields from the selected source are shared and CPU/identifiers remain excluded
+#### Scenario: Review common performance access
+- **WHEN** the user reviews a plugin's granted performance-history category permission
+- **THEN** Settings shows that the plugin may explicitly query matching history from any publisher within its granted scope and whether recipient persistence is separately allowed
+
+#### Scenario: Review common content-catalog access
+- **WHEN** the user reviews a plugin's granted common content-catalog permission
+- **THEN** Settings explains that an explicit query can return ROM/content availability from other runtimes in scope without granting access to ROM files or bytes
 
 ### Requirement: Persistence usage and cleanup administration
-Settings SHALL show plugin-attributed managed usage, quota, retention and user-visible physical location, with cleanup preview and uninstall keep/delete choices. Plugin APIs SHALL not receive those physical paths. The UI SHALL distinguish archived data from installed code and avoid suggesting retained data is automatically shared.
+Settings SHALL show plugin-attributed managed usage, quota, retention and user-visible physical location, with cleanup preview and uninstall keep/delete choices. Plugin APIs SHALL not receive those physical paths. The UI SHALL distinguish archived data from installed code and explain that access to retained data follows the consumer's granted category permissions or sensitive-data review.
 
 #### Scenario: Inspect retained data
 - **WHEN** the user opens storage administration for an uninstalled plugin
@@ -118,12 +122,12 @@ GameNode SHALL report unavailable approved game/save/runtime volumes without del
 - **WHEN** a registered volume disconnects
 - **THEN** the user sees an unavailable-volume state and previous save profiles/history remain intact
 
-### Requirement: Catalog and sensitive sharing controls
-Runtime and other catalog permissions SHALL let users grant scoped resource reads while showing provenance and available metadata namespaces. Sensitive fields SHALL remain under the explicit sharing review. New metadata SHALL not silently become visible or trigger new Core behavior.
+### Requirement: Common catalog and sensitive sharing controls
+Common runtime and other catalog permissions SHALL let users grant category-scoped reads while showing provenance and available metadata projections. Sensitive/custom fields SHALL remain under explicit sharing review. New categories or scopes SHALL not silently become visible or trigger new Core behavior.
 
 #### Scenario: Grant runtime lookup
-- **WHEN** the user approves B runtime catalog read scope
-- **THEN** B can discover A authorized runtime records without a separate send-to-B action and the UI still distinguishes private fields
+- **WHEN** the user grants B the applicable runtime category read permission
+- **THEN** B can discover matching records from any publisher without a separate send-to-B action and the UI still distinguishes private fields
 
 ### Requirement: Unified launch-plan review
 Every GameNode-mediated execution customization SHALL use a host-generated launch-plan review, including runtimes/emulators, known mod loaders/layers, alternate targets, arguments, cwd and environment changes. The review SHALL show game, source/developer/origin/version, effective programs/URI, ordered intermediaries, full arguments and changes from the default/previous plan. Plugin explanations SHALL be labelled separately from host facts.

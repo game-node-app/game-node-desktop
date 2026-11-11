@@ -98,11 +98,11 @@ Both Go and Rust examples SHALL demonstrate game.launch for detected URI and exe
 - **THEN** it can propose a recipe for a user-selected foreign-provider game without registering a fake provider or using that provider's credential context
 
 ### Requirement: Data producer consumer and persistence examples
-Both language examples SHALL include producer/consumer recipes for reports, hardware, presence and measured game performance, with field-level consent and persistence/cleanup. They SHALL demonstrate logical data handles only, disabled-by-default sharing, denied retention and no exposure of physical persistence paths.
+Both language examples SHALL demonstrate common and sensitive/custom producer-consumer flows, explicit access controls, separate persistence controls and logical data handles without exposing physical paths.
 
 #### Scenario: Two plugins exchange a series
-- **WHEN** a user explicitly authorizes one example as producer and the other as consumer
-- **THEN** only the selected performance fields are delivered and retained only when persistence is authorized
+- **WHEN** a user grants the consumer the performance-history category permission during activation
+- **THEN** the example first queries private data by default, can explicitly request matching published series across producers, and retains recipient copies only when separately allowed by storage.persist and the retention policy
 
 ### Requirement: Location and save inspection examples
 Examples SHALL demonstrate scoped save profile proposals and installation/save inspection including size, access, times, fresh hashes, partial reads and unavailable volumes. Diagnostic fixtures SHALL submit reports rather than require installed benchmark/SMART tools.
@@ -117,6 +117,10 @@ Both language examples SHALL demonstrate typed resource registration with a decl
 #### Scenario: No Core change for custom runtime metadata
 - **WHEN** the examples exchange a declared plugin-specific runtime annotation through normal catalog methods
 - **THEN** the same public protobuf schema supports the exchange and standard action validation remains unchanged
+
+#### Scenario: Emulator checks ROM availability across runtimes
+- **WHEN** the emulator example explicitly requests common content-catalog records for its console
+- **THEN** it receives the matching ROM/content identities and reporting runtimes without receiving file paths or ROM bytes
 
 ### Requirement: Launch consent examples
 Both reference clients SHALL demonstrate host-generated launch review for runtime/emulator, mod-loader and custom argument/environment recipes, with run-once and remembered approval behavior. Fixtures SHALL cover substituted plans, changed components, revoked scope and forbidden requests without performing destructive real launches.

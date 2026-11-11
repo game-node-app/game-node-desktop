@@ -295,25 +295,37 @@ The API SHALL accept bounded timestamped FPS, CPU and RAM batches with original 
 - **THEN** the API records the gap/sequence condition without fabricating zero FPS
 
 ### Requirement: Paired inter-plugin dataset access
-Every shareable data-ingestion family SHALL expose projected get/list/watch. Domain catalogs SHALL use user-approved resource-read grants without mandatory pairwise transfer. Sensitive/custom datasets SHALL require source-to-recipient field/resource consent independent of publication permission. Credentials, raw secrets and administrative commands SHALL NOT be exposed by mirroring RPC payloads.
+Common-data families SHALL expose projected get/list/watch. Requests SHALL list the common categories to include; an omitted or empty list SHALL exclude common records. Every listed category SHALL require a current user grant. Sensitive/custom datasets SHALL require separate sharing review. Secrets and administrative commands SHALL remain unavailable through common-data permissions.
 
-#### Scenario: Plugin talks to another plugin
-- **WHEN** the user approves one plugin to receive selected records from another
-- **THEN** the host delivers only that projection over authenticated API transport without a public broadcast or direct plugin endpoint
+#### Scenario: Consumer queries another publisher
+- **WHEN** a plugin with the shared performance-history read permission explicitly requests common records from another publisher
+- **THEN** the host returns the authorized category projection over authenticated API transport without requiring pairwise approval or a public broadcast endpoint
+
+#### Scenario: Query defaults to private data
+- **WHEN** a plugin issues a query without selecting common records
+- **THEN** the host excludes other plugins' common records while leaving the caller's private data and normal query result available
+
+#### Scenario: Common data permission is absent
+- **WHEN** a plugin explicitly requests common records without the applicable user grant
+- **THEN** the host denies that common-data query and does not alter or disclose the caller's private data
 
 ### Requirement: Host-assigned data provenance
-Shared records SHALL carry host-assigned producer identity, declared developer, origin, publisher fingerprint, installed version/package digest, schema, resource and observation/receipt times. A producer SHALL NOT forge another source. Derived records SHALL retain origin lineage and remain subject to explicit onward-sharing consent.
+Shared records SHALL carry host-assigned producer identity, declared developer, origin, publisher fingerprint, installed version/package digest, schema, resource and observation/receipt times. A producer SHALL NOT forge another source. Derived records SHALL retain origin lineage and SHALL NOT expose fields outside the applicable category projection when republished.
 
 #### Scenario: Forged producer version
 - **WHEN** a plugin submits another producer name/version in provenance fields
 - **THEN** the host rejects or replaces the claim with authenticated provenance rather than attributing it to the other plugin
 
 ### Requirement: Explicit persistence durability
-Durable publication, received-data copies and private writes SHALL require storage.persist in addition to their data grants and retention consent. Calls SHALL specify session-only or persistent durability and receive the actual mode/expiry. A denied persistent request SHALL fail explicitly rather than silently losing durability.
+Durable publication, received-data copies and private writes SHALL require storage.persist independently of category read permissions. Calls SHALL specify session-only or persistent durability and receive the actual mode/expiry. A denied persistent request SHALL fail explicitly rather than silently losing durability.
 
 #### Scenario: Persist received performance samples
-- **WHEN** a consumer has data access but lacks storage.persist or retention consent
+- **WHEN** a consumer has data access but lacks storage.persist
 - **THEN** its persistent-copy request is denied and session-only consumption remains separately available
+
+#### Scenario: Revoke access after a copy was retained
+- **WHEN** the user revokes a category read permission after a consumer has durably retained an authorized copy
+- **THEN** future source queries are denied, the retained copy follows its separately authorized retention policy, and the UI explains that already delivered data cannot be recalled automatically
 
 ### Requirement: API-only isolated persistence
 Plugins SHALL address managed persistence exclusively by their own logical identifiers through the API. No plugin-facing response, error, event or selector SHALL expose or accept physical persistence paths. Authentication SHALL determine namespace ownership; cleanup and policy calls SHALL never address another namespace, including through generic Files APIs.
@@ -330,11 +342,15 @@ storage.persist SHALL permit a plugin to configure automatic retention and reque
 - **THEN** the host removes only eligible entries in that plugin namespace and reports the result without disclosing physical paths
 
 ### Requirement: Shared domain catalog lookup
-A plugin SHALL be able to register an owned domain resource and another plugin SHALL discover it through the domain get/list/watch methods under explicit resource-read scope. Such lookup SHALL NOT require Data APIs or a second source-to-recipient agreement. Read access SHALL not confer mutation or access to private/sensitive fields.
+A plugin SHALL be able to register an owned common-data domain resource and another plugin SHALL discover it through domain get/list/watch methods under a user-granted category read permission and its declared resource scope. Such lookup SHALL NOT require Data APIs or a second source-to-recipient agreement. Sensitive/custom projections SHALL retain explicit sharing review; read access SHALL not confer mutation or access to excluded private/secret fields.
 
 #### Scenario: A registers B reads
-- **WHEN** A registers a runtime and the user grants B read access to that runtime catalog projection
+- **WHEN** A registers a runtime and the user grants B the applicable runtime category read permission
 - **THEN** B finds the resource through Runtimes.List/Get/Watch with A provenance and cannot update it
+
+#### Scenario: Emulator discovers same-console ROM availability
+- **WHEN** an emulator plugin with the common content-catalog permission requests that category through Library.List/Get/Watch for its console
+- **THEN** it receives the authorized ROM/content identities and the runtimes that report them available, including other publishers, without receiving ROM bytes or filesystem paths
 
 ### Requirement: Typed authority and operation fields
 Every RPC SHALL keep identity, provenance, permissions, scopes, handles, executable targets, arguments, paths, quotas, revisions, filters, outcomes and standard metric semantics in typed validated fields. A Struct or opaque payload SHALL NOT override these values, introduce a host operation or grant new authority.

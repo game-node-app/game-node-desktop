@@ -11,7 +11,7 @@ The host SHALL deny third-party data permissions by default and persist each use
 
 #### Scenario: First activation
 - **WHEN** a plugin requests required and optional permissions
-- **THEN** the user can review each scope, required permissions gate dependent work and denied optional permissions remain denied
+- **THEN** the user can review each permission by data category and scope, grant or deny it during activation, understand that a grant permits but does not trigger common-data queries, required permissions gate dependent work and denied optional permissions remain denied
 
 #### Scenario: Save fails
 - **WHEN** persisting a permission toggle fails
@@ -105,12 +105,24 @@ Every third-party permission SHALL start disabled at installation. File read/wri
 - **WHEN** writing one selected resource would affect several games
 - **THEN** the full shared scope must be reviewed and authorized before the host permits the write
 
-### Requirement: Default-deny field-level sharing
-Sensitive/custom data read and subscriptions SHALL require explicit source/destination identity and version, dataset/game/resources, fields, delivery, history and retention. Domain catalogs SHALL instead use explicit resource/owner/field read scopes. Neither model SHALL enable access by default or automatically expose new fields or resources.
+### Requirement: Default-deny common-data category sharing
+Common-data read permissions SHALL start denied and be selectable during activation. Granting one SHALL permit explicit per-operation access to all plugins' published records in that category within its declared scope, without pairwise source/recipient approval. Sensitive/custom datasets SHALL retain explicit sharing review; secrets and authentication material SHALL never be included.
 
-#### Scenario: Install a new consumer
-- **WHEN** a new plugin requests hardware or presence data
-- **THEN** all sharing is off until the user selects the source and fields and approves that recipient/version
+#### Scenario: Grant performance history access
+- **WHEN** the user grants a plugin the shared performance-history read permission during activation and the plugin requests common records in a query
+- **THEN** it can query persisted performance history published by any plugin under that category, subject to the granted scope and separate persistence rules
+
+#### Scenario: Grant does not cause automatic use
+- **WHEN** a plugin has a common-data read permission but makes a query that excludes common records
+- **THEN** the host returns no other plugin's common data and the grant remains available for later explicit queries
+
+#### Scenario: Sensitive custom data remains reviewed
+- **WHEN** a plugin holds a common-data category permission and requests a custom or sensitive dataset
+- **THEN** the common-data permission does not grant access and the separate sharing review remains required
+
+#### Scenario: Secret data is excluded
+- **WHEN** a plugin holds any shared-data category permission
+- **THEN** it cannot read credentials, cookies, tokens, secret configuration or other authentication material through that permission
 
 ### Requirement: Revocable recipient projections
 The host SHALL enforce sharing policy on queries, subscriptions, queued delivery and persistence of received data. Revocation SHALL stop future access and invalidate affected tokens. It SHALL disclose that copies already delivered to unsandboxed processes cannot be recalled.
@@ -120,15 +132,15 @@ The host SHALL enforce sharing policy on queries, subscriptions, queued delivery
 - **THEN** new queries and queued delivery to that consumer are denied without stopping separately authorized consumers
 
 ### Requirement: Persistence does not imply other access
-storage.persist SHALL default disabled and authorize retention/own-namespace cleanup only. It SHALL NOT imply reading another dataset, modifying game files, deleting foreign plugin data or disclosing physical managed paths. Recipient persistence SHALL also require explicit sharing-retention consent.
+storage.persist SHALL default disabled and authorize retention/own-namespace cleanup only. It SHALL NOT imply reading another dataset, modifying game files, deleting foreign plugin data or disclosing physical managed paths. Recipient persistence SHALL remain independent of category read permission and SHALL follow the user's retention policy.
 
 #### Scenario: Own cleanup without general delete
 - **WHEN** a plugin has storage.persist but lacks storage.delete and requests authorized cleanup through Persistence
 - **THEN** it can clean its own eligible persisted entries within user limits, while Storage.Delete still requires storage.delete and no foreign namespace becomes accessible
 
 #### Scenario: Reused archived producer data
-- **WHEN** a new plugin requests records retained after the original producer was uninstalled
-- **THEN** access and persistence are denied until the user separately approves that archived source and recipient
+- **WHEN** a plugin is granted the applicable category read permission and requests records retained after the original producer was uninstalled
+- **THEN** access follows that category permission and its resource scope, while any durable recipient copy still requires storage.persist and the configured retention policy
 
 ### Requirement: API enforcement disclosure
 Third-party permission UI SHALL describe restrictions as controls enforced on GameNode API calls. It SHALL NOT promise that independent native processes obey them for direct OS activity, hide their physical environment or are sandboxed. User consent SHALL identify the plugin and the scope of host authority being granted.
@@ -137,12 +149,12 @@ Third-party permission UI SHALL describe restrictions as controls enforced on Ga
 - **WHEN** the user grants API read access to a native plugin
 - **THEN** the UI does not claim that the process is unable to perform direct filesystem writes using its OS privileges
 
-### Requirement: Catalog read is scoped user consent
-Domain catalog read grants SHALL select permitted resources/owners and metadata projections and start disabled. They SHALL authorize those reads without a mandatory pairwise broker policy. Newly added sensitive/private fields and changed ownership SHALL not inherit access; original provenance SHALL remain visible.
+### Requirement: Common catalog read follows category grants
+Common domain catalog read permissions SHALL be selectable during activation and authorize published records across plugin owners within the category's declared resource scope. Read grants SHALL not confer mutation; secret, private and executable content SHALL remain excluded, and original provenance SHALL remain visible.
 
-#### Scenario: Runtime reader only
-- **WHEN** B has approved runtime read scope and no Data permission
-- **THEN** B reads authorized catalog records from A but cannot inspect A private storage, sensitive datasets or executable resource contents
+#### Scenario: Game path reader
+- **WHEN** a plugin has the shared game-path read permission
+- **THEN** it can read game paths published by any plugin within the permission's declared scope, while private storage and executable contents remain inaccessible
 
 ### Requirement: Metadata never supplies authority
 Unknown metadata and extension schemas SHALL not define permissions, executable policy, ownership or persistence selectors. Private/unclassified extensions SHALL remain hidden until authorized. Alternate domain/Data query paths SHALL enforce the same projection and cannot recover withheld fields.

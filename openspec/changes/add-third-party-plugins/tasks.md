@@ -121,9 +121,9 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 12. Shared data plane and consent
 
-- [ ] 12.1 Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and paired get/list/watch access; verify domain catalog lookup needs only its approved resource-read scope while sensitive/custom data still uses explicit broker projections.
+- [ ] 12.1 Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and get/list/watch access; add a typed per-query common-data selector that defaults to excluded and verify category grants plus sensitive/custom broker projections.
 - [ ] 12.2 Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
-- [ ] 12.3 Implement default-deny catalog resource/owner/namespace read grants and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify A-registers/B-reads requires no pairwise catalog link and neither model exposes unapproved new fields/resources.
+- [ ] 12.3 Implement default-deny common-data category read grants selected during activation and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify grants permit but do not trigger queries, explicit common queries cover all publishers within scope, and denied queries leave private data available.
 - [ ] 12.4 Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
 - [ ] 12.5 Document each dataset/method/permission/projection and safe non-shareable exclusions; verify the published producer-consumer contract can be followed without source-private RPCs or Core dashboards.
 
@@ -147,7 +147,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 - [ ] 14.2 Add approved runtime/interpreter resources and per-content game/installation bindings to structured launch recipes; verify several games share a runtime and one registered ROM/GameNode game offers several runtimes without duplicate game identity, lost history or save changes. Cover moving/renaming content, distinct variants, binding migration and runtime removal without cascading file/game/save deletion.
 - [ ] 14.3 Define and implement the common typed runtime-session event/result family over Exchange under default-deny per-game/runtime game.sessions.report, with plugin-owned adapters and Core arbitration; verify same-PID content switches, concurrent instances, duplicate evidence, PID reuse, boot failure, stale/disconnected/revoked reports, unknown gaps and fresh confirmation after restart. Preserve direct-executable, account, source, checkpoint and platform policies, and apply Core-owned pause rules. Document that one plugin may support multiple runtimes and that descriptive presence cannot establish sessions; test consented Data projections without exposing handles or credentials.
 
-- [ ] 14.4 Exercise A registering an owned runtime with a custom compatibility extension and B querying it through Runtimes.List/Get/Watch under only runtime-read scope; verify no Data/pairwise grant is required and B cannot mutate or execute the runtime from metadata alone.
+- [ ] 14.4 Exercise A registering an owned runtime with a custom compatibility extension and B querying it through Runtimes.List/Get/Watch under the applicable category read permission; verify the private-only default, explicit common-data opt-in, same-console ROM/runtime availability through Library.List/Get/Watch without file paths or bytes, no pairwise grant and no mutation/execution authority.
 
 - [ ] 14.5 Add negotiated scoped runtime-content discovery through Games.RegisterContent for runtime plugins/extensions under library.discovery without provider impersonation; verify ZSNES/bsnes observations reconcile one registered game/content with selectable bindings, discovery grants no execution, and DeSmuME-to-melonDS binding migration preserves history and save references without requiring foreign deletion.
 
@@ -168,7 +168,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 17. Administration and interoperability coverage
 
-- [ ] 17.1 Add domain catalog resource/owner/namespace read controls and separate sensitive-data source/recipient field/history/delivery/retention review, displaying provenance; verify all start off and catalog lookup has no mandatory transfer wizard in en/pt-BR component tests.
+- [ ] 17.1 Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/retention review, explaining that grants do not trigger per-query use; verify all start off, private-only query defaults and common lookup has no mandatory transfer wizard in en/pt-BR component tests.
 - [ ] 17.2 Add host-only physical-path storage accounting, uninstall retain/delete and cleanup preview/policy screens; verify plugin IPC cannot access these host administrative paths and slow accounting/deletion remains off the UI thread.
 - [ ] 17.3 Extend both Go/Rust examples with fixture producer-consumer exchanges, performance history/cleanup, save/location inspection and multiple content identities under a shared runtime; verify parity, no real collector dependency, no physical managed paths and explicit denied/granted/revoked flows.
 
@@ -183,9 +183,9 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 - [ ] 18.5 Exercise detected and custom launches across official, third-party and manual game fixtures, including a Linux Proton-style runtime wrapper and direct executable bypass; record equivalent Go/Rust parameters, original game identity, explicit unsupported-target outcomes and unchanged official provider files/credentials.
 
-- [ ] 18.6 Exercise the combined two-plugin data flow: selected per-game read/write, source/recipient field consent, measured performance publication, persistent history, producer uninstall, explicit future-consumer reuse and own/global cleanup; record no leakage across games/namespaces and clear native-process API-only disclosure.
+- [ ] 18.6 Exercise the combined two-plugin data flow: selected per-game read/write, private-only query defaults, explicit performance-history inclusion under a category grant, separately authorized persistent history, producer uninstall, category-scoped archived-data reuse and own/global cleanup; record no leakage across games/namespaces and clear native-process API-only disclosure.
 
-- [ ] 18.7 Verify the entire endpoint matrix against generated contract fixtures and both clients, including catalog versus sensitive sharing, unknown metadata preservation, rejected Struct authority injection and unchanged official 1.1–1.3 behavior; record coverage without treating annotation exchange as execution approval.
+- [ ] 18.7 Verify the entire endpoint matrix against generated contract fixtures and both clients, including per-query common-data selectors and defaults, same-console ROM/runtime availability projections, common category grants versus sensitive/custom sharing, unknown metadata preservation, rejected Struct authority injection and unchanged official 1.1–1.3 behavior; record coverage without treating annotation exchange as execution approval.
 
 - [ ] 18.8 Exercise common launch-plan consent end to end for runtime, mod and parameter-only overlays on official/third-party game fixtures; record accurate provenance/differences, changed-plan refusal, unchanged remembered Play, no unauthorized operation bypass and explicit limits on native-program behavior certification.
 

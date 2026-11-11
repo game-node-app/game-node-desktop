@@ -198,3 +198,10 @@ A package declaring public metadata/custom-data schemas SHALL include versioned 
 #### Scenario: Unsafe external schema reference
 - **WHEN** a package schema attempts to load an external reference during validation
 - **THEN** validation refuses it without network retrieval or executing plugin code
+
+### Requirement: Manifest playtime capability declarations
+The manifest SHALL declare whether the plugin can identify playtime and pauses, and whether accounting without pause detection is disabled or uses application-open time. These declarations SHALL be covered by package integrity checks and exposed before activation. A declaration SHALL NOT itself grant reporting permission.
+
+#### Scenario: Capability changes on update
+- **WHEN** an update changes pause detection or the accounting mode
+- **THEN** the host presents the changed policy and any application-open warning before activation and preserves the user's disabled-accounting preference

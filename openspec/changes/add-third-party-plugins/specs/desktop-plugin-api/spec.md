@@ -208,7 +208,7 @@ Libraries SHALL support create/update/remove, multiple approved roots, individua
 - **THEN** each root can be monitored independently and an unavailable external root does not disable the others
 
 ### Requirement: Save profile configuration
-The public API SHALL support listing, creating, updating and removing plugin-contributed save profiles for approved games, with multiple scoped files/directories, include/exclude rules and save-context identity. Independent read/write/delete grants SHALL control own records or explicitly selected foreign records. Scope changes SHALL require host review, preserve history and invalidate obsolete jobs. Configuration SHALL NOT authorize file-content reads or restore.
+The API SHALL support save-profile CRUD for approved games with scoped files/directories, include/exclude rules and save-context identity. Independent operation grants SHALL cover own records or published foreign records in authorized category/record scopes. Scope changes SHALL require host review, preserve history and invalidate obsolete jobs. Configuration SHALL NOT authorize file reads or restore.
 
 #### Scenario: Emulator save context
 - **WHEN** a plugin proposes save files for one emulated game and emulator user
@@ -426,3 +426,10 @@ The API SHALL accept negotiated typed runtime-session observations under default
 #### Scenario: Shared session observations
 - **WHEN** another plugin queries runtime-session observations through Data.Get/List/Watch
 - **THEN** only its explicitly consented sensitive-data projection is returned without process handles, credentials or launch tokens
+
+### Requirement: Consistent public pool authorization
+Domain APIs and Data projections SHALL enforce the same publication, operation and resource-scope grants. Category-wide and selected-record grants SHALL be supported without exposing private fields. Shared record updates SHALL require expected revisions and preserve creator provenance while recording the acting plugin. Read selectors SHALL NOT confer write authority.
+
+#### Scenario: Alternate route cannot widen a grant
+- **WHEN** a plugin authorized to update one public record submits a mutation through another API alias
+- **THEN** the same selected-record scope and revision checks apply, and other records remain protected

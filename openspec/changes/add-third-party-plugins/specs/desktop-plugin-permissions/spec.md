@@ -132,7 +132,7 @@ The host SHALL enforce sharing policy on queries, subscriptions, queued delivery
 - **THEN** new queries and queued delivery to that consumer are denied without stopping separately authorized consumers
 
 ### Requirement: Persistence does not imply other access
-storage.persist SHALL default disabled and authorize retention/own-namespace cleanup only. It SHALL NOT imply reading another dataset, modifying game files, deleting foreign plugin data or disclosing physical managed paths. Recipient persistence SHALL remain independent of category read permission and SHALL follow the user's retention policy.
+storage.persist SHALL default disabled and authorize retention/own-namespace cleanup only. It SHALL NOT imply reading another dataset, modifying game files, deleting foreign private data or disclosing physical managed paths. Recipient persistence SHALL remain independent of category read permission and SHALL follow the user's retention policy.
 
 #### Scenario: Own cleanup without general delete
 - **WHEN** a plugin has storage.persist but lacks storage.delete and requests authorized cleanup through Persistence
@@ -171,7 +171,7 @@ User launch confirmation SHALL approve only the exact supported plan within exis
 - **THEN** its request to install or modify mod files remains explicitly denied
 
 ### Requirement: Independent creator-scoped domain permissions
-Runtime, library-root and save-profile read/write/delete grants SHALL be independent and default denied. Their initial scope SHALL cover records created by the authenticated plugin only. Creation SHALL assign host-controlled creator provenance. Write SHALL NOT imply delete, file access, execution or access to another creator's records. storage.persist SHALL remain the explicit own-cleanup exception.
+Runtime, library-root and save-profile read/write/delete grants SHALL be independent and default denied. Own-record grants SHALL cover records created by the authenticated plugin. Separately authorized public-pool scopes SHALL permit category-wide or selected-record access. Creation SHALL assign host-controlled creator provenance. Write SHALL NOT imply delete, file access, execution or access to another creator's records. storage.persist SHALL remain the explicit own-cleanup exception.
 
 #### Scenario: Dolphin changes its own installation
 - **WHEN** Dolphin's plugin has own-record write/delete grants and replaces its external-disk runtime registration with an SSD registration
@@ -182,7 +182,7 @@ Runtime, library-root and save-profile read/write/delete grants SHALL be indepen
 - **THEN** an in-scope revision update can succeed and Runtimes.Remove returns an explicit denial
 
 ### Requirement: Explicit foreign domain resource grants
-The user SHALL be able to extend read/write/delete scope to selected shared runtime, library-root and save-profile records from other plugins. Grants SHALL identify recipient, original creator, resources, operations and current revisions. Writes SHALL retain creator provenance and record the acting plugin. This exception SHALL NOT expose foreign private persistence, secrets or provider-owned account/discovery facts.
+Users SHALL be able to grant read/create/update/delete on published runtime, library-root and save-profile categories or selected records. Grants SHALL bind recipient, scope, operations and authorization revision. Mutations SHALL check resource revisions, preserve creator provenance and record the actor. Foreign private persistence, secrets and provider-owned account/discovery facts SHALL remain excluded.
 
 #### Scenario: Only selected foreign runtime authorized
 - **WHEN** the user grants a migration plugin read/write on one DeSmuME runtime but not delete or access to a RetroArch runtime
@@ -191,3 +191,21 @@ The user SHALL be able to extend read/write/delete scope to selected shared runt
 #### Scenario: Foreign grant revoked
 - **WHEN** the user revokes resource access while a mutation is queued
 - **THEN** the host refuses the mutation at commit and preserves both the record and original creator provenance
+
+### Requirement: Authorized local public pool publication
+The public pool SHALL be local shared data distinct from private plugin storage. A producer SHALL request publication permission and the user SHALL authorize it before records become shared. Private records SHALL NOT become public merely because another plugin holds category access. Durable publication SHALL additionally require storage.persist.
+
+#### Scenario: Producer publication denied
+- **WHEN** a producer requests publication but the user denies permission
+- **THEN** its private records remain private and other plugins cannot retrieve them through public domain or Data queries
+
+### Requirement: Granular public pool operations and scopes
+Public-pool read, create, update and delete SHALL require independent user-selected permissions at installation or in settings, scoped to a category or selected records. A category grant SHALL cover eligible published records in that category; a record grant SHALL cover only selected records. Publication and persistence SHALL NOT imply consumer mutation rights.
+
+#### Scenario: Category mutation authorization
+- **WHEN** the user grants update on a published category but denies delete
+- **THEN** supported revision-checked updates can affect eligible records from other producers in that category, preserve creator provenance and record the acting plugin, while deletion is denied
+
+#### Scenario: Private namespace remains isolated
+- **WHEN** a plugin has every public-pool operation for a category
+- **THEN** foreign private storage, credentials and provider-owned account/discovery facts remain inaccessible to mutation through the pool

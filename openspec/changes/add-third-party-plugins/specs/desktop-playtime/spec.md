@@ -78,7 +78,7 @@ Core SHALL validate authorized plugin observations to distinguish content sessio
 - **THEN** the existing platform limitation remains and no measured session is recorded
 
 ### Requirement: Runtime uncertainty and common pause policy
-Runtime accounting SHALL require bounded sequence, timestamps and fresh authorized evidence with a documented finite timeout. Lost, stale, conflicting or revoked identification SHALL stop interval extension at the last accepted observation and mark activity unknown. Fresh evidence SHALL NOT backfill unknown gaps or infer content from a surviving PID. Pause/resume observations SHALL follow Core's common accounting policy.
+Runtime accounting SHALL require bounded sequence/timestamps and fresh authorized evidence with a documented finite timeout. Lost, stale, conflicting or revoked identification SHALL stop extension at the last accepted observation and mark activity unknown. Fresh evidence SHALL NOT backfill gaps or infer content from a surviving PID. Confirmed pauses SHALL be excluded; absent pause detection SHALL follow the declared accounting mode and user preference.
 
 #### Scenario: Emulator remains open without content
 - **WHEN** confirmed content ends while the emulator stays open in its menu
@@ -94,8 +94,27 @@ Runtime accounting SHALL require bounded sequence, timestamps and fresh authoriz
 
 #### Scenario: Paused content
 - **WHEN** the adapter reports pause and resume
-- **THEN** Core applies its common policy instead of an adapter-specific counting rule
+- **THEN** Core excludes the confirmed paused interval from measured gameplay
 
 #### Scenario: Descriptive presence only
 - **WHEN** a plugin publishes character or map details without validated runtime-session evidence
 - **THEN** presence alone neither starts measured gameplay nor proves safe backup or restore conditions
+
+### Requirement: Declared playtime measurement policy
+Plugins SHALL declare playtime and pause detection capabilities in their manifest. Without pause detection, the developer SHALL select application-open accounting or disabled measurement. Application-open accounting SHALL be labelled as such and require installation disclosure. Users SHALL be able to disable the plugin's accounting without disabling discovery or launching.
+
+#### Scenario: Application-open accounting disclosure
+- **WHEN** a plugin cannot identify pauses and declares application-open accounting
+- **THEN** installation displays "Plugin incapaz de distinguir pausas no jogo, tempo de jogo aberto é contabilizado como tempo de jogo" in pt-BR, with equivalent localized wording elsewhere, and permits disabling accounting
+
+#### Scenario: Developer disables unreliable accounting
+- **WHEN** the manifest declares no playtime detection or selects disabled measurement
+- **THEN** that plugin contributes no measured playtime and discovery and authorized launching remain available
+
+#### Scenario: User disables accounting
+- **WHEN** the user disables the plugin's accounting during installation or in settings
+- **THEN** no new time is accrued from that plugin, existing history is preserved and independently authorized evidence from other sources remains subject to Core deduplication
+
+#### Scenario: Runtime remains open without identified content
+- **WHEN** application-open accounting is enabled but a shared runtime has no identified game or loses its content binding
+- **THEN** elapsed runtime uptime is not assigned to unidentified games; freshness, content boundaries and unknown-gap rules still apply

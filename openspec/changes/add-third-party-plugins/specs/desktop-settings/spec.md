@@ -165,3 +165,17 @@ Launch review SHALL state that scope validation does not certify native executab
 #### Scenario: Plugin claims launch is safe
 - **WHEN** a plugin provides a reassuring explanation
 - **THEN** the UI labels it as plugin-provided text and retains the independent host disclosure
+
+### Requirement: Playtime capability disclosure and control
+Installation and plugin settings SHALL show declared playtime and pause detection support and the selected accounting mode. Users SHALL be able to disable plugin playtime accounting independently of discovery and launch permissions. Application-open accounting SHALL disclose that undetected pauses are included.
+
+#### Scenario: Disable application-open counting
+- **WHEN** the user installs a plugin without pause detection or later opens its settings
+- **THEN** the host shows the application-open warning when applicable and offers a persistent control to disable its accounting
+
+### Requirement: Public pool permission controls
+Installation and plugin settings SHALL offer independent publication, read, create, update and delete permission choices for the local public pool. The user SHALL be able to select category-wide scopes or individual records. All grants SHALL remain limited to requested, supported operations; persistence SHALL require its separate permission.
+
+#### Scenario: Read category and update selected record
+- **WHEN** the user grants category-wide read and update on one published runtime record
+- **THEN** the plugin can read that category and update that record but cannot update other records or delete any record without another explicit grant

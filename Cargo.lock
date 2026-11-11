@@ -1541,11 +1541,15 @@ dependencies = [
  "httpmock",
  "mimalloc",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "spdx",
  "tauri",
  "tauri-build",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
  "toml 1.2.0+spec-1.1.0",
@@ -1586,6 +1590,7 @@ dependencies = [
  "notify",
  "open",
  "reqwest",
+ "ring",
  "rusqlite",
  "rustix",
  "serde",
@@ -1627,9 +1632,11 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "prost-build",
+ "prost-types",
  "protoc-bin-vendored",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tonic",
  "tonic-prost",
@@ -1644,6 +1651,7 @@ dependencies = [
  "async-trait",
  "gamenode-plugin-protocol",
  "hyper-util",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -4766,6 +4774,15 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "spdx"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "646c5a367da914e3babcb9cd8e91c37ccaac42325b8f86f036513ad103f2a716"
+dependencies = [
+ "smallvec",
 ]
 
 [[package]]

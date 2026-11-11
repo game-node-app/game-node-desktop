@@ -28,6 +28,7 @@ struct ReferenceHost {
 
 #[tonic::async_trait]
 impl plugin_host_server::PluginHost for ReferenceHost {
+    type WatchPermissionChangesStream = tokio_stream::Empty<Result<PermissionChange, Status>>;
     async fn open_session(
         &self,
         request: RpcRequest<OpenSessionRequest>,
@@ -44,6 +45,8 @@ impl plugin_host_server::PluginHost for ReferenceHost {
             granted_capabilities: self.grants.clone(),
             api_major: 1,
             api_minor: self.minor,
+            features: vec![],
+            support_window: None,
         }))
     }
     async fn submit_discovery(
@@ -51,6 +54,24 @@ impl plugin_host_server::PluginHost for ReferenceHost {
         _: RpcRequest<SubmitDiscoveryRequest>,
     ) -> Result<Response<SubmitDiscoveryReply>, Status> {
         Err(Status::permission_denied("not granted"))
+    }
+    async fn describe_api(
+        &self,
+        _: RpcRequest<DescribeApiRequest>,
+    ) -> Result<Response<DescribeApiReply>, Status> {
+        Err(Status::unimplemented("fixture"))
+    }
+    async fn get_permissions(
+        &self,
+        _: RpcRequest<GetPermissionsRequest>,
+    ) -> Result<Response<GetPermissionsReply>, Status> {
+        Err(Status::unimplemented("fixture"))
+    }
+    async fn watch_permission_changes(
+        &self,
+        _: RpcRequest<WatchPermissionChangesRequest>,
+    ) -> Result<Response<Self::WatchPermissionChangesStream>, Status> {
+        Err(Status::unimplemented("fixture"))
     }
 }
 
@@ -181,6 +202,8 @@ impl Harness {
                     operation_id: id.into(),
                     account_epoch: 8,
                     profile_epoch: 5,
+                    session_kind: SessionKind::Unspecified as i32,
+                    target_game: None,
                 }),
                 operation: settings.operation() as i32,
                 target_operation_id: String::new(),

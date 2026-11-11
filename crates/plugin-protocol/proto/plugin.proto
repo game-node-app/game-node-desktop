@@ -1,9 +1,15 @@
 syntax = "proto3";
 package gamenode.plugin.v1;
 
+import "google/protobuf/struct.proto";
+
 service PluginHost {
   rpc OpenSession (OpenSessionRequest) returns (OpenSessionReply);
   rpc SubmitDiscovery (SubmitDiscoveryRequest) returns (SubmitDiscoveryReply);
+  // Authenticated control-plane methods; they never require data permissions.
+  rpc DescribeApi (DescribeApiRequest) returns (DescribeApiReply);
+  rpc GetPermissions (GetPermissionsRequest) returns (GetPermissionsReply);
+  rpc WatchPermissionChanges (WatchPermissionChangesRequest) returns (stream PermissionChange);
 }
 
 message OpenSessionRequest {
@@ -13,6 +19,14 @@ message OpenSessionRequest {
   uint32 api_minor = 4;
   bytes session_credential = 5;
   repeated string requested_capabilities = 6;
+  // API 1.4+: range and feature fields. Empty range preserves API 1.1–1.3 behavior.
+  uint32 min_api_major = 7;
+  uint32 min_api_minor = 8;
+  uint32 max_api_major = 9;
+  uint32 max_api_minor = 10;
+  repeated FeatureRequest features = 11;
+  SessionKind session_kind = 12;
+  optional TargetGameContext target_game = 13;
 }
 
 message OpenSessionReply {
@@ -20,6 +34,116 @@ message OpenSessionReply {
   repeated string granted_capabilities = 2;
   uint32 api_major = 3;
   uint32 api_minor = 4;
+  repeated FeatureStatus features = 5;
+  SupportWindow support_window = 6;
+}
+
+enum SessionKind {
+  SESSION_KIND_UNSPECIFIED = 0;
+  SESSION_KIND_PROVIDER = 1;
+  SESSION_KIND_EXTENSION = 2;
+}
+
+message TargetGameContext {
+  string game_id = 1;
+  string installation_id = 2;
+  string profile_id = 3;
+  string revision = 4;
+}
+
+message FeatureRequest {
+  string id = 1;
+  bool required = 2;
+}
+
+enum FeatureAvailability {
+  FEATURE_AVAILABILITY_UNSPECIFIED = 0;
+  FEATURE_AVAILABILITY_SUPPORTED = 1;
+  FEATURE_AVAILABILITY_UNSUPPORTED = 2;
+  FEATURE_AVAILABILITY_DENIED = 3;
+}
+
+message FeatureStatus {
+  string id = 1;
+  FeatureAvailability availability = 2;
+  uint32 introduced_minor = 3;
+}
+
+message SupportWindow {
+  uint32 minimum_api_minor = 1;
+  uint32 maximum_api_minor = 2;
+  optional int64 support_ends_at = 3;
+  string policy = 4;
+}
+
+message ApiFeature {
+  string id = 1;
+  uint32 introduced_minor = 2;
+  repeated string permissions = 3;
+  bool optional = 4;
+  string availability = 5;
+}
+
+message ApiMethod {
+  string service = 1;
+  string method = 2;
+  uint32 introduced_minor = 3;
+  repeated string permissions = 4;
+  string ownership = 5;
+  uint32 max_page_size = 6;
+  uint64 quota_bytes = 7;
+  bool idempotent = 8;
+}
+
+message DescribeApiRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+}
+message DescribeApiReply {
+  uint32 api_major = 1;
+  uint32 api_minor = 2;
+  SupportWindow support_window = 3;
+  repeated ApiFeature features = 4;
+  repeated ApiMethod methods = 5;
+}
+
+message GetPermissionsRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+}
+message PermissionGrant {
+  string permission_id = 1;
+  string state = 2;
+  string scope = 3;
+  string reason = 4;
+  uint64 revision = 5;
+}
+message GetPermissionsReply {
+  uint64 revision = 1;
+  repeated PermissionGrant grants = 2;
+}
+message WatchPermissionChangesRequest {
+  string session_id = 1;
+  bytes session_credential = 2;
+  uint64 after_revision = 3;
+}
+message PermissionChange {
+  uint64 revision = 1;
+  repeated PermissionGrant grants = 2;
+  bool revoked = 3;
+}
+
+enum DenialReason {
+  DENIAL_REASON_UNSPECIFIED = 0;
+  DENIAL_REASON_NOT_GRANTED = 1;
+  DENIAL_REASON_REVOKED = 2;
+  DENIAL_REASON_SCOPE_DENIED = 3;
+  DENIAL_REASON_REQUIRED_PERMISSION_MISSING = 4;
+}
+message DenialDetail {
+  DenialReason reason = 1;
+  string permission_id = 2;
+  uint64 grant_revision = 3;
 }
 
 message DiscoveryRecord {
@@ -64,6 +188,212 @@ service ProviderHost {
   rpc DeclareActions (ActionRequest) returns (ActionReply);
 }
 
+// API 1.4 resource surface. Every request is scoped to a host-issued session
+// and operation; implementations must recheck grants/revisions at commit.
+service ResourceHost {
+  rpc LibraryList (ResourceRequest) returns (ResourceReply);
+  rpc LibraryGet (ResourceRequest) returns (ResourceReply);
+  rpc LibraryWatch (ResourceRequest) returns (stream ResourceEvent);
+  rpc MetadataUpdate (ResourceRequest) returns (ResourceReply);
+  rpc FavoritesList (ResourceRequest) returns (ResourceReply);
+  rpc FavoritesSet (ResourceRequest) returns (ResourceReply);
+  rpc MatchingSearch (ResourceRequest) returns (ResourceReply);
+  rpc MatchingAssign (ResourceRequest) returns (ResourceReply);
+  rpc ArtworkRead (ResourceRequest) returns (ResourceReply);
+  rpc ArtworkSet (ResourceRequest) returns (ResourceReply);
+  rpc GamesRequestLaunch (GameLaunchRequest) returns (ResourceReply);
+  rpc GamesProposeCustomLaunch (CustomLaunchRequest) returns (ResourceReply);
+  rpc GamesRequestCustomLaunch (CustomLaunchRequest) returns (ResourceReply);
+  rpc GamesRemoveCustomLaunch (ResourceRequest) returns (ResourceReply);
+  rpc GamesRequestInstall (ResourceRequest) returns (ResourceReply);
+  rpc StorageGet (ResourceRequest) returns (ResourceReply);
+  rpc StoragePut (ResourceRequest) returns (ResourceReply);
+  rpc StorageDelete (ResourceRequest) returns (ResourceReply);
+  rpc FilesRequestAccess (ResourceRequest) returns (ResourceReply);
+  rpc FilesList (ResourceRequest) returns (ResourceReply);
+  rpc FilesRead (ResourceRequest) returns (ResourceReply);
+  rpc FilesWrite (ResourceRequest) returns (ResourceReply);
+  rpc FilesDelete (ResourceRequest) returns (ResourceReply);
+  rpc NetworkFetch (ResourceRequest) returns (ResourceReply);
+  rpc NotificationsPublish (ResourceRequest) returns (ResourceReply);
+  rpc BackupsList (ResourceRequest) returns (ResourceReply);
+  rpc BackupsRequestCreate (ResourceRequest) returns (ResourceReply);
+  rpc BackupsRequestRestore (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesList (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesGet (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesWatch (ResourceRequest) returns (stream ResourceEvent);
+  rpc LibrariesCreate (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesUpdate (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesRemove (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesAddRoot (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesUpdateRoot (ResourceRequest) returns (ResourceReply);
+  rpc LibrariesRemoveRoot (ResourceRequest) returns (ResourceReply);
+  rpc RuntimesList (ResourceRequest) returns (ResourceReply);
+  rpc RuntimesGet (ResourceRequest) returns (ResourceReply);
+  rpc RuntimesWatch (ResourceRequest) returns (stream ResourceEvent);
+  rpc RuntimesRegister (ResourceRequest) returns (ResourceReply);
+  rpc RuntimesUpdate (ResourceRequest) returns (ResourceReply);
+  rpc RuntimesRemove (ResourceRequest) returns (ResourceReply);
+  rpc GamesRegisterContent (ResourceRequest) returns (ResourceReply);
+  rpc StorageDiagnosticsPublishBenchmark (ResourceRequest) returns (ResourceReply);
+  rpc StorageDiagnosticsPublishSmart (ResourceRequest) returns (ResourceReply);
+  rpc ComputerPublishHardware (ResourceRequest) returns (ResourceReply);
+  rpc GamePresencePublish (ResourceRequest) returns (ResourceReply);
+  rpc GamePresenceClear (ResourceRequest) returns (ResourceReply);
+  rpc GamePerformancePublishSamples (ResourceRequest) returns (ResourceReply);
+  rpc GamePerformanceEndSeries (ResourceRequest) returns (ResourceReply);
+  rpc DataPublish (ResourceRequest) returns (ResourceReply);
+  rpc DataGet (ResourceRequest) returns (ResourceReply);
+  rpc DataList (ResourceRequest) returns (ResourceReply);
+  rpc DataWatch (ResourceRequest) returns (stream ResourceEvent);
+  rpc PersistenceGetUsage (ResourceRequest) returns (ResourceReply);
+  rpc PersistenceListEntries (ResourceRequest) returns (ResourceReply);
+  rpc PersistenceDeleteEntries (ResourceRequest) returns (ResourceReply);
+  rpc PersistenceClear (ResourceRequest) returns (ResourceReply);
+  rpc PersistenceSetRetentionPolicy (ResourceRequest) returns (ResourceReply);
+  rpc ToolsList (ResourceRequest) returns (ResourceReply);
+  rpc ToolsRequestApply (ResourceRequest) returns (ResourceReply);
+  rpc ToolsRequestRemove (ResourceRequest) returns (ResourceReply);
+  rpc PortsList (ResourceRequest) returns (ResourceReply);
+  rpc PortsDetail (ResourceRequest) returns (ResourceReply);
+  rpc PortsRequestInstall (ResourceRequest) returns (ResourceReply);
+  rpc JobsGet (ResourceRequest) returns (ResourceReply);
+  rpc JobsWatch (ResourceRequest) returns (stream ResourceEvent);
+  rpc JobsCancel (ResourceRequest) returns (ResourceReply);
+}
+
+message ResourceRequest {
+  ServiceContext context = 1;
+  string resource_id = 2;
+  string operation_id = 3;
+  string idempotency_key = 4;
+  uint64 expected_revision = 5;
+  string cursor = 6;
+  uint32 page_size = 7;
+  uint64 max_bytes = 8;
+  string durability = 9;
+  bytes payload = 10;
+  // Deprecated API 1.4 draft fields. Kept at their original wire numbers so
+  // clients compiled against the draft remain wire-decodable; hosts MUST NOT
+  // use these untyped fields to authorize or include shared records.
+  bool include_common = 11 [deprecated = true];
+  repeated string selected_categories = 12 [deprecated = true];
+  // Omitted or empty means private/owner-visible records only. Each requested
+  // category is independently checked against the caller's current grant.
+  CommonDataSelector common_data_categories = 13;
+}
+
+// Explicit, per-query opt-in to standard shared projections. A grant selected
+// during activation only permits a category; it never causes automatic reads.
+// Secrets and sensitive/custom datasets are not representable here.
+message CommonDataSelector {
+  repeated CommonDataCategory categories = 1;
+}
+
+enum CommonDataCategory {
+  COMMON_DATA_CATEGORY_UNSPECIFIED = 0;
+  COMMON_DATA_CATEGORY_GAME_PATHS = 1;
+  COMMON_DATA_CATEGORY_GAME_PERFORMANCE_HISTORY = 2;
+  COMMON_DATA_CATEGORY_RUNTIME_CATALOG = 3;
+  COMMON_DATA_CATEGORY_CONTENT_AVAILABILITY = 4;
+}
+message ResourceReply {
+  string resource_id = 1;
+  uint64 revision = 2;
+  string next_cursor = 3;
+  uint64 usage_bytes = 4;
+  uint64 quota_bytes = 5;
+  string job_id = 6;
+  string outcome = 7;
+  bytes payload = 8;
+}
+message ResourceEvent {
+  uint64 revision = 1;
+  string resource_id = 2;
+  string event_type = 3;
+  bytes payload = 4;
+}
+message GameLaunchRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  uint64 expected_revision = 4;
+  string user_intent_id = 5;
+  string idempotency_key = 6;
+}
+message CustomLaunchRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  uint64 expected_revision = 4;
+  string user_intent_id = 5;
+  string idempotency_key = 6;
+  string executable_handle = 7;
+  repeated string argv = 8;
+  string working_directory_handle = 9;
+  map<string, string> environment_set = 10;
+  repeated string environment_unset = 11;
+  string runtime_handle = 12;
+}
+
+// Extensible application metadata. Typed identity, ownership, grants, revisions
+// and execution fields stay outside Struct and are never inferred from it.
+message ExtensionPayload {
+  string schema_id = 1;
+  uint32 schema_version = 2;
+  bytes schema_digest = 3;
+  google.protobuf.Struct data = 4;
+}
+
+enum ExtensionFieldClassification {
+  EXTENSION_FIELD_CLASSIFICATION_UNSPECIFIED = 0;
+  EXTENSION_FIELD_CLASSIFICATION_PUBLIC = 1;
+  EXTENSION_FIELD_CLASSIFICATION_SENSITIVE = 2;
+  EXTENSION_FIELD_CLASSIFICATION_PRIVATE = 3;
+}
+
+message ExtensionSchemaField {
+  string path = 1;
+  ExtensionFieldClassification classification = 2;
+}
+
+// Declarative package asset; schema_json is bounded data, never executable code.
+message ExtensionSchemaDescriptor {
+  string namespace = 1;
+  string schema_id = 2;
+  uint32 schema_version = 3;
+  bytes schema_digest = 4;
+  bytes schema_json = 5;
+  repeated ExtensionSchemaField fields = 6;
+  bool optional = 7;
+}
+
+message ExtensionNamespacePatch {
+  string namespace = 1;
+  oneof operation {
+    ExtensionPayload set = 2;
+    bool remove = 3;
+  }
+}
+
+message ExtensionPatch {
+  uint64 expected_revision = 1;
+  repeated string typed_field_mask = 2;
+  repeated ExtensionNamespacePatch namespaces = 3;
+}
+
+// Example hybrid resource: exact revisions/timestamps remain typed integers.
+message RuntimeRecord {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  string executable_handle = 4;
+  repeated string supported_formats = 5;
+  map<string, ExtensionPayload> extensions = 6;
+  uint64 revision = 7;
+  int64 observed_at = 8;
+}
+
 // Epochs and operation ids are issued by the host; clients cannot widen them.
 message ServiceContext {
   string session_id = 1;
@@ -72,6 +402,8 @@ message ServiceContext {
   string operation_id = 4;
   uint64 account_epoch = 5;
   uint64 profile_epoch = 6;
+  SessionKind session_kind = 7;
+  optional TargetGameContext target_game = 8;
 }
 
 enum ProviderOperation {
@@ -91,6 +423,9 @@ enum ProviderOperation {
   PROVIDER_OPERATION_SETTINGS_DESCRIBE_READ = 13;
   PROVIDER_OPERATION_SETTINGS_SUBMIT = 14;
   PROVIDER_OPERATION_SETTINGS_CANCEL = 15;
+  PROVIDER_OPERATION_CONFIGURATION_OPEN = 16;
+  PROVIDER_OPERATION_CONFIGURATION_FOCUS = 17;
+  PROVIDER_OPERATION_CONFIGURATION_CLOSE = 18;
 }
 
 message ProviderCommand {
@@ -320,6 +655,15 @@ message OperationResult {
   optional AccountLoginOutcome login_outcome = 10;
   optional bool focused = 11;
   optional SettingsReply settings = 12;
+  optional ConfigurationResult configuration = 13;
+}
+
+message ConfigurationResult {
+  string session_id = 1;
+  string profile_id = 2;
+  string window_id = 3;
+  bool accepted = 4;
+  string failure = 5;
 }
 
 // Optional ui.settings, negotiated independently at API 1.3. This closed schema

@@ -1,0 +1,774 @@
+{
+  "api": "1.4",
+  "service": "ResourceHost",
+  "unknown_route": "UNIMPLEMENTED",
+  "routes": [
+    {
+      "method": "LibraryList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "LibraryGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "LibraryWatch",
+      "request": "ResourceRequest",
+      "response": "ResourceEvent",
+      "streaming": true,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "MetadataUpdate",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.metadata.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "FavoritesList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "favorites.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "FavoritesSet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "favorites.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "MatchingSearch",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "matching.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "MatchingAssign",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "matching.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "ArtworkRead",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "artwork.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "ArtworkSet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "artwork.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamesRequestLaunch",
+      "request": "GameLaunchRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.launch",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "uses approved detected launch target and stored parameters; no per-call overrides"
+      ]
+    },
+    {
+      "method": "GamesProposeCustomLaunch",
+      "request": "CustomLaunchRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.custom_launch",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
+      ]
+    },
+    {
+      "method": "GamesRequestCustomLaunch",
+      "request": "CustomLaunchRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.custom_launch",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
+      ]
+    },
+    {
+      "method": "GamesRemoveCustomLaunch",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.custom_launch",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
+      ]
+    },
+    {
+      "method": "GamesRequestInstall",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "games.install",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "StorageGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "StoragePut",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.write + storage.persist (durable)",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "quota applies; durable mode additionally requires storage.persist"
+      ]
+    },
+    {
+      "method": "StorageDelete",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.delete",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "FilesRequestAccess",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "files.read/write/delete (user-approved scope)",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "FilesList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "files.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "FilesRead",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "files.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "FilesWrite",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "files.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "FilesDelete",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "files.delete",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "NetworkFetch",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "network.fetch",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "NotificationsPublish",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "notifications.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "BackupsList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "backups.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "BackupsRequestCreate",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "backups.create",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "BackupsRequestRestore",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "backups.restore",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "LibrariesGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "LibrariesWatch",
+      "request": "ResourceRequest",
+      "response": "ResourceEvent",
+      "streaming": true,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "LibrariesCreate",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesUpdate",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesRemove",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.delete",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesAddRoot",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesUpdateRoot",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "LibrariesRemoveRoot",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.roots.delete",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "RuntimesList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "RuntimesGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "RuntimesWatch",
+      "request": "ResourceRequest",
+      "response": "ResourceEvent",
+      "streaming": true,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "RuntimesRegister",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "RuntimesUpdate",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.write",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "RuntimesRemove",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.runtime.delete",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamesRegisterContent",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "library.discovery",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "StorageDiagnosticsPublishBenchmark",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.diagnostics.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "StorageDiagnosticsPublishSmart",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.diagnostics.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "ComputerPublishHardware",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "computer.hardware.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamePresencePublish",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.presence.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamePresenceClear",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.presence.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamePerformancePublishSamples",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.performance.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "GamePerformanceEndSeries",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "game.performance.publish",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "DataPublish",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "data.publish or domain-specific publish grant; storage.persist for durable mode",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "private/session-only by default; durable mode requires storage.persist; producer does not grant recipient read access"
+      ]
+    },
+    {
+      "method": "DataGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
+      "semantics": [
+        "common records excluded unless explicitly requested; category selector grant checked"
+      ]
+    },
+    {
+      "method": "DataList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "common records excluded unless explicitly requested; category selector grant checked"
+      ]
+    },
+    {
+      "method": "DataWatch",
+      "request": "ResourceRequest",
+      "response": "ResourceEvent",
+      "streaming": true,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
+      "semantics": [
+        "common records excluded unless explicitly requested; category selector grant checked"
+      ]
+    },
+    {
+      "method": "PersistenceGetUsage",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.persist (own namespace)",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "PersistenceListEntries",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.persist (own namespace)",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "PersistenceDeleteEntries",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.persist (own namespace)",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "PersistenceClear",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.persist (own namespace)",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "PersistenceSetRetentionPolicy",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "storage.persist (own namespace)",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "ToolsList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "tools.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "ToolsRequestApply",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "tools.apply",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "ToolsRequestRemove",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "tools.remove",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "PortsList",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "ports.read",
+      "semantics": [
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
+      ]
+    },
+    {
+      "method": "PortsDetail",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "ports.read",
+      "semantics": [
+        "resource ownership and bounds are enforced by the host; see API contract design"
+      ]
+    },
+    {
+      "method": "PortsRequestInstall",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "ports.install",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
+      ]
+    },
+    {
+      "method": "JobsGet",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "underlying operation grant (caller-owned job)",
+      "semantics": [
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
+      ]
+    },
+    {
+      "method": "JobsWatch",
+      "request": "ResourceRequest",
+      "response": "ResourceEvent",
+      "streaming": true,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "underlying operation grant (caller-owned job)",
+      "semantics": [
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
+      ]
+    },
+    {
+      "method": "JobsCancel",
+      "request": "ResourceRequest",
+      "response": "ResourceReply",
+      "streaming": false,
+      "owner": "authenticated caller/plugin; host owns global facts and attribution",
+      "permission": "underlying operation grant (caller-owned job)",
+      "semantics": [
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
+      ]
+    }
+  ]
+}

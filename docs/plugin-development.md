@@ -1,5 +1,143 @@
 # Developing a GameNode provider plugin
 
+## Public transport and session lifecycle
+
+Plugins connect to the local GameNode process that started them. The endpoint is an OS-local
+Unix socket on Linux or a private named pipe on Windows; it is not a TCP listener. On Linux the
+socket is placed in a current-user-only directory and has mode `0600`; the host also checks the
+peer UID. Windows uses GameNode's private named-pipe listener. The host limits the server to 16
+accepted connections, eight concurrent requests per connection and eight concurrent streams.
+
+The supervisor supplies `GAMENODE_PLUGIN_ENDPOINT` (or the legacy
+`GAMENODE_PLUGIN_SOCKET`), `GAMENODE_PLUGIN_SESSION_CREDENTIAL`, and
+`GAMENODE_PLUGIN_OPERATION_ID`. `Launch::from_env()` parses these values. The credential is a
+32-byte session secret; it authenticates `OpenSession`, the provider stream and service calls.
+Treat it as a password: do not print it, include it in diagnostics, persist it or send it to a
+remote service. `Launch` intentionally has no `Debug` or serialization implementation. The
+operation identifier is host-supplied launch context, not a substitute for host-issued operation
+IDs in later commands.
+
+`OpenSession` authenticates the package identity and negotiates the protocol before the plugin
+opens `ProviderHost.Exchange`. API 1.1–1.3 clients keep using `api_major` and `api_minor`; an
+empty API range in the additive fields means the legacy request, where `api_minor` is the newest
+minor the client supports and the host may select any supported minor from the API minimum through
+that value. API 1.4 clients may
+declare inclusive minimum/maximum major and minor versions plus required or optional feature IDs.
+The host selects the highest overlapping version. A required unavailable feature rejects the
+session; optional unavailable features are returned as unsupported. The reply includes granted
+permissions, selected version, feature statuses and a support window. Unknown or duplicate
+permission IDs are rejected, and a requested permission is not a grant unless host policy
+authorized it.
+
+The protocol distinguishes `provider` and `extension` sessions. An extension session carries one
+host-validated `TargetGameContext` (game, installation, profile and revision) and its
+`ServiceContext` repeats that scope on each call. The Rust SDK exposes `Session::open_extension`
+and `run_extension` for that lifecycle. The desktop currently mounts the provider and control
+services described below; the API 1.4 `ResourceHost` is a contract in the `.proto` and is not yet
+mounted by the desktop server. Do not infer that an RPC is available just because generated
+client code exists. Third-party package metadata and validation are documented in
+[`plugin-package-manifest.md`](plugin-package-manifest.md).
+
+On `Exchange`, the plugin sends `ProviderEvent.Ready` first. It then receives host-issued
+`ProviderCommand`s and sends correlated events using the `ServiceContext` included with each
+command. A command context binds session credential, provider or target scope, operation ID,
+account epoch and profile epoch. Preserve it exactly in the response. Do not invent operation IDs,
+reuse an old context, or keep a `HostClient` from a completed command to authorize future work.
+The SDK's `HostClient::for_command` enforces this binding.
+
+The existing provider operation families are:
+
+| Command family | `ProviderOperation` values |
+| --- | --- |
+| Lifecycle and discovery | `Initialize`, `Discover`, `Shutdown`, `Acknowledge` |
+| Account and login | `SignIn`, `FocusSignIn`, `CancelSignIn`, `Check`, `SignOut`, `Cancel` |
+| Catalog and playtime | `SyncCatalog`, `ReadCounter` |
+| Declarative settings (API 1.3, `ui.settings`) | `SettingsDescribeRead`, `SettingsSubmit`, `SettingsCancel` |
+| External configuration (API 1.4, `ui.configure`) | `ConfigurationOpen`, `ConfigurationFocus`, `ConfigurationClose` |
+
+Existing `ProviderEvent` families are `Ready`, `AccountStatus`, `CatalogChunk` and `Result`.
+`OperationResult` carries the typed discovery, status, catalog completion, counter, login,
+settings or configuration result, plus failure, focused-state, account-change, sign-out and
+observation-time fields where relevant. Catalogs are chunked at 256 games and validated as a
+complete category before reconciliation. A completed empty result is different from a failed,
+cancelled or superseded operation; never report a failure as an empty successful snapshot. The old unary
+`PluginHost.SubmitDiscovery` remains for discovery-only API 1.1 clients; full providers use the
+exchange stream.
+
+Control operations such as login cancellation/focus, settings cancellation and configuration
+focus/close are dispatched separately from bounded work so they can progress while another
+operation awaits a network or user response. Honor cancellation promptly and stop side effects
+that have not committed. The host fences later work with operation, account, profile and grant
+revisions. The SDK bounds concurrent work and control dispatch; it calls `shutdown` after the host
+sends `Shutdown` or the stream ends, with a three-second shutdown wait.
+
+## RPC inventory and API 1.4 status
+
+The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.4
+control RPCs `DescribeApi`, `GetPermissions` and `WatchPermissionChanges`. The three control
+methods authenticate the session and do not require a library/data permission. They return public
+API metadata, the caller's own grants, and changes to those grants. Permission denial details use
+safe structured fields (reason, permission ID and grant revision); clients should branch on gRPC
+status and these fields, never on raw status text.
+
+The mounted `ProviderHost` service has `Exchange`, `GetContext`, `Account`, `Secret`, `Login` and
+`DeclareActions`. These are the existing provider service methods. Discovery, catalog, counters,
+status and lifecycle results travel through `Exchange`; they are not extra unary RPCs.
+
+The API 1.4 `ResourceHost` contract in `crates/plugin-protocol/proto/plugin.proto` defines these
+new method families: library list/get/watch and metadata; favorites; matching; artwork; detected
+and custom launch; install; storage; file access; network fetch; notifications; backups; library
+and root management; runtimes and content registration; hardware/storage diagnostics; game
+presence and performance; common/custom data; persistence management; tools; ports; and jobs.
+It currently uses shared request/reply envelopes for most methods, with separate typed launch
+requests. This is contract-only today: the desktop does not mount `ResourceHost`, and method
+permissions, ownership, payload schemas, pagination rules, quotas and idempotency requirements
+are not yet finalized for every method. Do not call these routes as implemented services or treat
+the envelope as permission to perform an operation. The current proposed resource/permission
+inventory is in [OpenSpec design section 4](../openspec/changes/add-third-party-plugins/design.md#4-initial-host-resource-catalog);
+the per-method API matrix remains pending task 2.2.
+
+Common data has a typed per-query selector in that envelope. Rust plugins can construct it with
+`gamenode_plugin_sdk::common_data_selector([CommonDataCategory::GamePerformanceHistory])` and
+set the result on `ResourceRequest.common_data_categories`. Omitting the selector or using an empty list
+keeps the query private to the caller's visible records. Naming a category requests its common
+projection for that query only; the host must still check the caller's activation grant and scope.
+The selector cannot name secrets or sensitive/custom datasets.
+
+The declared ResourceHost method names, grouped for source/API review, are:
+
+| Area | API 1.4 contract method names |
+| --- | --- |
+| Library and presentation | `LibraryList`, `LibraryGet`, `LibraryWatch`, `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`, `ArtworkRead`, `ArtworkSet` |
+| Game execution and install | `GamesRequestLaunch`, `GamesProposeCustomLaunch`, `GamesRequestCustomLaunch`, `GamesRemoveCustomLaunch`, `GamesRequestInstall` |
+| Storage, files and network | `StorageGet`, `StoragePut`, `StorageDelete`, `FilesRequestAccess`, `FilesList`, `FilesRead`, `FilesWrite`, `FilesDelete`, `NetworkFetch`, `NotificationsPublish` |
+| Backups and libraries | `BackupsList`, `BackupsRequestCreate`, `BackupsRequestRestore`, `LibrariesList`, `LibrariesGet`, `LibrariesWatch`, `LibrariesCreate`, `LibrariesUpdate`, `LibrariesRemove`, `LibrariesAddRoot`, `LibrariesUpdateRoot`, `LibrariesRemoveRoot` |
+| Runtimes and observations | `RuntimesList`, `RuntimesGet`, `RuntimesWatch`, `RuntimesRegister`, `RuntimesUpdate`, `RuntimesRemove`, `GamesRegisterContent`, `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart`, `ComputerPublishHardware`, `GamePresencePublish`, `GamePresenceClear`, `GamePerformancePublishSamples`, `GamePerformanceEndSeries` |
+| Data, persistence, tools, ports and jobs | `DataPublish`, `DataGet`, `DataList`, `DataWatch`, `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy`, `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove`, `PortsList`, `PortsDetail`, `PortsRequestInstall`, `JobsGet`, `JobsWatch`, `JobsCancel` |
+
+## Bounded work, cancellation and failures
+
+The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most
+32 in-flight operations; the SDK event queue is 32 entries. Discovery is limited to 50,000
+records. Catalog transfer validation allows 50,000 records, at most 256 records per chunk and
+32 MiB aggregate catalog data. `GetContext` reports negotiated record/message/chunk limits; use
+those values instead of assuming a future host has the same limits.
+
+Unary SDK service calls have a 15-second request timeout. The local connection attempt is bounded
+to three seconds. Current host operation deadlines are 615 seconds for sign-in, 300 seconds for
+catalog sync, 105 seconds for initialize/check, three seconds for settings cancellation and 90
+seconds for other operations. Login policy additionally bounds its window lifetime and page probe
+size. These provider-host values describe the current implementation; API 1.4 ResourceHost quotas
+are not established until task 2.2 is finalized. Blocking IO and CPU work belongs on worker
+threads, and async code must remain cancellable. `ResourceHost` job cancellation semantics are
+not implemented yet.
+
+The SDK's legacy `Error` keeps its existing coarse variants for source compatibility. New code
+can use `DetailedError`, which distinguishes denied, unauthenticated, stale, unsupported, invalid,
+unavailable and protocol outcomes and decodes structured denial details when present. Never
+include credentials, cookies, secret values, raw request bodies or arbitrary transport messages
+in logs.
+
 GameNode's provider API lets a bundled provider process implement store-specific behavior while
 the desktop application remains responsible for the library, profile, persistence and GameNode
 account. The process communicates with the running desktop through the versioned public crates
@@ -17,7 +155,7 @@ the async `ProviderPlugin` trait. `run(session, Arc::new(plugin))` dispatches ho
 the SDK. Do not retain a command's client to authorize later work: operation, account and profile
 generations fence stale requests.
 
-The public API currently defines discovery, account, catalog, login, secret, counter and action
+The existing provider API defines discovery, account, catalog, login, secret, counter and action
 operations. A provider should request only the capabilities it actually needs. The host compares
 the request with trusted packaged metadata and grants the intersection; a plugin cannot grant
 itself additional access. API major/minor negotiation and unknown or duplicate permission checks
@@ -25,7 +163,7 @@ are implemented in `gamenode-plugin-protocol`.
 
 ## Capabilities
 
-The complete capability identifiers currently defined by the public protocol are:
+The existing provider grant set (`capability::ALL`) is:
 
 | Capability | What the host service permits |
 | --- | --- |
@@ -49,6 +187,15 @@ Windows and the existing Secret Service/private-file policy on Linux. For Steam,
 alias (`steam` in the keyring and `steam-token` in the Linux private-file fallback). The GameNode
 session remains in its separate `Session` slot. Windows has no plaintext fallback. A plugin must
 not treat a reported storage method as proof that a secret has been persisted successfully.
+
+The protocol also defines the optional `ui.settings` grant (API 1.3), `ui.configure` (API 1.4),
+and API 1.4 resource grants for library reads and metadata, favorites, matching, artwork, game
+launch/install, storage, files, network, notifications, backups, library roots, runtimes,
+diagnostics, computer hardware, game sessions/presence/performance, custom data, tools and ports.
+These identifiers are known to the protocol but are not part of the legacy `ALL` grant set.
+Knowing an identifier never grants it. The complete identifier list is in
+[`capability.rs`](../crates/plugin-protocol/src/capability.rs); method-by-method scopes and
+availability remain subject to the pending API 1.4 permission matrix.
 
 The Steam plugin uses the full capability set above to provide installed discovery, account
 sign-in/check/sign-out, owned and Family catalog sync, Steam playtime observations and Play/Install

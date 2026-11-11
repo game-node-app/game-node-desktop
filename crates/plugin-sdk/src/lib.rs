@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use gamenode_plugin_protocol::{capability, models, proto, settings};
+pub use gamenode_plugin_protocol::{capability, extensions, models, prost_types, proto, settings};
 use proto::{plugin_host_client::PluginHostClient, provider_host_client::ProviderHostClient, *};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -12,6 +12,50 @@ use tonic::transport::{Channel, Endpoint};
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const EVENT_QUEUE: usize = 32;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Build an explicit, typed per-query common-data selector. An empty iterator
+/// is valid and means private/owner-visible records only. The host still checks
+/// the matching activation grant and its scope for every query.
+pub fn common_data_selector(
+    categories: impl IntoIterator<Item = CommonDataCategory>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let selector = CommonDataSelector {
+        categories: categories
+            .into_iter()
+            .map(|category| category as i32)
+            .collect(),
+    };
+    gamenode_plugin_protocol::common_data::categories(Some(&selector))?;
+    Ok(selector)
+}
+
+#[cfg(test)]
+mod common_data_selector_tests {
+    use super::*;
+
+    #[test]
+    fn selector_is_explicit_and_empty_means_private_only() {
+        let private = common_data_selector([]).unwrap();
+        assert!(private.categories.is_empty());
+
+        let selected = common_data_selector([
+            CommonDataCategory::GamePaths,
+            CommonDataCategory::GamePerformanceHistory,
+        ])
+        .unwrap();
+        assert_eq!(
+            selected.categories,
+            vec![
+                CommonDataCategory::GamePaths as i32,
+                CommonDataCategory::GamePerformanceHistory as i32,
+            ]
+        );
+        assert!(
+            common_data_selector([CommonDataCategory::GamePaths, CommonDataCategory::GamePaths,])
+                .is_err()
+        );
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -42,6 +86,45 @@ impl From<tonic::Status> for Error {
     }
 }
 
+/// Opt-in detailed status classification. The legacy [`Error`] conversion is
+/// unchanged so existing official plugins retain their matching behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailedError {
+    Denied(Option<DenialDetail>),
+    Unauthenticated,
+    Stale,
+    Unsupported,
+    Invalid,
+    Unavailable,
+    Protocol,
+}
+
+impl From<&tonic::Status> for DetailedError {
+    fn from(status: &tonic::Status) -> Self {
+        use gamenode_plugin_protocol::StatusKind as K;
+        match gamenode_plugin_protocol::classify_status(status.code()) {
+            K::Denied => Self::Denied(status.details().get(..).and_then(|bytes| {
+                // The status detail payload uses a length-delimited protobuf
+                // DenialDetail. Malformed/absent details remain a plain denial.
+                use gamenode_plugin_protocol::prost::Message;
+                DenialDetail::decode(bytes).ok()
+            })),
+            K::Unauthenticated => Self::Unauthenticated,
+            K::Stale => Self::Stale,
+            K::Unsupported => Self::Unsupported,
+            K::Invalid => Self::Invalid,
+            K::Unavailable => Self::Unavailable,
+            K::Protocol => Self::Protocol,
+        }
+    }
+}
+
+impl DetailedError {
+    pub fn from_status(status: &tonic::Status) -> Self {
+        status.into()
+    }
+}
+
 impl From<gamenode_plugin_protocol::WireError> for Error {
     fn from(_: gamenode_plugin_protocol::WireError) -> Self {
         Self::Protocol
@@ -53,6 +136,31 @@ pub struct Launch {
     pub endpoint: PathBuf,
     pub credential: Vec<u8>,
     pub operation_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionOptions {
+    pub min_api_major: u32,
+    pub min_api_minor: u32,
+    pub max_api_major: u32,
+    pub max_api_minor: u32,
+    pub features: Vec<(String, bool)>,
+    pub session_kind: SessionKind,
+    pub target_game: Option<TargetGameContext>,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            min_api_major: 0,
+            min_api_minor: 0,
+            max_api_major: 0,
+            max_api_minor: 0,
+            features: Vec::new(),
+            session_kind: SessionKind::Unspecified,
+            target_game: None,
+        }
+    }
 }
 
 impl Launch {
@@ -115,10 +223,12 @@ pub async fn connect(endpoint: &Path) -> Result<Channel, Error> {
 #[derive(Clone)]
 pub struct HostClient {
     client: ProviderHostClient<Channel>,
+    channel: Channel,
     context: ServiceContext,
     events: mpsc::Sender<ProviderEvent>,
     plugin_id: std::sync::Arc<str>,
     settings_supported: bool,
+    configure_supported: bool,
 }
 
 fn request<T>(message: T) -> tonic::Request<T> {
@@ -128,8 +238,54 @@ fn request<T>(message: T) -> tonic::Request<T> {
 }
 
 impl HostClient {
+    /// Raw generated client for the API 1.4 resource surface. It remains bound
+    /// to the same local authenticated channel; callers provide scoped request
+    /// contexts explicitly so the SDK adds no authority implicitly.
+    pub fn resource_client(&self) -> proto::resource_host_client::ResourceHostClient<Channel> {
+        proto::resource_host_client::ResourceHostClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
     pub fn context(&self) -> &ServiceContext {
         &self.context
+    }
+
+    pub async fn describe_api(&self) -> Result<DescribeApiReply, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .describe_api(request(DescribeApiRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
+    }
+
+    pub async fn get_permissions(&self) -> Result<GetPermissionsReply, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .get_permissions(request(GetPermissionsRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
+    }
+
+    pub async fn watch_permission_changes(
+        &self,
+        after_revision: u64,
+    ) -> Result<tonic::Streaming<PermissionChange>, DetailedError> {
+        PluginHostClient::new(self.channel.clone())
+            .watch_permission_changes(request(WatchPermissionChangesRequest {
+                session_id: self.context.session_id.clone(),
+                session_credential: self.context.session_credential.clone(),
+                after_revision,
+            }))
+            .await
+            .map(|reply| reply.into_inner())
+            .map_err(|status| DetailedError::from_status(&status))
     }
 
     pub fn for_command(&self, command: &ProviderCommand) -> Result<Self, Error> {
@@ -137,16 +293,20 @@ impl HostClient {
         if context.session_id != self.context.session_id
             || context.provider_id != self.context.provider_id
             || context.session_credential != self.context.session_credential
+            || context.session_kind != self.context.session_kind
+            || context.target_game != self.context.target_game
             || context.operation_id.is_empty()
         {
             return Err(Error::Protocol);
         }
         Ok(Self {
             client: self.client.clone(),
+            channel: self.channel.clone(),
             context: context.clone(),
             events: self.events.clone(),
             plugin_id: self.plugin_id.clone(),
             settings_supported: self.settings_supported,
+            configure_supported: self.configure_supported,
         })
     }
 
@@ -351,6 +511,58 @@ impl Session {
         .await
     }
 
+    pub async fn open_with_options(
+        launch: Launch,
+        plugin_id: &str,
+        provider_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+        options: SessionOptions,
+    ) -> Result<Self, Error> {
+        let channel = connect(&launch.endpoint).await?;
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            provider_id,
+            plugin_version,
+            capabilities,
+            options,
+        )
+        .await
+    }
+
+    /// Opens an extension session scoped to exactly one target game. The
+    /// extension has no provider identity of its own and must use the resource
+    /// client instead of provider-owned account/catalog operations.
+    pub async fn open_extension(
+        launch: Launch,
+        plugin_id: &str,
+        plugin_version: &str,
+        target: TargetGameContext,
+        capabilities: &[&str],
+    ) -> Result<Self, Error> {
+        let channel = connect(&launch.endpoint).await?;
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            "",
+            plugin_version,
+            capabilities,
+            SessionOptions {
+                min_api_major: 1,
+                min_api_minor: gamenode_plugin_protocol::API_MINOR,
+                max_api_major: 1,
+                max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                features: vec![(capability::FEATURE_EXTENSION_SESSION.into(), true)],
+                session_kind: SessionKind::Extension,
+                target_game: Some(target),
+            },
+        )
+        .await
+    }
+
     /// Also allows independent reference hosts to exercise the public protocol.
     pub async fn from_channel(
         channel: Channel,
@@ -360,17 +572,71 @@ impl Session {
         plugin_version: &str,
         capabilities: &[&str],
     ) -> Result<Self, Error> {
+        Self::from_channel_with_options(
+            channel,
+            launch,
+            plugin_id,
+            provider_id,
+            plugin_version,
+            capabilities,
+            SessionOptions::default(),
+        )
+        .await
+    }
+
+    /// API 1.4+ handshake with an explicit compatibility range and optional
+    /// feature requests. The legacy `from_channel` method keeps its API 1.1–1.3
+    /// request shape for existing official plugins.
+    pub async fn from_channel_with_options(
+        channel: Channel,
+        launch: Launch,
+        plugin_id: &str,
+        provider_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+        options: SessionOptions,
+    ) -> Result<Self, Error> {
         if launch.credential.len() != 32 {
             return Err(Error::Configuration);
+        }
+        capability::validate_session_scope(
+            options.session_kind as u32,
+            options.target_game.is_some(),
+        )
+        .map_err(|_| Error::Configuration)?;
+        if let Some(target) = options.target_game.as_ref() {
+            capability::validate_target(target).map_err(|_| Error::Configuration)?;
         }
         let reply = PluginHostClient::new(channel.clone())
             .open_session(request(OpenSessionRequest {
                 plugin_id: plugin_id.into(),
                 plugin_version: plugin_version.into(),
                 api_major: gamenode_plugin_protocol::API_MAJOR,
-                api_minor: gamenode_plugin_protocol::API_MINOR,
+                api_minor: if options.min_api_major == 0
+                    && options.min_api_minor == 0
+                    && options.max_api_major == 0
+                    && options.max_api_minor == 0
+                {
+                    gamenode_plugin_protocol::LEGACY_API_MINOR
+                } else {
+                    gamenode_plugin_protocol::API_MINOR
+                },
                 session_credential: launch.credential.clone(),
                 requested_capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
+                min_api_major: options.min_api_major,
+                min_api_minor: options.min_api_minor,
+                max_api_major: options.max_api_major,
+                max_api_minor: options.max_api_minor,
+                features: options
+                    .features
+                    .iter()
+                    .map(|(id, required)| FeatureRequest {
+                        id: id.clone(),
+                        required: *required,
+                    })
+                    .collect(),
+                session_kind: options.session_kind as i32,
+                target_game: options.target_game.clone(),
             }))
             .await?
             .into_inner();
@@ -391,6 +657,17 @@ impl Session {
         {
             return Err(Error::Protocol);
         }
+        for (id, required) in &options.features {
+            let Some(status) = reply.features.iter().find(|status| &status.id == id) else {
+                if *required {
+                    return Err(Error::Protocol);
+                }
+                continue;
+            };
+            if *required && status.availability != FeatureAvailability::Supported as i32 {
+                return Err(Error::Protocol);
+            }
+        }
         let settings_supported = capabilities.contains(&capability::SETTINGS);
         if settings_supported && reply.api_minor < capability::SETTINGS_API_MINOR {
             return Err(Error::Protocol);
@@ -402,9 +679,11 @@ impl Session {
             operation_id: launch.operation_id,
             account_epoch: 0,
             profile_epoch: 0,
+            session_kind: options.session_kind as i32,
+            target_game: options.target_game.clone(),
         };
         let (events, receive) = mpsc::channel(EVENT_QUEUE);
-        let mut client = ProviderHostClient::new(channel)
+        let mut client = ProviderHostClient::new(channel.clone())
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
         events
@@ -423,10 +702,12 @@ impl Session {
         Ok(Self {
             host: HostClient {
                 client,
+                channel: channel.clone(),
                 context,
                 events,
                 plugin_id: plugin_id.into(),
                 settings_supported,
+                configure_supported: capabilities.contains(&capability::CONFIGURE),
             },
             commands,
         })
@@ -455,7 +736,94 @@ pub trait ProviderPlugin: Send + Sync + 'static {
             },
         })
     }
+    /// Optional external configuration lifecycle. The default explicitly
+    /// declines; it does not turn an SDK plugin into an external UI provider.
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        _host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        let context = command.context.ok_or(Error::Protocol)?;
+        Ok(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: context.session_id,
+                profile_id: String::new(),
+                window_id: command.target_operation_id,
+                accepted: false,
+                failure: "unsupported".into(),
+            }),
+            ..Default::default()
+        })
+    }
     async fn shutdown(&self) {}
+}
+
+#[async_trait::async_trait]
+pub trait ExtensionPlugin: Send + Sync + 'static {
+    async fn handle(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error>;
+
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        _host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        let context = command.context.ok_or(Error::Protocol)?;
+        Ok(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: context.session_id,
+                profile_id: String::new(),
+                window_id: command.target_operation_id,
+                accepted: false,
+                failure: "unsupported".into(),
+            }),
+            ..Default::default()
+        })
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct ExtensionAdapter<P>(std::sync::Arc<P>);
+
+#[async_trait::async_trait]
+impl<P: ExtensionPlugin> ProviderPlugin for ExtensionAdapter<P> {
+    async fn handle(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        self.0.handle(command, host).await
+    }
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        self.0.configure(command, host).await
+    }
+    async fn shutdown(&self) {
+        self.0.shutdown().await;
+    }
+}
+
+/// Dispatches the shared authenticated command stream to an extension after
+/// checking the negotiated session is target-scoped.
+pub async fn run_extension<P: ExtensionPlugin>(
+    session: Session,
+    plugin: std::sync::Arc<P>,
+) -> Result<(), Error> {
+    if session.host.context.session_kind != SessionKind::Extension as i32
+        || session.host.context.target_game.is_none()
+    {
+        return Err(Error::Configuration);
+    }
+    run(session, std::sync::Arc::new(ExtensionAdapter(plugin))).await
 }
 
 /// Dispatch bounded operations concurrently so control requests can reach a
@@ -475,7 +843,7 @@ pub async fn run<P: ProviderPlugin>(
                 let operation = ProviderOperation::try_from(command.operation).map_err(|_| Error::Protocol)?;
                 if operation == ProviderOperation::Acknowledge { continue; }
                 if operation == ProviderOperation::Shutdown { break; }
-                let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel);
+                let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel | ProviderOperation::ConfigurationFocus | ProviderOperation::ConfigurationClose);
                 let permit = if control { controls.clone() } else { work.clone() }.try_acquire_owned();
                 let Ok(permit) = permit else {
                     let busy = if is_settings(operation) {
@@ -497,6 +865,17 @@ pub async fn run<P: ProviderPlugin>(
                     let _permit = permit;
                     let result = if is_settings(operation) {
                         dispatch_settings(plugin.as_ref(), command, host.clone()).await
+                    } else if matches!(operation, ProviderOperation::ConfigurationOpen | ProviderOperation::ConfigurationFocus | ProviderOperation::ConfigurationClose) {
+                        if !host.configure_supported {
+                            Ok(failure(Error::Denied))
+                        } else {
+                            let expected_session = host.context.session_id.clone();
+                            let expected_window = command.target_operation_id.clone();
+                            let result = plugin.configure(command, host.clone()).await?;
+                            if result.configuration.as_ref().is_none_or(|reply| reply.session_id != expected_session || reply.window_id != expected_window) {
+                                Ok(failure(Error::Protocol))
+                            } else { Ok(result) }
+                        }
                     } else {
                         plugin.handle(command, host.clone()).await
                     }.unwrap_or_else(failure);

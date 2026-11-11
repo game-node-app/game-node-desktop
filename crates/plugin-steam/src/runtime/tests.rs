@@ -96,6 +96,7 @@ fn authorize(context: Option<&ServiceContext>) -> Result<(), Status> {
 
 #[tonic::async_trait]
 impl plugin_host_server::PluginHost for Host {
+    type WatchPermissionChangesStream = tokio_stream::Empty<Result<PermissionChange, Status>>;
     async fn open_session(
         &self,
         request: Request<OpenSessionRequest>,
@@ -112,6 +113,8 @@ impl plugin_host_server::PluginHost for Host {
             session_id: "reference".into(),
             api_major: API_MAJOR,
             api_minor: API_MINOR,
+            features: vec![],
+            support_window: None,
             granted_capabilities: hello.requested_capabilities,
         }))
     }
@@ -120,6 +123,24 @@ impl plugin_host_server::PluginHost for Host {
         _: Request<SubmitDiscoveryRequest>,
     ) -> Result<Response<SubmitDiscoveryReply>, Status> {
         Err(Status::unimplemented("stream only"))
+    }
+    async fn describe_api(
+        &self,
+        _: Request<DescribeApiRequest>,
+    ) -> Result<Response<DescribeApiReply>, Status> {
+        Err(Status::unimplemented("reference fixture"))
+    }
+    async fn get_permissions(
+        &self,
+        _: Request<GetPermissionsRequest>,
+    ) -> Result<Response<GetPermissionsReply>, Status> {
+        Err(Status::unimplemented("reference fixture"))
+    }
+    async fn watch_permission_changes(
+        &self,
+        _: Request<WatchPermissionChangesRequest>,
+    ) -> Result<Response<Self::WatchPermissionChangesStream>, Status> {
+        Err(Status::unimplemented("reference fixture"))
     }
 }
 
@@ -357,6 +378,8 @@ async fn execute(
                 operation_id: id.into(),
                 account_epoch: epoch,
                 profile_epoch: 1,
+                session_kind: SessionKind::Unspecified as i32,
+                target_game: None,
             }),
             operation: kind as i32,
             ..Default::default()

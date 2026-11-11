@@ -11,8 +11,11 @@ use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, transport::Server};
 
 pub mod login;
+pub mod compatibility;
+pub mod package;
 pub mod process;
 pub mod provider;
+pub mod publisher_trust;
 pub mod runtime;
 pub mod services;
 mod transport;
@@ -219,6 +222,10 @@ const MAX_DISCOVERY_RECORDS: usize = 50_000;
 
 #[tonic::async_trait]
 impl plugin_host_server::PluginHost for PluginApi {
+    type WatchPermissionChangesStream = std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<PermissionChange, Status>> + Send + 'static>,
+    >;
+
     async fn open_session(
         &self,
         request: Request<OpenSessionRequest>,
@@ -235,6 +242,104 @@ impl plugin_host_server::PluginHost for PluginApi {
         Err(Status::unimplemented(
             "discovery results use the provider operation stream",
         ))
+    }
+
+    async fn describe_api(
+        &self,
+        request: Request<DescribeApiRequest>,
+    ) -> Result<Response<DescribeApiReply>, Status> {
+        let request = request.into_inner();
+        self.providers
+            .effective_permissions(&request.session_id, &request.session_credential)?;
+        Ok(Response::new(DescribeApiReply {
+            api_major: gamenode_plugin_protocol::API_MAJOR,
+            api_minor: gamenode_plugin_protocol::API_MINOR,
+            support_window: Some(SupportWindow {
+                minimum_api_minor: gamenode_plugin_protocol::MIN_API_MINOR,
+                maximum_api_minor: gamenode_plugin_protocol::API_MINOR,
+                support_ends_at: None,
+                policy: "supported by this GameNode build".into(),
+            }),
+            features: vec![
+                ApiFeature {
+                    id: capability::FEATURE_API_METADATA.into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    optional: true,
+                    availability: "supported".into(),
+                },
+                ApiFeature {
+                    id: capability::FEATURE_PERMISSION_WATCH.into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    optional: true,
+                    availability: "supported".into(),
+                },
+                ApiFeature {
+                    id: capability::FEATURE_EXTENSION_SESSION.into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    optional: true,
+                    availability: "supported".into(),
+                },
+            ],
+            methods: vec![
+                ApiMethod {
+                    service: "PluginHost".into(),
+                    method: "DescribeApi".into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    ownership: "session".into(),
+                    max_page_size: 0,
+                    quota_bytes: 0,
+                    idempotent: true,
+                },
+                ApiMethod {
+                    service: "PluginHost".into(),
+                    method: "GetPermissions".into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    ownership: "authenticated plugin".into(),
+                    max_page_size: 0,
+                    quota_bytes: 0,
+                    idempotent: true,
+                },
+                ApiMethod {
+                    service: "PluginHost".into(),
+                    method: "WatchPermissionChanges".into(),
+                    introduced_minor: 4,
+                    permissions: vec![],
+                    ownership: "authenticated plugin".into(),
+                    max_page_size: 0,
+                    quota_bytes: 0,
+                    idempotent: true,
+                },
+            ],
+        }))
+    }
+
+    async fn get_permissions(
+        &self,
+        request: Request<GetPermissionsRequest>,
+    ) -> Result<Response<GetPermissionsReply>, Status> {
+        let request = request.into_inner();
+        let (revision, grants) = self
+            .providers
+            .effective_permissions(&request.session_id, &request.session_credential)?;
+        Ok(Response::new(GetPermissionsReply { revision, grants }))
+    }
+
+    async fn watch_permission_changes(
+        &self,
+        request: Request<WatchPermissionChangesRequest>,
+    ) -> Result<Response<Self::WatchPermissionChangesStream>, Status> {
+        let request = request.into_inner();
+        let stream = self.providers.watch_permissions(
+            &request.session_id,
+            &request.session_credential,
+            request.after_revision,
+        )?;
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 

@@ -107,6 +107,101 @@ impl Harness {
     }
 }
 
+#[tokio::test]
+async fn control_plane_requires_the_session_credential_and_streams_grant_revisions() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT, cap::DISCOVERY]).await;
+    let context = h.client.host.context().clone();
+    let api = super::super::super::PluginApi {
+        providers: h.api.clone(),
+    };
+
+    // The control plane is authenticated independently of data permissions,
+    // but never accepts an unknown session or another credential.
+    let denied = super::super::super::plugin_host_server::PluginHost::describe_api(
+        &api,
+        Request::new(DescribeApiRequest {
+            session_id: context.session_id.clone(),
+            session_credential: vec![0; 32],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::Unauthenticated);
+    let unknown = super::super::super::plugin_host_server::PluginHost::get_permissions(
+        &api,
+        Request::new(GetPermissionsRequest {
+            session_id: "another-session".into(),
+            session_credential: context.session_credential.clone(),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
+
+    let metadata = h.client.host.describe_api().await.unwrap();
+    assert_eq!((metadata.api_major, metadata.api_minor), (1, 4));
+    let permissions = h.client.host.get_permissions().await.unwrap();
+    assert_eq!(permissions.revision, 1);
+    assert!(
+        permissions
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::DISCOVERY && grant.state == "granted" })
+    );
+    assert!(
+        permissions
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::SECRET_READ && grant.state == "denied" })
+    );
+
+    let mut changes = h
+        .client
+        .host
+        .watch_permission_changes(permissions.revision)
+        .await
+        .unwrap();
+    let next_revision = h
+        .api
+        .replace_session_grants(&context.session_id, [cap::CONTEXT.to_owned()].into())
+        .unwrap();
+    assert_eq!(next_revision, 2);
+    let change = tokio::time::timeout(Duration::from_secs(1), changes.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(change.revision, 2);
+    assert!(change.revoked);
+    assert!(
+        change
+            .grants
+            .iter()
+            .any(|grant| { grant.permission_id == cap::DISCOVERY && grant.state == "denied" })
+    );
+}
+
+#[tokio::test]
+async fn control_plane_denials_include_decodable_permission_details() {
+    use gamenode_plugin_protocol::prost::Message;
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT]).await;
+    let context = h.client.host.context().clone();
+    let status = ProviderHost::account(
+        &h.api,
+        Request::new(AccountRequest {
+            context: Some(context),
+            action: Some(account_request::Action::Read(true)),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(status.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::NotGranted as i32);
+    assert_eq!(detail.permission_id, cap::ACCOUNT_READ);
+    assert_eq!(detail.grant_revision, 1);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Access {
     Context,
@@ -376,6 +471,12 @@ async fn every_service_rejects_cross_provider_credentials_and_obsolete_sessions(
             tonic::Code::PermissionDenied,
             "{case:?}: provider"
         );
+        let audit = h.api.authorization_audit();
+        let denial = audit.last().expect("authorization denial is audited");
+        assert_eq!(denial.plugin_id, "fixture.plugin");
+        assert_eq!(denial.provider_id, "fixture");
+        assert_eq!(denial.reason, DenialReason::ScopeDenied);
+        assert!(!format!("{denial:?}").contains("session_credential"));
         let other = h.api.begin_launch("other").unwrap();
         let mut cross_plugin = context.clone();
         cross_plugin.session_credential = (0..other.credential.len())

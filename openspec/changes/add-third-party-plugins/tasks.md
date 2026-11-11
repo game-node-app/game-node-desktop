@@ -4,16 +4,16 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 1. Public licensing and official compatibility baseline
 
-- [ ] 1.1 Record the consolidated main plugin/service/provider specs, current official descriptors, grants, credential mappings, packaging and API 1.1–1.3 outcomes as regression fixtures; verify those fixtures pass before introducing third-party paths and distinguish the delivered baseline from pending native acceptance.
-- [ ] 1.2 Review provenance of SDK, protocol and example source; deliver a file-level licensing-authority record and resolve unauthorized material before MIT distribution, preserving existing third-party notices.
-- [ ] 1.3 Add explicit MIT notices/licenses for approved public assets and retain GPL-3.0-only on host/Core; verify package metadata and dependency closures and document the public-only licensing boundary.
+- [x] 1.1 Record the consolidated main plugin/service/provider specs, current official descriptors, grants, credential mappings, packaging and API 1.1–1.3 outcomes as regression fixtures; verify those fixtures pass before introducing third-party paths and distinguish the delivered baseline from pending native acceptance.
+- [x] 1.2 Review provenance of SDK, protocol and example source; deliver a file-level licensing-authority record and resolve unauthorized material before MIT distribution, preserving existing third-party notices.
+- [x] 1.3 Add explicit MIT notices/licenses for approved public assets and retain GPL-3.0-only on host/Core; verify package metadata and dependency closures and document the public-only licensing boundary.
 
 ## 2. Public API 1.4 and optional SDK
 
-- [ ] 2.1 Add backward-compatible third-party version-range/feature negotiation, provider/extension session kinds, scoped target-game contexts and support-window metadata to the public protocol; verify lower/higher overlap, required/optional unavailable features and unchanged official handshakes with contract tests.
+- [x] 2.1 Add backward-compatible third-party version-range/feature negotiation, provider/extension session kinds, scoped target-game contexts and support-window metadata to the public protocol; verify lower/higher overlap, required/optional unavailable features and unchanged official handshakes with contract tests.
 - [ ] 2.2 Define public RPC/message contracts for every row of design section 4, including operation ownership, pagination, revisions, quotas, idempotency and separate game.launch/game.custom_launch contracts; verify protobuf generation and contract fixtures while documenting method-to-permission mappings.
-- [ ] 2.3 Add DescribeApi/GetPermissions/WatchPermissionChanges and structured denial details; verify SDK-independent decoding distinguishes denied, unauthenticated, stale, unsupported, invalid and unavailable outcomes.
-- [ ] 2.4 Extend the optional Rust SDK with detailed errors, new service clients and configuration lifecycle dispatch without breaking existing official call sites; verify SDK client fixtures and unchanged official builds.
+- [x] 2.3 Add DescribeApi/GetPermissions/WatchPermissionChanges and structured denial details; verify SDK-independent decoding distinguishes denied, unauthenticated, stale, unsupported, invalid and unavailable outcomes.
+- [x] 2.4 Extend the optional Rust SDK with detailed errors, new service clients and configuration lifecycle dispatch without breaking existing official call sites; verify SDK client fixtures and unchanged official builds.
 - [ ] 2.5 Document the complete transport/session/Exchange lifecycle, credentials, limits, cancellation and existing-versus-new RPCs in public API guides; verify every existing method/event family and every new contract has a reference entry.
 
 - [ ] 2.6 Turn design section 18 into a per-RPC request/response/extension/access contract fixture and reference docs; verify every existing/proposed route and Exchange operation has a classification and official wire fixtures remain compatible.
@@ -21,16 +21,16 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 3. Package format, trust and managed registry
 
-- [ ] 3.1 Implement manifest schema 1 validation, including provider/extension kinds, optional provider identity, platform entrypoints, API range, scoped permissions, configuration modes and SPDX/LicenseRef notices; verify valid and malformed package fixtures and publish the manifest reference.
-- [ ] 3.2 Implement bounded ZIP staging and extraction rejection for traversal, links/reparse points, duplicates, case collisions, unlisted payloads and wrong architecture; verify hostile-archive tests cannot write outside staging.
+- [x] 3.1 Implement manifest schema 1 validation, including provider/extension kinds, optional provider identity, platform entrypoints, API range, scoped permissions, configuration modes and SPDX/LicenseRef notices; verify valid and malformed package fixtures and publish the manifest reference.
+- [x] 3.2 Implement bounded ZIP staging and extraction rejection for traversal, links/reparse points, duplicates, case collisions, unlisted payloads and wrong architecture; verify hostile-archive tests cannot write outside staging.
 - [ ] 3.3 Implement SHA-256 payload verification and domain-separated Ed25519 integrity signatures, including pre-launch checking; verify changed binaries/manifests/notices and invalid keys are rejected and document the signature byte format.
-- [ ] 3.4 Add persistent per-user package registry, immutable version paths, active pointer and transaction recovery; verify restart/interruption cases preserve either a complete valid version or inactive state.
+- [x] 3.4 Add persistent per-user package registry, immutable version paths, active pointer and transaction recovery; verify restart/interruption cases preserve either a complete valid version or inactive state.
 - [ ] 3.5 Implement initial publisher fingerprint confirmation, identity pinning and explicit re-trust for key changes; verify a valid signature alone cannot establish official attribution or silently replace a pinned publisher.
 - [ ] 3.6 Deliver package-building/signing/validation tooling and format documentation with clearly marked development keys; verify both target package fixtures round-trip without executing installation hooks.
 
-- [ ] 3.7 Validate packaged namespace/schema ownership, versions, classifications and bounded declarative schemas without remote references/code; verify malformed/missing assets and namespace collisions fail package validation with actionable errors.
+- [x] 3.7 Validate packaged namespace/schema ownership, versions, classifications and bounded declarative schemas without remote references/code; verify malformed/missing assets and namespace collisions fail package validation with actionable errors.
 
-- [ ] 3.8 Extend signed manifest target schema/reference with explicit OS/architecture/ABI, Windows version/build/product and Linux libc/distribution constraints plus separate author-tested environments; verify invalid bounds, unknown required selectors, contradictory ABI, distribution alternatives and ambiguous selection fixtures.
+- [x] 3.8 Extend signed manifest target schema/reference with explicit OS/architecture/ABI, Windows version/build/product and Linux libc/distribution constraints plus separate author-tested environments; verify invalid bounds, unknown required selectors, contradictory ABI, distribution alternatives and ambiguous selection fixtures.
 - [ ] 3.9 Implement minimal Core/platform detection of the effective plugin execution environment on background workers, independent of detector plugins; verify os-release identity, libc/ABI/version, Windows client/server/build, unknown facts, isolation boundaries and explicit emulation policy without executing candidate code.
 - [ ] 3.10 Implement typed compatibility verdicts/reasons and requirement evaluation at validation, update selection/activation and pre-launch; verify compatible/incompatible/indeterminate, informational tested coverage, environment changes, failed-update recovery and preserved package/data state without fallback execution.
 

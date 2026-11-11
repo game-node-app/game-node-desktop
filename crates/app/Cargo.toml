@@ -47,6 +47,10 @@ tracing.workspace = true
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 url.workspace = true
+semver = "1.0.27"
+spdx = "0.13.6"
+sha2 = "0.10.9"
+thiserror.workspace = true
 tonic = { version = "0.14", features = ["transport"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 
@@ -54,7 +58,7 @@ tokio-stream = { version = "0.1", features = ["net"] }
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Globalization", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 webview2-com = "0.39"
 windows-core = "0.62"
 

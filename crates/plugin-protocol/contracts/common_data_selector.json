@@ -1,0 +1,23 @@
+{
+  "api": "1.4",
+  "field": {
+    "message": "ResourceRequest",
+    "name": "common_data_categories",
+    "number": 13,
+    "message_type": "CommonDataSelector",
+    "private_default": true
+  },
+  "categories": [
+    { "name": "GAME_PATHS", "number": 1, "permission": "common.game_paths.read" },
+    { "name": "GAME_PERFORMANCE_HISTORY", "number": 2, "permission": "common.game_performance_history.read" },
+    { "name": "RUNTIME_CATALOG", "number": 3, "permission": "common.runtime_catalog.read" },
+    { "name": "CONTENT_AVAILABILITY", "number": 4, "permission": "common.content_availability.read" }
+  ],
+  "queries": [
+    { "id": "omitted", "selector": "omitted", "categories": [], "grants": [], "expected": "PRIVATE_ONLY" },
+    { "id": "empty", "selector": "present", "categories": [], "grants": [], "expected": "PRIVATE_ONLY" },
+    { "id": "explicit", "selector": "present", "categories": ["GAME_PERFORMANCE_HISTORY"], "grants": ["common.game_performance_history.read"], "expected": "COMMON_INCLUDED" },
+    { "id": "explicit_without_grant", "selector": "present", "categories": ["CONTENT_AVAILABILITY"], "grants": [], "expected": "PERMISSION_DENIED" }
+  ],
+  "excluded_data": ["secrets", "sensitive_data", "custom_data"]
+}

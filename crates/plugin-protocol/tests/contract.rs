@@ -147,6 +147,14 @@ fn negotiation_preserves_discovery_clients_without_granting_account_access() {
         Err(NegotiationError::Capability)
     );
     assert_eq!(
+        negotiate(API_MAJOR, 2, &[GAME_LAUNCH.into()], &[GAME_LAUNCH]),
+        Err(NegotiationError::Unsupported)
+    );
+    assert_eq!(
+        negotiate(API_MAJOR, 4, &[GAME_LAUNCH.into()], &[GAME_LAUNCH]),
+        Ok(4)
+    );
+    assert_eq!(
         negotiate(API_MAJOR + 1, 2, &[DISCOVERY.into()], &[DISCOVERY]),
         Err(NegotiationError::Version)
     );
@@ -158,6 +166,146 @@ fn negotiation_preserves_discovery_clients_without_granting_account_access() {
             &[DISCOVERY]
         ),
         Err(NegotiationError::Capability)
+    );
+}
+
+#[test]
+fn version_ranges_choose_highest_overlap_and_report_optional_features() {
+    use gamenode_plugin_protocol::capability::*;
+    let selected = negotiate_range(
+        1,
+        4,
+        1,
+        2,
+        1,
+        8,
+        &[
+            (FEATURE_API_METADATA.into(), true),
+            ("future.feature".into(), false),
+        ],
+    )
+    .unwrap();
+    assert_eq!(selected.api_minor, 4);
+    assert_eq!(
+        selected.features,
+        vec![
+            (FEATURE_API_METADATA.into(), true, 4),
+            ("future.feature".into(), false, 0),
+        ]
+    );
+    assert_eq!(
+        negotiate_range(1, 3, 1, 1, 1, 3, &[(FEATURE_API_METADATA.into(), true)]),
+        Err(RangeNegotiationError::RequiredFeature)
+    );
+    assert_eq!(
+        negotiate_range(1, 4, 2, 0, 2, 1, &[]),
+        Err(RangeNegotiationError::Version)
+    );
+    assert_eq!(negotiate_range(1, 4, 0, 0, 0, 0, &[]).unwrap().api_minor, 4);
+}
+
+#[test]
+fn session_scope_requires_target_only_for_extensions() {
+    use gamenode_plugin_protocol::capability::*;
+    use gamenode_plugin_protocol::proto::SessionKind;
+    assert_eq!(
+        validate_session_scope(SessionKind::Provider as u32, false),
+        Ok(())
+    );
+    assert_eq!(
+        validate_session_scope(SessionKind::Extension as u32, true),
+        Ok(())
+    );
+    assert_eq!(
+        validate_session_scope(SessionKind::Extension as u32, false),
+        Err(RangeNegotiationError::Session)
+    );
+    assert_eq!(
+        validate_session_scope(SessionKind::Provider as u32, true),
+        Err(RangeNegotiationError::Session)
+    );
+    assert!(
+        validate_target(&TargetGameContext {
+            game_id: "game:42".into(),
+            installation_id: "install-a".into(),
+            profile_id: "default".into(),
+            revision: "r4".into()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_target(&TargetGameContext {
+            game_id: "game-opaque-id".into(),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_target(&TargetGameContext {
+            game_id: "bad\nidentity".into(),
+            ..Default::default()
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn api_control_contracts_roundtrip_and_denial_classification_is_safe() {
+    use gamenode_plugin_protocol::{StatusKind, classify_status};
+    let metadata = DescribeApiReply {
+        api_major: 1,
+        api_minor: 4,
+        support_window: Some(SupportWindow {
+            minimum_api_minor: 1,
+            maximum_api_minor: 4,
+            support_ends_at: None,
+            policy: "current".into(),
+        }),
+        features: vec![ApiFeature {
+            id: "api.metadata".into(),
+            introduced_minor: 4,
+            permissions: vec![],
+            optional: true,
+            availability: "supported".into(),
+        }],
+        methods: vec![ApiMethod {
+            service: "PluginHost".into(),
+            method: "DescribeApi".into(),
+            introduced_minor: 4,
+            permissions: vec![],
+            ownership: "session".into(),
+            max_page_size: 0,
+            quota_bytes: 0,
+            idempotent: true,
+        }],
+    };
+    assert_eq!(
+        DescribeApiReply::decode(metadata.encode_to_vec().as_slice()).unwrap(),
+        metadata
+    );
+    assert_eq!(
+        classify_status(tonic::Code::PermissionDenied),
+        StatusKind::Denied
+    );
+    assert_eq!(
+        classify_status(tonic::Code::Unauthenticated),
+        StatusKind::Unauthenticated
+    );
+    assert_eq!(
+        classify_status(tonic::Code::FailedPrecondition),
+        StatusKind::Stale
+    );
+    assert_eq!(
+        classify_status(tonic::Code::Unimplemented),
+        StatusKind::Unsupported
+    );
+    assert_eq!(
+        classify_status(tonic::Code::InvalidArgument),
+        StatusKind::Invalid
+    );
+    assert_eq!(
+        classify_status(tonic::Code::Unavailable),
+        StatusKind::Unavailable
     );
 }
 
@@ -276,6 +424,8 @@ fn commands_preserve_operation_and_account_profile_fences() {
             operation_id: "login-7".into(),
             account_epoch: 3,
             profile_epoch: 9,
+            session_kind: SessionKind::Provider as i32,
+            target_game: None,
         }),
         operation: ProviderOperation::CancelSignIn as i32,
         target_operation_id: "login-6".into(),

@@ -98,6 +98,11 @@ impl DataPaths {
         self.data_dir.join(COVERS_DIR)
     }
 
+    /// Per-user immutable third-party plugin versions and activation pointers.
+    pub fn plugin_packages_dir(&self) -> PathBuf {
+        self.data_dir.join("plugin-packages")
+    }
+
     pub fn private_dir(&self) -> PathBuf {
         self.data_dir.join(PRIVATE_DIR)
     }

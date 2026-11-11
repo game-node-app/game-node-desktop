@@ -15,6 +15,79 @@ use tonic::{Request, Response, Status};
 const MAX_OPERATIONS: usize = 32;
 const COMMAND_QUEUE: usize = 32;
 const HISTORY: usize = 128;
+const AUTHORIZATION_AUDIT_LIMIT: usize = 256;
+
+/// Redacted host-side record of a denied authorization check. It deliberately
+/// excludes session credentials, operation ids, and request payloads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorizationAuditEvent {
+    pub plugin_id: String,
+    pub provider_id: String,
+    pub permission_id: String,
+    pub reason: DenialReason,
+    pub grant_revision: u64,
+}
+
+fn denial_event(
+    session: &Session,
+    permission: &str,
+    reason: DenialReason,
+) -> AuthorizationAuditEvent {
+    AuthorizationAuditEvent {
+        plugin_id: session.provider.registration.plugin_id.clone(),
+        provider_id: session.provider.registration.provider_id.clone(),
+        permission_id: permission.to_owned(),
+        reason,
+        grant_revision: session.grant_revision,
+    }
+}
+
+fn denial(reason: DenialReason, permission: &str, revision: u64) -> Status {
+    use gamenode_plugin_protocol::prost::Message;
+    let details = DenialDetail {
+        reason: reason as i32,
+        permission_id: permission.to_owned(),
+        grant_revision: revision,
+    }
+    .encode_to_vec();
+    Status::with_details(
+        tonic::Code::PermissionDenied,
+        "plugin permission denied",
+        details.into(),
+    )
+}
+
+fn permission_change(session: &Session, revoked: bool) -> PermissionChange {
+    let revision = session.grant_revision;
+    let mut grants = session
+        .grants
+        .iter()
+        .map(|permission_id| PermissionGrant {
+            permission_id: permission_id.clone(),
+            state: "granted".into(),
+            scope: "provider".into(),
+            reason: String::new(),
+            revision,
+        })
+        .collect::<Vec<_>>();
+    for permission_id in cap::KNOWN {
+        if !session.grants.contains(*permission_id) {
+            grants.push(PermissionGrant {
+                permission_id: (*permission_id).into(),
+                state: "denied".into(),
+                scope: "provider".into(),
+                reason: "not_granted".into(),
+                revision,
+            });
+        }
+    }
+    grants.sort_by(|a, b| a.permission_id.cmp(&b.permission_id));
+    PermissionChange {
+        revision,
+        grants,
+        revoked,
+    }
+}
 
 /// Implementations provide only safe diagnostics. Blocking work belongs on
 /// workers and mutations must check the supplied operation lease at commit.
@@ -62,6 +135,10 @@ struct Session {
     provider: Arc<Provider>,
     credential: [u8; 32],
     grants: BTreeSet<String>,
+    kind: i32,
+    target_game: Option<TargetGameContext>,
+    grant_revision: u64,
+    permission_watchers: Vec<mpsc::Sender<Result<PermissionChange, Status>>>,
     commands: Option<mpsc::Sender<Result<ProviderCommand, Status>>>,
     ready: Option<oneshot::Sender<()>>,
     completed: VecDeque<String>,
@@ -86,6 +163,7 @@ struct State {
     pending: Vec<Pending>,
     sessions: HashMap<String, Session>,
     operations: HashMap<(String, String), Operation>,
+    authorization_audit: VecDeque<AuthorizationAuditEvent>,
 }
 
 #[derive(Clone, Default)]
@@ -325,8 +403,18 @@ fn is_settings(kind: ProviderOperation) -> bool {
     )
 }
 
+fn is_configuration(kind: ProviderOperation) -> bool {
+    matches!(
+        kind,
+        ProviderOperation::ConfigurationOpen
+            | ProviderOperation::ConfigurationFocus
+            | ProviderOperation::ConfigurationClose
+    )
+}
+
 fn account_scoped(kind: ProviderOperation) -> bool {
     !is_settings(kind)
+        && !is_configuration(kind)
         && !matches!(
             kind,
             ProviderOperation::Discover | ProviderOperation::ReadCounter
@@ -345,6 +433,7 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
         ],
         Discover => &[cap::CONTEXT, cap::DISCOVERY],
         SettingsDescribeRead | SettingsSubmit | SettingsCancel => &[cap::SETTINGS],
+        ConfigurationOpen | ConfigurationFocus | ConfigurationClose => &[cap::CONFIGURE],
         SignIn => &[
             cap::CONTEXT,
             cap::ACCOUNT_READ,
@@ -389,6 +478,94 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 }
 
 impl ProviderApi {
+    fn record_authorization_denial(&self, event: AuthorizationAuditEvent) {
+        let mut state = lock(&self.state);
+        if state.authorization_audit.len() == AUTHORIZATION_AUDIT_LIMIT {
+            state.authorization_audit.pop_front();
+        }
+        state.authorization_audit.push_back(event);
+    }
+
+    /// Returns the bounded, redacted authorization-denial history for host UI
+    /// and diagnostics. This is never exposed through the plugin RPC surface.
+    pub fn authorization_audit(&self) -> Vec<AuthorizationAuditEvent> {
+        lock(&self.state).authorization_audit.iter().cloned().collect()
+    }
+
+    /// Authenticates the permission-control plane without requiring any data grant.
+    pub fn effective_permissions(
+        &self,
+        session_id: &str,
+        credential: &[u8],
+    ) -> Result<(u64, Vec<PermissionGrant>), Status> {
+        let state = lock(&self.state);
+        let session = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
+        if !super::constant_time_eq(&session.credential, credential) {
+            return Err(Status::unauthenticated("invalid plugin session credential"));
+        }
+        let change = permission_change(session, false);
+        Ok((change.revision, change.grants))
+    }
+
+    pub fn watch_permissions(
+        &self,
+        session_id: &str,
+        credential: &[u8],
+        after_revision: u64,
+    ) -> Result<ReceiverStream<Result<PermissionChange, Status>>, Status> {
+        let mut state = lock(&self.state);
+        let session = state
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
+        if !super::constant_time_eq(&session.credential, credential) {
+            return Err(Status::unauthenticated("invalid plugin session credential"));
+        }
+        let (tx, rx) = mpsc::channel(16);
+        if session.grant_revision > after_revision {
+            let change = permission_change(session, false);
+            let _ = tx.try_send(Ok(change));
+        }
+        session.permission_watchers.push(tx);
+        Ok(ReceiverStream::new(rx))
+    }
+
+    /// Host-only grant update entry point. Persist the grant change before
+    /// calling this method; consumers then receive the new revision.
+    pub fn replace_session_grants(
+        &self,
+        session_id: &str,
+        grants: BTreeSet<String>,
+    ) -> Result<u64, Status> {
+        if grants
+            .iter()
+            .any(|grant| !cap::KNOWN.contains(&grant.as_str()))
+        {
+            return Err(Status::invalid_argument("unknown plugin permission"));
+        }
+        let mut state = lock(&self.state);
+        let session = state
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
+        let revoked = !session.grants.is_subset(&grants);
+        session.grants = grants;
+        session.grant_revision = session.grant_revision.saturating_add(1);
+        let change = permission_change(session, revoked);
+        session
+            .permission_watchers
+            .retain(|watcher| watcher.try_send(Ok(change.clone())).is_ok());
+        if revoked {
+            // Existing operations are fenced by immediately disconnecting the
+            // affected session; queued work can no longer commit.
+            session.commands.take();
+        }
+        Ok(session.grant_revision)
+    }
+
     pub fn registered(&self, provider_id: &str) -> bool {
         lock(&self.state).providers.contains_key(provider_id)
     }
@@ -410,6 +587,8 @@ impl ProviderApi {
                             operation_id,
                             account_epoch,
                             profile_epoch,
+                            session_kind: session.kind,
+                            target_game: session.target_game.clone(),
                         }),
                         operation: ProviderOperation::Shutdown as i32,
                         target_operation_id: String::new(),
@@ -433,13 +612,13 @@ impl ProviderApi {
             gamenode_plugin_protocol::API_MAJOR,
             gamenode_plugin_protocol::API_MINOR,
             &registration.capabilities,
-            &[cap::ALL, &[cap::SETTINGS]].concat(),
+            cap::KNOWN,
         )
         .map_err(|_| Status::invalid_argument("invalid provider grants"))?;
         if !registration
             .capabilities
             .iter()
-            .any(|s| s == cap::CONTEXT || s == cap::SETTINGS)
+            .any(|s| s == cap::CONTEXT || s == cap::SETTINGS || s == cap::CONFIGURE)
         {
             return Err(Status::invalid_argument(
                 "full provider requires context access",
@@ -533,9 +712,38 @@ impl ProviderApi {
             .iter()
             .map(String::as_str)
             .collect();
-        let minor = cap::negotiate(
+        cap::validate_session_scope(
+            u32::try_from(hello.session_kind).unwrap_or(u32::MAX),
+            hello.target_game.is_some(),
+        )
+        .map_err(|_| Status::invalid_argument("invalid session scope"))?;
+        if let Some(target) = hello.target_game.as_ref() {
+            cap::validate_target(target)
+                .map_err(|_| Status::invalid_argument("invalid target game context"))?;
+        }
+        let selection = cap::negotiate_range(
             hello.api_major,
             hello.api_minor,
+            hello.min_api_major,
+            hello.min_api_minor,
+            hello.max_api_major,
+            hello.max_api_minor,
+            &hello
+                .features
+                .iter()
+                .map(|f| (f.id.clone(), f.required))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| match error {
+            cap::RangeNegotiationError::RequiredFeature => {
+                Status::failed_precondition(error.to_string())
+            }
+            cap::RangeNegotiationError::Session => Status::invalid_argument(error.to_string()),
+            _ => Status::failed_precondition(error.to_string()),
+        })?;
+        let minor = cap::negotiate(
+            selection.api_major,
+            selection.api_minor,
             &hello.requested_capabilities,
             &allowed,
         )
@@ -565,6 +773,10 @@ impl ProviderApi {
                 provider: pending.provider,
                 credential: pending.credential,
                 grants: requested.clone(),
+                kind: hello.session_kind,
+                target_game: hello.target_game.clone(),
+                grant_revision: 1,
+                permission_watchers: Vec::new(),
                 commands: None,
                 ready: Some(pending.ready),
                 completed: VecDeque::new(),
@@ -575,6 +787,25 @@ impl ProviderApi {
             granted_capabilities: requested.into_iter().collect(),
             api_major: gamenode_plugin_protocol::API_MAJOR,
             api_minor: minor,
+            features: selection
+                .features
+                .into_iter()
+                .map(|(id, supported, introduced_minor)| FeatureStatus {
+                    id,
+                    availability: if supported {
+                        FeatureAvailability::Supported as i32
+                    } else {
+                        FeatureAvailability::Unsupported as i32
+                    },
+                    introduced_minor,
+                })
+                .collect(),
+            support_window: Some(SupportWindow {
+                minimum_api_minor: gamenode_plugin_protocol::MIN_API_MINOR,
+                maximum_api_minor: gamenode_plugin_protocol::API_MINOR,
+                support_ends_at: None,
+                policy: "supported by this GameNode build".into(),
+            }),
         })
     }
 
@@ -656,15 +887,55 @@ impl ProviderApi {
         permission: &'static str,
     ) -> Result<Arc<Provider>, Status> {
         let state = lock(&self.state);
-        let session = state
+        let Some(session) = state
             .sessions
             .get(&context.session_id)
-            .ok_or_else(|| Status::unauthenticated("provider session expired"))?;
-        if !super::constant_time_eq(&session.credential, &context.session_credential)
-            || context.provider_id != session.provider.registration.provider_id
-            || !session.grants.contains(permission)
-        {
-            return Err(Status::permission_denied("provider scope denied"));
+        else {
+            return Err(Status::unauthenticated("provider session expired"));
+        };
+        if !super::constant_time_eq(&session.credential, &context.session_credential) {
+            let event = denial_event(session, permission, DenialReason::ScopeDenied);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(
+                DenialReason::ScopeDenied,
+                permission,
+                revision,
+            ));
+        }
+        if context.session_kind != session.kind || context.target_game != session.target_game {
+            let event = denial_event(session, permission, DenialReason::ScopeDenied);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(
+                DenialReason::ScopeDenied,
+                permission,
+                revision,
+            ));
+        }
+        if context.provider_id != session.provider.registration.provider_id {
+            let event = denial_event(session, permission, DenialReason::ScopeDenied);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(
+                DenialReason::ScopeDenied,
+                permission,
+                revision,
+            ));
+        }
+        if !session.grants.contains(permission) {
+            let event = denial_event(session, permission, DenialReason::NotGranted);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(
+                DenialReason::NotGranted,
+                permission,
+                revision,
+            ));
         }
         let operation = state
             .operations
@@ -685,7 +956,15 @@ impl ProviderApi {
             return Err(Status::failed_precondition("provider operation is stale"));
         }
         if !operation.permissions.contains(permission) {
-            return Err(Status::permission_denied("operation capability denied"));
+            let event = denial_event(session, permission, DenialReason::NotGranted);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(
+                DenialReason::NotGranted,
+                permission,
+                revision,
+            ));
         }
         Ok(session.provider.clone())
     }
@@ -740,7 +1019,11 @@ impl ProviderApi {
             .find(|(_, s)| s.provider.registration.provider_id == provider && s.commands.is_some())
             .ok_or_else(|| Status::unavailable("provider process unavailable"))?;
         if !session.grants.contains(cap::SETTINGS) {
-            return Err(Status::permission_denied("settings permission not granted"));
+            return Err(denial(
+                DenialReason::NotGranted,
+                cap::SETTINGS,
+                session.grant_revision,
+            ));
         }
         Ok(settings::Context {
             provider_id: provider.into(),
@@ -859,6 +1142,8 @@ impl ProviderApi {
             let provider = session.provider.clone();
             let credential = session.credential;
             let grants = session.grants.clone();
+            let session_kind = session.kind;
+            let target_game = session.target_game.clone();
             let required = match kind {
                 ProviderOperation::Discover => cap::DISCOVERY,
                 ProviderOperation::SyncCatalog => cap::CATALOG,
@@ -866,6 +1151,9 @@ impl ProviderApi {
                 ProviderOperation::SettingsDescribeRead
                 | ProviderOperation::SettingsSubmit
                 | ProviderOperation::SettingsCancel => cap::SETTINGS,
+                ProviderOperation::ConfigurationOpen
+                | ProviderOperation::ConfigurationFocus
+                | ProviderOperation::ConfigurationClose => cap::CONFIGURE,
                 ProviderOperation::SignIn
                 | ProviderOperation::FocusSignIn
                 | ProviderOperation::CancelSignIn => cap::LOGIN,
@@ -948,6 +1236,8 @@ impl ProviderApi {
                 operation_id: super::random_session_id()?,
                 account_epoch,
                 profile_epoch,
+                session_kind,
+                target_game,
             };
             if let Some(request) = &settings
                 && !request.matches_service(&context, &provider.registration.plugin_id)
@@ -1014,6 +1304,9 @@ impl ProviderApi {
             Some(provider_event::Event::CatalogChunk(_)) => cap::CATALOG,
             Some(provider_event::Event::Result(result)) if result.settings.is_some() => {
                 cap::SETTINGS
+            }
+            Some(provider_event::Event::Result(result)) if result.configuration.is_some() => {
+                cap::CONFIGURE
             }
             Some(provider_event::Event::Result(_)) => cap::CONTEXT,
             _ => return Err(Status::invalid_argument("invalid provider event")),

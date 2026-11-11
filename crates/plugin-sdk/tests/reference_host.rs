@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use gamenode_plugin_sdk::{
-    Error, HostClient, Launch, ProviderPlugin, Session, capability, models, proto::*,
+    Error, HostClient, Launch, ProviderPlugin, Session, capability, models, prost_types, proto::*,
 };
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
@@ -20,7 +20,9 @@ fn authorize(context: Option<&ServiceContext>) -> Result<&ServiceContext, Status
     let context = context.ok_or_else(|| Status::unauthenticated("missing context"))?;
     if context.session_id != "session"
         || context.session_credential != [9; 32]
-        || context.provider_id != "fixture"
+        || !(context.provider_id == "fixture"
+            || (context.provider_id.is_empty()
+                && context.session_kind == SessionKind::Extension as i32))
     {
         return Err(Status::permission_denied("wrong session"));
     }
@@ -39,6 +41,8 @@ fn reference_host_rejects_stale_epochs_and_unknown_operations() {
         operation_id: "current".into(),
         account_epoch: 7,
         profile_epoch: 11,
+        session_kind: SessionKind::Provider as i32,
+        target_game: None,
     };
     assert!(authorize(Some(&current)).is_ok());
     let stale = ServiceContext {
@@ -54,14 +58,21 @@ fn reference_host_rejects_stale_epochs_and_unknown_operations() {
 
 #[tonic::async_trait]
 impl plugin_host_server::PluginHost for ReferenceHost {
+    type WatchPermissionChangesStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<PermissionChange, Status>>>;
     async fn open_session(
         &self,
         request: Request<OpenSessionRequest>,
     ) -> Result<Response<OpenSessionReply>, Status> {
         let hello = request.into_inner();
+        let valid_provider = hello.session_kind == SessionKind::Provider as i32
+            && hello.requested_capabilities == [capability::CONTEXT, capability::CONFIGURE];
+        let valid_extension = hello.session_kind == SessionKind::Extension as i32
+            && hello.target_game.is_some()
+            && hello.requested_capabilities == [capability::GAME_LAUNCH, capability::CONFIGURE];
         if hello.plugin_id != "fixture.plugin"
             || hello.session_credential != [9; 32]
-            || hello.requested_capabilities != [capability::CONTEXT]
+            || !(valid_provider || valid_extension)
         {
             return Err(Status::permission_denied("invalid launch"));
         }
@@ -69,7 +80,17 @@ impl plugin_host_server::PluginHost for ReferenceHost {
             session_id: "session".into(),
             granted_capabilities: hello.requested_capabilities,
             api_major: 1,
-            api_minor: 2,
+            api_minor: 4,
+            features: hello
+                .features
+                .iter()
+                .map(|feature| FeatureStatus {
+                    id: feature.id.clone(),
+                    availability: FeatureAvailability::Supported as i32,
+                    introduced_minor: 4,
+                })
+                .collect(),
+            support_window: None,
         }))
     }
 
@@ -78,6 +99,60 @@ impl plugin_host_server::PluginHost for ReferenceHost {
         _: Request<SubmitDiscoveryRequest>,
     ) -> Result<Response<SubmitDiscoveryReply>, Status> {
         Err(Status::permission_denied("not granted"))
+    }
+    async fn describe_api(
+        &self,
+        request: Request<DescribeApiRequest>,
+    ) -> Result<Response<DescribeApiReply>, Status> {
+        if request.get_ref().session_id != "session"
+            || request.get_ref().session_credential != [9; 32]
+        {
+            return Err(Status::unauthenticated("invalid fixture"));
+        }
+        Ok(Response::new(DescribeApiReply {
+            api_major: 1,
+            api_minor: 4,
+            support_window: None,
+            features: vec![],
+            methods: vec![],
+        }))
+    }
+    async fn get_permissions(
+        &self,
+        request: Request<GetPermissionsRequest>,
+    ) -> Result<Response<GetPermissionsReply>, Status> {
+        if request.get_ref().session_id != "session"
+            || request.get_ref().session_credential != [9; 32]
+        {
+            return Err(Status::unauthenticated("invalid fixture"));
+        }
+        Ok(Response::new(GetPermissionsReply {
+            revision: 3,
+            grants: vec![PermissionGrant {
+                permission_id: capability::CONTEXT.into(),
+                state: "granted".into(),
+                scope: "provider".into(),
+                reason: String::new(),
+                revision: 3,
+            }],
+        }))
+    }
+    async fn watch_permission_changes(
+        &self,
+        request: Request<WatchPermissionChangesRequest>,
+    ) -> Result<Response<Self::WatchPermissionChangesStream>, Status> {
+        if request.get_ref().session_id != "session"
+            || request.get_ref().session_credential != [9; 32]
+        {
+            return Err(Status::unauthenticated("invalid fixture"));
+        }
+        Ok(Response::new(tokio_stream::iter(vec![Ok(
+            PermissionChange {
+                revision: 4,
+                grants: vec![],
+                revoked: true,
+            },
+        )])))
     }
 }
 
@@ -114,7 +189,16 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                     ..context.clone()
                 }),
                 operation: operation as i32,
-                target_operation_id: String::new(),
+                target_operation_id: if matches!(
+                    ProviderOperation::try_from(operation),
+                    Ok(ProviderOperation::ConfigurationOpen
+                        | ProviderOperation::ConfigurationFocus
+                        | ProviderOperation::ConfigurationClose)
+                ) {
+                    id.into()
+                } else {
+                    String::new()
+                },
                 settings: None,
             };
             for (operation, id) in [
@@ -127,6 +211,9 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                 (ProviderOperation::SyncCatalog, "catalog"),
                 (ProviderOperation::ReadCounter, "counter"),
                 (ProviderOperation::SignOut, "sign-out"),
+                (ProviderOperation::ConfigurationOpen, "config-open"),
+                (ProviderOperation::ConfigurationFocus, "config-focus"),
+                (ProviderOperation::ConfigurationClose, "config-close"),
             ] {
                 tx.send(Ok(command(operation, id))).await.unwrap();
             }
@@ -139,7 +226,7 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                         .await
                         .unwrap();
                     count += 1;
-                    if count == 9 {
+                    if count == 12 {
                         tx.send(Ok(command(ProviderOperation::Shutdown, "shutdown")))
                             .await
                             .unwrap();
@@ -296,6 +383,36 @@ impl ProviderPlugin for FixturePlugin {
     }
 }
 
+struct ExtensionFixture;
+
+#[tonic::async_trait]
+impl gamenode_plugin_sdk::ExtensionPlugin for ExtensionFixture {
+    async fn handle(&self, _: ProviderCommand, _: HostClient) -> Result<OperationResult, Error> {
+        Ok(OperationResult {
+            disposition: OperationDisposition::Completed as i32,
+            ..Default::default()
+        })
+    }
+    async fn configure(
+        &self,
+        command: ProviderCommand,
+        host: HostClient,
+    ) -> Result<OperationResult, Error> {
+        let context = host.context();
+        Ok(OperationResult {
+            disposition: OperationDisposition::Completed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: context.session_id.clone(),
+                profile_id: String::new(),
+                window_id: command.target_operation_id,
+                accepted: true,
+                failure: String::new(),
+            }),
+            ..Default::default()
+        })
+    }
+}
+
 #[tokio::test]
 async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
     let temp = tempfile::tempdir().unwrap();
@@ -312,7 +429,7 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
                 let _ = stopped.await;
             }),
     );
-    let session = Session::open(
+    let session = Session::open_with_options(
         Launch {
             endpoint,
             credential: vec![9; 32],
@@ -321,10 +438,26 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
         "fixture.plugin",
         "fixture",
         "1.0",
-        &[capability::CONTEXT],
+        &[capability::CONTEXT, capability::CONFIGURE],
+        gamenode_plugin_sdk::SessionOptions {
+            min_api_major: 1,
+            min_api_minor: 1,
+            max_api_major: 1,
+            max_api_minor: 4,
+            features: vec![(capability::FEATURE_API_METADATA.into(), true)],
+            session_kind: SessionKind::Provider,
+            target_game: None,
+        },
     )
     .await
     .unwrap();
+    assert_eq!(session.host.describe_api().await.unwrap().api_minor, 4);
+    assert_eq!(
+        session.host.get_permissions().await.unwrap().grants[0].permission_id,
+        capability::CONTEXT
+    );
+    let mut changes = session.host.watch_permission_changes(3).await.unwrap();
+    assert_eq!(changes.message().await.unwrap().unwrap().revision, 4);
     let plugin = Arc::new(FixturePlugin {
         started: Semaphore::new(0),
         cancelled: Semaphore::new(0),
@@ -337,7 +470,7 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
     .unwrap()
     .unwrap();
     let mut results = std::collections::BTreeMap::new();
-    for _ in 0..9 {
+    for _ in 0..12 {
         let (id, result) = completed.recv().await.unwrap();
         results.insert(id, result);
     }
@@ -379,6 +512,78 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
     );
     assert_eq!(results["counter"].counters[0].seconds, 3_600);
     assert!(results["sign-out"].signed_out);
+    assert_eq!(
+        results["config-open"]
+            .configuration
+            .as_ref()
+            .unwrap()
+            .window_id,
+        "config-open"
+    );
+    assert!(
+        !results["config-open"]
+            .configuration
+            .as_ref()
+            .unwrap()
+            .accepted
+    );
+    let _ = shutdown.send(());
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn extension_session_keeps_target_scope_through_lifecycle_dispatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let endpoint = temp.path().join("extension.sock");
+    let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+    let (tx, mut completed) = mpsc::channel(16);
+    let reference = ReferenceHost { completed: tx };
+    let (shutdown, stopped) = oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(plugin_host_server::PluginHostServer::new(reference.clone()))
+            .add_service(provider_host_server::ProviderHostServer::new(reference))
+            .serve_with_incoming_shutdown(UnixListenerStream::new(listener), async {
+                let _ = stopped.await;
+            }),
+    );
+    let target = TargetGameContext {
+        game_id: "steam:620".into(),
+        installation_id: "install-1".into(),
+        profile_id: "default".into(),
+        revision: "r7".into(),
+    };
+    let session = Session::open_extension(
+        Launch {
+            endpoint,
+            credential: vec![9; 32],
+            operation_id: "extension-launch".into(),
+        },
+        "fixture.plugin",
+        "1.0",
+        target.clone(),
+        &[capability::GAME_LAUNCH, capability::CONFIGURE],
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.host.context().provider_id, "");
+    assert_eq!(session.host.context().target_game.as_ref(), Some(&target));
+    gamenode_plugin_sdk::run_extension(session, Arc::new(ExtensionFixture))
+        .await
+        .unwrap();
+    let mut results = std::collections::BTreeMap::new();
+    for _ in 0..12 {
+        let (operation, result) = completed.recv().await.unwrap();
+        results.insert(operation, result);
+    }
+    assert_eq!(
+        results["config-open"]
+            .configuration
+            .as_ref()
+            .unwrap()
+            .window_id,
+        "config-open"
+    );
     let _ = shutdown.send(());
     server.await.unwrap().unwrap();
 }
@@ -387,4 +592,97 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
 fn public_models_do_not_expose_session_secrets_in_diagnostics() {
     let secret = models::SessionCredential::new("fixture-secret").unwrap();
     assert!(!format!("{secret:?}").contains("fixture-secret"));
+}
+
+#[test]
+fn detailed_errors_keep_safe_categories_and_structured_denials() {
+    use gamenode_plugin_protocol::prost::Message;
+    use gamenode_plugin_sdk::DetailedError;
+    let detail = DenialDetail {
+        reason: DenialReason::Revoked as i32,
+        permission_id: "files.read".into(),
+        grant_revision: 8,
+    };
+    let status = Status::with_details(
+        tonic::Code::PermissionDenied,
+        "private request value",
+        detail.encode_to_vec().into(),
+    );
+    assert_eq!(
+        DetailedError::from_status(&status),
+        DetailedError::Denied(Some(detail))
+    );
+    assert_eq!(
+        DetailedError::from_status(&Status::unauthenticated("token")),
+        DetailedError::Unauthenticated
+    );
+    assert_eq!(
+        DetailedError::from_status(&Status::failed_precondition("stale")),
+        DetailedError::Stale
+    );
+    assert_eq!(
+        DetailedError::from_status(&Status::unimplemented("future")),
+        DetailedError::Unsupported
+    );
+    assert_eq!(
+        DetailedError::from_status(&Status::invalid_argument("invalid")),
+        DetailedError::Invalid
+    );
+    assert_eq!(
+        DetailedError::from_status(&Status::unavailable("offline")),
+        DetailedError::Unavailable
+    );
+    assert!(
+        !format!(
+            "{:?}",
+            DetailedError::from_status(&Status::permission_denied("private request value"))
+        )
+        .contains("private request value")
+    );
+}
+
+#[test]
+fn sdk_extension_helpers_preserve_unselected_application_namespaces() {
+    use gamenode_plugin_sdk::extensions::ExtensionSet;
+    use std::collections::HashMap;
+    let payload = |schema_id: &str, note: &str| ExtensionPayload {
+        schema_id: schema_id.into(),
+        schema_version: 1,
+        schema_digest: vec![3; 32],
+        data: Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::from([(
+                "note".into(),
+                prost_types::Value {
+                    kind: Some(prost_types::value::Kind::StringValue(note.into())),
+                },
+            )]),
+        }),
+    };
+    let wire = HashMap::from([
+        (
+            "org.example.selected".into(),
+            payload("org.example.selected.v1", "old"),
+        ),
+        (
+            "org.other.unknown".into(),
+            payload("org.other.unknown.v8", "keep"),
+        ),
+    ]);
+    let mut extensions = ExtensionSet::from_wire(wire).unwrap();
+    let patch = ExtensionPatch {
+        expected_revision: 4,
+        typed_field_mask: vec![],
+        namespaces: vec![ExtensionNamespacePatch {
+            namespace: "org.example.selected".into(),
+            operation: Some(extension_namespace_patch::Operation::Set(payload(
+                "org.example.selected.v1",
+                "new",
+            ))),
+        }],
+    };
+    assert_eq!(extensions.apply_patch(&patch, 4), Ok(5));
+    assert_eq!(
+        extensions.as_map()["org.other.unknown"],
+        payload("org.other.unknown.v8", "keep")
+    );
 }

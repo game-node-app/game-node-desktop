@@ -12,6 +12,24 @@
 - These conventions do not authorize committing, pushing, or rewriting history;
   perform those actions only when requested.
 
+## Confirming and persisting specification decisions
+
+- When a user instruction or clarification appears to change specifications,
+  state the proposed interpretation and ask whether the user wants it persisted
+  in the documents, with a consistency review of related tasks and artifacts.
+  Explain that the confirmation is needed because you inferred a specification
+  change; do not treat exploratory discussion as authorization to edit specs.
+- Do not ask again when the user has already explicitly authorized the update
+  or confirmed the proposed persistence in the current conversation.
+- Once authorized, update the affected OpenSpec proposal, design, delta specs
+  and tasks as applicable. Review their consistency, identify tasks that must
+  be added or reopened, and synchronize main specs when authorized. A planning
+  update does not itself establish implementation completion.
+- Before finishing, verify the document changes and report the files updated,
+  validation results and any unresolved decisions. Do not describe a decision
+  as persisted when it exists only in the conversation. Document updates do not
+  authorize implementation, committing, pushing or archiving the change.
+
 ## Architecture Guardrails (Tauri v2 + React + TanStack)
 
 - **Async Tauri Commands**: All Rust commands exposed to the frontend must be

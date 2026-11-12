@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use gamenode_plugin_protocol::prost::Message;
 use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession};
 
 #[path = "permissions_tests.rs"]
@@ -10,6 +11,7 @@ mod permissions_tests;
 struct Services {
     reads: AtomicUsize,
     publications: AtomicUsize,
+    status: Mutex<Option<models::AccountStatus>>,
 }
 
 #[tonic::async_trait]
@@ -34,8 +36,9 @@ impl HostServices for Services {
     async fn actions(&self, _: Lease, _: ActionDeclaration) -> Result<ActionReply, Status> {
         Err(Status::unimplemented("fixture"))
     }
-    fn publish_status(&self, _: models::AccountStatus) {
+    fn publish_status(&self, status: models::AccountStatus) {
         self.publications.fetch_add(1, Ordering::Relaxed);
+        *lock(&self.status) = Some(status);
     }
 }
 
@@ -276,8 +279,47 @@ async fn mismatched_provider_result_is_rejected_without_publishing_state() {
         records: vec![],
     });
     client.finish(result).await.unwrap();
-    assert!(operation.await.unwrap().is_err());
+    let error = operation.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let denial = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(denial.reason, DenialReason::ScopeDenied as i32);
+    assert_eq!(denial.permission_id, cap::DISCOVERY);
     assert_eq!(h.services.publications.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn rejected_submission_preserves_previous_successful_account_facts() {
+    let mut h = Harness::new().await;
+    let first = h.execute(ProviderOperation::Check);
+    let client = h.next(ProviderOperation::Check).await;
+    let mut accepted = completed();
+    accepted.status = Some(AccountStatus {
+        state: AccountConnection::Connected as i32,
+        account_id: Some("account-previous".into()),
+        storage: SecretStorage::PrivateFile as i32,
+        ..Default::default()
+    });
+    client.finish(accepted).await.unwrap();
+    first.await.unwrap().unwrap();
+
+    let second = h.execute(ProviderOperation::Check);
+    let client = h.next(ProviderOperation::Check).await;
+    let mut rejected = completed();
+    rejected.discovery = Some(DiscoveryResult {
+        provider_id: "foreign-provider".into(),
+        records: vec![],
+    });
+    client.finish(rejected).await.unwrap();
+    let error = second.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let denial = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(denial.reason, DenialReason::NotGranted as i32);
+    assert_eq!(denial.permission_id, cap::DISCOVERY);
+
+    let status = lock(&h.services.status).clone().unwrap();
+    assert_eq!(status.state, models::AccountState::Connected);
+    assert_eq!(status.account_id.as_deref(), Some("account-previous"));
+    assert_eq!(h.services.publications.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

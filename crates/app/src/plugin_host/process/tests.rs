@@ -164,9 +164,88 @@ async fn managed_package_integrity_failure_prevents_process_start() {
         .integrity = Some(PackageIntegrity {
         package_root: directory.path().to_owned(),
         publisher_key: [0; 32],
+        emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
     });
     let error = processes.ensure_started("fixture").await.unwrap_err();
     assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(processes.process_id("fixture").await.is_none());
+    processes.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn incompatible_signed_target_prevents_process_start() {
+    use base64::Engine;
+    use ring::signature::KeyPair;
+    use sha2::Digest;
+    use std::collections::BTreeMap;
+
+    let package = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(package.path().join("bin")).unwrap();
+    std::fs::create_dir_all(package.path().join("licenses")).unwrap();
+    let executable = package.path().join("bin/fixture");
+    std::fs::write(&executable, b"fixture executable").unwrap();
+    std::fs::write(package.path().join("licenses/LICENSE"), b"fixture license").unwrap();
+
+    let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+    let public_key = key.public_key().as_ref();
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schema": 1,
+        "id": "org.example.fixture",
+        "kind": "provider",
+        "provider_id": "fixture",
+        "name": "Fixture",
+        "version": "1.0.0",
+        "api": {"min": "1.4.0", "max": "1.4.0"},
+        "targets": [{"os": "windows", "arch": "x86_64", "abi": "msvc", "entrypoint": "bin/fixture"}],
+        "publisher": {
+            "key_id": "fixture-key",
+            "public_key": base64::engine::general_purpose::STANDARD.encode(public_key)
+        },
+        "license": {"expression": "MIT", "files": ["licenses/LICENSE"]}
+    }))
+    .unwrap();
+    std::fs::write(package.path().join("plugin.json"), &manifest).unwrap();
+    let payloads = [
+        ("plugin.json", manifest.as_slice()),
+        ("bin/fixture", b"fixture executable".as_slice()),
+        ("licenses/LICENSE", b"fixture license".as_slice()),
+    ];
+    let files = payloads
+        .into_iter()
+        .map(|(path, bytes)| {
+            (
+                path.to_owned(),
+                format!("{:x}", sha2::Sha256::digest(bytes)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let integrity = serde_json::to_vec(&serde_json::json!({"schema": 1, "files": files})).unwrap();
+    let mut signed = gamenode_platform::plugin_packages::SIGNATURE_DOMAIN_PREFIX.to_vec();
+    signed.extend_from_slice(&integrity);
+    std::fs::write(package.path().join("integrity.json"), &integrity).unwrap();
+    std::fs::write(
+        package.path().join("signature.ed25519"),
+        key.sign(&signed).as_ref(),
+    )
+    .unwrap();
+
+    let (mut processes, _server, _directory) =
+        manager(executable, "normal", Duration::from_secs(5)).await;
+    Arc::get_mut(&mut processes.inner)
+        .unwrap()
+        .slots
+        .get_mut("fixture")
+        .unwrap()
+        .config
+        .integrity = Some(PackageIntegrity {
+        package_root: package.path().to_owned(),
+        publisher_key: public_key.try_into().unwrap(),
+        emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+    });
+    let error = processes.ensure_started("fixture").await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(error.message().contains("OperatingSystemMismatch"));
     assert!(processes.process_id("fixture").await.is_none());
     processes.shutdown().await;
 }

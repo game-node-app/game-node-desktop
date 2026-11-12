@@ -79,7 +79,10 @@ mod common_data_selector_tests {
 
         let selected_records = selected_record_selector(["runtime:one", "save:two"]).unwrap();
         assert!(selected_records.categories.is_empty());
-        assert_eq!(selected_records.selected_record_ids, ["runtime:one", "save:two"]);
+        assert_eq!(
+            selected_records.selected_record_ids,
+            ["runtime:one", "save:two"]
+        );
         assert!(
             common_data_selector([CommonDataCategory::GamePaths, CommonDataCategory::GamePaths,])
                 .is_err()

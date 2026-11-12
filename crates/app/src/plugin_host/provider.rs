@@ -280,6 +280,18 @@ impl Lease {
         self.api.authorize(&self.context, permission).map(|_| ())
     }
 
+    /// Reject a host-side scope mismatch with the same machine-readable denial
+    /// contract used for missing grants.
+    pub fn deny_scope(&self) -> Status {
+        self.deny_scope_for(self.permission)
+    }
+
+    pub fn deny_scope_for(&self, permission: &'static str) -> Status {
+        self.api
+            .scope_denial(&self.context, permission)
+            .unwrap_or_else(|| Status::unauthenticated("provider session expired"))
+    }
+
     /// Called by trusted service adapters inside `storage`, while the provider
     /// commit guard is held. Failed OS writes never establish a commit point.
     pub fn record_secret(&self, operation: SecretOperation, accepted: bool) -> Result<(), Status> {
@@ -478,6 +490,16 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 }
 
 impl ProviderApi {
+    fn scope_denial(&self, context: &ServiceContext, permission: &str) -> Option<Status> {
+        let state = lock(&self.state);
+        let session = state.sessions.get(&context.session_id)?;
+        let event = denial_event(session, permission, DenialReason::ScopeDenied);
+        let revision = event.grant_revision;
+        drop(state);
+        self.record_authorization_denial(event);
+        Some(denial(DenialReason::ScopeDenied, permission, revision))
+    }
+
     fn record_authorization_denial(&self, event: AuthorizationAuditEvent) {
         let mut state = lock(&self.state);
         if state.authorization_audit.len() == AUTHORIZATION_AUDIT_LIMIT {
@@ -486,10 +508,51 @@ impl ProviderApi {
         state.authorization_audit.push_back(event);
     }
 
+    /// Deliver a rejected stream submission to its authenticated operation
+    /// waiter before the Exchange stream is closed. A forged context cannot
+    /// cancel another operation: correlation requires the exact session,
+    /// credential, provider, and host-issued operation context.
+    fn reject_stream_operation(&self, context: &ServiceContext, error: Status) {
+        let operation = {
+            let mut state = lock(&self.state);
+            let Some(session) = state.sessions.get(&context.session_id) else {
+                return;
+            };
+            if !super::constant_time_eq(&session.credential, &context.session_credential)
+                || session.provider.registration.provider_id != context.provider_id
+            {
+                return;
+            }
+            let key = (context.session_id.clone(), context.operation_id.clone());
+            if !state
+                .operations
+                .get(&key)
+                .is_some_and(|operation| operation.context == *context)
+            {
+                return;
+            }
+            let operation = state.operations.remove(&key);
+            if let Some(session) = state.sessions.get_mut(&context.session_id) {
+                session.completed.push_back(context.operation_id.clone());
+                while session.completed.len() > HISTORY {
+                    session.completed.pop_front();
+                }
+            }
+            operation
+        };
+        if let Some(operation) = operation {
+            let _ = operation.result.send(Err(error));
+        }
+    }
+
     /// Returns the bounded, redacted authorization-denial history for host UI
     /// and diagnostics. This is never exposed through the plugin RPC surface.
     pub fn authorization_audit(&self) -> Vec<AuthorizationAuditEvent> {
-        lock(&self.state).authorization_audit.iter().cloned().collect()
+        lock(&self.state)
+            .authorization_audit
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Authenticates the permission-control plane without requiring any data grant.
@@ -535,7 +598,7 @@ impl ProviderApi {
 
     /// Host-only grant update entry point. Persist the grant change before
     /// calling this method; consumers then receive the new revision.
-    pub fn replace_session_grants(
+    pub async fn replace_session_grants(
         &self,
         session_id: &str,
         grants: BTreeSet<String>,
@@ -546,24 +609,57 @@ impl ProviderApi {
         {
             return Err(Status::invalid_argument("unknown plugin permission"));
         }
+        // Serialize grant changes with every host-side effect commit. A queued
+        // operation which has not crossed its commit point will reauthorize
+        // against the new grant set after this guard is released.
+        let provider = lock(&self.state)
+            .sessions
+            .get(session_id)
+            .map(|session| session.provider.clone())
+            .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
+        let _commit = provider.commits.lock().await;
         let mut state = lock(&self.state);
         let session = state
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
-        let revoked = !session.grants.is_subset(&grants);
+        let removed: BTreeSet<_> = session.grants.difference(&grants).cloned().collect();
+        let revoked = !removed.is_empty();
         session.grants = grants;
         session.grant_revision = session.grant_revision.saturating_add(1);
         let change = permission_change(session, revoked);
         session
             .permission_watchers
             .retain(|watcher| watcher.try_send(Ok(change.clone())).is_ok());
+        let revision = session.grant_revision;
         if revoked {
-            // Existing operations are fenced by immediately disconnecting the
-            // affected session; queued work can no longer commit.
-            session.commands.take();
+            let obsolete: Vec<_> = state
+                .operations
+                .iter()
+                .filter(|((id, _), operation)| {
+                    id == session_id && operation.permissions.iter().any(|p| removed.contains(*p))
+                })
+                .map(|(key, operation)| {
+                    let permission = operation
+                        .permissions
+                        .iter()
+                        .find(|permission| removed.contains(**permission))
+                        .copied()
+                        .unwrap_or(cap::CONTEXT);
+                    (key.clone(), permission)
+                })
+                .collect();
+            for (key, permission) in obsolete {
+                if let Some(operation) = state.operations.remove(&key) {
+                    let _ = operation.result.send(Err(denial(
+                        DenialReason::Revoked,
+                        permission,
+                        revision,
+                    )));
+                }
+            }
         }
-        Ok(session.grant_revision)
+        Ok(revision)
     }
 
     pub fn registered(&self, provider_id: &str) -> bool {
@@ -700,11 +796,13 @@ impl ProviderApi {
             .position(|p| super::constant_time_eq(&p.credential, &hello.session_credential))
             .ok_or_else(|| Status::unauthenticated("unknown provider launch"))?;
         let pending = &state.pending[index];
-        if pending.provider.registration.plugin_id != hello.plugin_id
-            || hello.plugin_version.is_empty()
-            || hello.plugin_version.len() > 128
-        {
-            return Err(Status::permission_denied("wrong provider identity"));
+        if pending.provider.registration.plugin_id != hello.plugin_id {
+            return Err(Status::unauthenticated(
+                "provider identity does not match launch",
+            ));
+        }
+        if hello.plugin_version.is_empty() || hello.plugin_version.len() > 128 {
+            return Err(Status::invalid_argument("invalid plugin version"));
         }
         let allowed: Vec<&str> = pending
             .provider
@@ -742,6 +840,17 @@ impl ProviderApi {
             cap::RangeNegotiationError::Session => Status::invalid_argument(error.to_string()),
             _ => Status::failed_precondition(error.to_string()),
         })?;
+        let mut seen_capabilities = BTreeSet::new();
+        if hello.requested_capabilities.is_empty()
+            || hello
+                .requested_capabilities
+                .iter()
+                .any(|capability| !seen_capabilities.insert(capability.as_str()))
+        {
+            return Err(Status::invalid_argument(
+                "invalid provider capability request",
+            ));
+        }
         let minor = cap::negotiate(
             selection.api_major,
             selection.api_minor,
@@ -749,7 +858,25 @@ impl ProviderApi {
             &allowed,
         )
         .map_err(|error| match error {
-            cap::NegotiationError::Capability => Status::permission_denied(error.to_string()),
+            cap::NegotiationError::Capability => {
+                if let Some(permission) = hello
+                    .requested_capabilities
+                    .iter()
+                    .find(|permission| !cap::KNOWN.contains(&permission.as_str()))
+                {
+                    Status::failed_precondition(format!(
+                        "unsupported provider permission: {permission}"
+                    ))
+                } else if let Some(permission) = hello
+                    .requested_capabilities
+                    .iter()
+                    .find(|permission| !allowed.contains(&permission.as_str()))
+                {
+                    denial(DenialReason::NotGranted, permission, 0)
+                } else {
+                    Status::invalid_argument(error.to_string())
+                }
+            }
             _ => Status::failed_precondition(error.to_string()),
         })?;
         let requested: BTreeSet<String> = hello.requested_capabilities.iter().cloned().collect();
@@ -888,10 +1015,7 @@ impl ProviderApi {
         permission: &'static str,
     ) -> Result<Arc<Provider>, Status> {
         let state = lock(&self.state);
-        let Some(session) = state
-            .sessions
-            .get(&context.session_id)
-        else {
+        let Some(session) = state.sessions.get(&context.session_id) else {
             return Err(Status::unauthenticated("provider session expired"));
         };
         if !super::constant_time_eq(&session.credential, &context.session_credential) {
@@ -899,44 +1023,28 @@ impl ProviderApi {
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
-            return Err(denial(
-                DenialReason::ScopeDenied,
-                permission,
-                revision,
-            ));
+            return Err(denial(DenialReason::ScopeDenied, permission, revision));
         }
         if context.session_kind != session.kind || context.target_game != session.target_game {
             let event = denial_event(session, permission, DenialReason::ScopeDenied);
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
-            return Err(denial(
-                DenialReason::ScopeDenied,
-                permission,
-                revision,
-            ));
+            return Err(denial(DenialReason::ScopeDenied, permission, revision));
         }
         if context.provider_id != session.provider.registration.provider_id {
             let event = denial_event(session, permission, DenialReason::ScopeDenied);
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
-            return Err(denial(
-                DenialReason::ScopeDenied,
-                permission,
-                revision,
-            ));
+            return Err(denial(DenialReason::ScopeDenied, permission, revision));
         }
         if !session.grants.contains(permission) {
             let event = denial_event(session, permission, DenialReason::NotGranted);
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
-            return Err(denial(
-                DenialReason::NotGranted,
-                permission,
-                revision,
-            ));
+            return Err(denial(DenialReason::NotGranted, permission, revision));
         }
         let operation = state
             .operations
@@ -961,11 +1069,7 @@ impl ProviderApi {
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
-            return Err(denial(
-                DenialReason::NotGranted,
-                permission,
-                revision,
-            ));
+            return Err(denial(DenialReason::NotGranted, permission, revision));
         }
         Ok(session.provider.clone())
     }
@@ -1047,32 +1151,18 @@ impl ProviderApi {
     /// Revocation affects this process session immediately. A later launch
     /// negotiates again from the trusted descriptor's approved permission set.
     pub async fn revoke_session_permission(&self, provider_id: &str, permission: &str) {
-        let provider = lock(&self.state).providers.get(provider_id).cloned();
-        let Some(provider) = provider else {
+        if !cap::KNOWN.contains(&permission) {
             return;
-        };
-        let _guard = provider.commits.lock().await;
-        let mut state = lock(&self.state);
-        for session in state
-            .sessions
-            .values_mut()
-            .filter(|s| s.provider.registration.provider_id == provider_id)
-        {
-            session.grants.remove(permission);
         }
-        let obsolete: Vec<_> = state
-            .operations
+        let sessions: Vec<_> = lock(&self.state)
+            .sessions
             .iter()
-            .filter(|(_, op)| {
-                op.context.provider_id == provider_id && op.permissions.contains(permission)
-            })
-            .map(|(key, _)| key.clone())
+            .filter(|(_, session)| session.provider.registration.provider_id == provider_id)
+            .map(|(id, session)| (id.clone(), session.grants.clone()))
             .collect();
-        for key in obsolete {
-            if let Some(op) = state.operations.remove(&key) {
-                let _ = op.result.send(Err(Status::permission_denied(
-                    "provider permission revoked",
-                )));
+        for (session_id, mut grants) in sessions {
+            if grants.remove(permission) {
+                let _ = self.replace_session_grants(&session_id, grants).await;
             }
         }
     }
@@ -1162,9 +1252,11 @@ impl ProviderApi {
                 _ => cap::CONTEXT,
             };
             if !grants.contains(required) {
-                return Err(Status::unimplemented(
-                    "required provider capability is unavailable",
-                ));
+                let event = denial_event(session, required, DenialReason::NotGranted);
+                let revision = event.grant_revision;
+                drop(state);
+                self.record_authorization_denial(event);
+                return Err(denial(DenialReason::NotGranted, required, revision));
             }
             let login_pending = state.operations.iter().any(|((id, _), operation)| {
                 id == &session_id && operation.kind == ProviderOperation::SignIn
@@ -1311,11 +1403,7 @@ impl ProviderApi {
                 cap::CONFIGURE
             }
             Some(provider_event::Event::Result(_)) => cap::CONTEXT,
-            Some(provider_event::Event::RuntimeSession(_)) => {
-                return Err(Status::unimplemented(
-                    "runtime session reporting is not available in this host version",
-                ));
-            }
+            Some(provider_event::Event::RuntimeSession(_)) => cap::GAME_SESSIONS_REPORT,
             _ => return Err(Status::invalid_argument("invalid provider event")),
         };
         let provider = self.authorize(&context, permission)?;
@@ -1336,9 +1424,7 @@ impl ProviderApi {
                                 && !operation.secret_deleted
                         })
                     {
-                        return Err(Status::permission_denied(
-                            "sign-out requires successful credential deletion",
-                        ));
+                        return Err(self.scope_denial(&context, cap::ACCOUNT_PUBLISH).unwrap());
                     }
                 }
                 let status = status
@@ -1354,6 +1440,11 @@ impl ProviderApi {
                     .catalog
                     .push(chunk)
                     .map_err(|_| Status::invalid_argument("invalid catalog transfer"))?;
+            }
+            provider_event::Event::RuntimeSession(_) => {
+                return Err(Status::unimplemented(
+                    "runtime session reporting is not available in this host version",
+                ));
             }
             provider_event::Event::Result(result) => {
                 for (present, permission) in [
@@ -1389,7 +1480,7 @@ impl ProviderApi {
                     || (result.focused.is_some()
                         && operation_kind != ProviderOperation::FocusSignIn)
                 {
-                    return Err(Status::permission_denied("invalid account result scope"));
+                    return Err(self.scope_denial(&context, cap::LOGIN).unwrap());
                 }
                 if result.counters.len() > 50_000
                     || result.counters.iter().any(|c| {
@@ -1402,7 +1493,7 @@ impl ProviderApi {
                     && (discovery.provider_id != context.provider_id
                         || discovery.records.len() > 50_000)
                 {
-                    return Err(Status::permission_denied("wrong discovery provider"));
+                    return Err(self.scope_denial(&context, cap::DISCOVERY).unwrap());
                 }
                 let status: Option<models::AccountStatus> = result
                     .status
@@ -1446,18 +1537,18 @@ impl ProviderApi {
                             .as_ref()
                             .is_some_and(|s| s.state == AccountConnection::NotConnected as i32))
                 {
-                    let _ = operation.result.send(Err(Status::permission_denied(
-                        "sign-out requires successful credential deletion",
-                    )));
-                    return Err(Status::permission_denied(
-                        "sign-out requires successful credential deletion",
-                    ));
+                    let error = self
+                        .scope_denial(&context, cap::SECRET_DELETE)
+                        .unwrap_or_else(|| Status::unauthenticated("unknown session"));
+                    let _ = operation.result.send(Err(error.clone()));
+                    return Err(error);
                 }
                 if result.signed_out && operation.kind != ProviderOperation::SignOut {
-                    let _ = operation
-                        .result
-                        .send(Err(Status::permission_denied("invalid account transition")));
-                    return Err(Status::permission_denied("invalid account transition"));
+                    let error = self
+                        .scope_denial(&context, cap::ACCOUNT_PUBLISH)
+                        .unwrap_or_else(|| Status::unauthenticated("unknown session"));
+                    let _ = operation.result.send(Err(error.clone()));
+                    return Err(error);
                 }
                 let catalog = match operation
                     .catalog
@@ -1528,11 +1619,25 @@ impl provider_host_server::ProviderHost for ProviderApi {
                 .sessions
                 .get_mut(&context.session_id)
                 .ok_or_else(|| Status::unauthenticated("unknown session"))?;
-            if !super::constant_time_eq(&session.credential, &context.session_credential)
-                || session.provider.registration.provider_id != context.provider_id
-                || session.commands.is_some()
-            {
-                return Err(Status::permission_denied("invalid stream session"));
+            if !super::constant_time_eq(&session.credential, &context.session_credential) {
+                return Err(Status::unauthenticated("invalid stream credential"));
+            }
+            if session.provider.registration.provider_id != context.provider_id {
+                let permission = cap::CONTEXT;
+                let detail = denial(
+                    DenialReason::ScopeDenied,
+                    permission,
+                    session.grant_revision,
+                );
+                let event = denial_event(session, permission, DenialReason::ScopeDenied);
+                drop(state);
+                self.record_authorization_denial(event);
+                return Err(detail);
+            }
+            if session.commands.is_some() {
+                return Err(Status::failed_precondition(
+                    "provider stream already connected",
+                ));
             }
             session.commands = Some(tx.clone());
             if let Some(ready) = session.ready.take() {
@@ -1549,17 +1654,21 @@ impl provider_host_server::ProviderHost for ProviderApi {
                     .is_none_or(|context| context.session_id != session_id)
                 {
                     let _ = tx
-                        .send(Err(Status::permission_denied(
+                        .send(Err(Status::unauthenticated(
                             "event belongs to another stream session",
                         )))
                         .await;
                     break;
                 }
+                let event_context = event.context.clone();
                 if let Err(error) = api.event(event).await {
                     // Obsolete/duplicate results are ignored and cannot tear down
                     // newer work on this same persistent provider connection.
                     if error.code() == tonic::Code::FailedPrecondition {
                         continue;
+                    }
+                    if let Some(context) = event_context.as_ref() {
+                        api.reject_stream_operation(context, error.clone());
                     }
                     let _ = tx.send(Err(error)).await;
                     break;
@@ -1608,9 +1717,7 @@ impl provider_host_server::ProviderHost for ProviderApi {
                 ))
                 .ok_or_else(|| Status::failed_precondition("stale account operation"))?;
             if operation.kind != ProviderOperation::SignOut || !operation.secret_deleted {
-                return Err(Status::permission_denied(
-                    "account removal requires credential deletion",
-                ));
+                return Err(lease.deny_scope_for(cap::SECRET_DELETE));
             }
         }
         Ok(Response::new(services.account(lease, action).await?))
@@ -1621,14 +1728,6 @@ impl provider_host_server::ProviderHost for ProviderApi {
         request: Request<SecretRequest>,
     ) -> Result<Response<SecretReply>, Status> {
         let request = request.into_inner();
-        if request.key != "session"
-            || request
-                .value
-                .as_ref()
-                .is_some_and(|v| v.is_empty() || v.len() > 32 * 1024)
-        {
-            return Err(Status::permission_denied("secret slot is not authorized"));
-        }
         let operation = SecretOperation::try_from(request.operation)
             .map_err(|_| Status::invalid_argument("invalid secret action"))?;
         if (operation == SecretOperation::Write) != request.value.is_some() {
@@ -1641,6 +1740,16 @@ impl provider_host_server::ProviderHost for ProviderApi {
             _ => return Err(Status::invalid_argument("missing secret action")),
         };
         let (lease, services) = self.lease(request.context.clone(), permission)?;
+        if request.key != "session" {
+            return Err(lease.deny_scope_for(permission));
+        }
+        if request
+            .value
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 32 * 1024)
+        {
+            return Err(Status::invalid_argument("invalid secret value"));
+        }
         Ok(Response::new(services.secret(lease, request).await?))
     }
 

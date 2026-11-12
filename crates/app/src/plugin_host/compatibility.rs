@@ -7,6 +7,8 @@ use gamenode_platform::plugin_environment::{
 };
 
 use super::package::{LibcFamily, Target, WindowsProduct};
+use super::package::{Manifest, ManifestError};
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompatibilityState {
@@ -52,6 +54,97 @@ pub struct CompatibilityVerdict {
     pub reasons: Vec<CompatibilityReason>,
     /// Facts the detector could not establish, preserved for diagnostics.
     pub unknown_facts: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetCompatibilityAssessment {
+    /// Retains all signed target declarations, including informational `tested_on` entries.
+    pub target: Target,
+    pub verdict: CompatibilityVerdict,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PackageCompatibilityError {
+    #[error("invalid package manifest: {0}")]
+    InvalidManifest(ManifestError),
+    #[error("executable resolves outside the package directory")]
+    ExecutableOutsidePackage,
+    #[error("executable is not a declared manifest target")]
+    ExecutableNotDeclared,
+    #[error("execution environment detection failed: {0}")]
+    EnvironmentDetection(String),
+    #[error("compatibility worker failed")]
+    WorkerFailed,
+}
+
+/// Validate a package manifest against the target executable and a detected
+/// effective environment. This is reusable by import/update/activation flows;
+/// pre-launch also calls it with refreshed environment facts.
+pub fn assess_package(
+    package_root: &Path,
+    executable: &Path,
+    manifest_bytes: &[u8],
+    environment: &PluginEnvironment,
+    emulation_policy: EmulationPolicy,
+) -> Result<CompatibilityVerdict, PackageCompatibilityError> {
+    let manifest =
+        Manifest::parse_json(manifest_bytes).map_err(PackageCompatibilityError::InvalidManifest)?;
+    let root = std::fs::canonicalize(package_root)
+        .map_err(|_| PackageCompatibilityError::ExecutableOutsidePackage)?;
+    let executable = std::fs::canonicalize(executable)
+        .map_err(|_| PackageCompatibilityError::ExecutableOutsidePackage)?;
+    let relative = executable
+        .strip_prefix(&root)
+        .map_err(|_| PackageCompatibilityError::ExecutableOutsidePackage)?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let target = manifest
+        .manifest()
+        .targets
+        .iter()
+        .find(|target| target.entrypoint == relative)
+        .ok_or(PackageCompatibilityError::ExecutableNotDeclared)?;
+    Ok(evaluate_target(target, environment, emulation_policy))
+}
+
+/// Evaluate every manifest target for import or update selection. Callers can
+/// display the retained `tested_on` declarations separately from the verdict;
+/// tested coverage never changes eligibility.
+pub fn assess_manifest_targets(
+    manifest_bytes: &[u8],
+    environment: &PluginEnvironment,
+    emulation_policy: EmulationPolicy,
+) -> Result<Vec<TargetCompatibilityAssessment>, PackageCompatibilityError> {
+    let manifest =
+        Manifest::parse_json(manifest_bytes).map_err(PackageCompatibilityError::InvalidManifest)?;
+    Ok(manifest
+        .manifest()
+        .targets
+        .iter()
+        .cloned()
+        .map(|target| TargetCompatibilityAssessment {
+            verdict: evaluate_target(&target, environment, emulation_policy),
+            target,
+        })
+        .collect())
+}
+
+/// Detect the current execution environment and assess every declared target.
+/// Both the OS probes and manifest evaluation run off the UI/executor thread.
+pub async fn assess_manifest_for_current_environment(
+    manifest_bytes: Vec<u8>,
+    emulation_policy: EmulationPolicy,
+) -> Result<(PluginEnvironment, Vec<TargetCompatibilityAssessment>), PackageCompatibilityError> {
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(PackageCompatibilityError::EnvironmentDetection)?;
+    let evaluation_environment = environment.clone();
+    let assessments = tokio::task::spawn_blocking(move || {
+        assess_manifest_targets(&manifest_bytes, &evaluation_environment, emulation_policy)
+    })
+    .await
+    .map_err(|_| PackageCompatibilityError::WorkerFailed)??;
+    Ok((environment, assessments))
 }
 
 impl CompatibilityVerdict {
@@ -520,6 +613,62 @@ mod tests {
             evaluate_target(&target, &environment, EmulationPolicy::RequireNative).state,
             CompatibilityState::Incompatible
         );
+    }
+
+    #[test]
+    fn package_assessment_uses_only_the_signed_declared_entrypoint() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("bin")).unwrap();
+        let executable = directory.path().join("bin/plugin");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let manifest = br#"{
+            "schema":1,
+            "id":"org.example.reader",
+            "kind":"provider",
+            "provider_id":"example-reader",
+            "name":"Reader",
+            "version":"1.0.0",
+            "api":{"min":"1.4.0","max":"1.4.0"},
+            "targets":[{"os":"linux","arch":"x86_64","abi":"gnu","entrypoint":"bin/plugin","tested_on":[{"distribution":"fedora","version":"40"}]}],
+            "publisher":{"key_id":"fixture","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+            "license":{"expression":"MIT","files":["licenses/LICENSE"]}
+        }"#;
+
+        let compatible = assess_package(
+            directory.path(),
+            &executable,
+            manifest,
+            &linux_environment(),
+            EmulationPolicy::RequireNative,
+        )
+        .unwrap();
+        assert_eq!(compatible.state, CompatibilityState::Compatible);
+        let assessments = assess_manifest_targets(
+            manifest,
+            &linux_environment(),
+            EmulationPolicy::RequireNative,
+        )
+        .unwrap();
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].verdict.state, CompatibilityState::Compatible);
+        assert_eq!(
+            assessments[0].target.tested_on[0].distribution.as_deref(),
+            Some("fedora")
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_executable = outside.path().join("plugin");
+        std::fs::write(&outside_executable, b"fixture").unwrap();
+        assert!(matches!(
+            assess_package(
+                directory.path(),
+                &outside_executable,
+                manifest,
+                &linux_environment(),
+                EmulationPolicy::RequireNative,
+            ),
+            Err(PackageCompatibilityError::ExecutableOutsidePackage)
+        ));
     }
 
     #[test]

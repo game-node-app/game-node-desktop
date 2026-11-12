@@ -28,6 +28,7 @@ pub struct ProcessConfig {
 pub struct PackageIntegrity {
     pub package_root: PathBuf,
     pub publisher_key: [u8; 32],
+    pub emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy,
 }
 
 async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
@@ -35,12 +36,30 @@ async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
         return Ok(());
     };
     let executable = config.executable.clone();
+    let environment = gamenode_platform::plugin_environment::detect()
+        .await
+        .map_err(|_| Status::unavailable("plugin execution environment could not be detected"))?;
     tokio::task::spawn_blocking(move || {
-        gamenode_platform::plugin_packages::verify_installed_package(
+        let integrity_manifest = gamenode_platform::plugin_packages::verify_package_directory(
             &integrity.package_root,
             &integrity.publisher_key,
         )
         .map_err(|_| Status::failed_precondition("plugin package integrity check failed"))?;
+        let manifest_path = integrity.package_root.join("plugin.json");
+        let metadata = std::fs::metadata(&manifest_path)
+            .map_err(|_| Status::failed_precondition("plugin manifest is unavailable"))?;
+        if metadata.len() > 4 * 1024 * 1024 {
+            return Err(Status::failed_precondition("plugin manifest is invalid"));
+        }
+        let manifest = std::fs::read(&manifest_path)
+            .map_err(|_| Status::failed_precondition("plugin manifest is unavailable"))?;
+        use sha2::Digest;
+        let manifest_hash = format!("{:x}", sha2::Sha256::digest(&manifest));
+        if integrity_manifest.files.0.get("plugin.json") != Some(&manifest_hash) {
+            return Err(Status::failed_precondition(
+                "plugin manifest changed during compatibility validation",
+            ));
+        }
         let root = std::fs::canonicalize(&integrity.package_root)
             .map_err(|_| Status::failed_precondition("plugin package is unavailable"))?;
         let target = std::fs::canonicalize(executable)
@@ -49,6 +68,20 @@ async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
             return Err(Status::failed_precondition(
                 "plugin executable is outside its verified package",
             ));
+        }
+        let verdict = super::compatibility::assess_package(
+            &root,
+            &target,
+            &manifest,
+            &environment,
+            integrity.emulation_policy,
+        )
+        .map_err(|_| Status::failed_precondition("plugin target compatibility is invalid"))?;
+        if verdict.state != super::compatibility::CompatibilityState::Compatible {
+            return Err(Status::failed_precondition(format!(
+                "plugin target compatibility is {:?}: {:?}",
+                verdict.state, verdict.reasons
+            )));
         }
         Ok(())
     })

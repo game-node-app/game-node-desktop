@@ -43,11 +43,17 @@ pub const BACKUPS_READ: &str = "backups.read";
 pub const BACKUPS_CREATE: &str = "backups.create";
 pub const BACKUPS_RESTORE: &str = "backups.restore";
 pub const LIBRARY_ROOTS_READ: &str = "library.roots.read";
-pub const LIBRARY_ROOTS_WRITE: &str = "library.roots.write";
+pub const LIBRARY_ROOTS_CREATE: &str = "library.roots.create";
+pub const LIBRARY_ROOTS_UPDATE: &str = "library.roots.update";
 pub const LIBRARY_ROOTS_DELETE: &str = "library.roots.delete";
 pub const GAME_RUNTIME_READ: &str = "game.runtime.read";
-pub const GAME_RUNTIME_WRITE: &str = "game.runtime.write";
+pub const GAME_RUNTIME_CREATE: &str = "game.runtime.create";
+pub const GAME_RUNTIME_UPDATE: &str = "game.runtime.update";
 pub const GAME_RUNTIME_DELETE: &str = "game.runtime.delete";
+pub const GAME_SAVES_READ: &str = "game.saves.read";
+pub const GAME_SAVES_CREATE: &str = "game.saves.create";
+pub const GAME_SAVES_UPDATE: &str = "game.saves.update";
+pub const GAME_SAVES_DELETE: &str = "game.saves.delete";
 pub const STORAGE_DIAGNOSTICS_PUBLISH: &str = "storage.diagnostics.publish";
 pub const COMPUTER_HARDWARE_PUBLISH: &str = "computer.hardware.publish";
 pub const GAME_PRESENCE_PUBLISH: &str = "game.presence.publish";
@@ -230,11 +236,17 @@ pub const KNOWN: &[&str] = &[
     BACKUPS_CREATE,
     BACKUPS_RESTORE,
     LIBRARY_ROOTS_READ,
-    LIBRARY_ROOTS_WRITE,
+    LIBRARY_ROOTS_CREATE,
+    LIBRARY_ROOTS_UPDATE,
     LIBRARY_ROOTS_DELETE,
     GAME_RUNTIME_READ,
-    GAME_RUNTIME_WRITE,
+    GAME_RUNTIME_CREATE,
+    GAME_RUNTIME_UPDATE,
     GAME_RUNTIME_DELETE,
+    GAME_SAVES_READ,
+    GAME_SAVES_CREATE,
+    GAME_SAVES_UPDATE,
+    GAME_SAVES_DELETE,
     STORAGE_DIAGNOSTICS_PUBLISH,
     COMPUTER_HARDWARE_PUBLISH,
     GAME_PRESENCE_PUBLISH,
@@ -274,10 +286,8 @@ pub const API_14_CAPABILITIES: &[&str] = &[
     BACKUPS_CREATE,
     BACKUPS_RESTORE,
     LIBRARY_ROOTS_READ,
-    LIBRARY_ROOTS_WRITE,
     LIBRARY_ROOTS_DELETE,
     GAME_RUNTIME_READ,
-    GAME_RUNTIME_WRITE,
     GAME_RUNTIME_DELETE,
     STORAGE_DIAGNOSTICS_PUBLISH,
     COMPUTER_HARDWARE_PUBLISH,

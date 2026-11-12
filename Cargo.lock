@@ -1530,6 +1530,7 @@ name = "gamenode-app"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "gamenode-api",
  "gamenode-core",
@@ -1540,6 +1541,7 @@ dependencies = [
  "getrandom 0.4.3",
  "httpmock",
  "mimalloc",
+ "ring",
  "rustix",
  "semver",
  "serde",

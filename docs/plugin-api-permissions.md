@@ -10,6 +10,16 @@ catalogs record ownership, permission, pagination, quota, revision, idempotency
 and commit-time authorization. Contract tests compare every catalog route to
 the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 
+The route tables below describe the API contract, not a claim that every route
+is currently served. At this implementation stage, `PluginApiServer` registers
+`PluginHost` and `ProviderHost`; it does not register `ResourceHost` or the
+domain services. Their RPCs therefore have no live handler that can enforce the
+listed grants yet. The persisted `PermissionGrantStore` also has not been wired
+into those RPC sessions. Treat the per-route checks and common-data selectors
+below as requirements for those handlers, not as evidence that an unavailable
+route is protected by runtime enforcement. Provider operation permissions and
+the permission-control methods that are mounted are enforced by `ProviderApi`.
+
 | Methods | Permission |
 | --- | --- |
 | `LibraryList`, `LibraryGet`, `LibraryWatch` | `library.read` (whole-library reads require `library.read.all`) |
@@ -75,10 +85,12 @@ save profiles; `selected_record_ids` names individual published records. A
 category selector requires its category grant, while each selected id requires
 its record grant and does not require category-wide access. Omitting the
 selector or sending it empty returns only data visible to the caller in its own
-scope. Selectors request data; they do not grant authority. The host checks each
-requested scope on every query. Activation grants only make queries eligible
-and do not trigger reads or delivery. Sensitive/custom datasets still require
-their separate sharing review, and secrets remain excluded.
+scope. Selectors request data; they do not grant authority. The contract
+requires the host to check each requested scope on every query. Activation
+grants only make queries eligible and do not trigger reads or delivery.
+Sensitive/custom datasets still require their separate sharing review, and
+secrets remain excluded. The common-data selector RPC handlers are not mounted
+yet, as noted above.
 
 The former `include_common` boolean and string `selected_categories` fields
 remain deprecated at their original wire numbers for draft-client decoding.
@@ -86,11 +98,15 @@ Hosts must ignore them for authorization and data inclusion.
 
 ## Host-side authorization audit
 
-The host retains a bounded recent history of denied authorization checks for
-diagnostics and permission UI. Each record identifies the acting plugin and
-provider, requested permission, denial reason, and grant revision. The history
-is available only to host code; it is not exposed through plugin RPCs. Session
-credentials, operation identifiers, cookies, and request payloads are omitted.
+The mounted provider API retains a bounded recent history (256 entries) of
+authorization denials for diagnostics and permission UI. Each record identifies
+the acting plugin and provider, requested permission, denial reason, and grant
+revision. The history is available only to host code; it is not exposed through
+plugin RPCs. Session credentials, operation identifiers, cookies, and request
+payloads are omitted. This is currently an in-memory denial history for the
+provider API; it is not yet a unified audit stream for all API 1.4 services.
+The separate permission-grant store has a bounded persisted domain-mutation
+audit model, but it is not yet connected to live RPC authorization.
 
 This audit describes API enforcement. A native plugin process can still access
 resources available to its operating-system identity, so API grants do not

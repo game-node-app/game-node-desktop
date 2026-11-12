@@ -79,7 +79,10 @@ fn selected_record_ids_are_explicit_independent_query_selectors() {
         common_data::selected_record_ids(Some(&selector)).unwrap(),
         vec!["runtime:one", "save:two"]
     );
-    assert_eq!(common_data::selected_record_ids(None).unwrap(), Vec::<&str>::new());
+    assert_eq!(
+        common_data::selected_record_ids(None).unwrap(),
+        Vec::<&str>::new()
+    );
     assert_eq!(
         common_data::selected_record_ids(Some(&CommonDataSelector {
             selected_record_ids: vec!["runtime:one".to_owned(), "runtime:one".to_owned()],

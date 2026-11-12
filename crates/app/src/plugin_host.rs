@@ -10,8 +10,10 @@ use std::io;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, transport::Server};
 
-pub mod login;
 pub mod compatibility;
+pub mod grants;
+pub mod login;
+pub mod managed_packages;
 pub mod package;
 pub mod process;
 pub mod provider;

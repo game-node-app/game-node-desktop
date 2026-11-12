@@ -39,17 +39,27 @@ fn common_data_fixture_matches_the_generated_wire_contract() {
         .flat_map(|file| &file.message_type)
         .find(|message| message.name.as_deref() == Some("CommonDataSelector"))
         .expect("CommonDataSelector descriptor");
-    let selected_ids = selector.field.iter()
+    let selected_ids = selector
+        .field
+        .iter()
         .find(|field| field.name.as_deref() == Some("selected_record_ids"))
         .expect("selected-record selector field");
     assert_eq!(selected_ids.number, Some(2));
     assert_eq!(selected_ids.label, Some(3));
 
-    let data_list = descriptor.file.iter().flat_map(|file| &file.message_type)
+    let data_list = descriptor
+        .file
+        .iter()
+        .flat_map(|file| &file.message_type)
         .find(|message| message.name.as_deref() == Some("DataListRequest"))
         .expect("DataListRequest descriptor");
-    assert!(data_list.field.iter().any(|field| field.name.as_deref() == Some("common_data_categories")),
-        "Data.List must support the same per-query category and record selector");
+    assert!(
+        data_list
+            .field
+            .iter()
+            .any(|field| field.name.as_deref() == Some("common_data_categories")),
+        "Data.List must support the same per-query category and record selector"
+    );
 
     for category in contract["categories"].as_array().unwrap() {
         let name = category["name"].as_str().unwrap();
@@ -79,8 +89,12 @@ fn common_data_fixture_matches_the_generated_wire_contract() {
                     category["number"].as_i64().unwrap() as i32
                 })
                 .collect(),
-            selected_record_ids: query["selected_records"].as_array().unwrap().iter()
-                .map(|id| id.as_str().unwrap().to_owned()).collect(),
+            selected_record_ids: query["selected_records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect(),
         };
         let selected = if query["selector"] == "omitted" {
             common_data::categories(None).unwrap()
@@ -95,7 +109,9 @@ fn common_data_fixture_matches_the_generated_wire_contract() {
         let selected_records = common_data::selected_record_ids(Some(&selector)).unwrap();
         let record_grants = query["record_grants"].as_array().unwrap();
         let records_authorized = selected_records.iter().all(|record| {
-            record_grants.iter().any(|grant| grant.as_str() == Some(*record))
+            record_grants
+                .iter()
+                .any(|grant| grant.as_str() == Some(*record))
         });
         let expected = query["expected"].as_str().unwrap();
         let actual = if selected.is_empty() && selected_records.is_empty() {

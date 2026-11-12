@@ -198,11 +198,59 @@ GameNode plugin integrity signatures from signatures used for any other
 message or product purpose. Rehash every payload from the immutable installed
 version immediately before launch.
 
+Managed package validation and update selection verify the signature and manifest, evaluate all
+declared targets against the detected effective environment, and expose typed verdicts with the
+author-tested declarations kept informational. Installation or activation requires exactly one
+compatible target; incompatible and indeterminate candidates leave the active version and plugin
+data untouched. Re-activating a stored version repeats this check against current environment
+facts, and does not fall back to another version.
+
 The process supervisor accepts host-owned `PackageIntegrity` configuration for managed
 packages. Before creating launch credentials or spawning their executable, it revalidates the
-signed directory and verifies that the executable resolves inside that directory. Hashing and
-filesystem checks run on a blocking worker. Failed verification prevents process startup;
-managed-package composition must supply the pinned publisher key and immutable package root.
+signed directory, verifies that the executable resolves to its declared target inside that
+directory, and reevaluates target requirements against refreshed effective-environment facts.
+Unknown required facts and incompatible targets prevent startup; no fallback binary is tried.
+Hashing and filesystem checks run on a blocking worker. Managed-package composition must
+supply the pinned publisher key, immutable package root and explicit emulation policy.
+
+## Building and checking a package
+
+The repository tool `scripts/plugin-package.py` creates `.gnplugin` ZIP files, checks that
+manifest-referenced license/resource/schema/entrypoint files exist, hashes every payload file,
+signs the exact compact UTF-8 `integrity.json` bytes, and verifies the completed archive before
+returning success. It does not execute package contents or installation hooks. It rejects
+symlinks, special files, unsafe or case-colliding paths, payload changes, unlisted files and
+archives beyond the documented size limits. The host remains authoritative for full manifest,
+license, publisher-consent, target-compatibility and installation validation.
+
+Install the pinned tool dependency and generate a test-only key:
+
+```sh
+python3 -m pip install -r scripts/plugin-package-requirements.txt
+python3 scripts/plugin-package.py keygen --development --private-key ./fixture-dev.pem
+```
+
+The key-generation command prints the public key and fingerprint for the manifest's
+`publisher` object, writes a `.development-key` marker beside the private key, and warns that
+the generated key is for local fixtures only. When such a key signs a package, the tool includes
+`DEVELOPMENT-KEY.txt` inside the signed archive. Never distribute that key or present the
+resulting fingerprint as a production identity. Production signing keys must be provisioned and
+protected by the publisher; this repository tool does not manage production key custody.
+
+After adding the public key to `plugin.json`, build and verify without running plugin code:
+
+```sh
+python3 scripts/plugin-package.py pack \
+  --source ./plugin-package \
+  --private-key ./fixture-dev.pem \
+  --output ./plugin.gnplugin
+python3 scripts/plugin-package.py verify ./plugin.gnplugin
+```
+
+The `.gnplugin` file is a ZIP archive containing the source payload plus `integrity.json` and
+raw `signature.ed25519`. `pack` refuses a key that does not match the manifest publisher key.
+Deterministic Linux and Windows-shaped fixture round trips, tamper rejection, and inert hook
+content are covered by `python3 -m unittest scripts.tests.test_plugin_package_tool`.
 
 ## Example
 

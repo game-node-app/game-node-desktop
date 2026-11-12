@@ -1,6 +1,7 @@
 //! Adversarial authorization cases exercise public RPC/event handlers. Adapter
 //! entry counters ensure rejection happens before host I/O or publication.
 use super::*;
+use gamenode_plugin_protocol::prost::Message;
 use provider_host_server::ProviderHost;
 
 struct CountingServices {
@@ -164,6 +165,7 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
     let next_revision = h
         .api
         .replace_session_grants(&context.session_id, [cap::CONTEXT.to_owned()].into())
+        .await
         .unwrap();
     assert_eq!(next_revision, 2);
     let change = tokio::time::timeout(Duration::from_secs(1), changes.message())
@@ -179,6 +181,113 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
             .iter()
             .any(|grant| { grant.permission_id == cap::DISCOVERY && grant.state == "denied" })
     );
+}
+
+#[tokio::test]
+async fn queued_storage_is_fenced_when_revocation_wins_commit_lock() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT]).await;
+    let context = h.client.host.context().clone();
+    let provider = lock(&h.api.state).providers.get("fixture").unwrap().clone();
+    let (operation_result, _) = oneshot::channel();
+    lock(&h.api.state).operations.insert(
+        (context.session_id.clone(), context.operation_id.clone()),
+        Operation {
+            context: context.clone(),
+            kind: ProviderOperation::Initialize,
+            permissions: [cap::CONTEXT].into(),
+            catalog: CatalogTransfer::default(),
+            result: operation_result,
+            identity_revision: 0,
+            secret_written: false,
+            secret_deleted: false,
+            identity_accepted: false,
+            settings: None,
+        },
+    );
+    let held = provider.commits.clone().lock_owned().await;
+
+    let revoke_api = h.api.clone();
+    let session_id = context.session_id.clone();
+    let (revoke_started, revoke_ready) = tokio::sync::oneshot::channel();
+    let mut revoke = tokio::spawn(async move {
+        revoke_started.send(()).unwrap();
+        revoke_api
+            .replace_session_grants(&session_id, BTreeSet::new())
+            .await
+    });
+    revoke_ready.await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut revoke)
+            .await
+            .is_err()
+    );
+
+    let (storage_started, storage_ready) = tokio::sync::oneshot::channel();
+    let committed = Arc::new(AtomicUsize::new(0));
+    let committed_by_work = committed.clone();
+    let lease = Lease {
+        api: h.api.clone(),
+        context,
+        permission: cap::CONTEXT,
+    };
+    let storage = tokio::spawn(async move {
+        storage_started.send(()).unwrap();
+        lease
+            .storage(move || {
+                committed_by_work.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+    });
+    storage_ready.await.unwrap();
+    tokio::task::yield_now().await;
+    drop(held);
+
+    assert_eq!(revoke.await.unwrap().unwrap(), 2);
+    let status = storage.await.unwrap().unwrap_err();
+    assert!(matches!(
+        status.code(),
+        tonic::Code::PermissionDenied | tonic::Code::FailedPrecondition
+    ));
+    assert_eq!(committed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn revocation_cancels_pending_operations_with_revisioned_denial() {
+    let (h, _) = Harness::with_grants(&[cap::CONTEXT, cap::DISCOVERY]).await;
+    let context = h.client.host.context().clone();
+    let api = h.api.clone();
+    let pending =
+        tokio::spawn(async move { api.execute("fixture", ProviderOperation::Discover).await });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if lock(&h.api.state)
+                .operations
+                .iter()
+                .any(|((session_id, _), operation)| {
+                    session_id == &context.session_id
+                        && operation.kind == ProviderOperation::Discover
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    h.api
+        .replace_session_grants(&context.session_id, [cap::CONTEXT.to_owned()].into())
+        .await
+        .unwrap();
+    let status = pending.await.unwrap().unwrap_err();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(status.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::Revoked as i32);
+    assert_eq!(detail.permission_id, cap::DISCOVERY);
+    assert_eq!(detail.grant_revision, 2);
 }
 
 #[tokio::test]
@@ -425,7 +534,10 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
                 .execute("fixture", case.operation())
                 .await
                 .unwrap_err();
-            assert_eq!(error.code(), tonic::Code::Unimplemented, "{case:?}");
+            assert_eq!(error.code(), tonic::Code::PermissionDenied, "{case:?}");
+            let detail = DenialDetail::decode(error.details()).unwrap();
+            assert_eq!(detail.reason, DenialReason::NotGranted as i32, "{case:?}");
+            assert_eq!(detail.permission_id, case.capability(), "{case:?}");
             assert!(
                 tokio::time::timeout(Duration::from_millis(10), h.client.commands.message())
                     .await

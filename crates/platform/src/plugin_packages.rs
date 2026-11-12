@@ -664,7 +664,7 @@ mod tests {
     use std::{collections::BTreeSet, fs::File, io::Write};
 
     use tempfile::tempdir;
-    use zip::{write::SimpleFileOptions, ZipWriter};
+    use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::*;
 

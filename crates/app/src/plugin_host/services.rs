@@ -239,7 +239,7 @@ impl ProviderServices {
     fn scope(&self, lease: &Lease) -> Result<(), Status> {
         lease.check()?;
         if lease.context.provider_id != self.context.provider_id {
-            return Err(Status::permission_denied("provider service scope denied"));
+            return Err(lease.deny_scope());
         }
         Ok(())
     }
@@ -271,7 +271,9 @@ impl HostServices for ProviderServices {
                 .try_into()
                 .map_err(|_| Status::invalid_argument("invalid account identity"))?;
             if validated.provider != provider {
-                return Err(Status::permission_denied("account scope denied"));
+                return Err(
+                    lease.deny_scope_for(gamenode_plugin_protocol::capability::ACCOUNT_PUBLISH)
+                );
             }
         }
         let accounts = lock(&self.accounts).clone();
@@ -337,17 +339,18 @@ impl HostServices for ProviderServices {
 
     async fn secret(&self, lease: Lease, request: SecretRequest) -> Result<SecretReply, Status> {
         self.scope(&lease)?;
-        if request.key != "session" {
-            return Err(Status::permission_denied("secret scope denied"));
-        }
         let operation = SecretOperation::try_from(request.operation)
             .map_err(|_| Status::invalid_argument("invalid secret operation"))?;
-        lease.require(match operation {
+        let permission = match operation {
             SecretOperation::Read => gamenode_plugin_protocol::capability::SECRET_READ,
             SecretOperation::Write => gamenode_plugin_protocol::capability::SECRET_WRITE,
             SecretOperation::Delete => gamenode_plugin_protocol::capability::SECRET_DELETE,
             _ => return Err(Status::invalid_argument("invalid secret operation")),
-        })?;
+        };
+        lease.require(permission)?;
+        if request.key != "session" {
+            return Err(lease.deny_scope_for(permission));
+        }
         let value = request
             .value
             .map(|value| {
@@ -434,7 +437,7 @@ impl HostServices for ProviderServices {
                 .as_ref()
                 .is_some_and(|uri| Some(uri) != self.actions.install_uri.as_ref())
         {
-            return Err(Status::permission_denied("provider action scope denied"));
+            return Err(lease.deny_scope());
         }
         Ok(ActionReply { accepted: true })
     }

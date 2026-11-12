@@ -1536,7 +1536,7 @@ mod tests {
                 provider_name: "Steam".into(),
                 installed: true,
                 owned: false,
-                family_shared: false,
+                shared: false,
                 status: MatchStatus::Matched {
                     game_id: 620,
                     source: MatchSource::Automatic,

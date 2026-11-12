@@ -155,7 +155,7 @@ struct State {
         (String, String),
         gamenode_core::achievements::StoredAchievementSummary,
     >,
-    /// The UI locale Steam achievement text is requested in.
+    /// The UI locale achievement text is requested in.
     achievement_language: String,
 }
 
@@ -370,7 +370,7 @@ impl Engine {
             }
             view
         });
-        let store_accounts = self.store_accounts(library.as_ref());
+        let store_accounts = self.store_accounts(library.as_ref(), state.library.providers());
         // Details loaded for the previous selection do not belong to the new one.
         let selection = library.as_ref().map(|view| view.selected.clone());
         if selection != state.published_selection {
@@ -401,13 +401,15 @@ impl Engine {
         snapshot
     }
 
-    /// Provider account states, with the library's live counts. Counts are zero while no GameNode
-    /// account's library is open; the card itself still renders.
+    /// Provider account states, with the library's live counts and the providers' declared
+    /// shared labels. Counts are zero while no GameNode account's library is open; the card
+    /// itself still renders.
     fn store_accounts(
         &self,
         library: Option<&gamenode_core::library::LibraryView>,
+        providers: &[gamenode_core::provider::Provider],
     ) -> Vec<StoreAccountView> {
-        self.provider_account_views(library)
+        self.provider_account_views(library, providers)
     }
 
     fn publish(&self, state: &mut State) {
@@ -453,7 +455,7 @@ impl Engine {
         self.publish(&mut state);
     }
 
-    /// Drops one provider's owned and family facts and persists the clear. Entries, matches and
+    /// Drops one provider's owned and shared facts and persists the clear. Entries, matches and
     /// covers are kept. While the library is loading its cache the in-memory clear is deferred
     /// until the cache is installed, so the old account's cached facts cannot come back.
     fn clear_store_catalog(&self, provider: &str) {
@@ -495,7 +497,7 @@ impl Engine {
                 op,
                 provider,
                 owned: None,
-                family: None,
+                shared: None,
                 now: unix_now(),
             });
             return;
@@ -1036,7 +1038,7 @@ impl Engine {
                 ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
             }),
             // The account service validates the session (persisting a rotated cookie) and fetches
-            // the owned and family catalogs; the engine applies the result here.
+            // the owned and shared catalogs; the engine applies the result here.
             LibEffect::SyncCatalog { op, provider } => {
                 // The machine accepted a pending request: it emitted the sync for it. While the
                 // cache is installing, this is only the scan's own sync and the request stays

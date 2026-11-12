@@ -439,7 +439,7 @@ fn the_view_separates_the_visible_total_from_the_installed_total() {
             count.count,
             count.installed_count,
             count.owned_count,
-            count.family_count
+            count.shared_count
         ),
         (3, 1, 1, 1)
     );

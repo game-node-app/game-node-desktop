@@ -46,6 +46,9 @@ export const DetailPane: React.FC = () => {
 
   const layout = library?.layout;
   const detail = library?.detail;
+  const sharedLabel =
+    library?.providers.find((provider) => provider.id === detail?.row.provider)?.sharedLabel ??
+    null;
   // PC ports keys provenance by `drmfree:<id>`; the library's own manual entries are
   // `manual:<id>`. The host renders both from the same row.
   const portProvenance =
@@ -315,13 +318,13 @@ export const DetailPane: React.FC = () => {
                     {detail.releaseYear ? `${detail.releaseYear} · ` : ''}
                     {detail.row.providerName}
                   </span>
-                  {detail.row.familyShared && !detail.row.owned && (
+                  {sharedLabel && detail.row.shared && !detail.row.owned && (
                     <span
-                      data-testid="detail-family-label"
+                      data-testid="detail-shared-label"
                       className="inline-flex items-center gap-1 rounded-xs bg-accent-subtle px-1.5 py-px text-[11px] font-medium text-brand"
                     >
                       <IconUsersGroup size={12} stroke={1.75} aria-hidden />
-                      {t('Library::Steam Family')}
+                      {t('Library::Shared through {label}', { label: sharedLabel })}
                     </span>
                   )}
                 </div>
@@ -542,7 +545,8 @@ export const DetailPane: React.FC = () => {
                           >
                             {achievementSummary.failure === 'privacy'
                               ? t(
-                                  'Library::Steam privacy settings prevent reading these achievements.',
+                                  'Library::{store} privacy settings prevent reading these achievements.',
+                                  { store: detail.row.providerName },
                                 )
                               : t(
                                   'Library::Achievements could not be updated. Showing the last saved data.',
@@ -584,7 +588,8 @@ export const DetailPane: React.FC = () => {
                       >
                         {achievementSummary.failure === 'privacy'
                           ? t(
-                              'Library::Steam privacy settings prevent reading these achievements.',
+                              'Library::{store} privacy settings prevent reading these achievements.',
+                              { store: detail.row.providerName },
                             )
                           : t('Library::Achievements could not be loaded.')}
                       </div>
@@ -600,14 +605,18 @@ export const DetailPane: React.FC = () => {
                         data-testid="detail-achievements-expired"
                         className="text-sm text-text-dimmed"
                       >
-                        {t('Library::Sign in to Steam again to see achievements.')}
+                        {t('Library::Sign in to {store} again to see achievements.', {
+                          store: detail.row.providerName,
+                        })}
                       </div>
                     ) : (
                       <div
                         data-testid="detail-achievements-not-connected"
                         className="text-sm text-text-dimmed"
                       >
-                        {t('Library::Connect Steam to see achievements.')}
+                        {t('Library::Connect {store} to see achievements.', {
+                          store: detail.row.providerName,
+                        })}
                       </div>
                     )}
                   </div>
@@ -911,6 +920,7 @@ export const DetailPane: React.FC = () => {
           onClose={() => setAchievementsOpen(false)}
           entryKey={detail.row.key}
           gameTitle={detail.row.title}
+          providerName={detail.row.providerName}
         />
       )}
     </div>

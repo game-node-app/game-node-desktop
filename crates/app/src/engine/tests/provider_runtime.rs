@@ -273,10 +273,10 @@ impl Scripted {
     fn set_catalog(
         &self,
         owned: Option<Result<Vec<models::CatalogRecord>, models::CatalogError>>,
-        family: Option<Result<Vec<models::CatalogRecord>, models::CatalogError>>,
+        shared: Option<Result<Vec<models::CatalogRecord>, models::CatalogError>>,
         now: i64,
     ) {
-        self.state.lock().unwrap().catalog = models::CatalogUpdate { owned, family, now };
+        self.state.lock().unwrap().catalog = models::CatalogUpdate { owned, shared, now };
     }
     /// A one-shot sync answer, with its own disposition, before the default catalog applies.
     fn queue_sync(&self, step: Step, catalog: models::CatalogUpdate) {
@@ -385,8 +385,8 @@ impl ProviderRuntime for Scripted {
             if let Some(owned) = &catalog.owned {
                 state.status.catalog_error = owned.as_ref().err().copied();
             }
-            if let Some(family) = &catalog.family {
-                state.status.family_error = family.as_ref().err().copied();
+            if let Some(shared) = &catalog.shared {
+                state.status.shared_error = shared.as_ref().err().copied();
             }
         }
         let status = state.status.clone();
@@ -419,7 +419,7 @@ fn account_status(state: models::AccountState) -> models::AccountStatus {
         storage: models::StorageMethod::SecretService,
         persist_failed: false,
         catalog_error: None,
-        family_error: None,
+        shared_error: None,
     }
 }
 
@@ -449,7 +449,7 @@ fn account(id: &str, name: &str) -> LastAccount {
     }
 }
 
-fn entry(key: &str, name: &str, installed: bool, owned: bool, family: bool) -> StoredEntry {
+fn entry(key: &str, name: &str, installed: bool, owned: bool, shared: bool) -> StoredEntry {
     StoredEntry {
         key: key.to_owned(),
         provider: "steam".to_owned(),
@@ -463,7 +463,7 @@ fn entry(key: &str, name: &str, installed: bool, owned: bool, family: bool) -> S
         fields: Default::default(),
         installed,
         owned,
-        family_shared: family,
+        shared,
         first_seen: 1,
         last_seen: 1,
     }
@@ -494,6 +494,57 @@ fn signed_out_harness(scripted: Arc<Scripted>) -> Harness {
     h
 }
 
+/// The bundled Steam manifest with its shared declaration removed, so the host loads a catalog
+/// provider that may not report shared access.
+fn steam_without_shared_declaration() -> Vec<gamenode_core::provider::Provider> {
+    let manifest = include_str!("../../../../../providers/steam.toml")
+        .replace("shared = { label = \"Steam Family\" }\n", "");
+    assert!(
+        !manifest.contains("shared ="),
+        "the test manifest no longer declares shared access"
+    );
+    let backend = gamenode_core::provider::PluginBackend {
+        plugin_id: "org.gamenode.plugin.steam-discovery".into(),
+        provider_id: "steam".into(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+        achievements: true,
+    };
+    let loaded = gamenode_core::provider::load_with_plugins(
+        &[("steam.toml", manifest.as_str())],
+        Platform::Linux,
+        &[backend],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    loaded.providers
+}
+
+fn scripted_harness_with_providers(
+    scripted: Arc<Scripted>,
+    providers: Vec<gamenode_core::provider::Provider>,
+) -> Harness {
+    let h = harness_with_providers(
+        FakeApi::new(),
+        FakeCreds::with(Some("stored-session")),
+        None,
+        providers,
+    );
+    h.engine.set_provider_runtime(scripted);
+    h
+}
+
+async fn wait_for_catalog_sync(scripted: &Scripted) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while scripted.calls(ProviderOperation::SyncCatalog) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the catalog sync ran");
+}
+
 async fn settled(h: &mut Harness) {
     loop {
         h.snapshots.borrow_and_update();
@@ -519,7 +570,7 @@ fn card(snapshot: &Snapshot) -> &gamenode_core::snapshot::StoreAccountView {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_connected_provider_applies_its_owned_family_and_installed_catalog() {
+async fn a_connected_provider_applies_its_owned_shared_and_installed_catalog() {
     let scripted = Arc::new(Scripted::connected("steam"));
     scripted.set_catalog(
         owned(vec![record("620", "Portal 2"), record("400", "Portals")]),
@@ -535,7 +586,7 @@ async fn a_connected_provider_applies_its_owned_family_and_installed_catalog() {
             s.store_accounts.first().is_some_and(|card| {
                 card.state == StoreAccountState::Connected
                     && card.owned_count == 2
-                    && card.family_count == 1
+                    && card.shared_count == 1
                     && card.installed_count == 1
             })
         })
@@ -548,6 +599,7 @@ async fn a_connected_provider_applies_its_owned_family_and_installed_catalog() {
     assert_eq!(card.account_id.as_deref(), Some("A"));
     assert_eq!(card.account_name.as_deref(), Some("cassi"));
     assert_eq!(card.installed_count, 1);
+    assert_eq!(card.shared_label.as_deref(), Some("Steam Family"));
     assert_eq!(card.last_checked_at, Some(1_000));
     assert!(card.can_check && card.can_sign_out);
     assert!(!card.can_sign_in);
@@ -559,6 +611,93 @@ async fn a_connected_provider_applies_its_owned_family_and_installed_catalog() {
     })
     .await
     .expect("the catalog is persisted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_catalog_data_from_an_undeclared_provider_fails_the_sync() {
+    let scripted = Arc::new(Scripted::connected("steam"));
+    scripted.set_catalog(
+        owned(vec![record("570", "Dota 2")]),
+        owned(vec![record("999", "Never accepted")]),
+        1_700_000_000,
+    );
+    let mut h =
+        scripted_harness_with_providers(scripted.clone(), steam_without_shared_declaration());
+    seed(
+        &h,
+        vec![
+            entry("steam:400", "Portals", false, true, false),
+            entry("steam:730", "Shared", false, false, true),
+        ],
+        Some(account("u1", "Ana")),
+    );
+
+    h.engine.start();
+    wait_for_catalog_sync(&scripted).await;
+    settled(&mut h).await;
+
+    let snapshot = h.engine.snapshot();
+    assert!(
+        has_row(&snapshot, "steam:400"),
+        "the previous owned fact is kept"
+    );
+    assert!(
+        has_row(&snapshot, "steam:730"),
+        "the previous shared fact is kept"
+    );
+    assert!(
+        !has_row(&snapshot, "steam:570"),
+        "the failed sync does not import its owned records"
+    );
+    assert!(
+        !has_row(&snapshot, "steam:999"),
+        "the failed sync does not import its shared records"
+    );
+    assert!(
+        h.store.catalogs.lock().unwrap().is_empty(),
+        "nothing from the failed sync is persisted"
+    );
+    let catalog_error = h
+        .engine
+        .lock()
+        .library
+        .scan_state("steam")
+        .and_then(|state| state.catalog_error);
+    assert_eq!(
+        catalog_error,
+        Some(CoreCatalogError::Unreachable),
+        "the failed sync is recorded instead of completing without an error"
+    );
+    assert_eq!(
+        card(&snapshot).shared_label,
+        None,
+        "a provider without the declaration has no label"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declared_provider_may_finish_with_an_empty_shared_catalog() {
+    let scripted = Arc::new(Scripted::connected("steam"));
+    scripted.set_catalog(owned(vec![record("620", "Portal 2")]), owned(vec![]), 2);
+    let mut h = scripted_harness(scripted.clone());
+    seed(&h, vec![], Some(account("u1", "Ana")));
+
+    h.engine.start();
+    let snapshot = h
+        .until("an accepted empty shared catalog", |s| {
+            s.store_accounts.first().is_some_and(|card| {
+                card.state == StoreAccountState::Connected
+                    && card.owned_count == 1
+                    && card.shared_count == 0
+                    && card.shared_error.is_none()
+            })
+        })
+        .await;
+    assert!(has_row(&snapshot, "steam:620"));
+    assert_eq!(
+        card(&snapshot).shared_label.as_deref(),
+        Some("Steam Family")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -643,11 +782,11 @@ async fn a_changed_account_whose_catalog_fails_does_not_keep_the_old_owned_games
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_family_failure_keeps_the_owned_catalog_and_is_reported_separately() {
+async fn a_shared_failure_keeps_the_owned_catalog_and_is_reported_separately() {
     let scripted = Arc::new(Scripted::connected("steam"));
     scripted.set_catalog(
         owned(vec![record("400", "Portals")]),
-        Some(Err(models::CatalogError::FamilyUnavailable)),
+        Some(Err(models::CatalogError::SharedUnavailable)),
         2,
     );
     let mut h = scripted_harness(scripted);
@@ -656,12 +795,12 @@ async fn a_family_failure_keeps_the_owned_catalog_and_is_reported_separately() {
     h.engine.start();
     let snapshot = h
         .until(
-            "the owned catalog imports despite the family failure",
+            "the owned catalog imports despite the shared failure",
             |s| {
                 s.store_accounts.first().is_some_and(|card| {
                     card.state == StoreAccountState::Connected
                         && card.owned_count == 1
-                        && card.family_error == Some(CoreCatalogError::FamilyUnavailable)
+                        && card.shared_error == Some(CoreCatalogError::SharedUnavailable)
                 })
             },
         )
@@ -743,7 +882,7 @@ async fn a_superseded_catalog_result_after_sign_out_is_ignored() {
         Step::new(account_status(models::AccountState::NotConnected)).superseded(),
         models::CatalogUpdate {
             owned: owned(vec![record("400", "Portals")]),
-            family: None,
+            shared: None,
             now: 3,
         },
     );

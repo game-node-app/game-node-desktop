@@ -302,7 +302,7 @@ impl ProviderPlugin for SteamPlugin {
                         catalogs.push(value);
                     }
                     if let Some(value) =
-                        category(&host, CatalogCategory::Family, result.family, &excluded).await?
+                        category(&host, CatalogCategory::Shared, result.shared, &excluded).await?
                     {
                         catalogs.push(value);
                     }

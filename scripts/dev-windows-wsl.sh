@@ -38,20 +38,46 @@ if ! python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 4777))
     exit 1
 fi
 
+plugin_cargo_output=$(python3 scripts/bundled_plugins.py --platform windows --format cargo-args)
+plugin_files_output=$(python3 scripts/bundled_plugins.py --platform windows --format files)
+plugin_cargo_args=()
+while IFS= read -r plugin_arg; do
+    [[ -n "$plugin_arg" ]] && plugin_cargo_args+=("$plugin_arg")
+done <<< "$plugin_cargo_output"
+plugin_files=()
+while IFS= read -r plugin_file; do
+    [[ -n "$plugin_file" ]] && plugin_files+=("$plugin_file")
+done <<< "$plugin_files_output"
+if [[ ${#plugin_files[@]} -eq 0 ]]; then
+    echo 'No bundled plugins are declared for Windows.' >&2
+    exit 1
+fi
+
 target_dir="$repo_root/target/windows-hmr"
 binary_dir="$target_dir/x86_64-pc-windows-msvc/debug"
 echo 'Building the current Windows development executable...'
 XWIN_ARCH=x86_64 CARGO_TARGET_DIR="$target_dir" cargo xwin build \
-    --locked --bins -p gamenode-app -p gamenode-plugin-steam -p gamenode-plugin-epic \
+    --locked --bins -p gamenode-app \
     --no-default-features --target x86_64-pc-windows-msvc
-[[ -f "$binary_dir/gamenode-plugin-steam.exe" ]] || {
-    echo 'The Windows Steam plugin was not built beside the desktop executable.' >&2
-    exit 1
-}
-[[ -f "$binary_dir/gamenode-plugin-epic.exe" ]] || {
-    echo 'The Windows Epic plugin was not built beside the desktop executable.' >&2
-    exit 1
-}
+XWIN_ARCH=x86_64 CARGO_TARGET_DIR="$target_dir" cargo xwin build \
+    --locked "${plugin_cargo_args[@]}" \
+    --no-default-features --target x86_64-pc-windows-msvc
+for plugin_file in "${plugin_files[@]}"; do
+    [[ -f "$binary_dir/$plugin_file" ]] || {
+        echo "The Windows provider plugin was not built beside the desktop executable: $binary_dir/$plugin_file" >&2
+        exit 1
+    }
+done
+# The Windows launcher reads this index; it never parses the TOML descriptors itself.
+python3 - "$binary_dir" <<'PY'
+from pathlib import Path
+import sys
+
+sys.path.insert(0, "scripts")
+import bundled_plugins
+
+bundled_plugins.write_index(Path(sys.argv[1]), "windows")
+PY
 
 # The native host expects its pinned backup helper and manifest beside the executable.
 if [[ ! -d "$binary_dir/backup-assets" && -d dist/windows/gamenode-desktop/backup-assets ]]; then

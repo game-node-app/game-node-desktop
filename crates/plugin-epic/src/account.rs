@@ -340,8 +340,8 @@ impl EpicAccount {
             storage: self.ports.credentials.method(),
             persist_failed: inner.persist_failed(),
             catalog_error: inner.catalog_error,
-            // Epic has no family sharing, so it never reports a family category.
-            family_error: None,
+            // Epic declares no shared catalog access, so it never reports a shared category.
+            shared_error: None,
         }
     }
 
@@ -559,7 +559,7 @@ impl EpicAccount {
             return EpicCatalogOutcome {
                 status: self.status(),
                 owned: None,
-                family: None,
+                shared: None,
                 now: self.ports.clock.now(),
                 account_changed: false,
                 superseded: false,
@@ -569,7 +569,7 @@ impl EpicAccount {
         EpicCatalogOutcome {
             status: outcome.status.clone(),
             owned: outcome.owned.clone(),
-            family: None,
+            shared: None,
             now: outcome.now,
             account_changed: outcome.account_changed,
             superseded: outcome.superseded,

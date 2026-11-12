@@ -49,7 +49,12 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
-        Self::with_extra_capabilities(&[]).await
+        Self::build(&[], false).await
+    }
+
+    /// A harness whose trusted descriptor declares shared catalog access.
+    async fn with_shared_catalog() -> Self {
+        Self::build(&[], true).await
     }
 
     /// A harness whose descriptor also grants the counter capability.
@@ -58,6 +63,10 @@ impl Harness {
     }
 
     async fn with_extra_capabilities(extra: &[&'static str]) -> Self {
+        Self::build(extra, false).await
+    }
+
+    async fn build(extra: &[&'static str], shared_catalog: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -79,6 +88,7 @@ impl Harness {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
+            shared_catalog,
             services: services.clone(),
         })
         .unwrap();

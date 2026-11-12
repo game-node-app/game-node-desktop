@@ -39,7 +39,7 @@ function createMockRows(count: number): Row[] {
     providerName: 'Steam',
     installed: true,
     owned: true,
-    familyShared: false,
+    shared: false,
     running: i === 0,
     status:
       i % 3 === 0
@@ -178,7 +178,7 @@ describe('Library Feature Tests', () => {
         access: 'verified',
         total: 500,
         installedTotal: 500,
-        providers: [{ id: 'steam', name: 'Steam', count: 500, installedCount: 500, ownedCount: 0, familyCount: 0 }],
+        providers: [{ id: 'steam', name: 'Steam', count: 500, installedCount: 500, ownedCount: 0, sharedCount: 0, sharedLabel: 'Steam Family' }],
         rows: createMockRows(500),
         scanning: false,
         failedProviders: [],
@@ -228,7 +228,7 @@ describe('Library Feature Tests', () => {
         access: 'verified',
         total: 500,
         installedTotal: 500,
-        providers: [{ id: 'steam', name: 'Steam', count: 500, installedCount: 500, ownedCount: 0, familyCount: 0 }],
+        providers: [{ id: 'steam', name: 'Steam', count: 500, installedCount: 500, ownedCount: 0, sharedCount: 0, sharedLabel: 'Steam Family' }],
         rows: createMockRows(500),
         scanning: false,
         failedProviders: [],

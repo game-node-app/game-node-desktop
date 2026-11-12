@@ -45,18 +45,41 @@ enum_wire!(
     SecretService,
     PrivateFile
 );
-enum_wire!(
-    CatalogError,
-    CatalogFailure,
-    Unreachable,
-    RateLimited,
-    Server,
-    Expired,
-    Privacy,
-    Changed,
-    InvalidCredential,
-    FamilyUnavailable
-);
+// `CatalogError` is provider-neutral, while the wire enum keeps its historical
+// `FamilyUnavailable` name. Only the number crosses the wire, so the two names
+// map onto each other without a protocol change.
+impl From<CatalogError> for proto::CatalogFailure {
+    fn from(value: CatalogError) -> Self {
+        match value {
+            CatalogError::Unreachable => Self::Unreachable,
+            CatalogError::RateLimited => Self::RateLimited,
+            CatalogError::Server => Self::Server,
+            CatalogError::Expired => Self::Expired,
+            CatalogError::Privacy => Self::Privacy,
+            CatalogError::Changed => Self::Changed,
+            CatalogError::InvalidCredential => Self::InvalidCredential,
+            CatalogError::SharedUnavailable => Self::FamilyUnavailable,
+        }
+    }
+}
+
+impl TryFrom<proto::CatalogFailure> for CatalogError {
+    type Error = WireError;
+
+    fn try_from(value: proto::CatalogFailure) -> Result<Self, Self::Error> {
+        match value {
+            proto::CatalogFailure::Unreachable => Ok(Self::Unreachable),
+            proto::CatalogFailure::RateLimited => Ok(Self::RateLimited),
+            proto::CatalogFailure::Server => Ok(Self::Server),
+            proto::CatalogFailure::Expired => Ok(Self::Expired),
+            proto::CatalogFailure::Privacy => Ok(Self::Privacy),
+            proto::CatalogFailure::Changed => Ok(Self::Changed),
+            proto::CatalogFailure::InvalidCredential => Ok(Self::InvalidCredential),
+            proto::CatalogFailure::FamilyUnavailable => Ok(Self::SharedUnavailable),
+            _ => Err(WireError),
+        }
+    }
+}
 
 impl From<CatalogRecord> for proto::CatalogGame {
     fn from(record: CatalogRecord) -> Self {
@@ -139,8 +162,8 @@ impl From<AccountStatus> for proto::AccountStatus {
             catalog_error: status
                 .catalog_error
                 .map(|error| proto::CatalogFailure::from(error) as i32),
-            family_error: status
-                .family_error
+            shared_error: status
+                .shared_error
                 .map(|error| proto::CatalogFailure::from(error) as i32),
         }
     }
@@ -182,7 +205,7 @@ impl TryFrom<proto::AccountStatus> for AccountStatus {
                 .try_into()?,
             persist_failed: status.persist_failed,
             catalog_error: status.catalog_error.map(error).transpose()?,
-            family_error: status.family_error.map(error).transpose()?,
+            shared_error: status.shared_error.map(error).transpose()?,
         })
     }
 }

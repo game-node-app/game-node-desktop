@@ -129,9 +129,10 @@ export const StoreAccountCard: React.FC<StoreAccountCardProps> = ({
   const identity = account.accountName ?? account.accountId;
   const showCounts =
     account.state !== 'signingIn' &&
-    (account.ownedCount > 0 || account.familyCount > 0 || account.installedCount > 0);
-  // Providers without family sharing never report a family count or a family outcome.
-  const showFamily = account.familyCount > 0 || account.familyError !== null;
+    (account.ownedCount > 0 || account.sharedCount > 0 || account.installedCount > 0);
+  // Providers that declare no shared access never report shared counts or a shared outcome.
+  const showShared = account.sharedLabel !== null;
+  const sharedParams = { label: account.sharedLabel ?? '' };
   const checkLabel =
     account.lastCheckedAt !== null
       ? t('settings.storeLastCheck', { time: formatLastCheck(account.lastCheckedAt, locale) })
@@ -305,10 +306,10 @@ export const StoreAccountCard: React.FC<StoreAccountCardProps> = ({
             <dt className={settingsRowDescription}>{t('settings.storeOwned')}</dt>
             <dd className="text-md font-semibold text-white">{account.ownedCount}</dd>
           </div>
-          {showFamily && (
+          {showShared && (
             <div className={settingsStat}>
-              <dt className={settingsRowDescription}>{t('settings.storeShared')}</dt>
-              <dd className="text-md font-semibold text-white">{account.familyCount}</dd>
+              <dt className={settingsRowDescription}>{account.sharedLabel}</dt>
+              <dd className="text-md font-semibold text-white">{account.sharedCount}</dd>
             </div>
           )}
           <div className={settingsStat}>
@@ -332,10 +333,10 @@ export const StoreAccountCard: React.FC<StoreAccountCardProps> = ({
         )}
       </div>
 
-      {account.familyError && (
+      {showShared && account.sharedError && (
         <div className={settingsInfoBoxWarning} role="status">
           <IconUsers size={14} stroke={1.75} aria-hidden="true" />
-          <span>{t('settings.storeFamilyWarning', params)}</span>
+          <span>{t('settings.storeSharedWarning', sharedParams)}</span>
         </div>
       )}
 

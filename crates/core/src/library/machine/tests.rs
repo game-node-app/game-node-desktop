@@ -47,7 +47,7 @@ pub(crate) fn stored_with(
     name: &str,
     installed: bool,
     owned: bool,
-    family_shared: bool,
+    shared: bool,
 ) -> StoredEntry {
     StoredEntry {
         key: entry_key(provider, id),
@@ -58,7 +58,7 @@ pub(crate) fn stored_with(
         fields: Default::default(),
         installed,
         owned,
-        family_shared,
+        shared,
         first_seen: 100,
         last_seen: 100,
     }
@@ -700,14 +700,14 @@ fn catalog_synced(
     machine: &mut LibraryMachine,
     op: u64,
     owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     now: i64,
 ) -> Vec<Effect> {
     machine.handle(Input::CatalogSynced {
         op,
         provider: "steam".to_owned(),
         owned,
-        family,
+        shared,
         now,
     })
 }
@@ -732,7 +732,7 @@ fn a_catalog_sync_adds_owned_only_entries() {
     );
 
     let entry = machine.entry("steam:620").expect("a catalog entry exists");
-    assert!(entry.owned && !entry.installed && !entry.family_shared);
+    assert!(entry.owned && !entry.installed && !entry.shared);
     assert_eq!(entry.install_dir, "");
     assert_eq!(entry.name.as_deref(), Some("Portal 2"));
     assert_eq!((entry.first_seen, entry.last_seen), (10, 10));
@@ -746,7 +746,7 @@ fn a_catalog_sync_adds_owned_only_entries() {
     let state = machine.scan_state("steam").unwrap();
     assert_eq!(state.last_catalog_at, Some(10));
     assert_eq!(state.catalog_error, None);
-    assert_eq!(state.last_family_at, None);
+    assert_eq!(state.last_shared_at, None);
 }
 
 #[test]
@@ -873,7 +873,7 @@ fn an_owned_sync_keeps_installed_facts_and_the_installed_name() {
 }
 
 #[test]
-fn a_family_sync_marks_a_non_owned_entry_shared() {
+fn a_shared_sync_marks_a_non_owned_entry_shared() {
     let mut machine = ready(LibraryCache::default());
     let (op, _) = request_catalog(&mut machine);
     catalog_synced(
@@ -885,10 +885,10 @@ fn a_family_sync_marks_a_non_owned_entry_shared() {
     );
 
     let entry = machine.entry("steam:70").unwrap();
-    assert!(entry.family_shared && !entry.owned && !entry.installed);
+    assert!(entry.shared && !entry.owned && !entry.installed);
     let state = machine.scan_state("steam").unwrap();
-    assert_eq!(state.last_family_at, Some(10));
-    assert_eq!(state.family_error, None);
+    assert_eq!(state.last_shared_at, Some(10));
+    assert_eq!(state.shared_error, None);
     assert_eq!(state.last_catalog_at, None);
 }
 
@@ -906,11 +906,11 @@ fn owned_wins_when_the_same_app_is_also_shared() {
 
     let entry = machine.entry("steam:620").unwrap();
     assert!(entry.owned);
-    assert!(!entry.family_shared);
+    assert!(!entry.shared);
     let row = &machine.visible_rows("")[0];
-    assert!(row.owned && !row.family_shared);
+    assert!(row.owned && !row.shared);
     assert_eq!(
-        machine.scan_state("steam").unwrap().last_family_at,
+        machine.scan_state("steam").unwrap().last_shared_at,
         Some(10)
     );
 }
@@ -948,7 +948,7 @@ fn a_failed_owned_sync_keeps_the_previous_owned_facts() {
 }
 
 #[test]
-fn a_failed_family_sync_keeps_family_and_does_not_fail_owned() {
+fn a_failed_shared_sync_keeps_shared_and_does_not_fail_owned() {
     let mut machine = ready(LibraryCache::default());
     let (op, _) = request_catalog(&mut machine);
     catalog_synced(
@@ -964,15 +964,15 @@ fn a_failed_family_sync_keeps_family_and_does_not_fail_owned() {
         &mut machine,
         op,
         Some(Ok(vec![catalog_record("620", "Portal 2")])),
-        Some(Err(CatalogError::FamilyUnavailable)),
+        Some(Err(CatalogError::SharedUnavailable)),
         30,
     );
 
-    assert!(machine.entry("steam:70").unwrap().family_shared);
+    assert!(machine.entry("steam:70").unwrap().shared);
     assert!(machine.entry("steam:620").unwrap().owned);
     let state = machine.scan_state("steam").unwrap();
-    assert_eq!(state.family_error, Some(CatalogError::FamilyUnavailable));
-    assert_eq!(state.last_family_at, Some(10));
+    assert_eq!(state.shared_error, Some(CatalogError::SharedUnavailable));
+    assert_eq!(state.last_shared_at, Some(10));
     assert_eq!(state.last_catalog_at, Some(30));
     assert_eq!(state.catalog_error, None);
 }
@@ -1022,7 +1022,7 @@ fn clearing_the_catalog_keeps_entries_matches_and_covers() {
     let kept = machine
         .entry("steam:70")
         .expect("entries are never deleted");
-    assert!(!kept.owned && !kept.family_shared);
+    assert!(!kept.owned && !kept.shared);
     assert_eq!(machine.chosen_match("steam:70"), Some(&choice));
     assert_eq!(machine.game(7), Some(&game));
     assert!(machine.entry("steam:620").unwrap().installed);
@@ -1038,8 +1038,8 @@ fn clearing_the_catalog_keeps_entries_matches_and_covers() {
         (
             state.last_catalog_at,
             state.catalog_error,
-            state.last_family_at,
-            state.family_error
+            state.last_shared_at,
+            state.shared_error
         ),
         (None, None, None, None)
     );
@@ -1113,7 +1113,7 @@ fn catalog_records_respect_exclusions_and_drop_unusable_names() {
 }
 
 #[test]
-fn a_scan_does_not_change_owned_or_family_facts() {
+fn a_scan_does_not_change_owned_or_shared_facts() {
     let mut machine = ready(LibraryCache::default());
     let (op, _) = request_catalog(&mut machine);
     catalog_synced(
@@ -1130,8 +1130,8 @@ fn a_scan_does_not_change_owned_or_family_facts() {
     let installed = machine.entry("steam:620").unwrap();
     assert!(installed.installed && installed.owned);
     assert_eq!(installed.install_dir, "/p");
-    let family = machine.entry("steam:70").unwrap();
-    assert!(!family.installed && family.family_shared);
+    let shared = machine.entry("steam:70").unwrap();
+    assert!(!shared.installed && shared.shared);
 }
 
 #[test]
@@ -1209,7 +1209,7 @@ fn a_catalog_sync_leaves_installed_only_entries_alone() {
 
     let installed = machine.entry("steam:620").unwrap();
     assert!(installed.installed);
-    assert!(!installed.owned && !installed.family_shared);
+    assert!(!installed.owned && !installed.shared);
     assert_eq!(
         (installed.name.as_deref(), installed.install_dir.as_str()),
         (Some("Portal 2"), "/p")
@@ -1217,7 +1217,7 @@ fn a_catalog_sync_leaves_installed_only_entries_alone() {
 }
 
 #[test]
-fn a_family_sync_marks_an_installed_entry_shared_but_keeps_its_folder() {
+fn a_shared_sync_marks_an_installed_entry_shared_but_keeps_its_folder() {
     let cache = LibraryCache {
         entries: vec![stored("steam", "70", "Half-Life", true)],
         ..LibraryCache::default()
@@ -1234,14 +1234,14 @@ fn a_family_sync_marks_an_installed_entry_shared_but_keeps_its_folder() {
     );
 
     let entry = machine.entry("steam:70").unwrap();
-    assert!(entry.installed && entry.family_shared && !entry.owned);
+    assert!(entry.installed && entry.shared && !entry.owned);
     assert_eq!(entry.install_dir, "/h");
     assert_eq!(entry.name.as_deref(), Some("Half-Life"));
-    assert!(machine.visible_rows("")[0].family_shared);
+    assert!(machine.visible_rows("")[0].shared);
 }
 
 #[test]
-fn a_failed_owned_sync_does_not_block_a_family_sync() {
+fn a_failed_owned_sync_does_not_block_a_shared_sync() {
     let mut machine = ready(LibraryCache::default());
     let (op, _) = request_catalog(&mut machine);
     catalog_synced(
@@ -1262,10 +1262,10 @@ fn a_failed_owned_sync_does_not_block_a_family_sync() {
     );
 
     assert!(machine.entry("steam:1").unwrap().owned);
-    assert!(!machine.entry("steam:2").unwrap().family_shared, "replaced");
-    assert!(machine.entry("steam:3").unwrap().family_shared);
+    assert!(!machine.entry("steam:2").unwrap().shared, "replaced");
+    assert!(machine.entry("steam:3").unwrap().shared);
     let state = machine.scan_state("steam").unwrap();
     assert_eq!(state.catalog_error, Some(CatalogError::Server));
     assert_eq!(state.last_catalog_at, Some(10));
-    assert_eq!(state.last_family_at, Some(20));
+    assert_eq!(state.last_shared_at, Some(20));
 }

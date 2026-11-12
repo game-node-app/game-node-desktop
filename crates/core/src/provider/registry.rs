@@ -152,9 +152,17 @@ impl Provider {
             .filter(|field| !field.trim().is_empty())
     }
 
-    /// Whether the provider can read an owned/family catalog beyond installed games.
+    /// Whether the provider can read an owned/shared catalog beyond installed games.
     pub fn has_catalog(&self) -> bool {
         self.manifest.catalog.is_some()
+    }
+
+    /// The declared shared-access label, if this provider declares shared catalog access.
+    pub fn shared_label(&self) -> Option<&str> {
+        self.manifest
+            .shared
+            .as_ref()
+            .map(|shared| shared.label.as_str())
     }
 
     /// The built-in catalog backend the manifest names, if any.
@@ -380,6 +388,20 @@ fn validate(
             Some(id) if catalog.native.is_empty() && plugin(id)?.catalog => {}
             Some(_) => return Err("invalid or unauthorized plugin catalog declaration".into()),
             None => return Err(format!("unknown catalog backend `{}`", catalog.native)),
+        }
+    }
+    if let Some(shared) = &manifest.shared {
+        if manifest.catalog.is_none() {
+            return Err("`shared` requires `catalog`".into());
+        }
+        if shared.label.trim().is_empty() {
+            return Err("`shared.label` is empty".into());
+        }
+        if shared.label.chars().count() > 32 {
+            return Err("`shared.label` is longer than 32 characters".into());
+        }
+        if shared.label.chars().any(char::is_control) {
+            return Err("`shared.label` contains a control character".into());
         }
     }
     if let Some(playtime) = &manifest.playtime {

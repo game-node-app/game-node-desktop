@@ -22,11 +22,16 @@ The browser may ask permission to open GameNode when completing sign-in.
 gamenode-desktop/
 ├── gamenode.sh          # Run this launcher
 ├── libexec/gamenode     # Internal executable
-├── libexec/gamenode-plugin-steam
-├── libexec/gamenode-plugin-packagekit
+├── libexec/gamenode-plugin-*      # One executable per plugin descriptor declared for Linux
+├── libexec/bundled-plugins.json   # Generated index of the bundled plugins
 ├── VERSION
 └── build-manifest.json
 ```
+
+The bundled plugin executables come from the trusted descriptors in `plugins/`. The generated
+`libexec/bundled-plugins.json` index lists exactly the plugins in this package; adding or removing
+a bundled plugin changes the descriptors, not this archive layout. Linux packages never include a
+Windows-only plugin.
 
 The package manager provider discovers games from installed desktop entries. It uses pacman on
 Arch-family distributions and PackageKit on other Linux distributions. The scan only queries

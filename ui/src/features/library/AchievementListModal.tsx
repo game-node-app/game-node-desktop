@@ -127,6 +127,8 @@ export interface AchievementListModalProps {
   onClose: () => void;
   entryKey: string;
   gameTitle: string;
+  /** The entry provider's display name, used by provider-named status messages. */
+  providerName: string;
 }
 
 export const AchievementListModal: React.FC<AchievementListModalProps> = ({
@@ -134,6 +136,7 @@ export const AchievementListModal: React.FC<AchievementListModalProps> = ({
   onClose,
   entryKey,
   gameTitle,
+  providerName,
 }) => {
   const { t, locale } = useI18n();
   const [filter, setFilter] = useState<AchievementFilter>('all');
@@ -215,7 +218,10 @@ export const AchievementListModal: React.FC<AchievementListModalProps> = ({
             ) : query.data?.state === 'failed' && query.data.achievements.length === 0 ? (
               <div data-testid="achievement-list-failed" className="text-sm text-warning">
                 {query.data.failure === 'privacy'
-                  ? t('Library::Steam privacy settings prevent reading these achievements.')
+                  ? t(
+                      'Library::{store} privacy settings prevent reading these achievements.',
+                      { store: providerName },
+                    )
                   : t('Library::Achievements could not be loaded.')}
               </div>
             ) : achievements.length === 0 ? (

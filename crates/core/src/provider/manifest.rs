@@ -37,9 +37,12 @@ pub struct Manifest {
     /// Which store or source the games come from. Kept for later steps.
     pub source: String,
     pub scan: ScanSpec,
-    /// A catalog the provider can read beyond what is installed (owned/family games).
+    /// A catalog the provider can read beyond what is installed (owned/shared games).
     #[serde(default)]
     pub catalog: Option<CatalogSpec>,
+    /// Shared catalog access the provider offers, with the proper name its UI shows.
+    #[serde(default)]
+    pub shared: Option<SharedSpec>,
     #[serde(default)]
     pub playtime: Option<PlaytimeSpec>,
     /// A provider plugin that reads achievements for this provider's games.
@@ -76,6 +79,14 @@ pub struct CatalogSpec {
     pub native: String,
     #[serde(default)]
     pub plugin: Option<String>,
+}
+
+/// `shared = { label = "<proper name>" }`. Requires a catalog. The label is a product name, shown
+/// as declared and never translated.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedSpec {
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

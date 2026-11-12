@@ -13,13 +13,14 @@ function account(overrides: Partial<StoreAccountView> = {}): StoreAccountView {
     accountId: null,
     accountName: null,
     ownedCount: 0,
-    familyCount: 0,
+    sharedCount: 0,
+    sharedLabel: null,
     installedCount: 0,
     lastCheckedAt: null,
     storage: 'secretService',
     persistFailed: false,
     catalogError: null,
-    familyError: null,
+    sharedError: null,
     canSignIn: false,
     canCancelSignIn: false,
     canFocusSignIn: false,
@@ -59,7 +60,8 @@ describe('StoreAccountCard', () => {
       accountId: '76561198000000000',
       accountName: 'cassi',
       ownedCount: 312,
-      familyCount: 8,
+      sharedCount: 8,
+      sharedLabel: 'Steam Family',
       installedCount: 18,
       lastCheckedAt: 1_700_000_000,
       storage: 'secretService',
@@ -71,6 +73,7 @@ describe('StoreAccountCard', () => {
     expect(screen.getByText('Signed in as cassi')).toBeInTheDocument();
     expect(screen.getByText('Connected')).toBeInTheDocument();
     expect(screen.getByText('312')).toBeInTheDocument();
+    expect(screen.getByText('Steam Family')).toBeInTheDocument();
     expect(screen.getByText('8')).toBeInTheDocument();
     expect(screen.getByText('18')).toBeInTheDocument();
     expect(screen.getByText(/Last check:/)).toBeInTheDocument();
@@ -205,18 +208,33 @@ describe('StoreAccountCard', () => {
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
   });
 
-  it('shows a non-blocking family warning when the family sync failed', () => {
+  it('shows a non-blocking shared warning named by the declared label', () => {
     renderCard(account({
       state: 'connected',
       accountName: 'cassi',
-      familyCount: 8,
-      familyError: 'familyUnavailable',
+      sharedCount: 8,
+      sharedLabel: 'Steam Family',
+      sharedError: 'sharedUnavailable',
       canCheck: true,
       canSignOut: true,
     }));
 
-    expect(screen.getByText(/Steam family sharing could not be synced/)).toBeInTheDocument();
+    expect(screen.getByText(/Steam Family could not be synced/)).toBeInTheDocument();
     expect(screen.getByText('8')).toBeInTheDocument();
+    expect(screen.getByText('Steam Family')).toBeInTheDocument();
+  });
+
+  it('accepts the legacy shared-catalog error name', () => {
+    renderCard(account({
+      state: 'connected',
+      accountName: 'cassi',
+      sharedCount: 8,
+      sharedLabel: 'Steam Family',
+      sharedError: 'familyUnavailable',
+      canCheck: true,
+    }));
+
+    expect(screen.getByText(/Steam Family could not be synced/)).toBeInTheDocument();
   });
 
   it('warns about the plain-text private file before sign-in and while connected', () => {
@@ -267,14 +285,16 @@ describe('StoreAccountCard', () => {
     expect(screen.getByText(/The last Steam library sync did not finish/)).toBeInTheDocument();
   });
 
-  it('renders an Epic Games Store account without family rows', () => {
+  it('renders an Epic Games Store account without shared rows', () => {
     renderCard(account({
       provider: 'epic',
       state: 'connected',
       accountId: 'epic-account-1',
       accountName: 'EpicPlayer',
       ownedCount: 4,
-      familyCount: 0,
+      sharedCount: 5,
+      sharedLabel: null,
+      sharedError: 'sharedUnavailable',
       installedCount: 2,
       lastCheckedAt: 1_700_000_000,
       canCheck: true,
@@ -283,8 +303,9 @@ describe('StoreAccountCard', () => {
 
     expect(screen.getByRole('region', { name: 'Epic Games Store account' })).toBeInTheDocument();
     expect(screen.getByText('Signed in as EpicPlayer')).toBeInTheDocument();
-    expect(screen.queryByText('Shared')).toBeNull();
-    expect(screen.queryByText(/family sharing could not be synced/)).toBeNull();
+    expect(screen.queryByText('Steam Family')).toBeNull();
+    expect(screen.queryByText('5')).toBeNull();
+    expect(screen.queryByText(/could not be synced/)).toBeNull();
   });
 
   it('routes an Epic card action only to the Epic provider', () => {
@@ -321,7 +342,7 @@ describe('StoreAccountCard', () => {
 function checkedCounts() {
   return {
     ownedCount: 312,
-    familyCount: 8,
+    sharedCount: 8,
     installedCount: 18,
     lastCheckedAt: 1_700_000_000,
   };

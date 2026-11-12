@@ -245,7 +245,7 @@ impl SteamAccount {
             storage: self.ports.credentials.method(),
             persist_failed: inner.persist_failed(),
             catalog_error: inner.catalog_error,
-            family_error: inner.family_error,
+            shared_error: inner.family_error,
         }
     }
 
@@ -469,7 +469,7 @@ impl SteamAccount {
             return SteamCatalogOutcome {
                 status: self.status(),
                 owned: None,
-                family: None,
+                shared: None,
                 now: self.ports.clock.now(),
                 account_changed: false,
                 superseded: false,
@@ -479,7 +479,7 @@ impl SteamAccount {
         SteamCatalogOutcome {
             status: outcome.status.clone(),
             owned: outcome.owned.clone(),
-            family: outcome.family.clone(),
+            shared: outcome.family.clone(),
             now: outcome.now,
             account_changed: outcome.account_changed,
             superseded: outcome.superseded,
@@ -1316,7 +1316,7 @@ impl SteamAccount {
             Ok(Ok(family)) => Ok(family_records(&family)),
             // A family failure is its own category and never fails the owned catalog.
             Ok(Err(error)) => Err(error.family_catalog_error()),
-            Err(_) => Err(CatalogError::FamilyUnavailable),
+            Err(_) => Err(CatalogError::SharedUnavailable),
         }
     }
 
@@ -1508,7 +1508,7 @@ fn family_records(family: &SteamFamily) -> Vec<CatalogRecord> {
 fn family_still_worth_trying(error: CatalogError) -> bool {
     matches!(
         error,
-        CatalogError::Privacy | CatalogError::Changed | CatalogError::FamilyUnavailable
+        CatalogError::Privacy | CatalogError::Changed | CatalogError::SharedUnavailable
     )
 }
 
@@ -2353,7 +2353,7 @@ mod tests {
         let outcome = harness.account.sync().await;
         assert_eq!(outcome.status.state, SteamAccountState::NotConnected);
         assert!(outcome.owned.is_none());
-        assert!(outcome.family.is_none());
+        assert!(outcome.shared.is_none());
         assert_eq!(harness.client.session_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -2388,10 +2388,10 @@ mod tests {
             Some(Ok(vec![CatalogRecord::new("620", "Portal 2")]))
         );
         assert_eq!(
-            outcome.family,
+            outcome.shared,
             Some(Ok(vec![CatalogRecord::new("400", "Portal")]))
         );
-        assert_eq!(outcome.status.family_error, None);
+        assert_eq!(outcome.status.shared_error, None);
     }
 
     #[tokio::test]
@@ -2412,10 +2412,10 @@ mod tests {
 
         assert_eq!(outcome.status.state, SteamAccountState::Connected);
         assert!(matches!(outcome.owned, Some(Ok(_))));
-        assert_eq!(outcome.family, Some(Err(CatalogError::FamilyUnavailable)));
+        assert_eq!(outcome.shared, Some(Err(CatalogError::SharedUnavailable)));
         assert_eq!(
-            outcome.status.family_error,
-            Some(CatalogError::FamilyUnavailable)
+            outcome.status.shared_error,
+            Some(CatalogError::SharedUnavailable)
         );
         assert_eq!(outcome.status.catalog_error, None);
     }
@@ -2446,7 +2446,7 @@ mod tests {
         let outcome = harness.account.sync().await;
         assert_eq!(outcome.status.state, SteamAccountState::Expired);
         assert_eq!(outcome.owned, Some(Err(CatalogError::Expired)));
-        assert!(outcome.family.is_none());
+        assert!(outcome.shared.is_none());
         assert_eq!(harness.credentials.stored(), None);
     }
 
@@ -2739,7 +2739,7 @@ mod tests {
             storage: StorageMethod::SecretService,
             persist_failed: false,
             catalog_error: None,
-            family_error: None,
+            shared_error: None,
         };
         let connected = check(SteamAccountState::Connected);
         assert!(connected.can_check());

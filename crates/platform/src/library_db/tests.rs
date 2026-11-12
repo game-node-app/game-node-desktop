@@ -67,8 +67,8 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
             last_error: None,
             last_catalog_at: None,
             catalog_error: None,
-            last_family_at: None,
-            family_error: None,
+            last_shared_at: None,
+            shared_error: None,
         }]
     );
 }
@@ -598,10 +598,10 @@ fn catalog_with(id: &str, name: &str, fields: &[(&str, &str)]) -> CatalogRecord 
 
 fn catalog_update(
     owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     now: i64,
 ) -> CatalogUpdate {
-    CatalogUpdate { owned, family, now }
+    CatalogUpdate { owned, shared, now }
 }
 
 #[test]
@@ -666,7 +666,7 @@ fn catalog_fields_fill_missing_keys_and_survive_a_restart() {
 }
 
 #[test]
-fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
+fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_shared() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
@@ -697,7 +697,7 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
         (
             portal.installed,
             portal.owned,
-            portal.family_shared,
+            portal.shared,
             portal.name.as_deref(),
             portal.first_seen,
             portal.last_seen,
@@ -710,7 +710,7 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
         (
             cs.installed,
             cs.owned,
-            cs.family_shared,
+            cs.shared,
             cs.install_dir.as_str(),
             cs.first_seen,
         ),
@@ -721,7 +721,7 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
     assert_eq!(cache.scans[0].last_catalog_at, Some(200));
     assert_eq!(cache.scans[0].catalog_error, None);
 
-    // A family sync after owned marks only games that are not owned, and a catalog-only name is
+    // A shared sync after owned marks only games that are not owned, and a catalog-only name is
     // kept once it is non-empty.
     store
         .save_catalog(
@@ -729,9 +729,9 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
             &catalog_update(
                 None,
                 Some(Ok(vec![
-                    catalog("620", "Portal 2 family"),
-                    catalog("730", "Counter-Strike 2 family"),
-                    catalog("400", "Family Game"),
+                    catalog("620", "Portal 2 shared"),
+                    catalog("730", "Counter-Strike 2 shared"),
+                    catalog("400", "Shared Game"),
                 ])),
                 300,
             ),
@@ -740,24 +740,24 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_family() {
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
-        (portal.owned, portal.family_shared),
+        (portal.owned, portal.shared),
         (true, false),
-        "owned wins over family"
+        "owned wins over shared"
     );
     let cs = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
     assert_eq!(
-        (cs.owned, cs.family_shared, cs.name.as_deref()),
+        (cs.owned, cs.shared, cs.name.as_deref()),
         (true, false, Some("Counter-Strike 2")),
         "an existing non-empty catalog name is not replaced"
     );
     let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
     assert_eq!(
-        (shared.installed, shared.owned, shared.family_shared),
+        (shared.installed, shared.owned, shared.shared),
         (false, false, true)
     );
-    assert_eq!(shared.name.as_deref(), Some("Family Game"));
-    assert_eq!(cache.scans[0].last_family_at, Some(300));
-    assert_eq!(cache.scans[0].family_error, None);
+    assert_eq!(shared.name.as_deref(), Some("Shared Game"));
+    assert_eq!(cache.scans[0].last_shared_at, Some(300));
+    assert_eq!(cache.scans[0].shared_error, None);
 }
 
 #[test]
@@ -769,7 +769,7 @@ fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
             "steam",
             &catalog_update(
                 Some(Ok(vec![catalog("620", "Portal 2")])),
-                Some(Ok(vec![catalog("400", "Family Game")])),
+                Some(Ok(vec![catalog("400", "Shared Game")])),
                 100,
             ),
         )
@@ -780,7 +780,7 @@ fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
             "steam",
             &catalog_update(
                 Some(Err(CatalogError::Expired)),
-                Some(Err(CatalogError::FamilyUnavailable)),
+                Some(Err(CatalogError::SharedUnavailable)),
                 200,
             ),
         )
@@ -794,26 +794,39 @@ fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
     );
     let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
     assert!(
-        shared.family_shared,
-        "a failed family sync keeps the previous family set"
+        shared.shared,
+        "a failed shared sync keeps the previous shared set"
     );
     assert_eq!(
         (
             cache.scans[0].last_catalog_at,
             cache.scans[0].catalog_error,
-            cache.scans[0].last_family_at,
-            cache.scans[0].family_error,
+            cache.scans[0].last_shared_at,
+            cache.scans[0].shared_error,
         ),
         (
             Some(100),
             Some(CatalogError::Expired),
             Some(100),
-            Some(CatalogError::FamilyUnavailable)
+            Some(CatalogError::SharedUnavailable)
         ),
         "a failure neither advances its last-success time nor touches the other phase"
     );
 
-    // A later owned success replaces owned facts, clears its own error and leaves family alone.
+    let stored: String = store
+        .conn()
+        .query_row(
+            "SELECT family_error FROM provider_scans WHERE provider = 'steam'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, "sharedUnavailable",
+        "the historical family_error column stores the renamed category"
+    );
+
+    // A later owned success replaces owned facts, clears its own error and leaves shared alone.
     store
         .save_catalog(
             "steam",
@@ -830,23 +843,23 @@ fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
             .owned
     );
     let shared = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
-    assert_eq!((shared.owned, shared.family_shared), (true, true));
+    assert_eq!((shared.owned, shared.shared), (true, true));
     assert_eq!(
         (
             cache.scans[0].last_catalog_at,
             cache.scans[0].catalog_error,
-            cache.scans[0].last_family_at,
-            cache.scans[0].family_error,
+            cache.scans[0].last_shared_at,
+            cache.scans[0].shared_error,
         ),
         (
             Some(300),
             None,
             Some(100),
-            Some(CatalogError::FamilyUnavailable)
+            Some(CatalogError::SharedUnavailable)
         )
     );
 
-    // A family success then clears the family error and applies owned-wins again.
+    // A shared success then clears the shared error and applies owned-wins again.
     store
         .save_catalog(
             "steam",
@@ -862,12 +875,44 @@ fn failed_catalog_phases_keep_their_facts_and_only_record_the_error() {
         .unwrap();
     let cache = store.load_cache(None).unwrap();
     let owned = cache.entries.iter().find(|e| e.key == "steam:400").unwrap();
-    assert_eq!((owned.owned, owned.family_shared), (true, false));
+    assert_eq!((owned.owned, owned.shared), (true, false));
     let shared = cache.entries.iter().find(|e| e.key == "steam:730").unwrap();
-    assert_eq!((shared.owned, shared.family_shared), (false, true));
+    assert_eq!((shared.owned, shared.shared), (false, true));
     assert_eq!(
-        (cache.scans[0].last_family_at, cache.scans[0].family_error,),
+        (cache.scans[0].last_shared_at, cache.scans[0].shared_error,),
         (Some(400), None)
+    );
+}
+
+#[test]
+fn a_shared_failure_stored_by_an_older_build_is_read_as_shared() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    store
+        .save_catalog(
+            "steam",
+            &catalog_update(Some(Ok(vec![catalog("400", "Shared Game")])), None, 100),
+        )
+        .unwrap();
+
+    // A build that still used the family name wrote this row.
+    store
+        .conn()
+        .execute(
+            "UPDATE provider_scans SET family_error = 'familyUnavailable' WHERE provider = 'steam'",
+            [],
+        )
+        .unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    assert_eq!(
+        cache.scans[0].shared_error,
+        Some(CatalogError::SharedUnavailable),
+        "the old category name maps onto the shared failure"
+    );
+    assert!(
+        cache.entries.iter().any(|entry| entry.key == "steam:400"),
+        "the stored facts are still there"
     );
 }
 
@@ -948,7 +993,7 @@ fn catalog_names_follow_installed_then_existing_then_catalog_precedence() {
 }
 
 #[test]
-fn save_scan_never_changes_owned_or_family_facts() {
+fn save_scan_never_changes_owned_or_shared_facts() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
@@ -956,7 +1001,7 @@ fn save_scan_never_changes_owned_or_family_facts() {
             "steam",
             &catalog_update(
                 Some(Ok(vec![catalog("620", "Portal 2")])),
-                Some(Ok(vec![catalog("400", "Family Game")])),
+                Some(Ok(vec![catalog("400", "Shared Game")])),
                 100,
             ),
         )
@@ -968,7 +1013,7 @@ fn save_scan_never_changes_owned_or_family_facts() {
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
-        (portal.installed, portal.owned, portal.family_shared),
+        (portal.installed, portal.owned, portal.shared),
         (true, true, false)
     );
     assert!(
@@ -977,7 +1022,7 @@ fn save_scan_never_changes_owned_or_family_facts() {
             .iter()
             .find(|e| e.key == "steam:400")
             .unwrap()
-            .family_shared,
+            .shared,
         "a scan for another entry-set does not clear sharing"
     );
 
@@ -986,7 +1031,7 @@ fn save_scan_never_changes_owned_or_family_facts() {
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
-        (portal.installed, portal.owned, portal.family_shared),
+        (portal.installed, portal.owned, portal.shared),
         (false, true, false)
     );
     assert!(
@@ -995,7 +1040,7 @@ fn save_scan_never_changes_owned_or_family_facts() {
             .iter()
             .find(|e| e.key == "steam:400")
             .unwrap()
-            .family_shared
+            .shared
     );
 }
 
@@ -1033,7 +1078,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
             "steam",
             &catalog_update(
                 Some(Ok(vec![catalog("620", "Portal 2")])),
-                Some(Ok(vec![catalog("400", "Family Game")])),
+                Some(Ok(vec![catalog("400", "Shared Game")])),
                 200,
             ),
         )
@@ -1045,7 +1090,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
         cache
             .entries
             .iter()
-            .map(|e| (e.key.as_str(), e.owned, e.family_shared))
+            .map(|e| (e.key.as_str(), e.owned, e.shared))
             .collect::<Vec<_>>(),
         [("steam:400", false, false), ("steam:620", false, false)]
     );
@@ -1056,8 +1101,8 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
         (
             cache.scans[0].last_catalog_at,
             cache.scans[0].catalog_error,
-            cache.scans[0].last_family_at,
-            cache.scans[0].family_error,
+            cache.scans[0].last_shared_at,
+            cache.scans[0].shared_error,
         ),
         (None, None, None, None)
     );
@@ -1165,7 +1210,7 @@ fn catalog_and_account_persistence_never_writes_a_cookie_or_token() {
             "steam",
             &catalog_update(
                 Some(Ok(vec![catalog("620", "Portal 2")])),
-                Some(Ok(vec![catalog("400", "Family Game")])),
+                Some(Ok(vec![catalog("400", "Shared Game")])),
                 100,
             ),
         )
@@ -1214,7 +1259,7 @@ fn unreadable_flags_and_error_categories_degrade_without_hiding_installed_games(
         entry.installed,
         "the installed fact still makes the game visible"
     );
-    assert!(!entry.owned && !entry.family_shared);
+    assert!(!entry.owned && !entry.shared);
     assert_eq!(cache.scans[0].catalog_error, None);
 }
 

@@ -99,11 +99,15 @@ pub(crate) struct PluginDescriptor {
     pub provider_manifest: String,
     /// The embedded manifest text consumed by the scoped provider services.
     pub manifest_toml: String,
+    /// Whether the embedded provider manifest declares shared catalog access.
+    pub shared_catalog: bool,
     pub login_policy: Option<LoginPolicy>,
     /// Existing physical credential names, when the provider must keep them.
     pub credential_alias: Option<CredentialAlias>,
     pub native_access: Vec<String>,
     pub legacy_login_profiles: Vec<String>,
+    /// Image hosts this provider may download achievement icons from.
+    pub achievement_icon_hosts: Vec<String>,
 }
 
 impl PluginDescriptor {
@@ -165,6 +169,8 @@ struct DescriptorFile {
     native_access: Vec<String>,
     #[serde(default)]
     legacy_login_profiles: Vec<String>,
+    #[serde(default)]
+    achievement_icon_hosts: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -282,6 +288,22 @@ fn parse_descriptor(
     }
     let has = |wanted: &str| file.capabilities.iter().any(|granted| granted == wanted);
 
+    if file.achievement_icon_hosts.len() > MAX_ACHIEVEMENT_ICON_HOSTS {
+        return Err(format!(
+            "at most {MAX_ACHIEVEMENT_ICON_HOSTS} achievement icon hosts are allowed"
+        ));
+    }
+    if !file.achievement_icon_hosts.is_empty() && !has(capability::ACHIEVEMENTS) {
+        return Err("achievement icon hosts require the achievements.read grant".to_owned());
+    }
+    if let Some(host) = file
+        .achievement_icon_hosts
+        .iter()
+        .find(|host| !plain_icon_host(host))
+    {
+        return Err(format!("invalid achievement icon host `{host}`"));
+    }
+
     let login_policy = file
         .login_policy
         .as_ref()
@@ -335,10 +357,12 @@ fn parse_descriptor(
         executable: file.executable,
         provider_manifest: file.provider_manifest,
         manifest_toml: manifest_text.to_owned(),
+        shared_catalog: manifest.shared.is_some(),
         login_policy,
         credential_alias: file.credential_alias,
         native_access: file.native_access,
         legacy_login_profiles: file.legacy_login_profiles,
+        achievement_icon_hosts: file.achievement_icon_hosts,
     })
 }
 
@@ -357,6 +381,35 @@ fn plain_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+/// A lowercase DNS host name with at least two labels, no wildcard, port, path or userinfo, and
+/// no IP literal.
+fn plain_icon_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 || !host.is_ascii() {
+        return false;
+    }
+    let labels = host.split('.').collect::<Vec<_>>();
+    if labels.len() < 2 {
+        return false;
+    }
+    if labels
+        .iter()
+        .all(|label| !label.is_empty() && label.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return false;
+    }
+    host.parse::<std::net::IpAddr>().is_err()
+        && !host.contains(['*', ':', '/', '@'])
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
 }
 
 /// Loads the trusted descriptors once. Invalid descriptors are reported and skipped.
@@ -416,6 +469,8 @@ pub struct PluginApi {
 const MAX_CONNECTIONS: usize = 16;
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DISCOVERY_RECORDS: usize = 50_000;
+/// A descriptor may trust at most this many achievement icon hosts.
+const MAX_ACHIEVEMENT_ICON_HOSTS: usize = 16;
 
 #[tonic::async_trait]
 impl plugin_host_server::PluginHost for PluginApi {
@@ -761,6 +816,123 @@ timeout_seconds = 600
         loaded.diagnostics[0].problem.clone()
     }
 
+    fn with_achievements_and_icon_hosts(hosts: &str) -> String {
+        descriptor_with(&[
+            (
+                "capabilities = [\"provider.context.read\", \"library.discovery\"]",
+                "capabilities = [\"provider.context.read\", \"library.discovery\", \"achievements.read\"]",
+            ),
+            (
+                "provider_manifest = \"fixture\"",
+                &format!("provider_manifest = \"fixture\"\nachievement_icon_hosts = {hosts}"),
+            ),
+        ])
+    }
+
+    fn load_invalid_icon_hosts(hosts: &str) -> LoadedDescriptors {
+        let second_manifest = FIXTURE_MANIFEST.replace("id = \"fixture\"", "id = \"second\"");
+        let valid = FIXTURE_DESCRIPTOR.replace("fixture", "second");
+        let invalid = with_achievements_and_icon_hosts(hosts);
+        load_descriptors(
+            &[
+                ("fixture.toml", FIXTURE_MANIFEST),
+                ("second.toml", &second_manifest),
+            ],
+            &[("a.toml", &invalid), ("b.toml", &valid)],
+            &[],
+        )
+    }
+
+    #[test]
+    fn accepts_icon_hosts_only_with_the_achievements_grant() {
+        let loaded = load(&with_achievements_and_icon_hosts(r#"["cdn.example.com"]"#));
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(
+            loaded.descriptors[0].achievement_icon_hosts,
+            ["cdn.example.com"]
+        );
+
+        let without_grant = descriptor_with(&[(
+            "provider_manifest = \"fixture\"",
+            "provider_manifest = \"fixture\"\nachievement_icon_hosts = [\"cdn.example.com\"]",
+        )]);
+        assert!(rejection(&without_grant).contains("achievements.read"));
+    }
+
+    #[test]
+    fn rejects_each_invalid_icon_host_form_and_keeps_the_other_descriptors() {
+        for hosts in [
+            r#"["*.steamstatic.com"]"#,
+            r#"["cdn.akamai.steamstatic.com:443"]"#,
+            r#"["cdn.akamai.steamstatic.com/path"]"#,
+            r#"["user@cdn.akamai.steamstatic.com"]"#,
+            r#"["127.0.0.1"]"#,
+            r#"["[::1]"]"#,
+            r#"["localhost"]"#,
+            r#"["CDN.akamai.steamstatic.com"]"#,
+            r#"["-cdn.akamai.steamstatic.com"]"#,
+            r#"["cdn-.akamai.steamstatic.com"]"#,
+            r#"["cdn..akamai.steamstatic.com"]"#,
+        ] {
+            let loaded = load_invalid_icon_hosts(hosts);
+            assert_eq!(loaded.descriptors.len(), 1, "{hosts}");
+            assert_eq!(loaded.descriptors[0].provider_id, "second", "{hosts}");
+            assert_eq!(loaded.diagnostics.len(), 1, "{hosts}");
+            assert!(
+                loaded.diagnostics[0]
+                    .problem
+                    .contains("achievement icon host"),
+                "{hosts}: {:?}",
+                loaded.diagnostics[0].problem
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_more_than_sixteen_icon_hosts() {
+        let hosts = format!(
+            "[{}]",
+            (0..17)
+                .map(|index| format!("\"h{index}.example.com\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let loaded = load_invalid_icon_hosts(&hosts);
+        assert_eq!(loaded.descriptors.len(), 1);
+        assert_eq!(loaded.descriptors[0].provider_id, "second");
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(
+            loaded.diagnostics[0].problem.contains("at most 16"),
+            "{:?}",
+            loaded.diagnostics[0].problem
+        );
+    }
+
+    #[test]
+    fn steam_declares_exactly_its_five_icon_hosts() {
+        let loaded = load_descriptors(
+            crate::providers::BUNDLED_MANIFESTS,
+            BUNDLED_PLUGIN_DESCRIPTORS,
+            BUNDLED_LOGIN_POLICIES,
+        );
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        let steam = loaded
+            .descriptors
+            .iter()
+            .find(|descriptor| descriptor.provider_id == "steam")
+            .expect("the Steam descriptor loads");
+        assert_eq!(
+            steam.achievement_icon_hosts,
+            [
+                "cdn.akamai.steamstatic.com",
+                "cdn.cloudflare.steamstatic.com",
+                "shared.akamai.steamstatic.com",
+                "steamcdn-a.akamaihd.net",
+                "media.steampowered.com",
+            ]
+        );
+    }
+
     #[test]
     fn rejects_a_manifest_whose_id_differs_from_the_provider() {
         let loaded = load_descriptors(
@@ -963,6 +1135,22 @@ timeout_seconds = 600
                 CredentialSlot::Session.keyring_account()
             );
         }
+        let shared_catalog = |provider: &str| {
+            loaded
+                .descriptors
+                .iter()
+                .find(|descriptor| descriptor.provider_id == provider)
+                .unwrap()
+                .shared_catalog
+        };
+        assert!(
+            shared_catalog("steam"),
+            "Steam's manifest declares shared access"
+        );
+        assert!(
+            !shared_catalog("epic"),
+            "Epic's manifest declares no shared access"
+        );
         for platform in [Platform::Windows, Platform::Linux] {
             let backends = backends(platform);
             assert_eq!(

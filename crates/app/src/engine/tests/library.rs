@@ -283,7 +283,7 @@ fn cached_portal_2() -> StoredEntry {
         fields: Default::default(),
         installed: true,
         owned: false,
-        family_shared: false,
+        shared: false,
         first_seen: 1,
         last_seen: 1,
     }
@@ -900,7 +900,7 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
             fields: Default::default(),
             installed: false,
             owned: true,
-            family_shared: false,
+            shared: false,
             first_seen: 1,
             last_seen: 1,
         });

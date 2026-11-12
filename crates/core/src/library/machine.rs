@@ -71,7 +71,7 @@ pub enum Effect {
         outcome: ScanOutcome,
         now: i64,
     },
-    /// Fetch the owned and family catalog of one provider and report with
+    /// Fetch the owned and shared catalog of one provider and report with
     /// [`Input::CatalogSynced`]. Emitted for every scan of a catalog provider and when the
     /// account connects; the engine decides whether a credential exists.
     SyncCatalog {
@@ -192,17 +192,17 @@ pub enum Input {
         /// Unix seconds.
         now: i64,
     },
-    /// The answer to an [`Effect::SyncCatalog`]. `owned`/`family` are `None` when that fact set
+    /// The answer to an [`Effect::SyncCatalog`]. `owned`/`shared` are `None` when that fact set
     /// was not attempted; `Err` keeps the previous set and records the category.
     CatalogSynced {
         op: u64,
         provider: String,
         owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-        family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
         /// Unix seconds.
         now: i64,
     },
-    /// The connected store account changed or signed out: drop its owned and family facts but
+    /// The connected store account changed or signed out: drop its owned and shared facts but
     /// keep entries, matches and covers.
     CatalogCleared {
         provider: String,
@@ -361,7 +361,7 @@ pub(super) struct ScanRun {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CatalogFact {
     Owned,
-    Family,
+    Shared,
 }
 
 pub struct LibraryMachine {
@@ -544,7 +544,7 @@ impl LibraryMachine {
             .filter(|entry| entry.installed && !self.excluded.contains(&entry.key))
     }
 
-    /// Every entry the library shows: installed, owned or family-shared, minus exclusions.
+    /// Every entry the library shows: installed, owned or shared, minus exclusions.
     pub fn visible_entries(&self) -> impl Iterator<Item = &StoredEntry> {
         self.entries
             .values()
@@ -674,9 +674,9 @@ impl LibraryMachine {
                 op,
                 provider,
                 owned,
-                family,
+                shared,
                 now,
-            } => self.on_catalog_synced(op, provider, owned, family, now),
+            } => self.on_catalog_synced(op, provider, owned, shared, now),
             Input::CatalogCleared { provider } => {
                 self.clear_catalog(&provider);
                 vec![]
@@ -1034,14 +1034,14 @@ impl LibraryMachine {
         op: u64,
         provider: String,
         owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-        family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+        shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
         now: i64,
     ) -> Vec<Effect> {
         if self.catalog_ops.get(&provider) != Some(&op) {
             return vec![];
         }
         self.catalog_ops.remove(&provider);
-        self.merge_catalog(&provider, &CatalogUpdate { owned, family, now });
+        self.merge_catalog(&provider, &CatalogUpdate { owned, shared, now });
         self.prune_selection();
         let mut effects = self.plan_lookups(now);
         effects.extend(self.plan_covers(None));
@@ -1049,13 +1049,13 @@ impl LibraryMachine {
     }
 
     /// Applies a catalog update exactly as `LibraryStore::save_catalog` applies it on disk.
-    /// Owned is applied before family, so an owned app never keeps the family flag.
+    /// Owned is applied before shared, so an owned app never keeps the shared flag.
     fn merge_catalog(&mut self, provider: &str, update: &CatalogUpdate) {
         if let Some(owned) = &update.owned {
             self.apply_catalog_fact(provider, owned, update.now, CatalogFact::Owned);
         }
-        if let Some(family) = &update.family {
-            self.apply_catalog_fact(provider, family, update.now, CatalogFact::Family);
+        if let Some(shared) = &update.shared {
+            self.apply_catalog_fact(provider, shared, update.now, CatalogFact::Shared);
         }
     }
 
@@ -1071,7 +1071,7 @@ impl LibraryMachine {
                 let state = self.scan_state_mut(provider);
                 match fact {
                     CatalogFact::Owned => state.catalog_error = Some(*error),
-                    CatalogFact::Family => state.family_error = Some(*error),
+                    CatalogFact::Shared => state.shared_error = Some(*error),
                 }
                 return;
             }
@@ -1119,7 +1119,7 @@ impl LibraryMachine {
         {
             match fact {
                 CatalogFact::Owned => entry.owned = false,
-                CatalogFact::Family => entry.family_shared = false,
+                CatalogFact::Shared => entry.shared = false,
             }
         }
         for record in usable {
@@ -1130,8 +1130,8 @@ impl LibraryMachine {
                 Some(entry) => {
                     match fact {
                         CatalogFact::Owned => entry.owned = true,
-                        // An entry the owned sync just claimed wins over family sharing.
-                        CatalogFact::Family => entry.family_shared = !entry.owned,
+                        // An entry the owned sync just claimed wins over shared access.
+                        CatalogFact::Shared => entry.shared = !entry.owned,
                     }
                     // An installed entry keeps the name the installed scan gave it.
                     let name_is_empty = entry
@@ -1163,7 +1163,7 @@ impl LibraryMachine {
                             fields: record.fields.clone(),
                             installed: false,
                             owned: fact == CatalogFact::Owned,
-                            family_shared: fact == CatalogFact::Family,
+                            shared: fact == CatalogFact::Shared,
                             first_seen: now,
                             last_seen: now,
                         },
@@ -1178,9 +1178,9 @@ impl LibraryMachine {
                 state.last_catalog_at = Some(now);
                 state.catalog_error = None;
             }
-            CatalogFact::Family => {
-                state.last_family_at = Some(now);
-                state.family_error = None;
+            CatalogFact::Shared => {
+                state.last_shared_at = Some(now);
+                state.shared_error = None;
             }
         }
     }
@@ -1202,13 +1202,13 @@ impl LibraryMachine {
             .filter(|entry| entry.provider == provider)
         {
             entry.owned = false;
-            entry.family_shared = false;
+            entry.shared = false;
         }
         if let Some(state) = self.scans.get_mut(provider) {
             state.last_catalog_at = None;
             state.catalog_error = None;
-            state.last_family_at = None;
-            state.family_error = None;
+            state.last_shared_at = None;
+            state.shared_error = None;
         }
         self.catalog_ops.remove(provider);
         self.prune_selection();
@@ -1277,8 +1277,8 @@ impl LibraryMachine {
                     let key = entry_key(provider, &record.id);
                     let existing = self.entries.get(&key);
                     let first_seen = existing.map_or(now, |entry| entry.first_seen);
-                    let (owned, family_shared) = existing
-                        .map(|entry| (entry.owned, entry.family_shared))
+                    let (owned, shared) = existing
+                        .map(|entry| (entry.owned, entry.shared))
                         .unwrap_or_default();
                     self.entries.insert(
                         key.clone(),
@@ -1291,7 +1291,7 @@ impl LibraryMachine {
                             fields: record.fields.clone(),
                             installed: true,
                             owned,
-                            family_shared,
+                            shared,
                             first_seen,
                             last_seen: now,
                         },

@@ -385,7 +385,7 @@ describe('DRM-Free Modals', () => {
         access: 'verified',
         total: 1,
         installedTotal: 1,
-        providers: [{ id: 'steam', name: 'Steam', count: 1, installedCount: 1, ownedCount: 1, familyCount: 0 }],
+        providers: [{ id: 'steam', name: 'Steam', count: 1, installedCount: 1, ownedCount: 1, sharedCount: 0, sharedLabel: 'Steam Family' }],
         rows: [
           {
             key: 'steam:620',
@@ -396,7 +396,7 @@ describe('DRM-Free Modals', () => {
             providerName: 'Steam',
             installed: true,
             owned: true,
-            familyShared: false,
+            shared: false,
             running: false,
             status: { matched: { gameId: 7, source: 'automatic' } },
             coverFile: null,

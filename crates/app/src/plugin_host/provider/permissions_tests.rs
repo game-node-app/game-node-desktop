@@ -65,6 +65,7 @@ impl Harness {
                 provider_id: provider.into(),
                 plugin_id: plugin.into(),
                 capabilities: grants.iter().map(|v| (*v).into()).collect(),
+                shared_catalog: false,
                 services: guarded.clone(),
             })
             .unwrap();
@@ -435,6 +436,123 @@ async fn every_service_rejects_cross_provider_credentials_and_obsolete_sessions(
         );
         untouched(&h, &entered, case);
         h.api.disconnect("other").await;
+    }
+}
+
+#[tokio::test]
+async fn shared_catalog_data_requires_declared_shared_access() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    let error = h.api.event(shared_chunk(&context, 0)).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        error.message(),
+        "shared catalog data requires declared shared access"
+    );
+
+    // A shared failure without chunks is rejected once the transfer is finalized too.
+    let error = h.api.event(shared_failure(&context)).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "the sync fails instead of completing without the shared facts"
+    );
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_shared_completion_without_records_still_requires_the_declaration() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(0)),
+    }];
+    let error = h
+        .api
+        .event(ProviderEvent {
+            context: Some(context),
+            event: Some(provider_event::Event::Result(result)),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_declared_provider_may_send_shared_catalog_data() {
+    let mut h = Harness::with_shared_catalog().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    h.api.event(shared_chunk(&context, 0)).await.unwrap();
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(1)),
+    }];
+    h.api
+        .event(ProviderEvent {
+            context: Some(context),
+            event: Some(provider_event::Event::Result(result)),
+        })
+        .await
+        .unwrap();
+
+    let completion = pending.await.unwrap().unwrap();
+    assert_eq!(completion.catalog.shared.unwrap().unwrap()[0].id, "42");
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+fn shared_chunk(context: &ServiceContext, index: u32) -> ProviderEvent {
+    ProviderEvent {
+        context: Some(context.clone()),
+        event: Some(provider_event::Event::CatalogChunk(CatalogChunk {
+            category: CatalogCategory::Shared as i32,
+            index,
+            games: vec![CatalogGame {
+                id: "42".into(),
+                name: "A game".into(),
+                fields: Default::default(),
+            }],
+        })),
+    }
+}
+
+fn shared_failure(context: &ServiceContext) -> ProviderEvent {
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::Failed(
+            CatalogFailure::Privacy as i32,
+        )),
+    }];
+    ProviderEvent {
+        context: Some(context.clone()),
+        event: Some(provider_event::Event::Result(result)),
     }
 }
 

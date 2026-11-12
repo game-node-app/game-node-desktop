@@ -9,6 +9,13 @@ uninstaller restores it when GameNode Desktop still owns the scheme.
 
 Run the installed `uninstall.ps1` with the same PowerShell options to remove the app and its owned integration.
 The application data directory `%LOCALAPPDATA%\GameNode\Desktop` is preserved.
+
+Release packages carry `bundled-plugins.json`, the generated index of the bundled provider
+plugins. `install.ps1` copies exactly the plugin executables that index lists, checks that every
+indexed file is present before changing an existing installation, and records them in
+`.gamenode-desktop-install.json`. The uninstaller removes the union of that record and the
+installed index, including plugins that a later package no longer bundles.
+
 The executable embeds its GameNode application icon, English and Brazilian
 Portuguese catalogs, Roboto font, GameNode artwork, and UI icons. Its Start
 Menu shortcut uses the embedded icon. The shipped `LICENSE` and `licenses/`

@@ -111,6 +111,7 @@ async fn manager(
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             capabilities: vec![capability::CONTEXT.into()],
+            shared_catalog: false,
             services: Arc::new(Services),
         })
         .unwrap();

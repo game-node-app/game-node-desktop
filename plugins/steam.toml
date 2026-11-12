@@ -22,6 +22,14 @@ capabilities = [
 ]
 executable = "gamenode-plugin-steam"
 provider_manifest = "steam"
+# Image hosts trusted for this provider's achievement icons; HTTPS only.
+achievement_icon_hosts = [
+    "cdn.akamai.steamstatic.com",
+    "cdn.cloudflare.steamstatic.com",
+    "shared.akamai.steamstatic.com",
+    "steamcdn-a.akamaihd.net",
+    "media.steampowered.com",
+]
 login_policy = "crates/plugin-steam/assets/login.toml"
 # Existing physical Steam credential, preserved without migration.
 credential_alias = { keyring_account = "steam", private_file = "steam-token" }

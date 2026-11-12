@@ -264,7 +264,7 @@ impl ProviderPlugin for FixturePlugin {
                         outcome: Some(catalog_completion::Outcome::CompletedRecords(0)),
                     },
                     CatalogCompletion {
-                        category: CatalogCategory::Family as i32,
+                        category: CatalogCategory::Shared as i32,
                         outcome: Some(catalog_completion::Outcome::Failed(
                             CatalogFailure::FamilyUnavailable as i32,
                         )),

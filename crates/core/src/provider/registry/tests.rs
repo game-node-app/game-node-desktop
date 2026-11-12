@@ -5,20 +5,20 @@ pub(crate) const STEAM_MANIFEST: &str = include_str!("../../../../../providers/s
 pub(crate) const EPIC_MANIFEST: &str = include_str!("../../../../../providers/epic.toml");
 
 // The application supplies this registry from trusted distribution metadata.
+pub(crate) fn steam_backend() -> PluginBackend {
+    PluginBackend {
+        plugin_id: "org.gamenode.plugin.steam-discovery".into(),
+        provider_id: "steam".into(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+        achievements: true,
+    }
+}
+
 pub(crate) fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProviders {
-    super::load_with_plugins(
-        sources,
-        platform,
-        &[PluginBackend {
-            plugin_id: "org.gamenode.plugin.steam-discovery".into(),
-            provider_id: "steam".into(),
-            discovery: true,
-            catalog: true,
-            counter: true,
-            actions: true,
-            achievements: true,
-        }],
-    )
+    super::load_with_plugins(sources, platform, &[steam_backend()])
 }
 
 const MINIMAL: &str = r#"
@@ -118,6 +118,7 @@ fn loads_the_bundled_steam_manifest() {
     assert_eq!(steam.external_category(), Some(1));
     assert!(steam.has_launch() && steam.has_install());
     assert!(steam.has_catalog());
+    assert_eq!(steam.shared_label(), Some("Steam Family"));
     assert_eq!(
         steam.achievement_plugin(),
         Some("org.gamenode.plugin.steam-discovery")
@@ -129,6 +130,127 @@ fn loads_the_bundled_steam_manifest() {
     assert!(steam.manifest().exclude_ids.contains(&"228980".to_owned()));
     assert_eq!(steam.manifest().roots.windows.len(), 1);
     assert_eq!(steam.manifest().roots.linux.len(), 3);
+}
+
+#[test]
+fn only_the_providers_that_declare_shared_access_expose_a_label() {
+    let steam = load(&[("steam.toml", STEAM_MANIFEST)], Platform::Linux);
+    assert!(steam.diagnostics.is_empty(), "{:?}", steam.diagnostics);
+    assert_eq!(
+        steam.get("steam").unwrap().shared_label(),
+        Some("Steam Family")
+    );
+
+    let epic = load_with_plugins(
+        &[("epic.toml", EPIC_MANIFEST)],
+        Platform::Windows,
+        &[epic_backend()],
+    );
+    assert!(epic.diagnostics.is_empty(), "{:?}", epic.diagnostics);
+    assert_eq!(epic.get("epic").unwrap().shared_label(), None);
+
+    let packagekit: Manifest =
+        toml::from_str(include_str!("../../../../../providers/packagekit.toml")).unwrap();
+    assert!(packagekit.shared.is_none());
+}
+
+fn catalog_backend(provider: &str) -> PluginBackend {
+    PluginBackend {
+        plugin_id: "org.example.catalog".into(),
+        provider_id: provider.into(),
+        discovery: false,
+        catalog: true,
+        counter: false,
+        actions: false,
+        achievements: false,
+    }
+}
+
+/// A minimal manifest with a valid catalog backend, ready to declare shared access.
+fn shared_manifest(label_toml: &str) -> String {
+    format!(
+        "{}\ncatalog = {{ plugin = \"org.example.catalog\" }}\nshared = {{ label = \"{label_toml}\" }}\n",
+        minimal("bad")
+    )
+}
+
+#[test]
+fn shared_access_requires_a_catalog_and_a_valid_label() {
+    let cases = [
+        (
+            "shared without a catalog",
+            format!("{}\nshared = {{ label = \"Family\" }}", minimal("bad")),
+            "`shared` requires `catalog`",
+        ),
+        (
+            "an empty label",
+            shared_manifest(""),
+            "`shared.label` is empty",
+        ),
+        (
+            "a label longer than 32 characters",
+            shared_manifest(&"x".repeat(33)),
+            "`shared.label` is longer than 32 characters",
+        ),
+        (
+            "a label with a control character",
+            shared_manifest(r"one\u0007two"),
+            "`shared.label` contains a control character",
+        ),
+    ];
+
+    for (what, text, expected) in cases {
+        let loaded = load_with_plugins(
+            &[("bad.toml", text.as_str()), ("steam.toml", STEAM_MANIFEST)],
+            Platform::Linux,
+            &[steam_backend(), catalog_backend("bad")],
+        );
+        assert_eq!(
+            loaded.diagnostics.len(),
+            1,
+            "{what}: {:?}",
+            loaded.diagnostics
+        );
+        let diagnostic = &loaded.diagnostics[0];
+        assert_eq!(diagnostic.file, "bad.toml", "{what}");
+        assert_eq!(diagnostic.provider.as_deref(), Some("bad"), "{what}");
+        assert!(
+            diagnostic.problem.contains(expected),
+            "{what}: {:?} should contain {expected:?}",
+            diagnostic.problem
+        );
+        assert!(
+            loaded.get("steam").is_some(),
+            "{what}: the other manifests still load"
+        );
+    }
+
+    let loaded = load_with_plugins(
+        &[("bad.toml", shared_manifest("Steam Family").as_str())],
+        Platform::Linux,
+        &[catalog_backend("bad")],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("bad").unwrap().shared_label(),
+        Some("Steam Family"),
+        "a valid label is accepted"
+    );
+}
+
+#[test]
+fn a_full_length_shared_label_is_accepted() {
+    let label = "x".repeat(32);
+    let loaded = load_with_plugins(
+        &[("bad.toml", shared_manifest(&label).as_str())],
+        Platform::Linux,
+        &[catalog_backend("bad")],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("bad").unwrap().shared_label(),
+        Some(label.as_str())
+    );
 }
 
 #[test]

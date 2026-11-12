@@ -124,8 +124,10 @@ pub struct StoreAccountView {
     pub account_name: Option<String>,
     /// Games the connected account owns.
     pub owned_count: usize,
-    /// Games shared through the store's family feature and not owned.
-    pub family_count: usize,
+    /// Games shared through the provider's declared shared access and not owned.
+    pub shared_count: usize,
+    /// The provider's declared shared-access label; `None` when it declares none.
+    pub shared_label: Option<String>,
     /// Games installed on this PC.
     pub installed_count: usize,
     /// Unix seconds of the last successful session validation.
@@ -138,7 +140,7 @@ pub struct StoreAccountView {
     /// A credential or account-row write failed, so a restart may not restore this state.
     pub persist_failed: bool,
     pub catalog_error: Option<CatalogError>,
-    pub family_error: Option<CatalogError>,
+    pub shared_error: Option<CatalogError>,
     pub can_sign_in: bool,
     pub can_cancel_sign_in: bool,
     pub can_focus_sign_in: bool,
@@ -168,14 +170,15 @@ mod tests {
             account_id: Some("76561198000000001".to_owned()),
             account_name: Some("cassi".to_owned()),
             owned_count: 312,
-            family_count: 8,
+            shared_count: 8,
+            shared_label: Some("Steam Family".to_owned()),
             installed_count: 18,
             last_checked_at: Some(1_760_000_000),
             last_synced_at: Some(1_760_000_100),
             storage: Some(StorageMethod::PrivateFile),
             persist_failed: true,
             catalog_error: Some(CatalogError::Unreachable),
-            family_error: Some(CatalogError::FamilyUnavailable),
+            shared_error: Some(CatalogError::SharedUnavailable),
             can_sign_in: false,
             can_cancel_sign_in: true,
             can_focus_sign_in: true,
@@ -204,14 +207,15 @@ mod tests {
         assert_eq!(account["accountId"], "76561198000000001");
         assert_eq!(account["accountName"], "cassi");
         assert_eq!(account["ownedCount"], 312);
-        assert_eq!(account["familyCount"], 8);
+        assert_eq!(account["sharedCount"], 8);
+        assert_eq!(account["sharedLabel"], "Steam Family");
         assert_eq!(account["installedCount"], 18);
         assert_eq!(account["lastCheckedAt"], 1_760_000_000);
         assert_eq!(account["lastSyncedAt"], 1_760_000_100);
         assert_eq!(account["storage"], "privateFile");
         assert_eq!(account["persistFailed"], true);
         assert_eq!(account["catalogError"], "unreachable");
-        assert_eq!(account["familyError"], "familyUnavailable");
+        assert_eq!(account["sharedError"], "sharedUnavailable");
         assert_eq!(account["canSignIn"], false);
         assert_eq!(account["canCancelSignIn"], true);
         assert_eq!(account["canFocusSignIn"], true);
@@ -232,14 +236,15 @@ mod tests {
                 "canSignIn",
                 "canSignOut",
                 "catalogError",
-                "familyCount",
-                "familyError",
                 "installedCount",
                 "lastCheckedAt",
                 "lastSyncedAt",
                 "ownedCount",
                 "persistFailed",
                 "provider",
+                "sharedCount",
+                "sharedError",
+                "sharedLabel",
                 "state",
                 "storage",
             ]

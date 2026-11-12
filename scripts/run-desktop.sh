@@ -3,21 +3,28 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-# Epic is Windows-only: only the Windows branch builds and requires its executable. Linux packages
-# and builds intentionally leave it out, so the launcher must not fail when it is absent.
+# The plugin executable set comes from the trusted descriptors through scripts/bundled_plugins.py.
+# Epic is Windows-only, so the Linux list naturally leaves it out.
 case "$(uname -s)" in
-    Linux)
-        desktop_name=gamenode
-        plugin_names=(gamenode-plugin-steam gamenode-plugin-packagekit)
-        plugin_packages=(gamenode-plugin-steam gamenode-plugin-packagekit)
-        ;;
-    MINGW*|MSYS*|CYGWIN*)
-        desktop_name=gamenode.exe
-        plugin_names=(gamenode-plugin-steam.exe gamenode-plugin-epic.exe)
-        plugin_packages=(gamenode-plugin-steam gamenode-plugin-epic)
-        ;;
+    Linux) platform=linux; desktop_name=gamenode ;;
+    MINGW*|MSYS*|CYGWIN*) platform=windows; desktop_name=gamenode.exe ;;
     *) echo 'Native desktop development supports Linux and Windows.' >&2; exit 1 ;;
 esac
+
+plugin_files_output=$(python3 scripts/bundled_plugins.py --platform "$platform" --format files)
+plugin_cargo_output=$(python3 scripts/bundled_plugins.py --platform "$platform" --format cargo-args)
+plugin_files=()
+while IFS= read -r plugin_file; do
+    [[ -n "$plugin_file" ]] && plugin_files+=("$plugin_file")
+done <<< "$plugin_files_output"
+plugin_cargo_args=()
+while IFS= read -r plugin_arg; do
+    [[ -n "$plugin_arg" ]] && plugin_cargo_args+=("$plugin_arg")
+done <<< "$plugin_cargo_output"
+if [[ ${#plugin_files[@]} -eq 0 ]]; then
+    echo "No bundled plugins are declared for $platform." >&2
+    exit 1
+fi
 
 # Cargo options precede `--`; arguments after it are passed to GameNode.
 # Guard empty array expansions for nounset on Bash versions before 4.4.
@@ -39,11 +46,8 @@ while (($#)); do
     shift
 done
 
-build_args=(-p gamenode-app)
-for package in "${plugin_packages[@]}"; do
-    build_args+=(-p "$package")
-done
-cargo build --locked --bins "${build_args[@]}" ${cargo_args[@]+"${cargo_args[@]}"}
+cargo build --locked --bins -p gamenode-app ${cargo_args[@]+"${cargo_args[@]}"}
+cargo build --locked "${plugin_cargo_args[@]}" ${cargo_args[@]+"${cargo_args[@]}"}
 target_dir=$(cargo metadata --locked --no-deps --format-version 1 \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 profile=debug
@@ -58,8 +62,8 @@ if [[ ! -f "$desktop" ]]; then
     echo "Desktop executable was not built: $desktop" >&2
     exit 1
 fi
-for plugin_name in "${plugin_names[@]}"; do
-    plugin="$binary_dir/$plugin_name"
+for plugin_file in "${plugin_files[@]}"; do
+    plugin="$binary_dir/$plugin_file"
     if [[ ! -f "$plugin" ]]; then
         echo "Required provider plugin was not built beside the desktop: $plugin" >&2
         exit 1

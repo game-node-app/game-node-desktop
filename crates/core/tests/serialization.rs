@@ -74,7 +74,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
         provider_name: "Steam".into(),
         installed: true,
         owned: true,
-        family_shared: false,
+        shared: false,
         status: MatchStatus::Matched {
             game_id: 1091500,
             source: MatchSource::Chosen,
@@ -217,7 +217,7 @@ fn test_library_input_serialization() {
     assert_eq!(
         filters.get("setFilters"),
         Some(&serde_json::json!({
-            "availability": { "installed": false, "owned": false, "family": false },
+            "availability": { "installed": false, "owned": false, "shared": false },
             "runningOnly": false,
             "matchState": "any",
             "playtime": "any",
@@ -258,7 +258,7 @@ fn catalog_errors_keep_their_stored_categories() {
         (CatalogError::Privacy, "privacy"),
         (CatalogError::Changed, "changed"),
         (CatalogError::InvalidCredential, "invalidCredential"),
-        (CatalogError::FamilyUnavailable, "familyUnavailable"),
+        (CatalogError::SharedUnavailable, "sharedUnavailable"),
     ] {
         assert_eq!(error.to_string(), category);
         assert_eq!(error.as_str(), category);
@@ -276,6 +276,11 @@ fn catalog_errors_keep_their_stored_categories() {
     assert_eq!(
         serde_json::from_str::<CatalogError>("\"invalidCookies\"").unwrap(),
         CatalogError::InvalidCredential
+    );
+    // Rows written by a build that still used the family name parse as the same failure.
+    assert_eq!(
+        "familyUnavailable".parse::<CatalogError>(),
+        Ok(CatalogError::SharedUnavailable)
     );
     assert_eq!("not-a-category".parse::<CatalogError>(), Err(()));
 
@@ -303,7 +308,7 @@ fn catalog_errors_keep_their_stored_categories() {
         Some(&serde_json::json!({
             "installed": true,
             "owned": false,
-            "family": false
+            "shared": false
         }))
     );
 }
@@ -326,13 +331,13 @@ fn stored_entries_and_scan_states_saved_before_the_catalog_still_load() {
         }"#,
     )
     .unwrap();
-    assert!(!entry.owned && !entry.family_shared);
+    assert!(!entry.owned && !entry.shared);
     assert_eq!(
         serde_json::to_value(&entry).unwrap().get("owned"),
         Some(&serde_json::json!(false))
     );
     assert_eq!(
-        serde_json::to_value(&entry).unwrap().get("familyShared"),
+        serde_json::to_value(&entry).unwrap().get("shared"),
         Some(&serde_json::json!(false))
     );
 
@@ -340,6 +345,6 @@ fn stored_entries_and_scan_states_saved_before_the_catalog_still_load() {
         serde_json::from_str(r#"{"provider":"steam","lastSuccessAt":1,"lastError":null}"#).unwrap();
     assert_eq!(state.last_catalog_at, None);
     assert_eq!(state.catalog_error, None);
-    assert_eq!(state.last_family_at, None);
-    assert_eq!(state.family_error, None);
+    assert_eq!(state.last_shared_at, None);
+    assert_eq!(state.shared_error, None);
 }

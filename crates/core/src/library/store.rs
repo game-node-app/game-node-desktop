@@ -33,9 +33,10 @@ pub struct StoredEntry {
     /// Found by the connected store account's owned catalog.
     #[serde(default)]
     pub owned: bool,
-    /// Shared with the account through Steam Family (owned wins when both are true).
+    /// Shared with the account through the provider's declared shared access (owned wins when
+    /// both are true).
     #[serde(default)]
-    pub family_shared: bool,
+    pub shared: bool,
     pub first_seen: i64,
     pub last_seen: i64,
 }
@@ -51,9 +52,9 @@ impl StoredEntry {
         }
     }
 
-    /// Whether the library shows this entry: at least one of installed, owned or family-shared.
+    /// Whether the library shows this entry: at least one of installed, owned or shared.
     pub fn is_visible(&self) -> bool {
-        self.installed || self.owned || self.family_shared
+        self.installed || self.owned || self.shared
     }
 }
 
@@ -72,12 +73,12 @@ pub struct ProviderScanState {
     /// Why the latest owned-catalog sync failed; cleared by the next success.
     #[serde(default)]
     pub catalog_error: Option<CatalogError>,
-    /// Unix seconds of the last successful family-catalog sync.
+    /// Unix seconds of the last successful shared-catalog sync.
     #[serde(default)]
-    pub last_family_at: Option<i64>,
-    /// Why the latest family-catalog sync failed; cleared by the next success.
+    pub last_shared_at: Option<i64>,
+    /// Why the latest shared-catalog sync failed; cleared by the next success.
     #[serde(default)]
-    pub family_error: Option<CatalogError>,
+    pub shared_error: Option<CatalogError>,
 }
 
 /// The categories a catalog sync failure is stored and shown under.
@@ -94,7 +95,7 @@ pub enum CatalogError {
     Changed,
     #[serde(alias = "invalidCookies")]
     InvalidCredential,
-    FamilyUnavailable,
+    SharedUnavailable,
 }
 
 impl CatalogError {
@@ -107,7 +108,7 @@ impl CatalogError {
             Self::Privacy => "privacy",
             Self::Changed => "changed",
             Self::InvalidCredential => "invalidCredential",
-            Self::FamilyUnavailable => "familyUnavailable",
+            Self::SharedUnavailable => "sharedUnavailable",
         }
     }
 
@@ -122,7 +123,8 @@ impl CatalogError {
             "changed" => Some(Self::Changed),
             // Rows written before the provider-neutral rename still say "invalidCookies".
             "invalidCredential" | "invalidCookies" => Some(Self::InvalidCredential),
-            "familyUnavailable" => Some(Self::FamilyUnavailable),
+            // Rows written before the shared rename still say "familyUnavailable".
+            "sharedUnavailable" | "familyUnavailable" => Some(Self::SharedUnavailable),
             _ => None,
         }
     }
@@ -142,7 +144,7 @@ impl FromStr for CatalogError {
     }
 }
 
-/// One game from a provider's owned or family-shared catalog.
+/// One game from a provider's owned or shared catalog.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogRecord {
@@ -158,7 +160,7 @@ pub struct CatalogRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogUpdate {
     pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    pub shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     pub now: i64,
 }
 
@@ -259,11 +261,11 @@ pub trait LibraryStore: Send + Sync {
     /// Records that a scan of `provider` failed. Its entries are left as they were.
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError>;
 
-    /// Applies an owned or family catalog result for `provider`, replacing only the fact sets the
+    /// Applies an owned or shared catalog result for `provider`, replacing only the fact sets the
     /// update covers and leaving installed facts, matches and covers untouched.
     fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError>;
 
-    /// Clears the owned and family facts and catalog sync state of `provider` without deleting
+    /// Clears the owned and shared facts and catalog sync state of `provider` without deleting
     /// entries, matches or covers.
     fn clear_catalog(&self, provider: &str) -> Result<(), StorageError>;
 

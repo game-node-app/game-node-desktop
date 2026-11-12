@@ -1,11 +1,13 @@
-//! Achievement icon cache: trusted Steam image hosts, an HTTPS-only bounded downloader and the
-//! on-disk files served by `gamenode-asset://localhost/achievement/<hash>`.
+//! Achievement icon cache: the image hosts declared by a provider's trusted descriptor, an
+//! HTTPS-only bounded downloader and the on-disk files served by
+//! `gamenode-asset://localhost/achievement/<hash>`.
 //!
 //! Everything here performs disk or network I/O and is blocking; call it from a worker thread.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -13,21 +15,34 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::redirect::Policy;
 use url::Url;
 
-/// Largest icon accepted. Steam achievement icons are a few KiB; anything far larger is refused.
+/// Largest icon accepted. Achievement icons are a few KiB; anything far larger is refused.
 pub const MAX_ACHIEVEMENT_ICON_BYTES: u64 = 1024 * 1024;
 
-/// Icons for one list are fetched concurrently; Steam serves them from a CDN and a whole list
-/// must not take one round trip per icon.
+/// Icons for one list are fetched concurrently; a store CDN serves them and a whole list must not
+/// take one round trip per icon.
 const ICON_FETCH_WORKERS: usize = 6;
 
-/// Hosts trusted to serve Steam achievement icons. This list is host metadata, never plugin data.
-pub const TRUSTED_ICON_HOSTS: &[&str] = &[
-    "cdn.akamai.steamstatic.com",
-    "cdn.cloudflare.steamstatic.com",
-    "shared.akamai.steamstatic.com",
-    "steamcdn-a.akamaihd.net",
-    "media.steampowered.com",
-];
+/// The image hosts one provider's trusted descriptor declares for its achievement icons.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IconHosts {
+    hosts: Arc<[String]>,
+}
+
+impl IconHosts {
+    pub fn new(hosts: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            hosts: hosts.into_iter().collect::<Vec<_>>().into(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hosts.is_empty()
+    }
+
+    fn contains(&self, host: &str) -> bool {
+        self.hosts.iter().any(|trusted| trusted == host)
+    }
+}
 
 static PART_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -54,12 +69,13 @@ pub fn valid_icon_hash(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// Whether this icon URL may be fetched. HTTPS and a trusted host are both required.
-pub fn trusted_icon_url(raw: &str) -> bool {
-    trusted_icon_url_with(raw, false)
+/// Whether this icon URL may be fetched. HTTPS and a host declared by the provider are both
+/// required.
+pub fn trusted_icon_url(raw: &str, hosts: &IconHosts) -> bool {
+    trusted_icon_url_with(raw, hosts, false)
 }
 
-fn trusted_icon_url_with(raw: &str, allow_loopback: bool) -> bool {
+fn trusted_icon_url_with(raw: &str, hosts: &IconHosts, allow_loopback: bool) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
     };
@@ -70,7 +86,7 @@ fn trusted_icon_url_with(raw: &str, allow_loopback: bool) -> bool {
         return false;
     };
     let host = host.to_ascii_lowercase();
-    TRUSTED_ICON_HOSTS.contains(&host.as_str())
+    hosts.contains(&host)
         || (allow_loopback && matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]"))
 }
 
@@ -93,25 +109,27 @@ pub enum IconError {
 pub struct AchievementIconLoader {
     client: reqwest::blocking::Client,
     dir: PathBuf,
+    hosts: IconHosts,
     allow_loopback: bool,
 }
 
 impl AchievementIconLoader {
-    /// The production loader: trusted Steam hosts only, `<covers>/achievement-icons`.
-    pub fn production(covers_dir: &Path) -> Result<Self, IconError> {
-        Self::new(covers_dir, false)
+    /// The production loader: the provider's declared hosts only, `<covers>/achievement-icons`.
+    pub fn production(covers_dir: &Path, hosts: IconHosts) -> Result<Self, IconError> {
+        Self::new(covers_dir, hosts, false)
     }
 
-    fn new(covers_dir: &Path, allow_loopback: bool) -> Result<Self, IconError> {
+    fn new(covers_dir: &Path, hosts: IconHosts, allow_loopback: bool) -> Result<Self, IconError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .redirect(redirect_policy(allow_loopback))
+            .redirect(redirect_policy(hosts.clone(), allow_loopback))
             .user_agent("GameNode Desktop")
             .build()
             .map_err(|error| IconError::Fetch(error.to_string()))?;
         Ok(Self {
             client,
             dir: achievement_icon_dir(covers_dir),
+            hosts,
             allow_loopback,
         })
     }
@@ -123,7 +141,8 @@ impl AchievementIconLoader {
         let pending = urls
             .into_iter()
             .filter(|url| {
-                seen.insert(url.clone()) && trusted_icon_url_with(url, self.allow_loopback)
+                seen.insert(url.clone())
+                    && trusted_icon_url_with(url, &self.hosts, self.allow_loopback)
             })
             .filter(|url| !self.cache_path(&achievement_icon_hash(url)).is_file())
             .collect::<Vec<_>>();
@@ -154,7 +173,7 @@ impl AchievementIconLoader {
     }
 
     fn fetch_and_cache(&self, url: &str) -> Result<(), IconError> {
-        if !trusted_icon_url_with(url, self.allow_loopback) {
+        if !trusted_icon_url_with(url, &self.hosts, self.allow_loopback) {
             return Err(IconError::RejectedUrl);
         }
         let response = self
@@ -163,7 +182,7 @@ impl AchievementIconLoader {
             .send()
             .map_err(|error| IconError::Fetch(error.to_string()))?;
         let final_url = response.url().clone();
-        if !trusted_icon_url_with(final_url.as_str(), self.allow_loopback)
+        if !trusted_icon_url_with(final_url.as_str(), &self.hosts, self.allow_loopback)
             || response.status().is_redirection()
         {
             return Err(IconError::RejectedUrl);
@@ -219,11 +238,11 @@ impl AchievementIconLoader {
     }
 }
 
-fn redirect_policy(allow_loopback: bool) -> Policy {
+fn redirect_policy(hosts: IconHosts, allow_loopback: bool) -> Policy {
     Policy::custom(move |attempt| {
         if attempt.previous().len() >= 5 {
             attempt.stop()
-        } else if trusted_icon_url_with(attempt.url().as_str(), allow_loopback) {
+        } else if trusted_icon_url_with(attempt.url().as_str(), &hosts, allow_loopback) {
             attempt.follow()
         } else {
             attempt.stop()
@@ -264,7 +283,14 @@ pub fn clear_achievement_icons(covers_dir: &Path) -> u64 {
 mod tests {
     use super::*;
     fn test_loader(dir: &Path) -> AchievementIconLoader {
-        AchievementIconLoader::new(dir, true).unwrap()
+        AchievementIconLoader::new(dir, IconHosts::default(), true).unwrap()
+    }
+
+    fn steam_hosts() -> IconHosts {
+        IconHosts::new([
+            "cdn.akamai.steamstatic.com".to_owned(),
+            "cdn.cloudflare.steamstatic.com".to_owned(),
+        ])
     }
 
     fn png() -> Vec<u8> {
@@ -272,22 +298,31 @@ mod tests {
     }
 
     #[test]
-    fn only_https_trusted_hosts_are_fetched() {
+    fn only_declared_https_hosts_are_fetched() {
+        let hosts = steam_hosts();
         for allowed in [
             "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg",
             "https://cdn.cloudflare.steamstatic.com/x.png",
         ] {
-            assert!(trusted_icon_url(allowed), "{allowed}");
+            assert!(trusted_icon_url(allowed, &hosts), "{allowed}");
         }
         for denied in [
             "http://cdn.akamai.steamstatic.com/x.png",
             "https://evil.example/x.png",
             "https://cdn.akamai.steamstatic.com.evil.example/x.png",
+            "https://steamcdn-a.akamaihd.net/x.png",
             "file:///etc/passwd",
             "not a url",
         ] {
-            assert!(!trusted_icon_url(denied), "{denied}");
+            assert!(!trusted_icon_url(denied, &hosts), "{denied}");
         }
+        assert!(
+            !trusted_icon_url(
+                "https://cdn.akamai.steamstatic.com/x.png",
+                &IconHosts::default()
+            ),
+            "a provider without declared hosts accepts no icon host"
+        );
     }
 
     #[test]
@@ -331,6 +366,25 @@ mod tests {
         loader.ensure([url]);
         assert_eq!(mock.calls(), 1);
         assert_eq!(achievement_icon_usage(dir.path()), png().len() as u64);
+    }
+
+    #[test]
+    fn a_redirect_to_an_undeclared_host_is_refused() {
+        let server = httpmock::MockServer::start();
+        let redirect = server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/redirect");
+            then.status(302)
+                .header("location", "https://undeclared.example/icon.png");
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let loader = test_loader(dir.path());
+        let url = format!("{}/redirect", server.base_url());
+        assert!(matches!(
+            loader.fetch_and_cache(&url),
+            Err(IconError::RejectedUrl)
+        ));
+        redirect.assert();
+        assert_eq!(achievement_icon_usage(dir.path()), 0);
     }
 
     #[test]

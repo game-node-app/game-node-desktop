@@ -142,6 +142,31 @@ class StoreBoundarySourceTests(unittest.TestCase):
         self.allowlist = self.root / checker.ALLOWLIST_PATH
         self.allowlist.parent.mkdir(parents=True, exist_ok=True)
         self.allowlist.write_text("", encoding="utf-8")
+        self.write_descriptor(
+            "steam.toml",
+            provider_id="steam",
+            platforms=("linux", "windows"),
+            login_policy="policies/steam.toml",
+            extra='achievement_icon_hosts = ["cdn.akamai.steamstatic.com"]',
+        )
+        self.write_descriptor(
+            "epic.toml",
+            provider_id="epic",
+            platforms=("windows",),
+            login_policy="policies/epic.toml",
+        )
+        self.write_policy("steam.toml", ["steampowered.com", "steamcommunity.com"])
+        self.write_policy("epic.toml", ["epicgames.com"])
+        self.write_manifest(
+            "steam.toml",
+            launch="steam://rungameid/{id}",
+            install="steam://nav/games/details/{id}",
+        )
+        self.write_manifest(
+            "epic.toml",
+            launch="com.epicgames.launcher://apps/{id}?action=launch",
+            install="com.epicgames.launcher://apps/{id}?action=install",
+        )
 
     def write_source(self, relative, content):
         path = self.root / relative
@@ -149,8 +174,59 @@ class StoreBoundarySourceTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
+    def write_descriptor(
+        self,
+        name,
+        *,
+        provider_id,
+        platforms,
+        login_policy=None,
+        extra="",
+    ):
+        platform_list = ", ".join(f'"{platform}"' for platform in platforms)
+        text = [
+            f'provider_id = "{provider_id}"',
+            f'plugin_id = "org.example.plugin.{provider_id}"',
+            f'name = "Fixture {provider_id}"',
+            f"platforms = [{platform_list}]",
+            f'executable = "gamenode-plugin-{provider_id}"',
+            'capabilities = ["provider.context.read", "library.discovery"]',
+        ]
+        if login_policy is not None:
+            text.append(f'login_policy = "{login_policy}"')
+        if extra:
+            text.append(extra)
+        path = self.root / "plugins" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(text) + "\n", encoding="utf-8")
+        return path
+
+    def write_policy(self, name, hosts):
+        host_list = ", ".join(f'"{host}"' for host in hosts)
+        path = self.root / "policies" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"allowed_hosts = [{host_list}]\n", encoding="utf-8")
+        return path
+
+    def write_manifest(self, name, *, launch=None, install=None):
+        lines = [f'id = "{Path(name).stem}"', f'name = "Fixture {Path(name).stem}"']
+        if launch is not None:
+            lines.append(f'launch = {{ uri = "{launch}" }}')
+        if install is not None:
+            lines.append(f'install = {{ uri = "{install}" }}')
+        path = self.root / "providers" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
     def scan(self):
         return checker.check_store_sources(self.root)
+
+    def assert_violation(self, errors, path, rule):
+        self.assertTrue(
+            any(f"{path}:1" in error and rule in error for error in errors),
+            errors,
+        )
 
     def test_production_violations_fail_every_rule(self):
         cases = {
@@ -161,6 +237,10 @@ class StoreBoundarySourceTests(unittest.TestCase):
             "crates/core/src/provider.rs": (
                 "use crate::steam::Client;\n",
                 "store-module-path",
+            ),
+            "crates/core/src/launch.rs": (
+                'let uri = "steam://rungameid/620";\n',
+                "store-uri-scheme",
             ),
             "crates/app/src/commands.rs": (
                 'if provider == "steam" { }\n',
@@ -177,10 +257,7 @@ class StoreBoundarySourceTests(unittest.TestCase):
         errors = self.scan()
         for relative, (_, rule) in cases.items():
             with self.subTest(rule=rule):
-                self.assertTrue(
-                    any(f"{relative}:1" in error and rule in error for error in errors),
-                    errors,
-                )
+                self.assert_violation(errors, relative, rule)
 
     def test_allowlist_excuses_an_exact_reviewed_line(self):
         self.write_source(
@@ -202,6 +279,9 @@ class StoreBoundarySourceTests(unittest.TestCase):
 #[cfg(test)]
 mod tests {
     const HOST: &str = "https://store.steampowered.com/";
+    const FIXTURE: &str = r#"
+scan = { plugin = "fixture.plugin" }
+"#;
 
     #[test]
     fn compares_provider() {
@@ -248,6 +328,63 @@ mod tests {
         self.assertTrue(
             any("malformed store boundary allowlist entry" in error for error in errors)
         )
+
+    def test_new_store_id_literal_fails_without_checker_edits(self):
+        self.write_descriptor(
+            "newstore.toml", provider_id="newstore", platforms=("linux", "windows")
+        )
+        self.write_source(
+            "crates/app/src/commands.rs",
+            'if provider == "newstore" { }\n',
+        )
+
+        errors = self.scan()
+        self.assert_violation(errors, "crates/app/src/commands.rs", "provider-id-literal")
+        self.assertNotIn("newstore", CHECKER_PATH.read_text(encoding="utf-8"))
+
+    def test_derived_hosts_and_uri_schemes_are_checked(self):
+        self.write_descriptor(
+            "newstore.toml",
+            provider_id="newstore",
+            platforms=("linux",),
+            login_policy="policies/newstore.toml",
+            extra='achievement_icon_hosts = ["cdn.newstore.example"]',
+        )
+        self.write_policy("newstore.toml", ["login.newstore.example"])
+        self.write_manifest(
+            "newstore.toml",
+            launch="newstore-launcher://launch/{id}",
+            install="newstore-install://install/{id}",
+        )
+        self.write_source(
+            "crates/api/src/client.rs",
+            'const ICON: &str = "https://cdn.newstore.example/icon.png";\n'
+            'const LOGIN: &str = "https://login.newstore.example/";\n'
+            'const LAUNCH: &str = "newstore-launcher://launch/1";\n'
+            'const INSTALL: &str = "newstore-install://install/1";\n'
+            'const OTHER: &str = "otherstore://launch/1";\n',
+        )
+
+        errors = self.scan()
+        self.assertTrue(
+            any("client.rs:1" in error and "store-host" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("client.rs:2" in error and "store-host" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("client.rs:3" in error and "store-uri-scheme" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("client.rs:4" in error and "store-uri-scheme" in error for error in errors), errors
+        )
+        self.assertFalse(any("client.rs:5" in error for error in errors), errors)
+
+    def test_vocabulary_does_not_fall_back_to_real_descriptors(self):
+        # The real descriptors declare `packagekit`; the temporary set does not, so this literal
+        # must not be reported. That proves the vocabulary comes from the scanned tree.
+        self.write_source("crates/app/src/commands.rs", 'if provider == "packagekit" { }\n')
+        self.assertEqual(self.scan(), [])
 
 
 if __name__ == "__main__":

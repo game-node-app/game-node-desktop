@@ -63,7 +63,7 @@ pub enum CatalogError {
     Privacy,
     Changed,
     InvalidCredential,
-    FamilyUnavailable,
+    SharedUnavailable,
 }
 
 impl CatalogError {
@@ -76,7 +76,7 @@ impl CatalogError {
             Self::Privacy => "privacy",
             Self::Changed => "changed",
             Self::InvalidCredential => "invalidCredential",
-            Self::FamilyUnavailable => "familyUnavailable",
+            Self::SharedUnavailable => "sharedUnavailable",
         }
     }
 
@@ -91,7 +91,8 @@ impl CatalogError {
             "changed" => Some(Self::Changed),
             // Rows written before the provider-neutral rename still say "invalidCookies".
             "invalidCredential" | "invalidCookies" => Some(Self::InvalidCredential),
-            "familyUnavailable" => Some(Self::FamilyUnavailable),
+            // Rows written before the provider-neutral rename still say "familyUnavailable".
+            "sharedUnavailable" | "familyUnavailable" => Some(Self::SharedUnavailable),
             _ => None,
         }
     }
@@ -111,7 +112,7 @@ impl FromStr for CatalogError {
     }
 }
 
-/// One game from a provider's owned or family-shared catalog.
+/// One game from a provider's owned or shared catalog.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogRecord {
@@ -231,7 +232,7 @@ impl AchievementOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogUpdate {
     pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    pub shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     pub now: i64,
 }
 
@@ -281,7 +282,7 @@ pub struct AccountStatus {
     /// A credential or account-row write failed, so a restart may not restore this state.
     pub persist_failed: bool,
     pub catalog_error: Option<CatalogError>,
-    pub family_error: Option<CatalogError>,
+    pub shared_error: Option<CatalogError>,
 }
 
 impl AccountStatus {
@@ -347,8 +348,8 @@ pub struct CatalogOutcome {
     pub status: AccountStatus,
     /// `None` when no catalog was attempted (no account, or the request joined a check).
     pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    /// `None` when family sync was not attempted.
-    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    /// `None` when shared sync was not attempted.
+    pub shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     pub now: i64,
     pub account_changed: bool,
     pub superseded: bool,

@@ -64,7 +64,7 @@ pub struct AchievementRecord {
     pub icon_gray_url: String,
     pub unlocked: bool,
     pub unlocked_at: Option<i64>,
-    /// Steam's schema order, used as the stable order among locked achievements.
+    /// The provider's schema order, used as the stable order among locked achievements.
     pub position: i64,
 }
 

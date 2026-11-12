@@ -26,14 +26,15 @@ function account(overrides: Partial<StoreAccountView> = {}): StoreAccountView {
     accountId: '76561198000000000',
     accountName: 'cassi',
     ownedCount: 5,
-    familyCount: 1,
+    sharedCount: 1,
+    sharedLabel: 'Steam Family',
     installedCount: 3,
     lastCheckedAt: NOW,
     lastSyncedAt: null,
     storage: 'secretService',
     persistFailed: false,
     catalogError: null,
-    familyError: null,
+    sharedError: null,
     canSignIn: false,
     canCancelSignIn: false,
     canFocusSignIn: false,
@@ -50,7 +51,8 @@ function epicAccount(overrides: Partial<StoreAccountView> = {}): StoreAccountVie
     accountId: 'epic-account-1',
     accountName: 'EpicPlayer',
     ownedCount: 4,
-    familyCount: 0,
+    sharedCount: 0,
+    sharedLabel: null,
     installedCount: 2,
     storage: 'secretService',
     ...overrides,
@@ -74,9 +76,9 @@ function library(): LibraryView {
     total: 16,
     installedTotal: 11,
     providers: [
-      { id: 'steam', name: 'Steam', count: 6, installedCount: 3, ownedCount: 5, familyCount: 1 },
-      { id: 'epic', name: 'Epic Games Store', count: 4, installedCount: 2, ownedCount: 4, familyCount: 0 },
-      { id: 'gog', name: 'GOG', count: 6, installedCount: 6, ownedCount: 0, familyCount: 0 },
+      { id: 'steam', name: 'Steam', count: 6, installedCount: 3, ownedCount: 5, sharedCount: 1, sharedLabel: 'Steam Family' },
+      { id: 'epic', name: 'Epic Games Store', count: 4, installedCount: 2, ownedCount: 4, sharedCount: 0, sharedLabel: null },
+      { id: 'gog', name: 'GOG', count: 6, installedCount: 6, ownedCount: 0, sharedCount: 0, sharedLabel: null },
     ],
     rows: [],
     scanning: false,
@@ -153,16 +155,18 @@ describe('StoresPanel store account integration', () => {
     expect(screen.getByRole('button', { name: /Reset hidden games/i })).toBeInTheDocument();
   });
 
-  it('hides the family row for a provider that never reported family data', () => {
+  it('shows shared data only for a provider that declares shared access', () => {
     openSettingsModal('stores');
     renderSettings(baseSnapshot());
 
     const epicCard = screen.getByRole('region', { name: 'Epic Games Store account' });
+    expect(within(epicCard).queryByText('Steam Family')).toBeNull();
     expect(within(epicCard).queryByText('Shared')).toBeNull();
-    expect(within(epicCard).queryByText(/family sharing could not be synced/)).toBeNull();
+    expect(within(epicCard).queryByText(/could not be synced/)).toBeNull();
 
     const steamCard = screen.getByRole('region', { name: 'Steam account' });
-    expect(within(steamCard).getByText('Shared')).toBeInTheDocument();
+    expect(within(steamCard).getByText('Steam Family')).toBeInTheDocument();
+    expect(within(steamCard).getByText('1')).toBeInTheDocument();
   });
 
   it('renders the store card and sign-in without a GameNode session', () => {
@@ -175,7 +179,7 @@ describe('StoresPanel store account integration', () => {
         accountId: null,
         accountName: null,
         ownedCount: 0,
-        familyCount: 0,
+        sharedCount: 0,
         installedCount: 0,
         lastCheckedAt: null,
         canSignIn: true,
@@ -226,7 +230,7 @@ describe('StoresPanel store account integration', () => {
           accountId: null,
           accountName: null,
           ownedCount: 0,
-          familyCount: 0,
+          sharedCount: 0,
           installedCount: 3,
           lastCheckedAt: null,
           canSignIn: false,
@@ -249,7 +253,7 @@ describe('StoresPanel store account integration', () => {
       storeAccounts: [
         account({
           ownedCount: 312,
-          familyCount: 8,
+          sharedCount: 8,
           installedCount: 18,
           lastSyncedAt: 1_700_000_120,
         }),
@@ -336,5 +340,45 @@ describe('StoresPanel store account integration', () => {
 
     expect(screen.getByRole('button', { name: 'Lojas: Steam precisa de atenção' })).toBeInTheDocument();
     expect(screen.getByText('Atenção')).toBeInTheDocument();
+  });
+
+  it('counts shared games in the imported toast only for a labelled provider', async () => {
+    openSettingsModal('stores');
+    const { queryClient } = renderSettings(baseSnapshot({
+      storeAccounts: [
+        account(),
+        epicAccount({
+          state: 'signingIn',
+          accountId: null,
+          accountName: null,
+          ownedCount: 0,
+          sharedCount: 0,
+          installedCount: 0,
+          lastCheckedAt: null,
+          canSignIn: false,
+          canCancelSignIn: true,
+          canFocusSignIn: true,
+          canCheck: false,
+          canSignOut: false,
+        }),
+      ],
+    }));
+
+    updateSnapshot(queryClient, baseSnapshot({
+      storeAccounts: [
+        account(),
+        epicAccount({
+          ownedCount: 4,
+          sharedCount: 5,
+          sharedLabel: null,
+          installedCount: 2,
+          lastSyncedAt: 1_700_000_120,
+        }),
+      ],
+    }));
+
+    expect(
+      await screen.findByText('Epic Games Store connected. 4 games imported.'),
+    ).toBeInTheDocument();
   });
 });

@@ -49,7 +49,7 @@ export type MockSteamScenario =
 const titles = ['Aster Vale', 'Beyond the Pines', 'Clockwork Harbor', 'Distant Skies', 'Emberfall', 'Forgotten Atlas', 'Glass Garden', 'Hollow Mountain', 'Infinite Coast', 'Juniper Station', 'Kingdom of Rain', 'Lunar Circuit'];
 
 /**
- * The mock library mixes installed, owned-only and family-shared rows so every
+ * The mock library mixes installed, owned-only and shared rows so every
  * indicator and count can be exercised from `VITE_UI_MOCK=1`.
  */
 const NOW = Math.floor(Date.now() / 1000);
@@ -61,13 +61,14 @@ const allRows: Row[] = titles.map((title, index) => {
   const provider = steam ? 'steam' : gog ? 'gog' : 'epic';
   const providerName = steam ? 'Steam' : gog ? 'GOG' : 'Epic Games Store';
   const installed = steam ? index === 0 || index === 2 || index === 8 : true;
-  const familyShared = index === 4;
-  const owned = !gog && !familyShared;
+  // Only Steam declares shared access in this fixture; an Epic row must stay owned.
+  const shared = index === 6;
+  const owned = !gog && !shared;
   return {
     key: `${provider}:${index + 1}`,
     title, detectedName: title, matchedName: index === 2 ? null : title,
     provider, providerName,
-    installed, owned, familyShared,
+    installed, owned, shared,
     running: false, status: index === 2 ? 'unmatched' : { matched: { gameId: index + 1, source: 'automatic' } },
     coverFile: `mock-${index}.svg`,
     playtime: {
@@ -91,13 +92,13 @@ function within(at: number | null | undefined, now: number, window: number): boo
 /** The same facet rules as `crates/core/src/library/query.rs`, in memory. */
 function matchesFilters(row: Row, filters: LibraryFilters, now: number): boolean {
   const availability = filters.availability;
-  const anyAvailability = availability.installed || availability.owned || availability.family;
+  const anyAvailability = availability.installed || availability.owned || availability.shared;
   if (
     anyAvailability &&
     !(
       (availability.installed && row.installed) ||
       (availability.owned && row.owned) ||
-      (availability.family && row.familyShared)
+      (availability.shared && row.shared)
     )
   ) return false;
   if (filters.runningOnly && !row.running) return false;
@@ -220,7 +221,13 @@ function compareRows(a: Row, b: Row, sort: { key: LibraryView['layout']['sort'][
   }
 }
 
-function summarizeProvider(filtered: Row[], raw: Row[], id: string, name: string): ProviderCount {
+function summarizeProvider(
+  filtered: Row[],
+  raw: Row[],
+  id: string,
+  name: string,
+  sharedLabel: string | null,
+): ProviderCount {
   const providerRows = filtered.filter((row) => row.provider === id);
   const rawRows = raw.filter((row) => row.provider === id);
   return {
@@ -229,15 +236,16 @@ function summarizeProvider(filtered: Row[], raw: Row[], id: string, name: string
     count: providerRows.length,
     installedCount: rawRows.filter((row) => row.installed).length,
     ownedCount: rawRows.filter((row) => row.owned).length,
-    familyCount: rawRows.filter((row) => row.familyShared && !row.owned).length,
+    sharedCount: rawRows.filter((row) => row.shared && !row.owned).length,
+    sharedLabel,
   };
 }
 
 function providerCounts(filtered: Row[], raw: Row[]): ProviderCount[] {
   return [
-    summarizeProvider(filtered, raw, 'steam', 'Steam'),
-    summarizeProvider(filtered, raw, 'gog', 'GOG'),
-    summarizeProvider(filtered, raw, 'epic', 'Epic Games Store'),
+    summarizeProvider(filtered, raw, 'steam', 'Steam', 'Steam Family'),
+    summarizeProvider(filtered, raw, 'gog', 'GOG', null),
+    summarizeProvider(filtered, raw, 'epic', 'Epic Games Store', null),
   ];
 }
 
@@ -284,7 +292,7 @@ function createLibrary(source: Row[]): LibraryView {
 
 /**
  * Optional large-library fixture (`?library=large`): 320 owned Steam games, exactly 18 installed,
- * and a few family-shared games, so virtualization, counts and the Installed filter can be checked
+ * and a few shared games, so virtualization, counts and the Installed filter can be checked
  * against a realistic catalog. It is additive; the default scenario stays at 12 games.
  */
 function createLargeLibraryRows(): Row[] {
@@ -300,7 +308,7 @@ function createLargeLibraryRows(): Row[] {
       providerName: 'Steam',
       installed,
       owned: true,
-      familyShared: false,
+      shared: false,
       running: false,
       status: index % 5 === 0 ? 'unmatched' : { matched: { gameId: index + 1, source: 'automatic' } },
       coverFile: `mock-${index % 12}.svg`,
@@ -313,14 +321,14 @@ function createLargeLibraryRows(): Row[] {
   for (let index = 0; index < 8; index += 1) {
     rows.push({
       key: `steam:${5000 + index}`,
-      title: `Family Shelf ${index + 1}`,
-      detectedName: `Family Shelf ${index + 1}`,
+      title: `Shared Shelf ${index + 1}`,
+      detectedName: `Shared Shelf ${index + 1}`,
       matchedName: null,
       provider: 'steam',
       providerName: 'Steam',
       installed: false,
       owned: false,
-      familyShared: true,
+      shared: true,
       running: false,
       status: 'unmatched',
       coverFile: `mock-${index % 12}.svg`,
@@ -335,14 +343,14 @@ function createLargeLibraryRows(): Row[] {
 
 function installedOnlyRows(source: Row[], provider: string): Row[] {
   return source
-    .map((row) => row.provider === provider ? { ...row, owned: false, familyShared: false } : { ...row })
-    .filter((row) => row.installed || row.owned || row.familyShared);
+    .map((row) => row.provider === provider ? { ...row, owned: false, shared: false } : { ...row })
+    .filter((row) => row.installed || row.owned || row.shared);
 }
 
 function makeStoreAccount(
   provider: 'steam' | 'epic',
   scenario: MockSteamScenario,
-  counts: Pick<StoreAccountView, 'ownedCount' | 'familyCount' | 'installedCount'>,
+  counts: Pick<StoreAccountView, 'ownedCount' | 'sharedCount' | 'installedCount'>,
   storage: StorageMethod,
 ): StoreAccountView {
   const disconnected = scenario === 'notConnected';
@@ -362,14 +370,15 @@ function makeStoreAccount(
     accountId: identity?.accountId ?? null,
     accountName: identity?.accountName ?? null,
     ownedCount: disconnected ? 0 : counts.ownedCount,
-    familyCount: disconnected || provider === 'epic' ? 0 : counts.familyCount,
+    sharedCount: disconnected || provider === 'epic' ? 0 : counts.sharedCount,
+    sharedLabel: provider === 'steam' ? 'Steam Family' : null,
     installedCount: counts.installedCount,
     lastCheckedAt: disconnected || signingIn ? null : Math.floor(Date.now() / 1000) - 120,
     lastSyncedAt: state === 'connected' ? Math.floor(Date.now() / 1000) : null,
     storage,
     persistFailed: scenario === 'persistFailed',
     catalogError,
-    familyError: null,
+    sharedError: null,
     canSignIn: scenario === 'notConnected' || scenario === 'expired' || scenario === 'credentialError',
     canCancelSignIn: signingIn,
     canFocusSignIn: signingIn,
@@ -783,7 +792,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
   function providerCountsOf(provider: StoreId) {
     return {
       ownedCount: rows.filter((row) => row.provider === provider && row.owned).length,
-      familyCount: rows.filter((row) => row.provider === provider && row.familyShared && !row.owned).length,
+      sharedCount: rows.filter((row) => row.provider === provider && row.shared && !row.owned).length,
       installedCount: rows.filter((row) => row.provider === provider && row.installed).length,
     };
   }
@@ -809,8 +818,8 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
 
   function clearCatalog(provider: StoreId) {
     rows = rows
-      .map((row) => row.provider === provider ? { ...row, owned: false, familyShared: false } : row)
-      .filter((row) => row.installed || row.owned || row.familyShared);
+      .map((row) => row.provider === provider ? { ...row, owned: false, shared: false } : row)
+      .filter((row) => row.installed || row.owned || row.shared);
   }
 
   function scheduleStore(provider: StoreId, delay: number, action: () => void) {
@@ -1147,7 +1156,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     const filter = lib.layout.filter;
     const sort = lib.layout.sort;
     const filters = lib.layout.filters;
-    const visible = rows.filter((row) => row.installed || row.owned || row.familyShared);
+    const visible = rows.filter((row) => row.installed || row.owned || row.shared);
     const byFacets = visible
       .filter((row) => matchesFilters(row, filters, NOW))
       .filter((row) => row.title.toLowerCase().includes(lib.search.toLowerCase()));
@@ -1159,7 +1168,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
       .sort((a, b) => compareRows(a, b, sort));
     const availability = filters.availability;
     const installedOnly =
-      availability.installed && !availability.owned && !availability.family;
+      availability.installed && !availability.owned && !availability.shared;
     if (visible.length === 0) {
       lib.empty = { noGames: { stores: ['Steam', 'GOG'] } };
     } else if (installedOnly && lib.installedTotal === 0) {

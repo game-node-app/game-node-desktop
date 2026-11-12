@@ -34,8 +34,9 @@ pub struct Row {
     pub installed: bool,
     /// Found in the connected account's owned catalog.
     pub owned: bool,
-    /// Shared through Steam Family; never true when the same entry is owned.
-    pub family_shared: bool,
+    /// Shared through the provider's declared shared access; never true when the same entry is
+    /// owned.
+    pub shared: bool,
     pub status: MatchStatus,
     /// File name of the cached cover under the per-user `covers/` folder.
     pub cover_file: Option<String>,
@@ -60,8 +61,12 @@ pub struct ProviderCount {
     pub installed_count: usize,
     /// Entries the connected account owns: a raw fact for the store card.
     pub owned_count: usize,
-    /// Entries shared through Steam Family and not owned: a raw fact for the store card.
-    pub family_count: usize,
+    /// Entries shared through the provider's declared shared access and not owned: a raw fact
+    /// for the store card.
+    pub shared_count: usize,
+    /// The provider's declared shared-access label, if it declares any. Only labelled providers
+    /// offer the Shared filter, counts and warnings.
+    pub shared_label: Option<String>,
 }
 
 impl LibraryMachine {
@@ -107,7 +112,7 @@ impl LibraryMachine {
                 .map_or_else(|| entry.provider.clone(), |p| p.name().to_owned()),
             installed: entry.installed,
             owned: entry.owned,
-            family_shared: entry.family_shared && !entry.owned,
+            shared: entry.shared && !entry.owned,
             status,
             cover_file: game.and_then(|game| game.cover_file.clone()),
             release_year: game.and_then(|game| game.release_year),
@@ -152,7 +157,7 @@ impl LibraryMachine {
     }
 
     /// Visible games per loaded provider, in provider order. A provider's count reflects every
-    /// active filter except its own selection; the raw installed/owned/family facts stay
+    /// active filter except its own selection; the raw installed/owned/shared facts stay
     /// unfiltered for the sidebar subline and the store card.
     pub fn provider_counts(&self) -> Vec<ProviderCount> {
         let rows = filter(
@@ -177,16 +182,20 @@ impl LibraryMachine {
             }
             if entry.owned {
                 counts.1 += 1;
-            } else if entry.family_shared {
+            } else if entry.shared {
                 counts.2 += 1;
             }
         }
         for count in &mut counts {
-            let (installed, owned, family) =
+            let (installed, owned, shared) =
                 facts.get(count.id.as_str()).copied().unwrap_or_default();
             count.installed_count = installed;
             count.owned_count = owned;
-            count.family_count = family;
+            count.shared_count = shared;
+            count.shared_label = self
+                .provider(&count.id)
+                .and_then(|provider| provider.shared_label())
+                .map(str::to_owned);
         }
         counts
     }
@@ -206,7 +215,7 @@ fn matches_availability(filter: AvailabilityFilter, row: &Row) -> bool {
     filter.is_any()
         || (filter.installed && row.installed)
         || (filter.owned && row.owned)
-        || (filter.family && row.family_shared)
+        || (filter.shared && row.shared)
 }
 
 fn matches_match_state(filter: MatchFilter, status: &MatchStatus) -> bool {
@@ -414,7 +423,8 @@ pub fn counts<'a>(
             count: rows.iter().filter(|row| row.provider == id).count(),
             installed_count: 0,
             owned_count: 0,
-            family_count: 0,
+            shared_count: 0,
+            shared_label: None,
         })
         .collect()
 }

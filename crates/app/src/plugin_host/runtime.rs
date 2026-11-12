@@ -111,6 +111,7 @@ impl HostedProviders {
                 provider_id: descriptor.provider_id.clone(),
                 plugin_id: descriptor.plugin_id.clone(),
                 capabilities: descriptor.capabilities.clone(),
+                shared_catalog: descriptor.shared_catalog,
                 services: services.clone(),
             })?;
             let executable = executable_dir.join(descriptor.executable_name());

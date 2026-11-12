@@ -419,7 +419,7 @@ fn a_new_cover_url_drops_the_downloaded_file() {
 }
 
 #[test]
-fn owned_only_and_family_shared_games_are_looked_up() {
+fn owned_only_and_shared_games_are_looked_up() {
     let mut cache = LibraryCache::default();
     cache
         .entries
@@ -475,7 +475,7 @@ fn a_catalog_sync_looks_up_newly_visible_games() {
             name: "Half-Life".to_owned(),
             fields: Default::default(),
         }])),
-        family: Some(Err(CatalogError::FamilyUnavailable)),
+        shared: Some(Err(CatalogError::SharedUnavailable)),
         now: NOW + 1,
     });
     assert_eq!(lookups(&effects)[0].2, ["70"]);

@@ -17,7 +17,7 @@ impl HostFiles for StdHostFiles {
     fn read_dir(&self, path: &str) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in std::fs::read_dir(path)? {
-            // A name that is not valid text cannot be a Steam manifest; skip it.
+            // A name that is not valid text cannot be a manifest file name; skip it.
             if let Ok(name) = entry?.file_name().into_string() {
                 names.push(name);
             }

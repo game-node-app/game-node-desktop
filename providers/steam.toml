@@ -6,6 +6,8 @@ source = "steam"
 scan = { plugin = "org.gamenode.plugin.steam-discovery" }
 # Owned and Steam Family games, read with the connected account's web session.
 catalog = { plugin = "org.gamenode.plugin.steam-discovery" }
+# Shared games are playable through Steam Family; the label is shown as declared.
+shared = { label = "Steam Family" }
 achievements = { plugin = "org.gamenode.plugin.steam-discovery" }
 launch = { uri = "steam://rungameid/{id}" }
 install = { uri = "steam://nav/games/details/{id}" }

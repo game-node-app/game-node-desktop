@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) {
         Ok(providers) => Some(providers),
         Err(error) => {
-            tracing::warn!(%error, "Steam provider is unavailable");
+            tracing::warn!(%error, "bundled providers are unavailable");
             None
         }
     };

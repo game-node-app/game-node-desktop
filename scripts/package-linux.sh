@@ -33,6 +33,9 @@ host = next(line.removeprefix("host: ") for line in subprocess.check_output(
 target = os.environ.get("CARGO_BUILD_TARGET") or host
 if "/" in target or "linux" not in target:
     raise SystemExit("Linux packaging requires a Linux target triple, not a custom target file")
+sys.path.insert(0, str(Path("scripts").resolve()))
+import bundled_plugins
+
 metadata = {
     "version": version,
     "buildVersion": build_version,
@@ -53,39 +56,52 @@ binary = Path(target_directory)
 if os.environ.get("CARGO_BUILD_TARGET"):
     binary /= target
 (stage / "binary").write_text(str(binary / "release/gamenode") + "\n", encoding="utf-8")
-(stage / "steam_binary").write_text(
-    str(binary / "release/gamenode-plugin-steam") + "\n", encoding="utf-8"
-)
-(stage / "packagekit_binary").write_text(
-    str(binary / "release/gamenode-plugin-packagekit") + "\n", encoding="utf-8"
+plugin_files = [plugin.file_name("linux") for plugin in bundled_plugins.load("linux")]
+(stage / "plugin_files").write_text(
+    "".join(name + "\n" for name in plugin_files), encoding="utf-8"
 )
 PY
 read -r build_version < "$package/VERSION"
 read -r target < "$stage/target"
 read -r binary < "$stage/binary"
-read -r steam_binary < "$stage/steam_binary"
-read -r packagekit_binary < "$stage/packagekit_binary"
+plugin_files=()
+while IFS= read -r plugin_file; do
+    plugin_files+=("$plugin_file")
+done < "$stage/plugin_files"
+if [[ ${#plugin_files[@]} -eq 0 ]]; then
+    echo 'No bundled plugins are declared for Linux.' >&2
+    exit 1
+fi
 pnpm --dir ui build
 GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-app --locked
-GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-plugin-steam --locked
-GAMENODE_BUILD_VERSION="$build_version" cargo build --release -p gamenode-plugin-packagekit --locked
-# The Epic plugin is Windows-only and is intentionally not built into Linux packages.
+plugin_build_args=()
+for plugin_file in "${plugin_files[@]}"; do
+    plugin_build_args+=(--bin "$plugin_file")
+done
+GAMENODE_BUILD_VERSION="$build_version" cargo build --release --locked "${plugin_build_args[@]}"
+binary_dir=$(dirname "$binary")
 cp "$binary" "$package/libexec/gamenode"
-cp "$steam_binary" "$package/libexec/gamenode-plugin-steam"
-cp "$packagekit_binary" "$package/libexec/gamenode-plugin-packagekit"
+plugin_paths=()
+for plugin_file in "${plugin_files[@]}"; do
+    cp "$binary_dir/$plugin_file" "$package/libexec/$plugin_file"
+    plugin_paths+=("$package/libexec/$plugin_file")
+done
 cp LICENSE "$package/LICENSE"
 cp packaging/linux/README.md "$package/README.md"
 cp crates/app/icons/gamenode.png "$package/gamenode.png"
 cp packaging/linux/{install.sh,uninstall.sh,gamenode.sh,desktop-integration.sh} "$package/"
 cp -R licenses "$package/licenses"
-chmod 755 "$package/libexec/gamenode" "$package/libexec/gamenode-plugin-steam" \
-    "$package/libexec/gamenode-plugin-packagekit" \
+chmod 755 "$package/libexec/gamenode" "${plugin_paths[@]}" \
     "$package/install.sh" "$package/uninstall.sh" "$package/gamenode.sh"
-# Epic is a Windows-only provider. Refuse a Linux package that somehow carries its executable.
-if [[ -e "$package/libexec/gamenode-plugin-epic" || -e "$package/libexec/gamenode-plugin-epic.exe" ]]; then
-    echo 'Refusing to package the Windows-only Epic plugin in the Linux package.' >&2
-    exit 1
-fi
+python3 - "$package/libexec" <<'PY'
+from pathlib import Path
+import sys
+
+sys.path.insert(0, "scripts")
+import bundled_plugins
+
+bundled_plugins.write_index(Path(sys.argv[1]), "linux")
+PY
 python3 scripts/verify-plugin-package.py --platform linux "$package"
 
 mkdir -p dist/linux
@@ -98,6 +114,13 @@ import sys
 package = Path(sys.argv[1])
 manifest = package / "build-manifest.json"
 metadata = json.loads(manifest.read_text(encoding="utf-8"))
+index = json.loads((package / "libexec/bundled-plugins.json").read_text(encoding="utf-8"))
+metadata["pluginSha256"] = {
+    entry["file"]: hashlib.sha256(
+        (package / "libexec" / entry["file"]).read_bytes()
+    ).hexdigest()
+    for entry in index["plugins"]
+}
 metadata["filesSha256"] = {
     str(path.relative_to(package)): hashlib.sha256(path.read_bytes()).hexdigest()
     for path in sorted(package.rglob("*")) if path.is_file() and path != manifest

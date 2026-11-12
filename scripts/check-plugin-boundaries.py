@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import NamedTuple
 
 
@@ -36,6 +37,11 @@ FORBIDDEN_HOST_PLUGIN_CRATES = {
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_PATH = "scripts/plugin-boundary-allowlist.txt"
 
+# Import the descriptor reader used by the build, packaging and verification scripts. The store
+# vocabulary below is derived from it and the manifests, so adding a store needs no checker edit.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import bundled_plugins  # noqa: E402  (the scripts directory is not a package)
+
 # Production sources that must stay store-agnostic. Stores reach the host only through plugin
 # descriptors, manifests, scoped services and test fixtures.
 STORE_SOURCE_ROOTS = (
@@ -46,29 +52,155 @@ STORE_SOURCE_ROOTS = (
     "ui/src",
 )
 SOURCE_SUFFIXES = frozenset({".rs", ".ts", ".tsx", ".js", ".jsx"})
-# Store provider ids from the bundled store descriptors. Extend this list when a store is added.
-STORE_PROVIDER_IDS = ("steam", "epic")
 TEST_PATH_SEGMENTS = frozenset({"tests", "test", "__tests__", "fixtures"})
 TEST_FILE_SUFFIXES = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx")
 
-STORE_HOST_PATTERN = re.compile(
-    r"steampowered|steamcommunity|steamstatic|epicgames", re.IGNORECASE
+RULE_NAMES = (
+    "store-host",
+    "store-module-path",
+    "store-uri-scheme",
+    "provider-id-literal",
+    "store-identifier",
 )
-STORE_MODULE_PATH_PATTERN = re.compile(r"::(?:steam|epic)::")
-STORE_PROVIDER_LITERAL_PATTERN = re.compile(
-    r"""["'](?:%s)["']"""
-    % "|".join(re.escape(provider) for provider in STORE_PROVIDER_IDS)
-)
-STORE_IDENTIFIER_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?:steam|epic)_[A-Za-z0-9_]", re.IGNORECASE
-)
+URI_SCHEME_PATTERN = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
 
-SOURCE_RULES = {
-    "store-host": STORE_HOST_PATTERN,
-    "store-module-path": STORE_MODULE_PATH_PATTERN,
-    "provider-id-literal": STORE_PROVIDER_LITERAL_PATTERN,
-    "store-identifier": STORE_IDENTIFIER_PATTERN,
-}
+
+class StoreVocabularyError(Exception):
+    """The bundled descriptors or manifests cannot provide the store vocabulary."""
+
+
+class StoreVocabulary(NamedTuple):
+    """Store literals derived from the trusted descriptors and provider manifests."""
+
+    provider_ids: tuple[str, ...]
+    domains: tuple[str, ...]
+    uri_schemes: tuple[str, ...]
+
+
+def _read_toml(path: Path) -> dict:
+    try:
+        with path.open("rb") as source:
+            return tomllib.load(source)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise StoreVocabularyError(f"{path}: {error}") from error
+
+
+def _registrable_domain(host: str) -> str | None:
+    """Return the last two labels of a host name, or None when there are fewer.
+
+    Multi-part public suffixes such as `co.uk` are misclassified; this is a lint over our own
+    trusted declarations, not a general URL classifier.
+    """
+    labels = [label for label in host.strip().lower().rstrip(".").split(".") if label]
+    if len(labels) < 2:
+        return None
+    return ".".join(labels[-2:])
+
+
+def _uri_scheme(template: str) -> str | None:
+    match = URI_SCHEME_PATTERN.match(template)
+    return match.group(1).lower() if match else None
+
+
+def load_store_vocabulary(repo_root: Path) -> StoreVocabulary:
+    """Derive provider ids, store hosts and URI schemes from trusted declarations."""
+    repo_root = Path(repo_root)
+    descriptors_dir = repo_root / "plugins"
+    if not descriptors_dir.is_dir():
+        raise StoreVocabularyError(f"plugin descriptor directory is missing: {descriptors_dir}")
+
+    documents: list[tuple[Path, dict]] = [
+        (path, _read_toml(path)) for path in sorted(descriptors_dir.glob("*.toml"))
+    ]
+    executables = {
+        document["executable"]
+        for _, document in documents
+        if isinstance(document.get("executable"), str)
+    }
+    provider_ids: set[str] = set()
+    try:
+        for platform in bundled_plugins.KNOWN_PLATFORMS:
+            provider_ids.update(
+                plugin.provider_id
+                for plugin in bundled_plugins.load(
+                    platform, descriptors_dir, binary_names=executables
+                )
+            )
+    except bundled_plugins.BundledPluginsError as error:
+        raise StoreVocabularyError(str(error)) from error
+
+    domains: set[str] = set()
+    for path, document in documents:
+        icon_hosts = document.get("achievement_icon_hosts") or []
+        if not isinstance(icon_hosts, list):
+            raise StoreVocabularyError(f"{path}: achievement_icon_hosts is not a list")
+        for host in icon_hosts:
+            if not isinstance(host, str):
+                raise StoreVocabularyError(f"{path}: achievement icon host is not a string")
+            domain = _registrable_domain(host)
+            if domain is not None:
+                domains.add(domain)
+
+        policy_reference = document.get("login_policy")
+        if isinstance(policy_reference, str) and policy_reference:
+            policy = _read_toml(repo_root / policy_reference)
+            allowed_hosts = policy.get("allowed_hosts") or []
+            if not isinstance(allowed_hosts, list):
+                raise StoreVocabularyError(
+                    f"{repo_root / policy_reference}: allowed_hosts is not a list"
+                )
+            for host in allowed_hosts:
+                if not isinstance(host, str):
+                    raise StoreVocabularyError(
+                        f"{repo_root / policy_reference}: allowed host is not a string"
+                    )
+                domain = _registrable_domain(host)
+                if domain is not None:
+                    domains.add(domain)
+
+    uri_schemes: set[str] = set()
+    providers_dir = repo_root / "providers"
+    if providers_dir.is_dir():
+        for path in sorted(providers_dir.glob("*.toml")):
+            manifest = _read_toml(path)
+            for key in ("launch", "install"):
+                action = manifest.get(key)
+                if not isinstance(action, dict):
+                    continue
+                template = action.get("uri")
+                if not isinstance(template, str):
+                    continue
+                scheme = _uri_scheme(template)
+                if scheme is not None:
+                    uri_schemes.add(scheme)
+
+    return StoreVocabulary(
+        provider_ids=tuple(sorted(provider_ids)),
+        domains=tuple(sorted(domains)),
+        uri_schemes=tuple(sorted(uri_schemes)),
+    )
+
+
+def _alternation(values: tuple[str, ...]) -> str:
+    if not values:
+        return r"(?!)"
+    return "(?:" + "|".join(re.escape(value) for value in values) + ")"
+
+
+def source_rules(vocabulary: StoreVocabulary) -> dict[str, re.Pattern]:
+    """Build the production source rules for one derived store vocabulary."""
+    provider_ids = _alternation(vocabulary.provider_ids)
+    return {
+        "store-host": re.compile(_alternation(vocabulary.domains), re.IGNORECASE),
+        "store-module-path": re.compile(rf"::{provider_ids}::"),
+        # Quote-adjacent schemes only: backticked documentation examples may name a store.
+        "store-uri-scheme": re.compile(
+            rf"""["']{_alternation(vocabulary.uri_schemes)}://""", re.IGNORECASE
+        ),
+        "provider-id-literal": re.compile(rf"""["']{provider_ids}["']"""),
+        "store-identifier": re.compile(rf"(?<![A-Za-z0-9]){provider_ids}_[A-Za-z0-9_]"),
+    }
+
 
 # Only an exact `#[cfg(test)]` (or `cfg(all(test, ...))`) item is test-only. `cfg(any(..., test))`
 # also compiles production code and must stay visible to the scan.
@@ -172,7 +304,9 @@ def check_metadata(metadata: dict) -> list[str]:
     return errors
 
 
-def load_allowlist(path: Path) -> tuple[list[AllowlistEntry], list[str]]:
+def load_allowlist(
+    path: Path, rule_names: tuple[str, ...] = RULE_NAMES
+) -> tuple[list[AllowlistEntry], list[str]]:
     """Read reviewed path/line exceptions with a mandatory justification."""
     if not path.is_file():
         return [], [f"store boundary allowlist is missing: {path}"]
@@ -190,10 +324,10 @@ def load_allowlist(path: Path) -> tuple[list[AllowlistEntry], list[str]]:
             )
             continue
         rule = match.group("rule")
-        if rule not in SOURCE_RULES:
+        if rule not in rule_names:
             errors.append(
                 f"{path}:{number}: unknown store boundary rule `{rule}`; "
-                f"expected one of {', '.join(sorted(SOURCE_RULES))}"
+                f"expected one of {', '.join(sorted(rule_names))}"
             )
             continue
         entries.append(
@@ -222,6 +356,36 @@ def _is_test_path(relative: Path) -> bool:
     return False
 
 
+_RUST_LITERAL_OR_COMMENT = re.compile(
+    r'r#*".*?"#*'
+    r'|"(?:\\.|[^"\\])*"'
+    r"|'(?:\\.|[^'\\])'"
+    r"|/\*.*?\*/"
+    r"|//.*$"
+)
+
+
+def _test_item_end(lines: list[str], index: int) -> int:
+    """Return the index after the item annotated by a `#[cfg(test)]` attribute.
+
+    Tracking braces keeps fixture strings that end with `}` from ending the skip early, while a
+    statement item ends at its semicolon.
+    """
+    depth = 0
+    opened = False
+    while index < len(lines):
+        code = _RUST_LITERAL_OR_COMMENT.sub("", lines[index])
+        depth += code.count("{") - code.count("}")
+        if "{" in code:
+            opened = True
+        if opened and depth <= 0:
+            return index + 1
+        if not opened and lines[index].rstrip().endswith((";", ",")):
+            return index + 1
+        index += 1
+    return index
+
+
 def _production_lines(path: Path) -> list[tuple[int, str]]:
     """Return the lines the store scan may inspect, hiding `#[cfg(test)]` items in Rust."""
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -231,30 +395,21 @@ def _production_lines(path: Path) -> list[tuple[int, str]]:
     visible: list[tuple[int, str]] = []
     index = 0
     while index < len(lines):
-        line = lines[index]
-        if not CFG_TEST_ATTRIBUTE_PATTERN.match(line):
-            visible.append((index + 1, line))
+        if not CFG_TEST_ATTRIBUTE_PATTERN.match(lines[index]):
+            visible.append((index + 1, lines[index]))
             index += 1
             continue
-
-        indent = len(line) - len(line.lstrip())
-        while index + 1 < len(lines):
-            index += 1
-            text = lines[index].strip()
-            if not text:
-                continue
-            current_indent = len(lines[index]) - len(lines[index].lstrip())
-            if current_indent <= indent and text.endswith((";", ",", "}")):
-                break
-        index += 1
+        index = _test_item_end(lines, index + 1)
     return visible
 
 
-def _scan_source_file(repo_root: Path, path: Path) -> list[tuple[str, int, str, str]]:
+def _scan_source_file(
+    repo_root: Path, path: Path, rules: dict[str, re.Pattern]
+) -> list[tuple[str, int, str, str]]:
     relative = path.relative_to(repo_root).as_posix()
     findings = []
     for line_number, line in _production_lines(path):
-        for rule, pattern in SOURCE_RULES.items():
+        for rule, pattern in rules.items():
             if pattern.search(line):
                 findings.append((relative, line_number, rule, line.strip()))
     return findings
@@ -264,7 +419,12 @@ def check_store_sources(repo_root: Path, allowlist_path: Path | None = None) -> 
     """Fail on store-specific production code outside trusted plugin data and test fixtures."""
     repo_root = Path(repo_root)
     allowlist_path = Path(allowlist_path) if allowlist_path else repo_root / ALLOWLIST_PATH
-    entries, errors = load_allowlist(allowlist_path)
+    try:
+        vocabulary = load_store_vocabulary(repo_root)
+    except StoreVocabularyError as error:
+        return [f"store boundary vocabulary: {error}"]
+    rules = source_rules(vocabulary)
+    entries, errors = load_allowlist(allowlist_path, tuple(rules))
     allowed = {(entry.path, entry.line, entry.rule) for entry in entries}
     used: set[tuple[str, int, str]] = set()
 
@@ -278,7 +438,9 @@ def check_store_sources(repo_root: Path, allowlist_path: Path | None = None) -> 
             relative = path.relative_to(repo_root)
             if _is_test_path(relative):
                 continue
-            for relative_path, line_number, rule, text in _scan_source_file(repo_root, path):
+            for relative_path, line_number, rule, text in _scan_source_file(
+                repo_root, path, rules
+            ):
                 key = (relative_path, line_number, rule)
                 if key in allowed:
                     used.add(key)
@@ -324,7 +486,11 @@ def main() -> int:
     if errors:
         for error in errors:
             if error.startswith(
-                ("store boundary violation:", "stale store boundary allowlist entry:")
+                (
+                    "store boundary violation:",
+                    "store boundary vocabulary:",
+                    "stale store boundary allowlist entry:",
+                )
             ):
                 print(error, file=sys.stderr)
             else:

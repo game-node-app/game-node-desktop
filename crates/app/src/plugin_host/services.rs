@@ -233,7 +233,7 @@ impl ProviderServices {
             storage: method,
             persist_failed: false,
             catalog_error: None,
-            family_error: None,
+            shared_error: None,
         })
     }
 

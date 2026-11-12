@@ -49,7 +49,7 @@ function row(overrides: Partial<Row> = {}): Row {
     providerName: 'Steam',
     installed: true,
     owned: true,
-    familyShared: false,
+    shared: false,
     running: false,
     status: 'unmatched',
     coverFile: null,
@@ -101,7 +101,8 @@ function library(overrides: Partial<LibraryView> = {}): LibraryView {
         count: 1,
         installedCount: 1,
         ownedCount: 1,
-        familyCount: 0,
+        sharedCount: 0,
+        sharedLabel: 'Steam Family',
       },
     ],
     rows: [first],
@@ -116,20 +117,21 @@ function library(overrides: Partial<LibraryView> = {}): LibraryView {
   };
 }
 
-function account(state: StoreAccountState): StoreAccountView {
+function account(state: StoreAccountState, provider = 'steam'): StoreAccountView {
   return {
-    provider: 'steam',
+    provider,
     state,
-    accountId: state === 'notConnected' ? null : '76561198000000000',
-    accountName: state === 'notConnected' ? null : 'cassi',
+    accountId: state === 'notConnected' ? null : provider === 'steam' ? '76561198000000000' : 'epic-account-1',
+    accountName: state === 'notConnected' ? null : provider === 'steam' ? 'cassi' : 'EpicPlayer',
     ownedCount: 1,
-    familyCount: 0,
+    sharedCount: 0,
+    sharedLabel: 'Steam Family',
     installedCount: 1,
     lastCheckedAt: null,
     storage: 'secretService',
     persistFailed: false,
     catalogError: null,
-    familyError: null,
+    sharedError: null,
     canSignIn: false,
     canCancelSignIn: false,
     canFocusSignIn: false,
@@ -178,7 +180,7 @@ function snapshotWith(
 ): Snapshot {
   const snapshot = createDefaultSnapshot();
   snapshot.library = library({ detail: detailValue });
-  snapshot.storeAccounts = [account(state)];
+  snapshot.storeAccounts = [account(state, detailValue.row.provider)];
   return snapshot;
 }
 
@@ -270,6 +272,30 @@ describe('Achievement detail section', () => {
 
     renderDetail(snapshotWith('expired', detail()));
     expect(screen.getByTestId('detail-achievements-expired')).toBeInTheDocument();
+  });
+
+  it('names a not-connected provider by its display name', () => {
+    renderDetail(
+      snapshotWith(
+        'notConnected',
+        detail({
+          row: row({ provider: 'epic', providerName: 'Epic Games Store' }),
+        }),
+      ),
+    );
+
+    expect(screen.getByTestId('detail-achievements-not-connected')).toBeInTheDocument();
+    expect(
+      screen.getByText('Connect Epic Games Store to see achievements.'),
+    ).toBeInTheDocument();
+  });
+
+  it('localizes the provider-named sign-in-again message in Brazilian Portuguese', () => {
+    renderDetail(snapshotWith('expired', detail()), 'pt-BR');
+
+    expect(screen.getByTestId('detail-achievements-expired')).toHaveTextContent(
+      'Entre novamente em Steam para ver as conquistas.',
+    );
   });
 
   it('shows no section for a provider without an achievement backend', () => {
@@ -374,6 +400,27 @@ describe('Achievement list window', () => {
     const row = await screen.findByTestId('achievement-row');
     expect(within(row).getByText('No time')).toBeInTheDocument();
     expect(within(row).queryByText(/\b(19|20)\d{2}\b/)).toBeNull();
+  });
+
+  it('names the entry provider in a privacy failure inside the full list', async () => {
+    const epicRow = row({
+      key: 'epic:1',
+      provider: 'epic',
+      providerName: 'Epic Games Store',
+    });
+    vi.spyOn(commands, 'achievementList').mockResolvedValue(
+      list([], 'failed'),
+    );
+    renderDetail(
+      snapshotWith('connected', detail({ row: epicRow, achievements: summary() })),
+    );
+    fireEvent.click(screen.getByTestId('detail-achievements-open'));
+
+    expect(
+      await screen.findByText(
+        'Epic Games Store privacy settings prevent reading these achievements.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('renders an achievement icon through the asset protocol and hides a failed image', async () => {

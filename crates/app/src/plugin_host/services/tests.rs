@@ -98,6 +98,7 @@ impl Harness {
             provider_id: "steam".into(),
             plugin_id: "fixture.steam".into(),
             capabilities: cap::ALL.iter().map(|c| (*c).into()).collect(),
+            shared_catalog: false,
             services: services.clone(),
         })
         .unwrap();
@@ -180,7 +181,7 @@ fn connected() -> models::AccountStatus {
         storage: models::StorageMethod::PrivateFile,
         persist_failed: false,
         catalog_error: None,
-        family_error: None,
+        shared_error: None,
     }
 }
 

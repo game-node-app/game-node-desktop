@@ -781,6 +781,9 @@ impl Engine {
         if !self.provider_has_achievements(&provider) {
             return Ok(None);
         }
+        // Each provider's icons are trusted only on the hosts its own descriptor declares. A
+        // provider without declared hosts gets an empty set and every icon stays a placeholder.
+        let hosts = icon_hosts(&provider);
         let library = self.shared.ports.library.clone();
         let achievements = self.shared.ports.achievements.clone();
         let result =
@@ -833,15 +836,17 @@ impl Engine {
                         &achievement.icon_gray_url
                     }
                 })
-                .filter(|url| gamenode_platform::achievement_icons::trusted_icon_url(url))
+                .filter(|url| gamenode_platform::achievement_icons::trusted_icon_url(url, &hosts))
                 .cloned()
                 .collect::<Vec<_>>();
             if !urls.is_empty() {
                 let covers_dir = self.shared.ports.covers_dir.clone();
+                let loader_hosts = hosts.clone();
                 self.shared.runtime.spawn_blocking(move || {
                     if let Ok(loader) =
                         gamenode_platform::achievement_icons::AchievementIconLoader::production(
                             &covers_dir,
+                            loader_hosts,
                         )
                     {
                         loader.ensure(urls);
@@ -849,16 +854,30 @@ impl Engine {
                 });
             }
             for achievement in &mut view.achievements {
-                achievement.icon_url = icon_asset(&achievement.icon_url);
-                achievement.icon_gray_url = icon_asset(&achievement.icon_gray_url);
+                achievement.icon_url = icon_asset(&achievement.icon_url, &hosts);
+                achievement.icon_gray_url = icon_asset(&achievement.icon_gray_url, &hosts);
             }
         }
         Ok(view)
     }
 }
 
-pub(super) fn icon_asset(url: &str) -> String {
-    if !gamenode_platform::achievement_icons::trusted_icon_url(url) {
+/// The achievement icon hosts declared by the descriptor of the provider that reported an entry.
+pub(super) fn icon_hosts(provider: &str) -> gamenode_platform::achievement_icons::IconHosts {
+    crate::plugin_host::descriptor_for_provider(provider)
+        .map(|descriptor| {
+            gamenode_platform::achievement_icons::IconHosts::new(
+                descriptor.achievement_icon_hosts.clone(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn icon_asset(
+    url: &str,
+    hosts: &gamenode_platform::achievement_icons::IconHosts,
+) -> String {
+    if !gamenode_platform::achievement_icons::trusted_icon_url(url, hosts) {
         return String::new();
     }
     gamenode_platform::achievement_icons::achievement_icon_asset_url(

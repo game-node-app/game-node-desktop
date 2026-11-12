@@ -416,6 +416,17 @@ fn harness_over(
     creds: Arc<FakeCreds>,
     remote: Option<Arc<gamenode_api::GameNodeClient>>,
 ) -> Harness {
+    let providers = crate::providers::load_bundled_for_tests(Platform::Linux).providers;
+    harness_with_providers(api, creds, remote, providers)
+}
+
+/// Like [`harness_over`], with the provider manifests a test needs.
+fn harness_with_providers(
+    api: Arc<FakeApi>,
+    creds: Arc<FakeCreds>,
+    remote: Option<Arc<gamenode_api::GameNodeClient>>,
+    providers: Vec<gamenode_core::provider::Provider>,
+) -> Harness {
     let browser = Arc::new(FakeBrowser::default());
     let settings = Arc::new(FakeSettings::default());
     let store = Arc::new(FakeLibrary::default());
@@ -482,7 +493,6 @@ fn harness_over(
         store_accounts: Vec::new(),
         ports: Default::default(),
     });
-    let providers = crate::providers::load_bundled_for_tests(Platform::Linux).providers;
     let publishes = Arc::new(AtomicUsize::new(0));
     let publish_count = publishes.clone();
     let engine = Engine::new(

@@ -45,7 +45,7 @@ function makeRow(overrides: Partial<Row> & Pick<Row, 'key' | 'title'>): Row {
     providerName: 'Steam',
     installed: false,
     owned: true,
-    familyShared: false,
+    shared: false,
     running: false,
     status: 'unmatched',
     coverFile: null,
@@ -94,7 +94,8 @@ function makeLibrary(
         count: rows.length,
         installedCount: rows.filter((row) => row.installed).length,
         ownedCount: rows.filter((row) => row.owned).length,
-        familyCount: rows.filter((row) => row.familyShared && !row.owned).length,
+        sharedCount: rows.filter((row) => row.shared && !row.owned).length,
+        sharedLabel: 'Steam Family',
       },
     ],
     rows,
@@ -115,14 +116,15 @@ function makeStoreAccount(state: StoreAccountState, provider = 'steam'): StoreAc
     accountId: state === 'notConnected' ? null : '76561198000000000',
     accountName: state === 'notConnected' ? null : 'cassi',
     ownedCount: 320,
-    familyCount: 8,
+    sharedCount: 8,
+    sharedLabel: provider === 'steam' ? 'Steam Family' : null,
     installedCount: 18,
     lastCheckedAt: null,
     storage: 'secretService',
     persistFailed: false,
     catalogError:
       state === 'expired' ? 'expired' : state === 'unreachable' ? 'unreachable' : null,
-    familyError: null,
+    sharedError: null,
     canSignIn: state === 'notConnected' || state === 'expired',
     canCancelSignIn: state === 'signingIn',
     canFocusSignIn: state === 'signingIn',
@@ -172,7 +174,7 @@ describe('Steam library UI', () => {
       expect(libraryInputSpy).toHaveBeenLastCalledWith({
         setFilters: {
           ...createDefaultFilters(),
-          availability: { installed: true, owned: false, family: false },
+          availability: { installed: true, owned: false, shared: false },
         },
       });
 
@@ -192,7 +194,7 @@ describe('Steam library UI', () => {
       const snapshot = createDefaultSnapshot();
       const filters = {
         ...createDefaultFilters(),
-        availability: { installed: true, owned: false, family: false },
+        availability: { installed: true, owned: false, shared: false },
         playtime: 'played' as const,
         favoritesOnly: true,
       };
@@ -211,7 +213,7 @@ describe('Steam library UI', () => {
 
       fireEvent.click(screen.getByTestId('library-filter-chip-remove-installed'));
       expect(libraryInputSpy).toHaveBeenLastCalledWith({
-        setFilters: { ...filters, availability: { installed: false, owned: false, family: false } },
+        setFilters: { ...filters, availability: { installed: false, owned: false, shared: false } },
       });
 
       fireEvent.click(screen.getByTestId('library-clear-filters-btn'));
@@ -242,11 +244,65 @@ describe('Steam library UI', () => {
       expect(button).toHaveFocus();
     });
 
+    it('offers the Shared filter only when a loaded provider declares shared access', async () => {
+      const labelled = createDefaultSnapshot();
+      labelled.library = makeLibrary([makeRow({ key: 'steam:1', title: 'Owned' })]);
+      const first = renderSnapshot(<LibraryToolbar />, labelled);
+      const user = userEvent.setup();
+
+      await user.click(screen.getByTestId('library-filters-btn'));
+      expect(await screen.findByTestId('filter-shared')).toBeInTheDocument();
+      expect(screen.getByTestId('filter-installed')).toBeInTheDocument();
+      expect(screen.getByTestId('filter-owned')).toBeInTheDocument();
+      first.unmount();
+
+      const unlabelled = createDefaultSnapshot();
+      unlabelled.library = makeLibrary([makeRow({ key: 'steam:1', title: 'Owned' })], {
+        providers: [
+          {
+            id: 'steam',
+            name: 'Steam',
+            count: 1,
+            installedCount: 0,
+            ownedCount: 1,
+            sharedCount: 0,
+            sharedLabel: null,
+          },
+        ],
+      });
+      renderSnapshot(<LibraryToolbar />, unlabelled);
+      const secondUser = userEvent.setup();
+
+      await secondUser.click(screen.getByTestId('library-filters-btn'));
+      expect(await screen.findByTestId('filter-owned')).toBeInTheDocument();
+      expect(screen.queryByTestId('filter-shared')).not.toBeInTheDocument();
+    });
+
+    it('shows a removable Shared chip when the shared filter is active', () => {
+      const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
+      const snapshot = createDefaultSnapshot();
+      const filters = {
+        ...createDefaultFilters(),
+        availability: { installed: false, owned: false, shared: true },
+      };
+      snapshot.library = makeLibrary([makeRow({ key: 'steam:1', title: 'Shared' })], {
+        layout: { filters },
+      });
+
+      renderSnapshot(<LibraryToolbar />, snapshot);
+
+      expect(screen.getByTestId('library-filter-chip-shared')).toHaveTextContent('Shared');
+      fireEvent.click(screen.getByTestId('library-filter-chip-remove-shared'));
+      expect(libraryInputSpy).toHaveBeenLastCalledWith({
+        setFilters: { ...filters, availability: { installed: false, owned: false, shared: false } },
+      });
+    });
+
     it('round-trips the filters through the mock layout', async () => {
       const host = createMockHost();
       const installed = {
         ...createDefaultFilters(),
-        availability: { installed: true, owned: false, family: false },
+        availability: { installed: true, owned: false, shared: false },
       };
       await host.invoke('library_input', { input: { setFilters: installed } });
 
@@ -270,8 +326,8 @@ describe('Steam library UI', () => {
         total: 340,
         installedTotal: 18,
         providers: [
-          { id: 'steam', name: 'Steam', count: 328, installedCount: 18, ownedCount: 320, familyCount: 8 },
-          { id: 'gog', name: 'GOG', count: 12, installedCount: 12, ownedCount: 0, familyCount: 0 },
+          { id: 'steam', name: 'Steam', count: 328, installedCount: 18, ownedCount: 320, sharedCount: 8, sharedLabel: 'Steam Family' },
+          { id: 'gog', name: 'GOG', count: 12, installedCount: 12, ownedCount: 0, sharedCount: 0, sharedLabel: null },
         ],
       });
 
@@ -291,12 +347,12 @@ describe('Steam library UI', () => {
     it('follows the installed filter instead of the visible totals', () => {
       const snapshot = createDefaultSnapshot();
       snapshot.library = makeLibrary([], {
-        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, family: false } } },
+        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, shared: false } } },
         total: 340,
         installedTotal: 18,
         providers: [
-          { id: 'steam', name: 'Steam', count: 18, installedCount: 18, ownedCount: 320, familyCount: 8 },
-          { id: 'gog', name: 'GOG', count: 0, installedCount: 12, ownedCount: 0, familyCount: 0 },
+          { id: 'steam', name: 'Steam', count: 18, installedCount: 18, ownedCount: 320, sharedCount: 8, sharedLabel: 'Steam Family' },
+          { id: 'gog', name: 'GOG', count: 0, installedCount: 12, ownedCount: 0, sharedCount: 0, sharedLabel: null },
         ],
       });
 
@@ -317,7 +373,7 @@ describe('Steam library UI', () => {
         total: 9,
         installedTotal: 9,
         providers: [
-          { id: 'steam', name: 'Steam', count: 9, installedCount: 9, ownedCount: 0, familyCount: 0 },
+          { id: 'steam', name: 'Steam', count: 9, installedCount: 9, ownedCount: 0, sharedCount: 0, sharedLabel: 'Steam Family' },
         ],
       });
 
@@ -336,13 +392,41 @@ describe('Steam library UI', () => {
     const rows = [
       makeRow({ key: 'steam:1', title: 'Installed Owned', installed: true, owned: true }),
       makeRow({ key: 'steam:2', title: 'Owned Only', installed: false, owned: true }),
-      makeRow({ key: 'steam:3', title: 'Family Shared', owned: false, familyShared: true }),
-      makeRow({ key: 'steam:4', title: 'Owned And Shared', owned: true, familyShared: false }),
+      makeRow({ key: 'steam:3', title: 'Shared Game', owned: false, shared: true }),
+      makeRow({ key: 'steam:4', title: 'Owned And Shared', owned: true, shared: true }),
+      makeRow({
+        key: 'epic:1',
+        title: 'Epic Shared',
+        provider: 'epic',
+        providerName: 'Epic Games Store',
+        owned: false,
+        shared: true,
+      }),
+    ];
+    const providers: LibraryView['providers'] = [
+      {
+        id: 'steam',
+        name: 'Steam',
+        count: 4,
+        installedCount: 1,
+        ownedCount: 2,
+        sharedCount: 1,
+        sharedLabel: 'Steam Family',
+      },
+      {
+        id: 'epic',
+        name: 'Epic Games Store',
+        count: 1,
+        installedCount: 0,
+        ownedCount: 0,
+        sharedCount: 1,
+        sharedLabel: null,
+      },
     ];
 
-    it('marks installed and family-shared games in the grid without colour alone', () => {
+    it('marks installed and shared games in the grid without colour alone', () => {
       const snapshot = createDefaultSnapshot();
-      snapshot.library = makeLibrary(rows);
+      snapshot.library = makeLibrary(rows, { providers });
 
       renderSnapshot(<GameGrid />, snapshot);
 
@@ -351,15 +435,17 @@ describe('Steam library UI', () => {
       expect(installed).toHaveAttribute('aria-label', 'Installed on this PC');
 
       expect(screen.queryByTestId('game-tile-installed-steam:2')).not.toBeInTheDocument();
-      const family = screen.getByTestId('game-tile-family-steam:3');
-      expect(family).toHaveAttribute('role', 'img');
-      expect(family).toHaveAttribute('aria-label', 'Shared through Steam Family');
-      expect(screen.queryByTestId('game-tile-family-steam:4')).not.toBeInTheDocument();
+      const shared = screen.getByTestId('game-tile-shared-steam:3');
+      expect(shared).toHaveAttribute('role', 'img');
+      expect(shared).toHaveAttribute('aria-label', 'Shared through Steam Family');
+      expect(screen.queryByTestId('game-tile-shared-steam:4')).not.toBeInTheDocument();
+      // Epic declares no shared access, so even a shared fact shows no Steam label.
+      expect(screen.queryByTestId('game-tile-shared-epic:1')).not.toBeInTheDocument();
     });
 
-    it('marks installed and family-shared games in the list', () => {
+    it('marks installed and shared games in the list', () => {
       const snapshot = createDefaultSnapshot();
-      snapshot.library = makeLibrary(rows, { layout: { view: 'list' } });
+      snapshot.library = makeLibrary(rows, { providers, layout: { view: 'list' } });
 
       renderSnapshot(<GameList />, snapshot);
 
@@ -368,17 +454,30 @@ describe('Steam library UI', () => {
         'Installed on this PC',
       );
       expect(screen.queryByTestId('game-row-installed-steam:2')).not.toBeInTheDocument();
-      expect(screen.getByTestId('game-row-family-steam:3')).toHaveAttribute(
+      expect(screen.getByTestId('game-row-shared-steam:3')).toHaveAttribute(
         'aria-label',
         'Shared through Steam Family',
       );
-      expect(screen.queryByTestId('game-row-family-steam:4')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('game-row-shared-steam:4')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('game-row-shared-epic:1')).not.toBeInTheDocument();
+    });
+
+    it('keeps the declared label untranslated in Brazilian Portuguese', () => {
+      const snapshot = createDefaultSnapshot();
+      snapshot.library = makeLibrary([rows[2]], { providers });
+
+      renderSnapshot(<GameGrid />, snapshot, 'pt-BR');
+
+      expect(screen.getByTestId('game-tile-shared-steam:3')).toHaveAttribute(
+        'aria-label',
+        'Compartilhado via Steam Family',
+      );
     });
 
     it('hides the installed indicator while the installed filter is active', () => {
       const snapshot = createDefaultSnapshot();
       snapshot.library = makeLibrary([rows[0]], {
-        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, family: false } } },
+        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, shared: false } } },
       });
 
       renderSnapshot(<GameGrid />, snapshot);
@@ -425,7 +524,7 @@ describe('Steam library UI', () => {
         'Not installed on this PC',
       );
       expect(screen.queryByTestId('detail-install-dir')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('detail-family-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('detail-shared-label')).not.toBeInTheDocument();
 
       const install = screen.getByTestId('detail-install-btn');
       expect(install).toBeEnabled();
@@ -435,18 +534,36 @@ describe('Steam library UI', () => {
       expect(screen.getByTestId('detail-play-btn')).toBeEnabled();
     });
 
-    it('identifies family-shared games in the detail pane', () => {
+    it('identifies shared games in the detail pane through the declared label', () => {
       const row = makeRow({
         key: 'steam:700',
         title: 'Shared Adventure',
         owned: false,
-        familyShared: true,
+        shared: true,
       });
 
       renderSnapshot(<DetailPane />, detailSnapshot(row, ''));
 
-      expect(screen.getByTestId('detail-family-label')).toHaveTextContent('Steam Family');
+      expect(screen.getByTestId('detail-shared-label')).toHaveTextContent(
+        'Shared through Steam Family',
+      );
       expect(screen.getByTestId('detail-not-installed')).toBeInTheDocument();
+    });
+
+    it('shows no shared-access line for a provider without a declared label', () => {
+      const row = makeRow({
+        key: 'epic:700',
+        title: 'Epic Adventure',
+        provider: 'epic',
+        providerName: 'Epic Games Store',
+        owned: false,
+        shared: true,
+      });
+
+      renderSnapshot(<DetailPane />, detailSnapshot(row, ''));
+
+      expect(screen.queryByTestId('detail-shared-label')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Shared through/)).not.toBeInTheDocument();
     });
 
     it('keeps installed details unchanged', () => {
@@ -463,7 +580,7 @@ describe('Steam library UI', () => {
         '/games/installed',
       );
       expect(screen.queryByTestId('detail-not-installed')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('detail-family-label')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('detail-shared-label')).not.toBeInTheDocument();
     });
 
     it('keeps DRM-free details unchanged and omits Install', () => {
@@ -589,7 +706,7 @@ describe('Steam library UI', () => {
       const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
       const snapshot = createDefaultSnapshot();
       snapshot.library = makeLibrary([], {
-        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, family: false } } },
+        layout: { filters: { ...createDefaultFilters(), availability: { installed: true, owned: false, shared: false } } },
         total: 328,
         installedTotal: 0,
         empty: { noInstalled: { provider: 'steam' } },
@@ -681,7 +798,7 @@ describe('Steam library UI', () => {
   });
 
   describe('Large mock library', () => {
-    it('serves 300+ owned Steam games, 18 installed, family-shared games and an expired variant', async () => {
+    it('serves 300+ owned Steam games, 18 installed, shared games and an expired variant', async () => {
       const host = createMockHost({ largeLibrary: true, storeAccount: 'expired' });
       const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
       const rows = snapshot.library!.rows;
@@ -690,7 +807,8 @@ describe('Steam library UI', () => {
       expect(rows.length).toBeGreaterThanOrEqual(300);
       expect(steam.ownedCount).toBeGreaterThanOrEqual(300);
       expect(steam.installedCount).toBe(18);
-      expect(steam.familyCount).toBeGreaterThan(0);
+      expect(steam.sharedCount).toBeGreaterThan(0);
+      expect(steam.sharedLabel).toBe('Steam Family');
       expect(snapshot.library!.total).toBe(rows.length);
       expect(snapshot.library!.installedTotal).toBe(18);
       expect(snapshot.storeAccounts[0].state).toBe('expired');
@@ -699,7 +817,7 @@ describe('Steam library UI', () => {
         input: {
           setFilters: {
             ...createDefaultFilters(),
-            availability: { installed: true, owned: false, family: false },
+            availability: { installed: true, owned: false, shared: false },
           },
         },
       });

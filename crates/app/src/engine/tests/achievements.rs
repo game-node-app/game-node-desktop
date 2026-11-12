@@ -21,7 +21,7 @@ fn entry(store_id: &str) -> StoredEntry {
         fields: Default::default(),
         installed: true,
         owned: false,
-        family_shared: false,
+        shared: false,
         first_seen: 1,
         last_seen: 1,
     }
@@ -97,21 +97,88 @@ fn record(
 }
 
 #[test]
-fn trusted_icon_urls_become_asset_routes_and_untrusted_ones_stay_empty() {
+fn steam_icon_urls_become_asset_routes_and_untrusted_ones_stay_empty() {
+    let hosts = crate::engine::achievements::icon_hosts("steam");
+    assert!(!hosts.is_empty(), "Steam declares its icon hosts");
     let url = "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg";
     let hash = gamenode_platform::achievement_icons::achievement_icon_hash(url);
     assert_eq!(
-        crate::engine::achievements::icon_asset(url),
+        crate::engine::achievements::icon_asset(url, &hosts),
         format!("gamenode-asset://localhost/achievement/{hash}"),
         "the host returns the canonical route; the UI maps its base to the webview form"
     );
     assert_eq!(
         crate::engine::achievements::icon_asset(
-            "http://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg"
+            "http://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg",
+            &hosts,
         ),
         "",
         "a URL that may not be fetched keeps the placeholder"
     );
+    assert_eq!(
+        crate::engine::achievements::icon_asset("https://evil.example/icon.png", &hosts),
+        "",
+        "a host the provider does not declare keeps the placeholder"
+    );
+}
+
+#[test]
+fn a_steam_icon_reported_by_another_provider_is_empty_and_never_fetched() {
+    let url = "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/a.jpg";
+    let steam = crate::engine::achievements::icon_hosts("steam");
+    assert!(gamenode_platform::achievement_icons::trusted_icon_url(
+        url, &steam
+    ));
+    let other = crate::engine::achievements::icon_hosts("epic");
+    assert!(
+        other.is_empty(),
+        "a provider without declared hosts gets an empty set"
+    );
+    assert_eq!(
+        crate::engine::achievements::icon_asset(url, &other),
+        "",
+        "another provider's descriptor cannot widen the hosts Steam declares"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let loader =
+        gamenode_platform::achievement_icons::AchievementIconLoader::production(dir.path(), other)
+            .unwrap();
+    loader.ensure([url.to_owned()]);
+    assert_eq!(
+        gamenode_platform::achievement_icons::achievement_icon_usage(dir.path()),
+        0,
+        "an icon on a host the entry's provider does not declare is not fetched"
+    );
+}
+
+#[test]
+fn icons_cached_before_the_descriptor_change_are_still_served() {
+    let hosts = crate::engine::achievements::icon_hosts("steam");
+    let url = "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/620/cached.jpg";
+    let dir = tempfile::tempdir().unwrap();
+    let icons = gamenode_platform::achievement_icons::achievement_icon_dir(dir.path());
+    std::fs::create_dir_all(&icons).unwrap();
+    let hash = gamenode_platform::achievement_icons::achievement_icon_hash(url);
+    let cached = icons.join(format!("{hash}.img"));
+    std::fs::write(&cached, b"cached").unwrap();
+
+    let loader = gamenode_platform::achievement_icons::AchievementIconLoader::production(
+        dir.path(),
+        hosts.clone(),
+    )
+    .unwrap();
+    loader.ensure([url.to_owned()]);
+    assert_eq!(
+        gamenode_platform::achievement_icons::achievement_icon_usage(dir.path()),
+        6,
+        "an already cached icon is neither fetched again nor dropped"
+    );
+    assert_eq!(
+        crate::engine::achievements::icon_asset(url, &hosts),
+        format!("gamenode-asset://localhost/achievement/{hash}"),
+        "the cache hash and asset route are unchanged"
+    );
+    assert!(cached.is_file());
 }
 
 #[test]

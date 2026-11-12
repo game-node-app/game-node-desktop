@@ -1,13 +1,20 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
 
 
+SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+
+import bundled_plugins  # noqa: E402  (the scripts directory is not a package)
+
 spec = importlib.util.spec_from_file_location(
-    "package_check", Path(__file__).resolve().parents[1] / "verify-plugin-package.py"
+    "package_check", SCRIPTS / "verify-plugin-package.py"
 )
 package_check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package_check)
@@ -18,6 +25,11 @@ class PackageLayout(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="gamenode package with spaces ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+
+    def _plugin_files(self, platform):
+        return [
+            plugin.file_name(platform) for plugin in bundled_plugins.load(platform)
+        ]
 
     def _resources(self, *, windows):
         names = (
@@ -43,9 +55,10 @@ class PackageLayout(unittest.TestCase):
         header[:2] = b"MZ"
         struct.pack_into("<I", header, 60, 64)
         header[64:] = b"PE\x00\x00\x64\x86"
-        for name in ("gamenode.exe", "gamenode-plugin-steam.exe", "gamenode-plugin-epic.exe"):
+        for name in ("gamenode.exe", *self._plugin_files("windows")):
             (self.root / name).write_bytes(header)
         self._resources(windows=True)
+        bundled_plugins.write_index(self.root, "windows")
 
     def _linux(self):
         directory = self.root / "libexec"
@@ -53,41 +66,47 @@ class PackageLayout(unittest.TestCase):
         header = bytearray(64)
         header[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<H", header, 18, 62)
-        for name in ("gamenode", "gamenode-plugin-steam", "gamenode-plugin-packagekit"):
+        for name in ("gamenode", *self._plugin_files("linux")):
             binary = directory / name
             binary.write_bytes(header)
             binary.chmod(0o755)
         self._resources(windows=False)
+        bundled_plugins.write_index(directory, "linux")
 
-    def test_windows_requires_adjacent_steam_plugin_and_keeps_paths_with_spaces(self):
+    def _other_platform_plugin(self, platform):
+        plugins = {}
+        for plugin in (*bundled_plugins.load("linux"), *bundled_plugins.load("windows")):
+            plugins[(plugin.provider_id, plugin.plugin_id)] = plugin
+        return next(
+            plugin for plugin in plugins.values() if platform not in plugin.platforms
+        )
+
+    def test_windows_requires_exactly_the_descriptor_plugins(self):
         self._windows()
         self.assertEqual(package_check.verify(self.root, "windows"), [])
-        (self.root / "gamenode-plugin-steam.exe").unlink()
-        self.assertIn("missing regular binary", package_check.verify(self.root, "windows")[0])
-
-    def test_windows_requires_adjacent_epic_plugin(self):
-        self._windows()
-        self.assertEqual(package_check.verify(self.root, "windows"), [])
-        (self.root / "gamenode-plugin-epic.exe").unlink()
+        missing = self._plugin_files("windows")[1]
+        (self.root / missing).unlink()
         errors = package_check.verify(self.root, "windows")
-        self.assertEqual(len(errors), 1)
         self.assertIn("missing regular binary", errors[0])
-        self.assertIn("gamenode-plugin-epic.exe", errors[0])
+        self.assertIn(missing, errors[0])
 
-    def test_windows_rejects_wrong_target_and_linux_only_plugin(self):
+    def test_windows_rejects_wrong_target_and_other_platform_plugin(self):
         self._windows()
-        (self.root / "gamenode-plugin-steam.exe").write_bytes(b"\x7fELF")
-        (self.root / "gamenode-plugin-packagekit.exe").write_bytes(b"not supported")
+        corrupt = self.root / self._plugin_files("windows")[0]
+        corrupt.write_bytes(b"\x7fELF")
+        other = self._other_platform_plugin("windows")
+        (self.root / other.executable).write_bytes(b"not supported")
+        (self.root / (other.executable + ".exe")).write_bytes(b"not supported")
         errors = package_check.verify(self.root, "windows")
-        self.assertEqual(len(errors), 2)
-        self.assertIn("PE binary", errors[0])
-        self.assertIn("Linux package-manager", errors[1])
+        self.assertTrue(any("PE binary" in error for error in errors))
+        self.assertTrue(any("another platform" in error for error in errors))
+        self.assertTrue(any(other.executable in error for error in errors))
 
     @unittest.skipUnless(os.name == "posix", "Linux execute bits require POSIX stat semantics")
     def test_linux_requires_adjacent_plugins_and_user_execute_permissions(self):
         self._linux()
         self.assertEqual(package_check.verify(self.root, "linux"), [])
-        plugin = self.root / "libexec/gamenode-plugin-packagekit"
+        plugin = self.root / "libexec" / self._plugin_files("linux")[0]
         plugin.chmod(0o644)
         errors = package_check.verify(self.root, "linux")
         self.assertEqual(len(errors), 1)
@@ -95,24 +114,40 @@ class PackageLayout(unittest.TestCase):
         plugin.unlink()
         self.assertIn("missing regular binary", package_check.verify(self.root, "linux")[0])
 
-    def test_linux_does_not_require_epic_plugin(self):
+    def test_linux_does_not_require_the_windows_only_plugin(self):
         self._linux()
+        other = self._other_platform_plugin("linux")
+        self.assertFalse((self.root / "libexec" / other.executable).exists())
         self.assertEqual(package_check.verify(self.root, "linux"), [])
-        self.assertFalse((self.root / "libexec/gamenode-plugin-epic").exists())
 
-    def test_linux_forbids_epic_plugin_binaries(self):
+    def test_linux_forbids_the_other_platform_plugin(self):
         self._linux()
-        epic = self.root / "libexec/gamenode-plugin-epic"
-        epic.write_bytes(b"\x7fELF")
-        epic.chmod(0o755)
+        other = self._other_platform_plugin("linux")
+        for name in (other.executable, other.executable + ".exe"):
+            (self.root / "libexec" / name).write_bytes(b"\x7fELF")
         errors = package_check.verify(self.root, "linux")
-        self.assertEqual(len(errors), 1)
-        self.assertIn("Windows-only Epic plugin", errors[0])
-        epic.unlink()
-        (self.root / "libexec/gamenode-plugin-epic.exe").write_bytes(b"MZ")
+        self.assertTrue(errors)
+        self.assertTrue(all("another platform" in error for error in errors))
+
+    def test_missing_index_fails_both_platforms(self):
+        self._windows()
+        (self.root / "bundled-plugins.json").unlink()
+        errors = package_check.verify(self.root, "windows")
+        self.assertIn("missing bundled plugin index", errors[0])
+
+        self._linux()
+        (self.root / "libexec/bundled-plugins.json").unlink()
         errors = package_check.verify(self.root, "linux")
-        self.assertEqual(len(errors), 1)
-        self.assertIn("gamenode-plugin-epic.exe", errors[0])
+        self.assertIn("missing bundled plugin index", errors[0])
+
+    def test_index_must_match_the_descriptors(self):
+        self._windows()
+        index = self.root / "bundled-plugins.json"
+        metadata = json.loads(index.read_text(encoding="utf-8"))
+        metadata["plugins"] = metadata["plugins"][:-1]
+        index.write_text(json.dumps(metadata), encoding="utf-8")
+        errors = package_check.verify(self.root, "windows")
+        self.assertTrue(any("does not match the descriptors" in error for error in errors))
 
     def test_existing_license_and_pc_ports_resources_are_required(self):
         self._windows()

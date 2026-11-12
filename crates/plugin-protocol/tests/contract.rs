@@ -347,6 +347,57 @@ fn invalid_credential_keeps_wire_number_seven_and_reads_legacy_rows() {
 }
 
 #[test]
+fn shared_category_keeps_the_family_wire_numbers_and_stored_categories() {
+    use gamenode_plugin_protocol::catalog::CatalogTransfer;
+
+    // Protobuf encodes numbers, not names. A build that still used the family identifiers
+    // streamed category 2 (field 1) and failure 8 (field 3); the same bytes must decode as the
+    // shared category and the stored shared-unavailable error.
+    assert_eq!(CatalogCategory::Shared as i32, 2);
+    assert_eq!(CatalogFailure::FamilyUnavailable as i32, 8);
+    let legacy_completion = [
+        0x08, 0x02, // category = 2
+        0x18, 0x08, // failed = CATALOG_FAILURE_FAMILY_UNAVAILABLE
+    ];
+    let completion = CatalogCompletion::decode(legacy_completion.as_slice()).unwrap();
+    assert_eq!(completion.category, CatalogCategory::Shared as i32);
+    let update = CatalogTransfer::default()
+        .finish(vec![completion], 100)
+        .unwrap();
+    assert_eq!(
+        update.shared,
+        Some(Err(models::CatalogError::SharedUnavailable))
+    );
+
+    // `family_error` was field 9; the same bytes now fill `shared_error`.
+    let legacy_status = [
+        0x08, 0x04, // state = ACCOUNT_CONNECTION_CONNECTED
+        0x30, 0x03, // storage = SECRET_STORAGE_PRIVATE_FILE
+        0x48, 0x08, // field 9 = CATALOG_FAILURE_FAMILY_UNAVAILABLE
+    ];
+    let status = AccountStatus::decode(legacy_status.as_slice()).unwrap();
+    let status: models::AccountStatus = status.try_into().unwrap();
+    assert_eq!(
+        status.shared_error,
+        Some(models::CatalogError::SharedUnavailable)
+    );
+
+    // Rows written before the rename still parse; new rows store the neutral string.
+    assert_eq!(
+        models::CatalogError::from_category("familyUnavailable"),
+        Some(models::CatalogError::SharedUnavailable)
+    );
+    assert_eq!(
+        models::CatalogError::from_category("sharedUnavailable"),
+        Some(models::CatalogError::SharedUnavailable)
+    );
+    assert_eq!(
+        models::CatalogError::SharedUnavailable.as_str(),
+        "sharedUnavailable"
+    );
+}
+
+#[test]
 fn catalog_wire_distinguishes_empty_failure_and_unchanged() {
     let outcomes = [
         catalog_completion::Outcome::CompletedRecords(0),
@@ -355,7 +406,7 @@ fn catalog_wire_distinguishes_empty_failure_and_unchanged() {
     ];
     for outcome in outcomes {
         let completion = CatalogCompletion {
-            category: CatalogCategory::Family as i32,
+            category: CatalogCategory::Shared as i32,
             outcome: Some(outcome),
         };
         assert_eq!(
@@ -378,7 +429,7 @@ fn chunk(category: CatalogCategory, index: u32) -> CatalogChunk {
 }
 
 #[test]
-fn catalog_commits_only_complete_categories_and_isolates_family_failure() {
+fn catalog_commits_only_complete_categories_and_isolates_shared_failure() {
     use gamenode_plugin_protocol::catalog::CatalogTransfer;
     let mut transfer = CatalogTransfer::default();
     transfer.push(chunk(CatalogCategory::Owned, 0)).unwrap();
@@ -390,7 +441,7 @@ fn catalog_commits_only_complete_categories_and_isolates_family_failure() {
                     outcome: Some(catalog_completion::Outcome::CompletedRecords(1)),
                 },
                 CatalogCompletion {
-                    category: CatalogCategory::Family as i32,
+                    category: CatalogCategory::Shared as i32,
                     outcome: Some(catalog_completion::Outcome::Failed(
                         CatalogFailure::FamilyUnavailable as i32,
                     )),
@@ -401,8 +452,8 @@ fn catalog_commits_only_complete_categories_and_isolates_family_failure() {
         .unwrap();
     assert_eq!(update.owned.unwrap().unwrap()[0].id, "620");
     assert_eq!(
-        update.family,
-        Some(Err(models::CatalogError::FamilyUnavailable))
+        update.shared,
+        Some(Err(models::CatalogError::SharedUnavailable))
     );
     assert_eq!(
         CatalogTransfer::default()
@@ -430,7 +481,7 @@ fn partial_duplicate_out_of_order_and_oversized_catalogs_are_rejected() {
     transfer.push(chunk(CatalogCategory::Owned, 0)).unwrap();
     assert!(transfer.push(chunk(CatalogCategory::Owned, 0)).is_err());
     assert!(transfer.push(chunk(CatalogCategory::Owned, 1)).is_err());
-    let mut oversized = chunk(CatalogCategory::Family, 0);
+    let mut oversized = chunk(CatalogCategory::Shared, 0);
     oversized.games = vec![
         CatalogGame {
             id: "1".into(),

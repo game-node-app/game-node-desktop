@@ -19,7 +19,7 @@ struct Category {
 #[derive(Default)]
 pub struct CatalogTransfer {
     owned: Category,
-    family: Category,
+    shared: Category,
     bytes: usize,
 }
 
@@ -27,7 +27,7 @@ impl CatalogTransfer {
     pub fn push(&mut self, chunk: CatalogChunk) -> Result<(), WireError> {
         let buffer = match CatalogCategory::try_from(chunk.category).map_err(|_| WireError)? {
             CatalogCategory::Owned => &mut self.owned,
-            CatalogCategory::Family => &mut self.family,
+            CatalogCategory::Shared => &mut self.shared,
             _ => return Err(WireError),
         };
         if chunk.index != buffer.next_index
@@ -79,7 +79,7 @@ impl CatalogTransfer {
             return Err(WireError);
         }
         let mut owned = Some(self.owned);
-        let mut family = Some(self.family);
+        let mut shared = Some(self.shared);
         let mut update = CatalogUpdate {
             now,
             ..Default::default()
@@ -88,7 +88,7 @@ impl CatalogTransfer {
             let category = CatalogCategory::try_from(completion.category).map_err(|_| WireError)?;
             let buffer = match category {
                 CatalogCategory::Owned => owned.take(),
-                CatalogCategory::Family => family.take(),
+                CatalogCategory::Shared => shared.take(),
                 _ => return Err(WireError),
             }
             .ok_or(WireError)?;
@@ -108,13 +108,13 @@ impl CatalogTransfer {
             };
             match category {
                 CatalogCategory::Owned => update.owned = outcome,
-                CatalogCategory::Family => update.family = outcome,
+                CatalogCategory::Shared => update.shared = outcome,
                 _ => return Err(WireError),
             }
         }
         // A transmitted category cannot disappear from the terminal result.
         if owned.is_some_and(|buffer| !buffer.games.is_empty())
-            || family.is_some_and(|buffer| !buffer.games.is_empty())
+            || shared.is_some_and(|buffer| !buffer.games.is_empty())
         {
             return Err(WireError);
         }

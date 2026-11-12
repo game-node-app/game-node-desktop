@@ -159,7 +159,7 @@ message AccountStatus {
   SecretStorage storage = 6;
   bool persist_failed = 7;
   optional CatalogFailure catalog_error = 8;
-  optional CatalogFailure family_error = 9;
+  optional CatalogFailure shared_error = 9;
 }
 
 message AccountRequest {
@@ -270,7 +270,7 @@ message CatalogGame {
 enum CatalogCategory {
   CATALOG_CATEGORY_UNSPECIFIED = 0;
   CATALOG_CATEGORY_OWNED = 1;
-  CATALOG_CATEGORY_FAMILY = 2;
+  CATALOG_CATEGORY_SHARED = 2;
 }
 
 message CatalogChunk {

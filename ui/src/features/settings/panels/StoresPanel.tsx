@@ -91,7 +91,7 @@ export const StoresPanel: React.FC = () => {
           && syncedAt !== lastSyncedAt.current.get(account.provider)
         ) {
           signInPending.current.delete(account.provider);
-          const imported = account.ownedCount + account.familyCount;
+          const imported = account.ownedCount + (account.sharedLabel !== null ? account.sharedCount : 0);
           pushToast(
             'success',
             t('settings.storeConnectedToast', {

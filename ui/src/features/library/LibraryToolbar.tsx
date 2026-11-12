@@ -83,7 +83,11 @@ interface Chip {
   clear: () => LibraryFilters;
 }
 
-function activeChips(filters: LibraryFilters, t: (key: string) => string): Chip[] {
+function activeChips(
+  filters: LibraryFilters,
+  t: (key: string) => string,
+  showShared: boolean,
+): Chip[] {
   const chips: Chip[] = [];
   const availability = (patch: Partial<LibraryFilters['availability']>) => ({
     ...filters,
@@ -103,11 +107,11 @@ function activeChips(filters: LibraryFilters, t: (key: string) => string): Chip[
       clear: () => availability({ owned: false }),
     });
   }
-  if (filters.availability.family) {
+  if (showShared && filters.availability.shared) {
     chips.push({
-      id: 'family',
-      label: t('Library::Family shared'),
-      clear: () => availability({ family: false }),
+      id: 'shared',
+      label: t('Library::Shared'),
+      clear: () => availability({ shared: false }),
     });
   }
   if (filters.runningOnly) {
@@ -287,6 +291,9 @@ export const LibraryToolbar: React.FC = () => {
   const storeWarning = storeAccounts?.find(
     (account) => account.state === 'expired' || account.state === 'unreachable',
   );
+  const showShared = (library?.providers ?? []).some(
+    (provider) => provider.sharedLabel !== null,
+  );
   const storeWarningProvider = storeWarning
     ? providerLabel(
         storeWarning.provider,
@@ -295,7 +302,10 @@ export const LibraryToolbar: React.FC = () => {
       )
     : '';
 
-  const chips = useMemo(() => activeChips(filters, t), [filters, t]);
+  const chips = useMemo(
+    () => activeChips(filters, t, showShared),
+    [filters, t, showShared],
+  );
 
   const setFilters = (next: LibraryFilters) => {
     commands.libraryInput({ setFilters: next });
@@ -540,22 +550,24 @@ export const LibraryToolbar: React.FC = () => {
                   color="brand"
                   size="xs"
                 />
-                <Checkbox
-                  data-testid="filter-family"
-                  label={t('Library::Family shared')}
-                  checked={filters.availability.family}
-                  onChange={(event) =>
-                    setFilters({
-                      ...filters,
-                      availability: {
-                        ...filters.availability,
-                        family: event.currentTarget.checked,
-                      },
-                    })
-                  }
-                  color="brand"
-                  size="xs"
-                />
+                {showShared && (
+                  <Checkbox
+                    data-testid="filter-shared"
+                    label={t('Library::Shared')}
+                    checked={filters.availability.shared}
+                    onChange={(event) =>
+                      setFilters({
+                        ...filters,
+                        availability: {
+                          ...filters.availability,
+                          shared: event.currentTarget.checked,
+                        },
+                      })
+                    }
+                    color="brand"
+                    size="xs"
+                  />
+                )}
               </div>
 
               <div className="flex items-center justify-between gap-sm">

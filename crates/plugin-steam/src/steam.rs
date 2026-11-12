@@ -131,10 +131,10 @@ impl SteamError {
         }
     }
 
-    /// The category for a failed family fetch. Family failures are always reported as a
-    /// family-specific category so they never look like an owned-catalog failure.
+    /// The category for a failed family fetch. Family failures are always reported as the
+    /// shared-unavailable category so they never look like an owned-catalog failure.
     pub const fn family_catalog_error(self) -> CatalogError {
-        CatalogError::FamilyUnavailable
+        CatalogError::SharedUnavailable
     }
 }
 
@@ -269,11 +269,11 @@ mod tests {
         );
         assert_eq!(
             SteamError::Server.family_catalog_error(),
-            CatalogError::FamilyUnavailable
+            CatalogError::SharedUnavailable
         );
         assert_eq!(
             SteamError::Expired.family_catalog_error(),
-            CatalogError::FamilyUnavailable
+            CatalogError::SharedUnavailable
         );
     }
 

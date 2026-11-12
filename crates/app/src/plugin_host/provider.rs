@@ -46,6 +46,8 @@ pub struct Registration {
     pub provider_id: String,
     pub plugin_id: String,
     pub capabilities: Vec<String>,
+    /// Whether this provider's trusted manifest declares shared catalog access.
+    pub shared_catalog: bool,
     pub services: Arc<dyn HostServices>,
 }
 
@@ -312,7 +314,7 @@ impl Lease {
     }
 }
 
-// Steam sync performs session validation, owned games, then Family games,
+// A catalog sync may validate the session, read owned games and read shared games,
 // each bounded at 90 seconds. Leave bounded headroom for host storage/RPCs.
 fn operation_timeout(kind: ProviderOperation) -> Duration {
     match kind {
@@ -1122,6 +1124,15 @@ impl ProviderApi {
                 provider.registration.services.publish_status(status);
             }
             provider_event::Event::CatalogChunk(chunk) => {
+                if matches!(
+                    CatalogCategory::try_from(chunk.category),
+                    Ok(CatalogCategory::Shared)
+                ) && !provider.registration.shared_catalog
+                {
+                    return Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    ));
+                }
                 lock(&self.state)
                     .operations
                     .get_mut(&(context.session_id, context.operation_id))
@@ -1252,6 +1263,14 @@ impl ProviderApi {
                         return Err(Status::invalid_argument("incomplete catalog"));
                     }
                 };
+                if catalog.shared.is_some() && !provider.registration.shared_catalog {
+                    let _ = operation.result.send(Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    )));
+                    return Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    ));
+                }
                 let achievements = if operation.kind == ProviderOperation::ReadAchievements {
                     match gamenode_plugin_protocol::achievements::parse_outcomes(
                         &result.achievements,

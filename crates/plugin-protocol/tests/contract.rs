@@ -430,6 +430,7 @@ fn commands_preserve_operation_and_account_profile_fences() {
         operation: ProviderOperation::CancelSignIn as i32,
         target_operation_id: "login-6".into(),
         settings: None,
+        runtime_session_result: None,
     };
     assert_eq!(
         ProviderCommand::decode(command.encode_to_vec().as_slice()).unwrap(),

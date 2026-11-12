@@ -7,7 +7,7 @@ Expose explicit provider-scoped host services that let the Steam plugin own its 
 ## Requirements
 
 ### Requirement: Host services require explicit grants
-Each host service SHALL require its named grant and validate plugin, session, operation, the applicable provider or runtime-content context and applicable profile/account generation. A denied call SHALL return no protected data and apply no side effect. Private resources of another plugin SHALL remain inaccessible. Explicit public-pool category or selected-record operation grants SHALL authorize only eligible shared resources, never foreign credentials or private namespaces.
+Each host service SHALL require its named grant and validate plugin, session, operation, the applicable provider or runtime-content context and applicable profile/account generation. A denied call SHALL return no protected data and apply no side effect. Private resources of another plugin SHALL remain inaccessible. Explicit public-pool category or selected-record operation grants SHALL authorize only eligible shared resources, never foreign credentials or private namespaces. A selected-record read does not require a category-wide grant; query selectors identify only the authorized categories or records. Public domain deletion is governed by its explicit record/category delete grant and remains distinct from storage.persist cleanup, which addresses only the caller's own private namespace.
 
 #### Scenario: Missing permission
 - **WHEN** a session without secret or login grants requests those services
@@ -16,6 +16,14 @@ Each host service SHALL require its named grant and validate plugin, session, op
 #### Scenario: Cross-plugin handle
 - **WHEN** a plugin presents another plugin's resource handle
 - **THEN** access is rejected unless an explicit shared-resource operation grant covers that handle; matching permission names alone do not authorize access
+
+#### Scenario: Selected shared record access
+- **WHEN** a plugin queries one explicitly authorized published record without a category-wide grant
+- **THEN** the host returns only that record and applies the same restriction through domain and Data APIs
+
+#### Scenario: Public deletion and private cleanup remain separate
+- **WHEN** a plugin deletes an explicitly authorized published domain record while cleaning persistent data
+- **THEN** the domain delete grant applies to that record and storage.persist cleanup remains confined to the caller's own private namespace
 
 ### Requirement: Provider context excludes application secrets
 `provider.context.read` SHALL expose only validated configuration, platform, negotiated limits and operation context belonging to the caller's provider. It SHALL exclude GameNode tokens, unrelated provider configuration, raw database access and internal commands.

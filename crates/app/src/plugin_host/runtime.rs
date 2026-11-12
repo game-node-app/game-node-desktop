@@ -124,6 +124,7 @@ impl HostedProviders {
                 arguments: vec![],
                 environment: vec![],
                 startup_timeout: Duration::from_secs(10),
+                integrity: None,
             });
             entries.insert(
                 descriptor.provider_id.into(),

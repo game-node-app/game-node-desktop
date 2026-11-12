@@ -200,6 +200,7 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                     String::new()
                 },
                 settings: None,
+                runtime_session_result: None,
             };
             for (operation, id) in [
                 (ProviderOperation::Initialize, "initialize"),

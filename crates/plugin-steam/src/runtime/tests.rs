@@ -656,6 +656,7 @@ impl Harness {
                     operation_id: id.into(),
                     account_epoch: epoch,
                     profile_epoch: 1,
+                    ..Default::default()
                 }),
                 operation: kind as i32,
                 ..Default::default()

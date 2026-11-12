@@ -140,10 +140,35 @@ async fn manager(
                 ),
             ],
             startup_timeout: timeout,
+            integrity: None,
         }],
     )
     .unwrap();
     (manager, server, directory)
+}
+
+#[tokio::test]
+async fn managed_package_integrity_failure_prevents_process_start() {
+    let (mut processes, _server, directory) = manager(
+        std::env::current_exe().unwrap(),
+        "fixture",
+        Duration::from_secs(5),
+    )
+    .await;
+    Arc::get_mut(&mut processes.inner)
+        .unwrap()
+        .slots
+        .get_mut("fixture")
+        .unwrap()
+        .config
+        .integrity = Some(PackageIntegrity {
+        package_root: directory.path().to_owned(),
+        publisher_key: [0; 32],
+    });
+    let error = processes.ensure_started("fixture").await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(processes.process_id("fixture").await.is_none());
+    processes.shutdown().await;
 }
 
 #[tokio::test]

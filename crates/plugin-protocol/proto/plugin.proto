@@ -191,76 +191,251 @@ service ProviderHost {
 // API 1.4 resource surface. Every request is scoped to a host-issued session
 // and operation; implementations must recheck grants/revisions at commit.
 service ResourceHost {
-  rpc LibraryList (ResourceRequest) returns (ResourceReply);
-  rpc LibraryGet (ResourceRequest) returns (ResourceReply);
-  rpc LibraryWatch (ResourceRequest) returns (stream ResourceEvent);
-  rpc MetadataUpdate (ResourceRequest) returns (ResourceReply);
-  rpc FavoritesList (ResourceRequest) returns (ResourceReply);
-  rpc FavoritesSet (ResourceRequest) returns (ResourceReply);
-  rpc MatchingSearch (ResourceRequest) returns (ResourceReply);
-  rpc MatchingAssign (ResourceRequest) returns (ResourceReply);
-  rpc ArtworkRead (ResourceRequest) returns (ResourceReply);
-  rpc ArtworkSet (ResourceRequest) returns (ResourceReply);
-  rpc GamesRequestLaunch (GameLaunchRequest) returns (ResourceReply);
-  rpc GamesProposeCustomLaunch (CustomLaunchRequest) returns (ResourceReply);
-  rpc GamesRequestCustomLaunch (CustomLaunchRequest) returns (ResourceReply);
-  rpc GamesRemoveCustomLaunch (ResourceRequest) returns (ResourceReply);
-  rpc GamesRequestInstall (ResourceRequest) returns (ResourceReply);
-  rpc StorageGet (ResourceRequest) returns (ResourceReply);
-  rpc StoragePut (ResourceRequest) returns (ResourceReply);
-  rpc StorageDelete (ResourceRequest) returns (ResourceReply);
-  rpc FilesRequestAccess (ResourceRequest) returns (ResourceReply);
-  rpc FilesList (ResourceRequest) returns (ResourceReply);
-  rpc FilesRead (ResourceRequest) returns (ResourceReply);
-  rpc FilesWrite (ResourceRequest) returns (ResourceReply);
-  rpc FilesDelete (ResourceRequest) returns (ResourceReply);
-  rpc NetworkFetch (ResourceRequest) returns (ResourceReply);
-  rpc NotificationsPublish (ResourceRequest) returns (ResourceReply);
-  rpc BackupsList (ResourceRequest) returns (ResourceReply);
-  rpc BackupsRequestCreate (ResourceRequest) returns (ResourceReply);
-  rpc BackupsRequestRestore (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesList (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesGet (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesWatch (ResourceRequest) returns (stream ResourceEvent);
-  rpc LibrariesCreate (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesUpdate (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesRemove (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesAddRoot (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesUpdateRoot (ResourceRequest) returns (ResourceReply);
-  rpc LibrariesRemoveRoot (ResourceRequest) returns (ResourceReply);
-  rpc RuntimesList (ResourceRequest) returns (ResourceReply);
-  rpc RuntimesGet (ResourceRequest) returns (ResourceReply);
-  rpc RuntimesWatch (ResourceRequest) returns (stream ResourceEvent);
-  rpc RuntimesRegister (ResourceRequest) returns (ResourceReply);
-  rpc RuntimesUpdate (ResourceRequest) returns (ResourceReply);
-  rpc RuntimesRemove (ResourceRequest) returns (ResourceReply);
-  rpc GamesRegisterContent (ResourceRequest) returns (ResourceReply);
-  rpc StorageDiagnosticsPublishBenchmark (ResourceRequest) returns (ResourceReply);
-  rpc StorageDiagnosticsPublishSmart (ResourceRequest) returns (ResourceReply);
-  rpc ComputerPublishHardware (ResourceRequest) returns (ResourceReply);
-  rpc GamePresencePublish (ResourceRequest) returns (ResourceReply);
-  rpc GamePresenceClear (ResourceRequest) returns (ResourceReply);
-  rpc GamePerformancePublishSamples (ResourceRequest) returns (ResourceReply);
-  rpc GamePerformanceEndSeries (ResourceRequest) returns (ResourceReply);
-  rpc DataPublish (ResourceRequest) returns (ResourceReply);
-  rpc DataGet (ResourceRequest) returns (ResourceReply);
-  rpc DataList (ResourceRequest) returns (ResourceReply);
-  rpc DataWatch (ResourceRequest) returns (stream ResourceEvent);
-  rpc PersistenceGetUsage (ResourceRequest) returns (ResourceReply);
-  rpc PersistenceListEntries (ResourceRequest) returns (ResourceReply);
-  rpc PersistenceDeleteEntries (ResourceRequest) returns (ResourceReply);
-  rpc PersistenceClear (ResourceRequest) returns (ResourceReply);
-  rpc PersistenceSetRetentionPolicy (ResourceRequest) returns (ResourceReply);
-  rpc ToolsList (ResourceRequest) returns (ResourceReply);
-  rpc ToolsRequestApply (ResourceRequest) returns (ResourceReply);
-  rpc ToolsRequestRemove (ResourceRequest) returns (ResourceReply);
-  rpc PortsList (ResourceRequest) returns (ResourceReply);
-  rpc PortsDetail (ResourceRequest) returns (ResourceReply);
-  rpc PortsRequestInstall (ResourceRequest) returns (ResourceReply);
-  rpc JobsGet (ResourceRequest) returns (ResourceReply);
-  rpc JobsWatch (ResourceRequest) returns (stream ResourceEvent);
-  rpc JobsCancel (ResourceRequest) returns (ResourceReply);
+  rpc LibraryList (LibraryListRequest) returns (LibraryListReply);
+  rpc LibraryGet (LibraryGetRequest) returns (LibraryGetReply);
+  rpc LibraryWatch (LibraryWatchRequest) returns (stream LibraryEvent);
+  rpc MetadataUpdate (MetadataUpdateRequest) returns (MutationReply);
+  rpc FavoritesList (FavoritesListRequest) returns (FavoritesListReply);
+  rpc FavoritesSet (FavoritesSetRequest) returns (MutationReply);
+  rpc MatchingSearch (MatchingSearchRequest) returns (MatchingSearchReply);
+  rpc MatchingAssign (MatchingAssignRequest) returns (MutationReply);
+  rpc ArtworkRead (ArtworkReadRequest) returns (ArtworkReadReply);
+  rpc ArtworkSet (ArtworkSetRequest) returns (MutationReply);
+  rpc GamesRequestLaunch (GameLaunchRequest) returns (GameLaunchReply);
+  rpc GamesProposeCustomLaunch (CustomLaunchRequest) returns (CustomLaunchReply);
+  rpc GamesRequestCustomLaunch (CustomLaunchRequest) returns (CustomLaunchReply);
+  rpc GamesRemoveCustomLaunch (CustomLaunchRemoveRequest) returns (MutationReply);
+  rpc GamesRequestInstall (GameInstallRequest) returns (JobReply);
+  rpc StorageGet (StorageGetRequest) returns (StorageGetReply);
+  rpc StoragePut (StoragePutRequest) returns (StorageMutationReply);
+  rpc StorageDelete (StorageDeleteRequest) returns (MutationReply);
+  rpc FilesRequestAccess (FilesRequestAccessRequest) returns (FileAccessReply);
+  rpc FilesList (FilesListRequest) returns (FilesListReply);
+  rpc FilesRead (FilesReadRequest) returns (FileReadReply);
+  rpc FilesWrite (FilesWriteRequest) returns (MutationReply);
+  rpc FilesDelete (FilesDeleteRequest) returns (MutationReply);
+  rpc NetworkFetch (NetworkFetchRequest) returns (NetworkFetchReply);
+  rpc NotificationsPublish (NotificationPublishRequest) returns (MutationReply);
+  rpc BackupsList (BackupsListRequest) returns (BackupsListReply);
+  rpc BackupsRequestCreate (BackupCreateRequest) returns (JobReply);
+  rpc BackupsRequestRestore (BackupRestoreRequest) returns (JobReply);
+  rpc LibrariesList (DomainListRequest) returns (LibrariesListReply);
+  rpc LibrariesGet (DomainGetRequest) returns (LibraryRecordReply);
+  rpc LibrariesWatch (DomainWatchRequest) returns (stream LibraryRecordEvent);
+  rpc LibrariesCreate (LibraryCreateRequest) returns (LibraryMutationReply);
+  rpc LibrariesUpdate (LibraryUpdateRequest) returns (LibraryMutationReply);
+  rpc LibrariesRemove (DomainRemoveRequest) returns (MutationReply);
+  rpc LibrariesAddRoot (LibraryRootAddRequest) returns (LibraryMutationReply);
+  rpc LibrariesUpdateRoot (LibraryRootUpdateRequest) returns (LibraryMutationReply);
+  rpc LibrariesRemoveRoot (LibraryRootRemoveRequest) returns (MutationReply);
+  rpc RuntimesList (DomainListRequest) returns (RuntimesListReply);
+  rpc RuntimesGet (DomainGetRequest) returns (RuntimeRecordReply);
+  rpc RuntimesWatch (DomainWatchRequest) returns (stream RuntimeRecordEvent);
+  rpc RuntimesRegister (RuntimeRegisterRequest) returns (RuntimeMutationReply);
+  rpc RuntimesUpdate (RuntimeUpdateRequest) returns (RuntimeMutationReply);
+  rpc RuntimesRemove (DomainRemoveRequest) returns (MutationReply);
+  rpc GamesRegisterContent (ContentRegistrationRequest) returns (MutationReply);
+  rpc StorageDiagnosticsPublishBenchmark (BenchmarkReportRequest) returns (ReportMutationReply);
+  rpc StorageDiagnosticsPublishSmart (SmartReportRequest) returns (ReportMutationReply);
+  rpc ComputerPublishHardware (HardwareReportRequest) returns (ReportMutationReply);
+  rpc GamePresencePublish (PresencePublishRequest) returns (ReportMutationReply);
+  rpc GamePresenceClear (PresenceClearRequest) returns (MutationReply);
+  rpc GamePerformancePublishSamples (PerformanceSamplesRequest) returns (ReportMutationReply);
+  rpc GamePerformanceEndSeries (PerformanceEndSeriesRequest) returns (MutationReply);
+  rpc DataPublish (DataPublishRequest) returns (DataMutationReply);
+  rpc DataGet (DataGetRequest) returns (DataGetReply);
+  rpc DataList (DataListRequest) returns (DataListReply);
+  rpc DataWatch (DataWatchRequest) returns (stream DataEvent);
+  rpc PersistenceGetUsage (PersistenceUsageRequest) returns (PersistenceUsageReply);
+  rpc PersistenceListEntries (PersistenceListRequest) returns (PersistenceListReply);
+  rpc PersistenceDeleteEntries (PersistenceDeleteRequest) returns (MutationReply);
+  rpc PersistenceClear (PersistenceClearRequest) returns (MutationReply);
+  rpc PersistenceSetRetentionPolicy (RetentionPolicyRequest) returns (MutationReply);
+  rpc ToolsList (ToolsListRequest) returns (ToolsListReply);
+  rpc ToolsRequestApply (ToolApplyRequest) returns (JobReply);
+  rpc ToolsRequestRemove (ToolRemoveRequest) returns (JobReply);
+  rpc PortsList (PortsListRequest) returns (PortsListReply);
+  rpc PortsDetail (PortDetailRequest) returns (PortDetailReply);
+  rpc PortsRequestInstall (PortInstallRequest) returns (JobReply);
+  rpc JobsGet (JobGetRequest) returns (JobReply);
+  rpc JobsWatch (JobWatchRequest) returns (stream JobEvent);
+  rpc JobsCancel (JobCancelRequest) returns (JobReply);
 }
+
+service Saves {
+  rpc ListProfiles (SaveProfileListRequest) returns (SaveProfileListReply);
+  rpc GetProfile (SaveProfileGetRequest) returns (SaveProfileReply);
+  rpc CreateProfile (SaveProfileCreateRequest) returns (SaveProfileMutationReply);
+  rpc UpdateProfile (SaveProfileUpdateRequest) returns (SaveProfileMutationReply);
+  rpc RemoveProfile (SaveProfileRemoveRequest) returns (SaveProfileMutationReply);
+}
+
+service Locations {
+  rpc Inspect (LocationInspectRequest) returns (LocationInspectReply);
+  rpc GetSize (LocationSizeRequest) returns (LocationSizeReply);
+  rpc GetAccess (LocationAccessRequest) returns (LocationAccessReply);
+  rpc GetLastModified (LocationLastModifiedRequest) returns (LocationLastModifiedReply);
+  rpc GetFingerprint (LocationFingerprintRequest) returns (LocationFingerprintReply);
+  rpc Compare (LocationCompareRequest) returns (LocationCompareReply);
+  rpc WatchAvailability (LocationAvailabilityWatchRequest) returns (stream LocationAvailabilityEvent);
+}
+
+service StorageDiagnostics {
+  rpc List (DiagnosticListRequest) returns (DiagnosticListReply);
+  rpc Get (DiagnosticGetRequest) returns (DiagnosticGetReply);
+  rpc Watch (DiagnosticWatchRequest) returns (stream DiagnosticEvent);
+}
+
+service Computer {
+  rpc List (ComputerListRequest) returns (ComputerListReply);
+  rpc Get (ComputerGetRequest) returns (ComputerGetReply);
+  rpc Watch (ComputerWatchRequest) returns (stream ComputerEvent);
+}
+
+service GamePresence {
+  rpc List (PresenceListRequest) returns (PresenceListReply);
+  rpc Get (PresenceGetRequest) returns (PresenceGetReply);
+  rpc Watch (PresenceWatchRequest) returns (stream PresenceEvent);
+}
+
+service GamePerformance {
+  rpc List (PerformanceListRequest) returns (PerformanceListReply);
+  rpc Get (PerformanceGetRequest) returns (PerformanceGetReply);
+  rpc Watch (PerformanceWatchRequest) returns (stream PerformanceEvent);
+  rpc QuerySeries (PerformanceQuerySeriesRequest) returns (PerformanceQuerySeriesReply);
+  rpc Aggregate (PerformanceAggregateRequest) returns (PerformanceAggregateReply);
+}
+
+// Typed operation messages for the API 1.4 services. Common identity,
+// revision, pagination and idempotency values remain explicit protobuf fields.
+message CustomLaunchRemoveRequest { MutationContext mutation = 1; string game_id = 2; string recipe_id = 3; }
+message GameInstallRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string user_intent_id = 4; string idempotency_key = 5; }
+message StorageGetRequest { ServiceContext context = 1; string key = 2; }
+message StoragePutRequest { MutationContext mutation = 1; string key = 2; bytes value = 3; StorageDurability durability = 4; uint64 ttl_seconds = 5; }
+message StorageDeleteRequest { MutationContext mutation = 1; string key = 2; }
+enum StorageDurability { STORAGE_DURABILITY_UNSPECIFIED = 0; STORAGE_DURABILITY_SESSION_ONLY = 1; STORAGE_DURABILITY_PERSISTENT = 2; }
+message StorageGetReply { bytes value = 1; uint64 revision = 2; bool found = 3; }
+message StorageMutationReply { uint64 revision = 1; uint64 usage_bytes = 2; uint64 quota_bytes = 3; MutationOutcome outcome = 4; }
+message FilesRequestAccessRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; repeated string requested_operations = 4; repeated string resource_kinds = 5; }
+message FileHandle { string handle = 1; string display_name = 2; string resource_kind = 3; bool writable = 4; }
+message FileAccessReply { repeated FileHandle handles = 1; }
+message FilesListRequest { ServiceContext context = 1; string directory_handle = 2; string cursor = 3; uint32 page_size = 4; }
+message FilesListReply { repeated FileEntry entries = 1; string next_cursor = 2; }
+message FileEntry { string handle = 1; string name = 2; bool directory = 3; uint64 size_bytes = 4; int64 modified_at = 5; }
+message FilesReadRequest { ServiceContext context = 1; string file_handle = 2; uint64 offset = 3; uint64 max_bytes = 4; }
+message FileReadReply { bytes contents = 1; uint64 next_offset = 2; bool eof = 3; }
+message FilesWriteRequest { MutationContext mutation = 1; string file_handle = 2; uint64 offset = 3; bytes contents = 4; bool truncate = 5; }
+message FilesDeleteRequest { MutationContext mutation = 1; string file_handle = 2; }
+message NetworkFetchRequest { ServiceContext context = 1; string url = 2; string method = 3; map<string,string> headers = 4; bytes body = 5; uint64 max_response_bytes = 6; uint32 timeout_ms = 7; }
+message NetworkFetchReply { uint32 status_code = 1; map<string,string> headers = 2; bytes body = 3; string final_origin = 4; }
+message NotificationPublishRequest { MutationContext mutation = 1; string title = 2; string body = 3; string locale = 4; string severity = 5; }
+message BackupsListRequest { PageRequest page = 1; string game_id = 2; string profile_id = 3; }
+message BackupCreateRequest { MutationContext mutation = 1; string game_id = 2; string profile_id = 3; string reason = 4; }
+message BackupRestoreRequest { MutationContext mutation = 1; string backup_id = 2; string game_id = 3; string profile_id = 4; string user_intent_id = 5; }
+message BackupsListReply { repeated BackupRecord backups = 1; string next_cursor = 2; }
+message BackupRecord { string backup_id = 1; string game_id = 2; int64 created_at = 3; uint64 size_bytes = 4; string state = 5; }
+message JobReply { string job_id = 1; JobState state = 2; string result_code = 3; string message = 4; uint64 revision = 5; }
+enum JobState { JOB_STATE_UNSPECIFIED = 0; JOB_STATE_QUEUED = 1; JOB_STATE_RUNNING = 2; JOB_STATE_SUCCEEDED = 3; JOB_STATE_FAILED = 4; JOB_STATE_CANCELLED = 5; }
+message DomainListRequest { PageRequest page = 1; string kind = 2; string owner_filter = 3; }
+message DomainGetRequest { ServiceContext context = 1; string resource_id = 2; uint64 expected_revision = 3; CommonDataSelector shared_records = 4; }
+message DomainWatchRequest { ServiceContext context = 1; uint64 after_revision = 2; string resource_id = 3; CommonDataSelector shared_records = 4; }
+message DomainRemoveRequest { MutationContext mutation = 1; string resource_id = 2; }
+message LibraryCreateRequest { MutationContext mutation = 1; string name = 2; string description = 3; }
+message LibraryUpdateRequest { MutationContext mutation = 1; string library_id = 2; string name = 3; string description = 4; repeated string field_mask = 5; }
+message LibraryRootAddRequest { MutationContext mutation = 1; string library_id = 2; string approved_root_handle = 3; string display_name = 4; }
+message LibraryRootUpdateRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; string approved_root_handle = 4; string display_name = 5; }
+message LibraryRootRemoveRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; }
+message LibraryRecord { string id = 1; string name = 2; string creator_plugin_id = 3; repeated string root_ids = 4; uint64 revision = 5; }
+message LibrariesListReply { repeated LibraryRecord libraries = 1; string next_cursor = 2; uint64 revision = 3; }
+message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
+message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }
+message LibraryMutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+message RuntimeRegisterRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; }
+message RuntimeUpdateRequest { MutationContext mutation = 1; RuntimeRecord runtime = 2; repeated string field_mask = 3; }
+message RuntimeMutationReply { RuntimeRecord runtime = 1; MutationOutcome outcome = 2; }
+message RuntimeRecordReply { RuntimeRecord runtime = 1; uint64 revision = 2; }
+message RuntimeRecordEvent { uint64 revision = 1; string event_type = 2; RuntimeRecord runtime = 3; }
+message RuntimesListReply { repeated RuntimeRecord runtimes = 1; string next_cursor = 2; uint64 revision = 3; }
+message ContentRegistrationRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string content_handle = 4; string content_kind = 5; string runtime_id = 6; repeated string supported_platforms = 7; }
+message ReportMutationReply { string report_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+message BenchmarkReportRequest { MutationContext mutation = 1; string volume_handle = 2; string tool_name = 3; string tool_version = 4; map<string,double> measurements = 5; string units = 6; int64 observed_at = 7; }
+message SmartReportRequest { MutationContext mutation = 1; string volume_handle = 2; string device_model = 3; string firmware = 4; map<string,string> attributes = 5; int64 observed_at = 6; }
+message HardwareReportRequest { MutationContext mutation = 1; string computer_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct observations = 5; int64 observed_at = 6; }
+message PresencePublishRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; google.protobuf.Struct details = 4; uint64 ttl_seconds = 5; }
+message PresenceClearRequest { MutationContext mutation = 1; string game_id = 2; string session_id = 3; }
+message PerformanceSample { int64 observed_at = 1; double frames_per_second = 2; double cpu_percent = 3; uint64 memory_bytes = 4; uint64 sequence = 5; }
+message PerformanceSamplesRequest { MutationContext mutation = 1; string series_id = 2; string game_id = 3; string computer_id = 4; repeated PerformanceSample samples = 5; }
+message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; }
+message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; }
+message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; }
+message DataGetRequest { ServiceContext context = 1; string dataset_id = 2; string record_id = 3; CommonDataSelector common_data_categories = 4; }
+message DataListRequest { PageRequest page = 1; string dataset_id = 2; string filter = 3; CommonDataSelector common_data_categories = 4; }
+message DataWatchRequest { ServiceContext context = 1; string dataset_id = 2; uint64 after_revision = 3; CommonDataSelector common_data_categories = 4; }
+message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; }
+message DataGetReply { DataRecord record = 1; }
+message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; }
+message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
+message PersistenceUsageRequest { ServiceContext context = 1; }
+message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; }
+message PersistenceListRequest { PageRequest page = 1; string category = 2; }
+message PersistenceListReply { repeated PersistenceEntry entries = 1; string next_cursor = 2; }
+message PersistenceEntry { string entry_id = 1; string category = 2; string logical_key = 3; uint64 size_bytes = 4; int64 last_used_at = 5; }
+message PersistenceDeleteRequest { MutationContext mutation = 1; repeated string entry_ids = 2; }
+message PersistenceClearRequest { MutationContext mutation = 1; string category = 2; }
+message RetentionPolicyRequest { MutationContext mutation = 1; string category = 2; uint64 max_age_seconds = 3; uint64 max_bytes = 4; }
+message PersistenceMutationReply { uint64 reclaimed_bytes = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+message ToolsListRequest { PageRequest page = 1; string game_id = 2; string platform = 3; }
+message ToolApplyRequest { MutationContext mutation = 1; string tool_id = 2; string game_id = 3; string user_intent_id = 4; }
+message ToolRemoveRequest { MutationContext mutation = 1; string tool_id = 2; string game_id = 3; string user_intent_id = 4; }
+message ToolsListReply { repeated ToolRecord tools = 1; string next_cursor = 2; }
+message ToolRecord { string tool_id = 1; string name = 2; string version = 3; string availability = 4; }
+message PortsListRequest { PageRequest page = 1; string platform = 2; string query = 3; }
+message PortDetailRequest { ServiceContext context = 1; string port_id = 2; }
+message PortInstallRequest { MutationContext mutation = 1; string port_id = 2; string game_id = 3; repeated string supplied_file_handles = 4; string user_intent_id = 5; }
+message PortsListReply { repeated PortRecord ports = 1; string next_cursor = 2; }
+message PortDetailReply { PortRecord port = 1; }
+message PortRecord { string port_id = 1; string name = 2; string platform = 3; string availability = 4; }
+message JobGetRequest { ServiceContext context = 1; string job_id = 2; }
+message JobWatchRequest { ServiceContext context = 1; string job_id = 2; uint64 after_sequence = 3; }
+message JobCancelRequest { MutationContext mutation = 1; string job_id = 2; }
+message JobEvent { string job_id = 1; uint64 sequence = 2; JobState state = 3; uint32 progress_percent = 4; string result_code = 5; string message = 6; }
+
+// Shared mutation envelope. operation_id is host-issued; idempotency_key is
+// client supplied and scoped to the authenticated plugin and operation.
+message MutationContext {
+  ServiceContext context = 1;
+  string operation_id = 2;
+  string idempotency_key = 3;
+  uint64 expected_revision = 4;
+}
+
+message PageRequest {
+  ServiceContext context = 1;
+  string cursor = 2;
+  uint32 page_size = 3;
+  CommonDataSelector common_data_categories = 4;
+}
+message LibraryListRequest { PageRequest page = 1; string provider_id = 2; string search = 3; }
+message LibraryGetRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; CommonDataSelector common_data_categories = 4; }
+message LibraryWatchRequest { ServiceContext context = 1; uint64 after_revision = 2; string provider_id = 3; CommonDataSelector common_data_categories = 4; }
+message MetadataUpdateRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; map<string, string> display_fields = 4; }
+message FavoritesListRequest { PageRequest page = 1; string profile_id = 2; }
+message FavoritesSetRequest { MutationContext mutation = 1; string profile_id = 2; string game_id = 3; bool favorite = 4; }
+message MatchingSearchRequest { ServiceContext context = 1; string query = 2; string platform = 3; uint32 page_size = 4; string cursor = 5; }
+message MatchingAssignRequest { MutationContext mutation = 1; string provider_id = 2; string provider_game_id = 3; string gamenode_game_id = 4; }
+message ArtworkReadRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; uint64 max_bytes = 5; }
+message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; }
+message LibraryListReply { repeated LibraryEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
+message LibraryGetReply { LibraryEntry entry = 1; uint64 revision = 2; }
+message FavoritesListReply { repeated FavoriteEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
+message MatchingSearchReply { repeated MatchCandidate candidates = 1; string next_cursor = 2; }
+message ArtworkReadReply { bytes encoded_image = 1; string media_type = 2; uint64 byte_length = 3; uint64 revision = 4; }
+message MutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; }
+message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; }
+message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
+message MatchCandidate { string game_id = 1; string title = 2; string platform = 3; string confidence = 4; }
+message LibraryEvent { uint64 revision = 1; string event_type = 2; LibraryEntry entry = 3; }
 
 message ResourceRequest {
   ServiceContext context = 1;
@@ -283,11 +458,15 @@ message ResourceRequest {
   CommonDataSelector common_data_categories = 13;
 }
 
-// Explicit, per-query opt-in to standard shared projections. A grant selected
-// during activation only permits a category; it never causes automatic reads.
-// Secrets and sensitive/custom datasets are not representable here.
+// Explicit, per-query selector for published projections. Category grants and
+// selected-record grants are independently checked by the host; this selector
+// never grants authority or triggers automatic reads. Sensitive/custom fields
+// still require their separate sharing review, and secrets are excluded.
 message CommonDataSelector {
   repeated CommonDataCategory categories = 1;
+  // Explicit ids are independently checked against selected-record grants;
+  // they do not require or imply a category-wide grant.
+  repeated string selected_record_ids = 2;
 }
 
 enum CommonDataCategory {
@@ -296,7 +475,97 @@ enum CommonDataCategory {
   COMMON_DATA_CATEGORY_GAME_PERFORMANCE_HISTORY = 2;
   COMMON_DATA_CATEGORY_RUNTIME_CATALOG = 3;
   COMMON_DATA_CATEGORY_CONTENT_AVAILABILITY = 4;
+  COMMON_DATA_CATEGORY_LIBRARY_ROOTS = 5;
+  COMMON_DATA_CATEGORY_SAVE_PROFILES = 6;
 }
+
+message SaveProfileListRequest {
+  ServiceContext context = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string cursor = 4;
+  uint32 page_size = 5;
+  CommonDataSelector shared_records = 6;
+}
+message SaveProfileGetRequest { ServiceContext context = 1; string game_id = 2; string profile_id = 3; CommonDataSelector shared_records = 4; }
+message SaveProfileCreateRequest { MutationContext mutation = 1; SaveProfile profile = 2; }
+message SaveProfileUpdateRequest { MutationContext mutation = 1; string profile_id = 2; SaveProfilePatch patch = 3; }
+message SaveProfileRemoveRequest { MutationContext mutation = 1; string game_id = 2; string profile_id = 3; }
+message SaveProfilePatch { repeated string field_mask = 1; SaveProfile profile = 2; }
+message SaveProfile {
+  string profile_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string name = 4;
+  repeated SaveDirectory directories = 5;
+  string runtime_id = 6;
+  string format_id = 7;
+  uint32 format_version = 8;
+  google.protobuf.Struct descriptive_metadata = 9;
+  string creator_plugin_id = 10;
+  uint64 revision = 11;
+}
+message SaveDirectory { string approved_resource_handle = 1; string display_name = 2; repeated string naming_patterns = 3; }
+message SaveProfileListReply { repeated SaveProfile profiles = 1; string next_cursor = 2; uint64 revision = 3; }
+message SaveProfileReply { SaveProfile profile = 1; uint64 revision = 2; }
+message SaveProfileMutationReply { string profile_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
+
+enum InspectionAvailability { INSPECTION_AVAILABILITY_UNSPECIFIED = 0; INSPECTION_AVAILABILITY_AVAILABLE = 1; INSPECTION_AVAILABILITY_UNMOUNTED = 2; INSPECTION_AVAILABILITY_DISCONNECTED = 3; INSPECTION_AVAILABILITY_INACCESSIBLE = 4; INSPECTION_AVAILABILITY_MISSING = 5; INSPECTION_AVAILABILITY_UNKNOWN = 6; }
+message LocationInspectRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string requested_dimensions = 3; uint32 max_entries = 4; }
+message LocationInspectReply { LocationDescription location = 1; repeated LocationObservation observations = 2; }
+message LocationSizeRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
+message LocationSizeReply { uint64 logical_bytes = 1; uint64 file_count = 2; uint64 directory_count = 3; bool complete = 4; InspectionAvailability availability = 5; }
+message LocationAccessRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string entry_handles = 3; }
+message LocationAccessReply { repeated LocationAccessEntry entries = 1; InspectionAvailability availability = 2; }
+message LocationLastModifiedRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
+message LocationLastModifiedReply { repeated LocationTimestamp entries = 1; optional int64 aggregate_latest_at = 2; InspectionAvailability availability = 3; }
+message LocationFingerprintRequest { ServiceContext context = 1; string approved_resource_handle = 2; string algorithm = 3; bool require_fresh = 4; uint32 max_entries = 5; string idempotency_key = 6; }
+message LocationFingerprintReply { string snapshot_id = 1; string algorithm = 2; bytes digest = 3; uint64 revision = 4; bool complete = 5; string consistency = 6; string job_id = 7; InspectionAvailability availability = 8; }
+message LocationCompareRequest { ServiceContext context = 1; string before_snapshot_id = 2; string after_snapshot_id = 3; uint64 expected_revision = 4; uint32 page_size = 5; string cursor = 6; }
+message LocationCompareReply { repeated LocationChange changes = 1; string next_cursor = 2; string status = 3; uint64 revision = 4; }
+message LocationAvailabilityWatchRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint64 after_sequence = 3; }
+message LocationAvailabilityEvent { uint64 sequence = 1; string resource_id = 2; InspectionAvailability availability = 3; string volume_identity_token = 4; int64 observed_at = 5; }
+message LocationDescription { string resource_id = 1; InspectionAvailability availability = 2; string volume_identity_token = 3; string mount_point = 4; string network_state = 5; string media_type = 6; uint64 capacity_bytes = 7; uint64 free_bytes = 8; int64 observed_at = 9; }
+message LocationObservation { string entry_handle = 1; string kind = 2; uint64 logical_bytes = 3; InspectionAvailability availability = 4; }
+message LocationAccessEntry { string entry_handle = 1; string read_only_state = 2; string effective_access = 3; InspectionAvailability availability = 4; }
+message LocationTimestamp { string entry_handle = 1; int64 modified_at = 2; string precision = 3; }
+message LocationChange { string entry_handle = 1; string change_kind = 2; uint64 previous_size_bytes = 3; uint64 current_size_bytes = 4; }
+
+message DiagnosticListRequest { PageRequest page = 1; string owner_plugin_id = 2; string volume_identity_token = 3; string projection_id = 4; }
+message DiagnosticGetRequest { ServiceContext context = 1; string report_id = 2; string projection_id = 3; }
+message DiagnosticWatchRequest { ServiceContext context = 1; string owner_plugin_id = 2; string volume_identity_token = 3; string projection_id = 4; uint64 after_revision = 5; }
+message DiagnosticReport { string report_id = 1; string report_kind = 2; string owner_plugin_id = 3; string volume_identity_token = 4; string schema_id = 5; uint32 schema_version = 6; google.protobuf.Struct typed_measurements = 7; google.protobuf.Struct approved_extension = 8; int64 observed_at = 9; uint64 revision = 10; }
+message DiagnosticListReply { repeated DiagnosticReport reports = 1; string next_cursor = 2; uint64 revision = 3; }
+message DiagnosticGetReply { DiagnosticReport report = 1; }
+message DiagnosticEvent { uint64 revision = 1; string event_type = 2; DiagnosticReport report = 3; }
+
+message ComputerListRequest { PageRequest page = 1; string computer_context_id = 2; string projection_id = 3; }
+message ComputerGetRequest { ServiceContext context = 1; string computer_record_id = 2; string projection_id = 3; }
+message ComputerWatchRequest { ServiceContext context = 1; string computer_context_id = 2; string projection_id = 3; uint64 after_revision = 4; }
+message ComputerReport { string record_id = 1; string computer_context_id = 2; string owner_plugin_id = 3; string schema_id = 4; uint32 schema_version = 5; google.protobuf.Struct typed_observations = 6; google.protobuf.Struct approved_extension = 7; int64 observed_at = 8; uint64 revision = 9; }
+message ComputerListReply { repeated ComputerReport reports = 1; string next_cursor = 2; uint64 revision = 3; }
+message ComputerGetReply { ComputerReport report = 1; }
+message ComputerEvent { uint64 revision = 1; string event_type = 2; ComputerReport report = 3; }
+
+message PresenceListRequest { PageRequest page = 1; string game_id = 2; string session_id = 3; string projection_id = 4; }
+message PresenceGetRequest { ServiceContext context = 1; string presence_id = 2; string projection_id = 3; }
+message PresenceWatchRequest { ServiceContext context = 1; string game_id = 2; string session_id = 3; string projection_id = 4; uint64 after_sequence = 5; }
+message PresenceRecord { string presence_id = 1; string game_id = 2; string session_id = 3; string owner_plugin_id = 4; uint64 sequence = 5; int64 observed_at = 6; int64 expires_at = 7; google.protobuf.Struct approved_details = 8; uint64 revision = 9; }
+message PresenceListReply { repeated PresenceRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
+message PresenceGetReply { PresenceRecord record = 1; }
+message PresenceEvent { uint64 sequence = 1; string event_type = 2; PresenceRecord record = 3; }
+
+message PerformanceListRequest { PageRequest page = 1; string game_id = 2; string computer_context_id = 3; string projection_id = 4; }
+message PerformanceGetRequest { ServiceContext context = 1; string series_id = 2; string projection_id = 3; CommonDataSelector common_data_categories = 4; }
+message PerformanceWatchRequest { ServiceContext context = 1; string game_id = 2; string computer_context_id = 3; string projection_id = 4; uint64 after_sequence = 5; CommonDataSelector common_data_categories = 6; }
+message PerformanceQuerySeriesRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; uint32 resolution_ms = 5; PageRequest page = 6; CommonDataSelector common_data_categories = 7; }
+message PerformanceAggregateRequest { ServiceContext context = 1; string series_id = 2; int64 from_time = 3; int64 to_time = 4; string metric = 5; string aggregation = 6; CommonDataSelector common_data_categories = 7; }
+message PerformanceSeries { string series_id = 1; string game_id = 2; string installation_id = 3; string computer_context_id = 4; string session_id = 5; string owner_plugin_id = 6; repeated PerformanceSample samples = 7; uint64 revision = 8; }
+message PerformanceListReply { repeated PerformanceSeries series = 1; string next_cursor = 2; uint64 revision = 3; }
+message PerformanceGetReply { PerformanceSeries series = 1; }
+message PerformanceEvent { uint64 sequence = 1; string event_type = 2; PerformanceSeries series = 3; }
+message PerformanceQuerySeriesReply { repeated PerformanceSample samples = 1; string next_cursor = 2; string coverage = 3; uint64 dropped_samples = 4; }
+message PerformanceAggregateReply { string metric = 1; string aggregation = 2; double value = 3; string unit = 4; uint64 sample_count = 5; string coverage = 6; string provenance = 7; }
 message ResourceReply {
   string resource_id = 1;
   uint64 revision = 2;
@@ -321,6 +590,7 @@ message GameLaunchRequest {
   string user_intent_id = 5;
   string idempotency_key = 6;
 }
+message GameLaunchReply { string job_id = 1; JobState state = 2; string refusal_code = 3; string message = 4; }
 message CustomLaunchRequest {
   ServiceContext context = 1;
   string game_id = 2;
@@ -335,6 +605,7 @@ message CustomLaunchRequest {
   repeated string environment_unset = 11;
   string runtime_handle = 12;
 }
+message CustomLaunchReply { string recipe_id = 1; uint64 recipe_revision = 2; string job_id = 3; JobState state = 4; string refusal_code = 5; string message = 6; }
 
 // Extensible application metadata. Typed identity, ownership, grants, revisions
 // and execution fields stay outside Struct and are never inferred from it.
@@ -426,6 +697,7 @@ enum ProviderOperation {
   PROVIDER_OPERATION_CONFIGURATION_OPEN = 16;
   PROVIDER_OPERATION_CONFIGURATION_FOCUS = 17;
   PROVIDER_OPERATION_CONFIGURATION_CLOSE = 18;
+  PROVIDER_OPERATION_RUNTIME_SESSION_RESULT = 19;
 }
 
 message ProviderCommand {
@@ -433,6 +705,7 @@ message ProviderCommand {
   ProviderOperation operation = 2;
   string target_operation_id = 3;
   optional SettingsRequest settings = 4;
+  optional RuntimeSessionResult runtime_session_result = 5;
 }
 
 message ProviderContext {
@@ -796,5 +1069,52 @@ message ProviderEvent {
     AccountStatus account_status = 3;
     CatalogChunk catalog_chunk = 4;
     OperationResult result = 5;
+    RuntimeSessionReport runtime_session = 6;
   }
+}
+
+message RuntimeSessionReport {
+  string correlation_id = 1;
+  string game_id = 2;
+  string installation_id = 3;
+  string content_id = 4;
+  string runtime_id = 5;
+  string runtime_instance_id = 6;
+  string reporter_session_id = 7;
+  uint64 sequence = 8;
+  int64 observed_at = 9;
+  RuntimeSessionTransition transition = 10;
+  string source_observation_id = 11;
+}
+
+enum RuntimeSessionTransition {
+  RUNTIME_SESSION_TRANSITION_UNSPECIFIED = 0;
+  RUNTIME_SESSION_TRANSITION_IDENTIFIED = 1;
+  RUNTIME_SESSION_TRANSITION_STARTED = 2;
+  RUNTIME_SESSION_TRANSITION_PAUSED = 3;
+  RUNTIME_SESSION_TRANSITION_RESUMED = 4;
+  RUNTIME_SESSION_TRANSITION_CONTENT_CHANGED = 5;
+  RUNTIME_SESSION_TRANSITION_ENDED = 6;
+  RUNTIME_SESSION_TRANSITION_IDENTIFICATION_LOST = 7;
+}
+
+enum RuntimeSessionOutcome {
+  RUNTIME_SESSION_OUTCOME_UNSPECIFIED = 0;
+  RUNTIME_SESSION_OUTCOME_ACCEPTED = 1;
+  RUNTIME_SESSION_OUTCOME_DUPLICATE = 2;
+  RUNTIME_SESSION_OUTCOME_REJECTED_INVALID = 3;
+  RUNTIME_SESSION_OUTCOME_REJECTED_UNAUTHORIZED = 4;
+  RUNTIME_SESSION_OUTCOME_REJECTED_STALE = 5;
+  RUNTIME_SESSION_OUTCOME_REJECTED_CONFLICT = 6;
+  RUNTIME_SESSION_OUTCOME_REJECTED_UNAVAILABLE = 7;
+}
+
+message RuntimeSessionResult {
+  string correlation_id = 1;
+  RuntimeSessionOutcome outcome = 2;
+  string host_session_id = 3;
+  uint64 accepted_sequence = 4;
+  int64 accepted_at = 5;
+  string reason = 6;
+  DenialDetail denial = 7;
 }

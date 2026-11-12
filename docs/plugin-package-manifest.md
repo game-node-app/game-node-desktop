@@ -198,6 +198,12 @@ GameNode plugin integrity signatures from signatures used for any other
 message or product purpose. Rehash every payload from the immutable installed
 version immediately before launch.
 
+The process supervisor accepts host-owned `PackageIntegrity` configuration for managed
+packages. Before creating launch credentials or spawning their executable, it revalidates the
+signed directory and verifies that the executable resolves inside that directory. Hashing and
+filesystem checks run on a blocking worker. Failed verification prevents process startup;
+managed-package composition must supply the pinned publisher key and immutable package root.
+
 ## Example
 
 ```json

@@ -20,6 +20,40 @@ pub struct ProcessConfig {
     pub arguments: Vec<OsString>,
     pub environment: Vec<(OsString, OsString)>,
     pub startup_timeout: Duration,
+    /// Present for managed packages; publisher key comes from host trust state.
+    pub integrity: Option<PackageIntegrity>,
+}
+
+#[derive(Clone)]
+pub struct PackageIntegrity {
+    pub package_root: PathBuf,
+    pub publisher_key: [u8; 32],
+}
+
+async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
+    let Some(integrity) = config.integrity.clone() else {
+        return Ok(());
+    };
+    let executable = config.executable.clone();
+    tokio::task::spawn_blocking(move || {
+        gamenode_platform::plugin_packages::verify_installed_package(
+            &integrity.package_root,
+            &integrity.publisher_key,
+        )
+        .map_err(|_| Status::failed_precondition("plugin package integrity check failed"))?;
+        let root = std::fs::canonicalize(&integrity.package_root)
+            .map_err(|_| Status::failed_precondition("plugin package is unavailable"))?;
+        let target = std::fs::canonicalize(executable)
+            .map_err(|_| Status::failed_precondition("plugin executable is unavailable"))?;
+        if !target.starts_with(&root) || !target.is_file() {
+            return Err(Status::failed_precondition(
+                "plugin executable is outside its verified package",
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| Status::unavailable("plugin integrity worker failed"))?
 }
 
 struct ChildProcess {
@@ -123,6 +157,7 @@ impl ProviderProcesses {
             }
         }
         stored.take();
+        verify_before_launch(&slot.config).await?;
         let launch = self.inner.api.begin_launch(provider_id)?;
         let mut command = tokio::process::Command::new(&slot.config.executable);
         command

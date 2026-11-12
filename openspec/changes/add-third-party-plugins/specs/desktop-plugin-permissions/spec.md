@@ -18,7 +18,7 @@ The host SHALL deny third-party data permissions by default and persist each use
 - **THEN** the previous saved grant remains effective and the UI restores its actual state with an error
 
 ### Requirement: Stable permission catalog
-Every public data method or event SHALL declare its permission, supported API version, resource scope and read/write/execute effects. Read, write and delete SHALL be independent except for explicitly authorized storage.persist own-cleanup. Unknown required permissions SHALL prevent activation; unknown optional permissions SHALL be reported unsupported and never granted.
+Every public method/event SHALL declare its permission, API version, scope and effects. Runtime, library-root and save-profile create, update and delete grants are independent. `storage.persist` permits cleanup only in the caller's private namespace. Unknown required permissions block activation; unknown optional permissions remain unsupported and denied.
 
 #### Scenario: Future unknown permission
 - **WHEN** an older host sees an unknown optional permission in an otherwise compatible package
@@ -149,12 +149,16 @@ Third-party permission UI SHALL describe restrictions as controls enforced on Ga
 - **WHEN** the user grants API read access to a native plugin
 - **THEN** the UI does not claim that the process is unable to perform direct filesystem writes using its OS privileges
 
-### Requirement: Common catalog read follows category grants
-Common domain catalog read permissions SHALL be selectable during activation and authorize published records across plugin owners within the category's declared resource scope. Read grants SHALL not confer mutation; secret, private and executable content SHALL remain excluded, and original provenance SHALL remain visible.
+### Requirement: Common catalog read follows category or record grants
+Common domain reads SHALL require an explicit user grant at activation or in settings. A category grant covers eligible published records in scope; a selected-record grant covers only named records and needs no category grant. Query selectors identify data but confer no authority and default to private/own records. Reads do not grant mutation; secrets and private/executable content remain excluded, with provenance preserved.
 
 #### Scenario: Game path reader
 - **WHEN** a plugin has the shared game-path read permission
 - **THEN** it can read game paths published by any plugin within the permission's declared scope, while private storage and executable contents remain inaccessible
+
+#### Scenario: Selected record without category grant
+- **WHEN** a plugin has read permission for one published runtime record but no category-wide runtime-catalog grant
+- **THEN** a query selecting that record returns only that record, while other records in the category remain inaccessible
 
 ### Requirement: Metadata never supplies authority
 Unknown metadata and extension schemas SHALL not define permissions, executable policy, ownership or persistence selectors. Private/unclassified extensions SHALL remain hidden until authorized. Alternate domain/Data query paths SHALL enforce the same projection and cannot recover withheld fields.
@@ -171,18 +175,18 @@ User launch confirmation SHALL approve only the exact supported plan within exis
 - **THEN** its request to install or modify mod files remains explicitly denied
 
 ### Requirement: Independent creator-scoped domain permissions
-Runtime, library-root and save-profile read/write/delete grants SHALL be independent and default denied. Own-record grants SHALL cover records created by the authenticated plugin. Separately authorized public-pool scopes SHALL permit category-wide or selected-record access. Creation SHALL assign host-controlled creator provenance. Write SHALL NOT imply delete, file access, execution or access to another creator's records. storage.persist SHALL remain the explicit own-cleanup exception.
+Runtime, library-root and save-profile read/create/update/delete grants SHALL be independent and default denied. Own-record grants cover only records created by the authenticated plugin. Create assigns host provenance; update applies only to own or authorized published records. Public grants cover only their category or selected ids. No grant implies other operations, file access, execution or foreign records. `storage.persist` permits own-private cleanup.
 
 #### Scenario: Dolphin changes its own installation
 - **WHEN** Dolphin's plugin has own-record write/delete grants and replaces its external-disk runtime registration with an SSD registration
 - **THEN** it can change its own registrations but cannot modify or remove RetroArch's runtime or delete game files, saves or history
 
-#### Scenario: Write without delete
-- **WHEN** a plugin has game.runtime.write but lacks game.runtime.delete
-- **THEN** an in-scope revision update can succeed and Runtimes.Remove returns an explicit denial
+#### Scenario: Create without update or delete
+- **WHEN** a plugin has game.runtime.create but lacks game.runtime.update and game.runtime.delete
+- **THEN** it can register a new runtime in its authorized category but cannot change or remove an existing runtime
 
 ### Requirement: Explicit foreign domain resource grants
-Users SHALL be able to grant read/create/update/delete on published runtime, library-root and save-profile categories or selected records. Grants SHALL bind recipient, scope, operations and authorization revision. Mutations SHALL check resource revisions, preserve creator provenance and record the actor. Foreign private persistence, secrets and provider-owned account/discovery facts SHALL remain excluded.
+Users SHALL grant read/create/update/delete on published runtime, library-root and save-profile records by category or selected record. Create is category-scoped; other operations may use either scope. Grants bind recipient, operation, scope and revision; mutations check revisions and preserve creator/actor provenance. Domain deletion follows its delete grant; `storage.persist` cleanup is caller-private only. Foreign secrets and provider-owned facts remain excluded.
 
 #### Scenario: Only selected foreign runtime authorized
 - **WHEN** the user grants a migration plugin read/write on one DeSmuME runtime but not delete or access to a RetroArch runtime
@@ -209,3 +213,7 @@ Public-pool read, create, update and delete SHALL require independent user-selec
 #### Scenario: Private namespace remains isolated
 - **WHEN** a plugin has every public-pool operation for a category
 - **THEN** foreign private storage, credentials and provider-owned account/discovery facts remain inaccessible to mutation through the pool
+
+#### Scenario: Published record deletion is distinct from private cleanup
+- **WHEN** a plugin has delete permission for one published runtime record but only storage.persist for its own namespace
+- **THEN** it may delete that authorized public record, may clean its own persisted entries, and cannot address another plugin's private namespace

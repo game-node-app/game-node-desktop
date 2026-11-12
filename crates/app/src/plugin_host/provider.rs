@@ -593,6 +593,7 @@ impl ProviderApi {
                         operation: ProviderOperation::Shutdown as i32,
                         target_operation_id: String::new(),
                         settings: None,
+                        runtime_session_result: None,
                     }));
                 }
             }
@@ -1276,6 +1277,7 @@ impl ProviderApi {
                 operation: kind as i32,
                 target_operation_id: String::new(),
                 settings: settings.map(Into::into),
+                runtime_session_result: None,
             }))
             .is_err()
         {
@@ -1309,6 +1311,11 @@ impl ProviderApi {
                 cap::CONFIGURE
             }
             Some(provider_event::Event::Result(_)) => cap::CONTEXT,
+            Some(provider_event::Event::RuntimeSession(_)) => {
+                return Err(Status::unimplemented(
+                    "runtime session reporting is not available in this host version",
+                ));
+            }
             _ => return Err(Status::invalid_argument("invalid provider event")),
         };
         let provider = self.authorize(&context, permission)?;
@@ -1485,6 +1492,7 @@ impl ProviderApi {
                         operation: ProviderOperation::Acknowledge as i32,
                         target_operation_id: String::new(),
                         settings: None,
+                        runtime_session_result: None,
                     }));
                 }
             }

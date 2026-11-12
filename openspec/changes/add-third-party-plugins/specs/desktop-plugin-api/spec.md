@@ -428,8 +428,16 @@ The API SHALL accept negotiated typed runtime-session observations under default
 - **THEN** only its explicitly consented sensitive-data projection is returned without process handles, credentials or launch tokens
 
 ### Requirement: Consistent public pool authorization
-Domain APIs and Data projections SHALL enforce the same publication, operation and resource-scope grants. Category-wide and selected-record grants SHALL be supported without exposing private fields. Shared record updates SHALL require expected revisions and preserve creator provenance while recording the acting plugin. Read selectors SHALL NOT confer write authority.
+Domain APIs and Data projections SHALL enforce identical publication, operation and scope grants. Query selectors SHALL list categories/record ids, default to private/own records, and SHALL NOT grant access; selected-record reads need no category grant. Create/update/delete require separate grants. Shared mutations check revisions and preserve creator/actor provenance. Public-record deletion is distinct from `storage.persist` cleanup of the caller's private namespace.
 
 #### Scenario: Alternate route cannot widen a grant
 - **WHEN** a plugin authorized to update one public record submits a mutation through another API alias
 - **THEN** the same selected-record scope and revision checks apply, and other records remain protected
+
+#### Scenario: Selected read does not require category access
+- **WHEN** a plugin has read permission for one published record but lacks the category-wide read grant
+- **THEN** a query selecting that record returns only that record and does not expose other records in its category
+
+#### Scenario: Public deletion does not expand private cleanup
+- **WHEN** a plugin has delete permission for one published record and storage.persist for its own namespace
+- **THEN** it can delete that authorized record and clean its own persisted entries, but cannot delete another plugin's private data

@@ -84,27 +84,29 @@ The mounted `ProviderHost` service has `Exchange`, `GetContext`, `Account`, `Sec
 `DeclareActions`. These are the existing provider service methods. Discovery, catalog, counters,
 status and lifecycle results travel through `Exchange`; they are not extra unary RPCs.
 
-The API 1.4 `ResourceHost` contract in `crates/plugin-protocol/proto/plugin.proto` defines these
-new method families: library list/get/watch and metadata; favorites; matching; artwork; detected
-and custom launch; install; storage; file access; network fetch; notifications; backups; library
-and root management; runtimes and content registration; hardware/storage diagnostics; game
-presence and performance; common/custom data; persistence management; tools; ports; and jobs.
-It currently uses shared request/reply envelopes for most methods, with separate typed launch
-requests. This is contract-only today: the desktop does not mount `ResourceHost`, and method
-permissions, ownership, payload schemas, pagination rules, quotas and idempotency requirements
-are not yet finalized for every method. Do not call these routes as implemented services or treat
-the envelope as permission to perform an operation. The current proposed resource/permission
-inventory is in [OpenSpec design section 4](../openspec/changes/add-third-party-plugins/design.md#4-initial-host-resource-catalog);
-the per-method API matrix remains pending task 2.2.
+The API 1.4 `ResourceHost` and domain-service contracts in `crates/plugin-protocol/proto/plugin.proto`
+define typed request and response messages. The checked
+[`resource_host.json`](../crates/plugin-protocol/contracts/resource_host.json) and
+[`domain_host.json`](../crates/plugin-protocol/contracts/domain_host.json) catalogs record each
+method, message, stream, permission, owner, revision, pagination, quota and idempotency rule;
+contract tests compare every route to the generated protobuf descriptor. The permission grouping
+is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes are `UNIMPLEMENTED`.
 
-Common data has a typed per-query selector in that envelope. Rust plugins can construct it with
+These API 1.4 resource and domain methods remain contract-only: the desktop does not mount their
+services, so generated clients cannot call them successfully yet. Provider and control services
+described above are mounted. Do not infer runtime availability from the protobuf contract.
+
+Public-data reads use a typed per-query `CommonDataSelector` on each query that supports shared
+projections. Its categories and selected record ids are checked independently; a selected-record
+grant does not require category-wide access. Rust plugins can construct one with
 `gamenode_plugin_sdk::common_data_selector([CommonDataCategory::GamePerformanceHistory])` and
-set the result on `ResourceRequest.common_data_categories`. Omitting the selector or using an empty list
-keeps the query private to the caller's visible records. Naming a category requests its common
-projection for that query only; the host must still check the caller's activation grant and scope.
-The selector cannot name secrets or sensitive/custom datasets.
+set it on the operation-specific request, such as `LibraryListRequest.page` or
+`DataGetRequest.common_data_categories`; selected-record clients populate
+`selected_record_ids`. Omitting or emptying the selector keeps the query private to the caller's
+visible records. Selectors request data only; the host still checks each grant and scope. Secrets
+remain excluded, and sensitive/custom datasets require separate sharing review.
 
-The declared ResourceHost method names, grouped for source/API review, are:
+The ResourceHost method names, grouped for source/API review, are:
 
 | Area | API 1.4 contract method names |
 | --- | --- |
@@ -114,6 +116,11 @@ The declared ResourceHost method names, grouped for source/API review, are:
 | Backups and libraries | `BackupsList`, `BackupsRequestCreate`, `BackupsRequestRestore`, `LibrariesList`, `LibrariesGet`, `LibrariesWatch`, `LibrariesCreate`, `LibrariesUpdate`, `LibrariesRemove`, `LibrariesAddRoot`, `LibrariesUpdateRoot`, `LibrariesRemoveRoot` |
 | Runtimes and observations | `RuntimesList`, `RuntimesGet`, `RuntimesWatch`, `RuntimesRegister`, `RuntimesUpdate`, `RuntimesRemove`, `GamesRegisterContent`, `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart`, `ComputerPublishHardware`, `GamePresencePublish`, `GamePresenceClear`, `GamePerformancePublishSamples`, `GamePerformanceEndSeries` |
 | Data, persistence, tools, ports and jobs | `DataPublish`, `DataGet`, `DataList`, `DataWatch`, `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy`, `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove`, `PortsList`, `PortsDetail`, `PortsRequestInstall`, `JobsGet`, `JobsWatch`, `JobsCancel` |
+
+Each name above maps to exactly one typed request/response pair in the protobuf service and
+catalog. `GamesRequestLaunch` takes `GameLaunchRequest` and has no target/argument override;
+`GamesProposeCustomLaunch` and `GamesRequestCustomLaunch` take `CustomLaunchRequest` and require
+the independent `game.custom_launch` grant. Their approvals and effects are not interchangeable.
 
 ## Bounded work, cancellation and failures
 
@@ -127,10 +134,14 @@ Unary SDK service calls have a 15-second request timeout. The local connection a
 to three seconds. Current host operation deadlines are 615 seconds for sign-in, 300 seconds for
 catalog sync, 105 seconds for initialize/check, three seconds for settings cancellation and 90
 seconds for other operations. Login policy additionally bounds its window lifetime and page probe
-size. These provider-host values describe the current implementation; API 1.4 ResourceHost quotas
-are not established until task 2.2 is finalized. Blocking IO and CPU work belongs on worker
-threads, and async code must remain cancellable. `ResourceHost` job cancellation semantics are
-not implemented yet.
+size. These provider-host values describe the current implementation. API 1.4 resource request
+and response payloads are capped at 8 MiB; method-specific limits are listed in the route catalog.
+Blocking IO and CPU work belongs on worker
+threads, and async code must remain cancellable. Resource job state, progress, terminal outcome,
+watch sequence and cancellation request fields are defined by `JobReply`, `JobEvent`,
+`JobGetRequest`, `JobWatchRequest` and `JobCancelRequest`; service implementation is not mounted
+yet. API 1.4 method-specific quota values are carried as catalog contract metadata and are not
+claims about current desktop enforcement.
 
 The SDK's legacy `Error` keeps its existing coarse variants for source compatibility. New code
 can use `DetailedError`, which distinguishes denied, unauthenticated, stale, unsupported, invalid,

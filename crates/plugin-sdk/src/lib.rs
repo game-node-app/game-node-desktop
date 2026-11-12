@@ -13,8 +13,8 @@ pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const EVENT_QUEUE: usize = 32;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Build an explicit, typed per-query common-data selector. An empty iterator
-/// is valid and means private/owner-visible records only. The host still checks
+/// Build an explicit, typed per-query category selector. An empty iterator is
+/// valid and means private/owner-visible records only. The host still checks
 /// the matching activation grant and its scope for every query.
 pub fn common_data_selector(
     categories: impl IntoIterator<Item = CommonDataCategory>,
@@ -24,8 +24,33 @@ pub fn common_data_selector(
             .into_iter()
             .map(|category| category as i32)
             .collect(),
+        ..Default::default()
     };
     gamenode_plugin_protocol::common_data::categories(Some(&selector))?;
+    Ok(selector)
+}
+
+/// Build a selector for explicitly granted published records without asking
+/// for category-wide access. The host must authorize every id independently.
+pub fn selected_record_selector(
+    record_ids: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let selector = CommonDataSelector {
+        selected_record_ids: record_ids.into_iter().map(Into::into).collect(),
+        ..Default::default()
+    };
+    gamenode_plugin_protocol::common_data::selected_record_ids(Some(&selector))?;
+    Ok(selector)
+}
+
+/// Build a selector combining category-wide and selected-record grants.
+pub fn common_data_selector_with_records(
+    categories: impl IntoIterator<Item = CommonDataCategory>,
+    record_ids: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<CommonDataSelector, gamenode_plugin_protocol::common_data::SelectorError> {
+    let mut selector = common_data_selector(categories)?;
+    selector.selected_record_ids = record_ids.into_iter().map(Into::into).collect();
+    gamenode_plugin_protocol::common_data::selected_record_ids(Some(&selector))?;
     Ok(selector)
 }
 
@@ -37,6 +62,7 @@ mod common_data_selector_tests {
     fn selector_is_explicit_and_empty_means_private_only() {
         let private = common_data_selector([]).unwrap();
         assert!(private.categories.is_empty());
+        assert!(private.selected_record_ids.is_empty());
 
         let selected = common_data_selector([
             CommonDataCategory::GamePaths,
@@ -50,6 +76,10 @@ mod common_data_selector_tests {
                 CommonDataCategory::GamePerformanceHistory as i32,
             ]
         );
+
+        let selected_records = selected_record_selector(["runtime:one", "save:two"]).unwrap();
+        assert!(selected_records.categories.is_empty());
+        assert_eq!(selected_records.selected_record_ids, ["runtime:one", "save:two"]);
         assert!(
             common_data_selector([CommonDataCategory::GamePaths, CommonDataCategory::GamePaths,])
                 .is_err()

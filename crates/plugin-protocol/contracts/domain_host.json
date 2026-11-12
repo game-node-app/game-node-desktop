@@ -1,0 +1,872 @@
+{
+  "api": "1.4",
+  "source": "design.md sections 4 and 18",
+  "services": [
+    "Computer",
+    "GamePerformance",
+    "GamePresence",
+    "Locations",
+    "Saves",
+    "StorageDiagnostics"
+  ],
+  "routes": [
+    {
+      "route": "/gamenode.plugin.v1.Saves/ListProfiles",
+      "service": "Saves",
+      "method": "ListProfiles",
+      "request": "SaveProfileListRequest",
+      "response": "SaveProfileListReply",
+      "streaming": false,
+      "permission": "game.saves.read",
+      "operation_owner": "authorized save-profile reader",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "page and selected records",
+      "response_policy": "save-profile records, provenance, revisions, cursor",
+      "extension_or_opaque_policy": "Descriptive game/emulator metadata only; source paths remain scoped handles",
+      "access_model": "game.saves.read; own creator or category/selected-record grant; game scope",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Saves/GetProfile",
+      "service": "Saves",
+      "method": "GetProfile",
+      "request": "SaveProfileGetRequest",
+      "response": "SaveProfileReply",
+      "streaming": false,
+      "permission": "game.saves.read",
+      "operation_owner": "authorized save-profile reader",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "profile id and selected-record selector",
+      "response_policy": "save-profile record, provenance, revision",
+      "extension_or_opaque_policy": "Descriptive game/emulator metadata only; source paths remain scoped handles",
+      "access_model": "game.saves.read; selected-record grant can work without category grant; game scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Saves/CreateProfile",
+      "service": "Saves",
+      "method": "CreateProfile",
+      "request": "SaveProfileCreateRequest",
+      "response": "SaveProfileMutationReply",
+      "streaming": false,
+      "permission": "game.saves.create",
+      "operation_owner": "authenticated creating plugin",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "typed new profile, approved resource handles, idempotency key",
+      "response_policy": "created profile id and revision or typed conflict",
+      "extension_or_opaque_policy": "Descriptive emulator metadata only; rules/handles remain typed",
+      "access_model": "game.saves.create; own creator/category scope; game scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Saves/UpdateProfile",
+      "service": "Saves",
+      "method": "UpdateProfile",
+      "request": "SaveProfileUpdateRequest",
+      "response": "SaveProfileMutationReply",
+      "streaming": false,
+      "permission": "game.saves.update",
+      "operation_owner": "authenticated updating plugin",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "existing profile id, expected revision, typed patch, idempotency key",
+      "response_policy": "updated profile id and revision or typed conflict",
+      "extension_or_opaque_policy": "Descriptive emulator metadata only; rules/handles remain typed",
+      "access_model": "game.saves.update; own creator or category/selected-record grant; game scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Saves/RemoveProfile",
+      "service": "Saves",
+      "method": "RemoveProfile",
+      "request": "SaveProfileRemoveRequest",
+      "response": "SaveProfileMutationReply",
+      "streaming": false,
+      "permission": "game.saves.delete",
+      "operation_owner": "authenticated deleting plugin",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "existing profile id, expected revision, idempotency key",
+      "response_policy": "removed profile id and revision or typed conflict",
+      "extension_or_opaque_policy": "None",
+      "access_model": "game.saves.delete; own creator or category/selected-record grant; game scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/Inspect",
+      "service": "Locations",
+      "method": "Inspect",
+      "request": "LocationInspectRequest",
+      "response": "LocationInspectReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle, requested dimensions and bounded entry count",
+      "response_policy": "typed location characteristics and per-observation availability",
+      "extension_or_opaque_policy": "Descriptive vendor metadata only; cannot replace access, volume or digest fields",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/GetSize",
+      "service": "Locations",
+      "method": "GetSize",
+      "request": "LocationSizeRequest",
+      "response": "LocationSizeReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle and bounded entry count",
+      "response_policy": "logical bytes, file/directory counts, completeness and availability",
+      "extension_or_opaque_policy": "None; unknown states remain explicit",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/GetAccess",
+      "service": "Locations",
+      "method": "GetAccess",
+      "request": "LocationAccessRequest",
+      "response": "LocationAccessReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle and selected entry handles",
+      "response_policy": "read-only attributes and effective access states",
+      "extension_or_opaque_policy": "None; unknown states remain explicit",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/GetLastModified",
+      "service": "Locations",
+      "method": "GetLastModified",
+      "request": "LocationLastModifiedRequest",
+      "response": "LocationLastModifiedReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle and bounded entry count",
+      "response_policy": "per-entry timestamp/precision and optional aggregate latest time",
+      "extension_or_opaque_policy": "None; unknown states remain explicit",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/GetFingerprint",
+      "service": "Locations",
+      "method": "GetFingerprint",
+      "request": "LocationFingerprintRequest",
+      "response": "LocationFingerprintReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle, algorithm, freshness and idempotency key",
+      "response_policy": "snapshot id, digest, completeness, consistency, revision and job id",
+      "extension_or_opaque_policy": "None; no arbitrary path or plugin-defined hashing authority",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/Compare",
+      "service": "Locations",
+      "method": "Compare",
+      "request": "LocationCompareRequest",
+      "response": "LocationCompareReply",
+      "streaming": false,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "compatible snapshot ids/revision and bounded page",
+      "response_policy": "typed change entries, cursor and comparable/indeterminate status",
+      "extension_or_opaque_policy": "None; unknown observations remain explicit",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Locations/WatchAvailability",
+      "service": "Locations",
+      "method": "WatchAvailability",
+      "request": "LocationAvailabilityWatchRequest",
+      "response": "LocationAvailabilityEvent",
+      "streaming": true,
+      "permission": "game.storage.inspect or game.saves.inspect",
+      "operation_owner": "authenticated plugin within approved resource scope",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "approved resource handle and sequence cursor",
+      "response_policy": "typed volume/mount availability event",
+      "extension_or_opaque_policy": "None; opaque volume identity only",
+      "access_model": "game.storage.inspect or game.saves.inspect; selected approved resource scope",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.StorageDiagnostics/List",
+      "service": "StorageDiagnostics",
+      "method": "List",
+      "request": "DiagnosticListRequest",
+      "response": "DiagnosticListReply",
+      "streaming": false,
+      "permission": "storage.diagnostics.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "owner/resource selector, approved projection and bounded page/cursor",
+      "response_policy": "typed reports, provenance, revisions and next cursor",
+      "extension_or_opaque_policy": "Approved vendor/report extensions only",
+      "access_model": "storage.diagnostics.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.StorageDiagnostics/Get",
+      "service": "StorageDiagnostics",
+      "method": "Get",
+      "request": "DiagnosticGetRequest",
+      "response": "DiagnosticGetReply",
+      "streaming": false,
+      "permission": "storage.diagnostics.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "report id and approved projection",
+      "response_policy": "typed report, provenance and revision",
+      "extension_or_opaque_policy": "Approved vendor/report extensions only",
+      "access_model": "storage.diagnostics.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.StorageDiagnostics/Watch",
+      "service": "StorageDiagnostics",
+      "method": "Watch",
+      "request": "DiagnosticWatchRequest",
+      "response": "DiagnosticEvent",
+      "streaming": true,
+      "permission": "storage.diagnostics.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "owner/resource selector, approved projection and revision cursor",
+      "response_policy": "typed report-change event and revision",
+      "extension_or_opaque_policy": "Approved vendor/report extensions only",
+      "access_model": "storage.diagnostics.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Computer/List",
+      "service": "Computer",
+      "method": "List",
+      "request": "ComputerListRequest",
+      "response": "ComputerListReply",
+      "streaming": false,
+      "permission": "computer.hardware.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "computer selector, approved projection and bounded page/cursor",
+      "response_policy": "typed hardware/software reports, provenance, revisions and next cursor",
+      "extension_or_opaque_policy": "Approved hardware/vendor extension fields; private identifiers excluded",
+      "access_model": "computer.hardware.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Computer/Get",
+      "service": "Computer",
+      "method": "Get",
+      "request": "ComputerGetRequest",
+      "response": "ComputerGetReply",
+      "streaming": false,
+      "permission": "computer.hardware.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "computer record id and approved projection",
+      "response_policy": "typed report, provenance and revision",
+      "extension_or_opaque_policy": "Approved hardware/vendor extension fields; private identifiers excluded",
+      "access_model": "computer.hardware.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.Computer/Watch",
+      "service": "Computer",
+      "method": "Watch",
+      "request": "ComputerWatchRequest",
+      "response": "ComputerEvent",
+      "streaming": true,
+      "permission": "computer.hardware.read",
+      "operation_owner": "authenticated report consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "computer selector, approved projection and revision cursor",
+      "response_policy": "typed hardware report-change event and revision",
+      "extension_or_opaque_policy": "Approved hardware/vendor extension fields; private identifiers excluded",
+      "access_model": "computer.hardware.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePresence/List",
+      "service": "GamePresence",
+      "method": "List",
+      "request": "PresenceListRequest",
+      "response": "PresenceListReply",
+      "streaming": false,
+      "permission": "game.presence.read",
+      "operation_owner": "authenticated presence consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "game/session selector, approved projection and bounded page/cursor",
+      "response_policy": "typed expiring presence records and provenance",
+      "extension_or_opaque_policy": "Approved game-specific extension fields only",
+      "access_model": "game.presence.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePresence/Get",
+      "service": "GamePresence",
+      "method": "Get",
+      "request": "PresenceGetRequest",
+      "response": "PresenceGetReply",
+      "streaming": false,
+      "permission": "game.presence.read",
+      "operation_owner": "authenticated presence consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "presence record id and approved projection",
+      "response_policy": "typed expiring presence record and provenance",
+      "extension_or_opaque_policy": "Approved game-specific extension fields only",
+      "access_model": "game.presence.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePresence/Watch",
+      "service": "GamePresence",
+      "method": "Watch",
+      "request": "PresenceWatchRequest",
+      "response": "PresenceEvent",
+      "streaming": true,
+      "permission": "game.presence.read",
+      "operation_owner": "authenticated presence consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "game/session selector, approved projection and sequence cursor",
+      "response_policy": "typed presence event with sequence, expiry and provenance",
+      "extension_or_opaque_policy": "Approved game-specific extension fields only",
+      "access_model": "game.presence.read plus explicit sensitive source/recipient projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePerformance/List",
+      "service": "GamePerformance",
+      "method": "List",
+      "request": "PerformanceListRequest",
+      "response": "PerformanceListReply",
+      "streaming": false,
+      "permission": "game.performance.read",
+      "operation_owner": "authenticated performance consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "game/computer selector, projection, category/record selector and bounded page",
+      "response_policy": "typed series/samples, provenance, revisions and next cursor",
+      "extension_or_opaque_policy": "Approved supplemental metric fields only",
+      "access_model": "game.performance.read; common standard metrics or explicit sensitive projection review",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePerformance/Get",
+      "service": "GamePerformance",
+      "method": "Get",
+      "request": "PerformanceGetRequest",
+      "response": "PerformanceGetReply",
+      "streaming": false,
+      "permission": "game.performance.read",
+      "operation_owner": "authenticated performance consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "series id, projection and category/record selector",
+      "response_policy": "typed series/samples, provenance and revision",
+      "extension_or_opaque_policy": "Approved supplemental metric fields only",
+      "access_model": "game.performance.read; selected-record grant can work without category grant",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePerformance/Watch",
+      "service": "GamePerformance",
+      "method": "Watch",
+      "request": "PerformanceWatchRequest",
+      "response": "PerformanceEvent",
+      "streaming": true,
+      "permission": "game.performance.read",
+      "operation_owner": "authenticated performance consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "game/computer selector, projection, selector and sequence cursor",
+      "response_policy": "typed series event, samples, provenance and sequence",
+      "extension_or_opaque_policy": "Approved supplemental metric fields only",
+      "access_model": "game.performance.read; common standard metrics or explicit sensitive projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePerformance/QuerySeries",
+      "service": "GamePerformance",
+      "method": "QuerySeries",
+      "request": "PerformanceQuerySeriesRequest",
+      "response": "PerformanceQuerySeriesReply",
+      "streaming": false,
+      "permission": "game.performance.read",
+      "operation_owner": "authenticated performance consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "series/time window/resolution, category/record selector and bounded page",
+      "response_policy": "typed samples, coverage, gaps and dropped-sample count",
+      "extension_or_opaque_policy": "Approved supplemental sample fields only",
+      "access_model": "game.performance.read; common standard metrics or explicit sensitive projection review",
+      "contract": {
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    },
+    {
+      "route": "/gamenode.plugin.v1.GamePerformance/Aggregate",
+      "service": "GamePerformance",
+      "method": "Aggregate",
+      "request": "PerformanceAggregateRequest",
+      "response": "PerformanceAggregateReply",
+      "streaming": false,
+      "permission": "game.performance.read",
+      "operation_owner": "authenticated performance consumer",
+      "resource_owner": "host-owned source attribution; caller-owned writes; published foreign records require matching operation/scope grant",
+      "request_policy": "series/time window, standard metric, aggregation and category/record selector",
+      "response_policy": "typed value, unit, coverage, sample count and provenance",
+      "extension_or_opaque_policy": "No extension affects computation; unknown metrics are not aggregated",
+      "access_model": "game.performance.read; common standard metrics or explicit sensitive projection review",
+      "contract": {
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque and session scoped"
+        },
+        "revision": {
+          "read": "response includes observed revision where available",
+          "mutation": "expected_revision required for existing resources; stale revisions return typed revision conflict"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin and method",
+          "retry": "same key returns original committed outcome"
+        },
+        "quota": "method-specific result/page bounds; location traversal and report queries run as cancellable bounded jobs where required",
+        "commit_authorization": "recheck authenticated identity, named grant, record/category scope and grant revision immediately before mutation or stream delivery"
+      }
+    }
+  ]
+}

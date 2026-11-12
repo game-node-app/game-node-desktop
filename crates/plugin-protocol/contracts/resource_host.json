@@ -5,770 +5,2258 @@
   "routes": [
     {
       "method": "LibraryList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryListRequest",
+      "response": "LibraryListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibraryGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryGetRequest",
+      "response": "LibraryGetReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibraryWatch",
-      "request": "ResourceRequest",
-      "response": "ResourceEvent",
+      "request": "LibraryWatchRequest",
+      "response": "LibraryEvent",
       "streaming": true,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "MetadataUpdate",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "MetadataUpdateRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.metadata.write",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FavoritesList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FavoritesListRequest",
+      "response": "FavoritesListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "favorites.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FavoritesSet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FavoritesSetRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "favorites.write",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "MatchingSearch",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "MatchingSearchRequest",
+      "response": "MatchingSearchReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "matching.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "MatchingAssign",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "MatchingAssignRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "matching.write",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ArtworkRead",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ArtworkReadRequest",
+      "response": "ArtworkReadReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "artwork.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ArtworkSet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ArtworkSetRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "artwork.write",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Uses operation-specific typed fields; mutations require expected_revision and idempotency_key, while list/get/watch use bounded cursors and typed projections."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesRequestLaunch",
       "request": "GameLaunchRequest",
-      "response": "ResourceReply",
+      "response": "GameLaunchReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.launch",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
         "uses approved detected launch target and stored parameters; no per-call overrides"
-      ]
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesProposeCustomLaunch",
       "request": "CustomLaunchRequest",
-      "response": "ResourceReply",
+      "response": "CustomLaunchReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.custom_launch",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
         "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
-      ]
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesRequestCustomLaunch",
       "request": "CustomLaunchRequest",
-      "response": "ResourceReply",
+      "response": "CustomLaunchReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.custom_launch",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
         "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
-      ]
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesRemoveCustomLaunch",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "CustomLaunchRemoveRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.custom_launch",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
-        "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch"
-      ]
+        "separate game.custom_launch grant and explicit reviewed recipe; never aliases game.launch",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesRequestInstall",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "GameInstallRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "games.install",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "StorageGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "StorageGetRequest",
+      "response": "StorageGetReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "StoragePut",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "StoragePutRequest",
+      "response": "StorageMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.write + storage.persist (durable)",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
-        "quota applies; durable mode additionally requires storage.persist"
-      ]
+        "quota applies; durable mode additionally requires storage.persist",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "StorageDelete",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "StorageDeleteRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.delete",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FilesRequestAccess",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FilesRequestAccessRequest",
+      "response": "FileAccessReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "files.read/write/delete (user-approved scope)",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FilesList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FilesListRequest",
+      "response": "FilesListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "files.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FilesRead",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FilesReadRequest",
+      "response": "FileReadReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "files.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FilesWrite",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FilesWriteRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "files.write",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "FilesDelete",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "FilesDeleteRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "files.delete",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "NetworkFetch",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "NetworkFetchRequest",
+      "response": "NetworkFetchReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "network.fetch",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "NotificationsPublish",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "NotificationPublishRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "notifications.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "BackupsList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "BackupsListRequest",
+      "response": "BackupsListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "backups.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "BackupsRequestCreate",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "BackupCreateRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "backups.create",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "BackupsRequestRestore",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "BackupRestoreRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "backups.restore",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainListRequest",
+      "response": "LibrariesListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.roots.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainGetRequest",
+      "response": "LibraryRecordReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.roots.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesWatch",
-      "request": "ResourceRequest",
-      "response": "ResourceEvent",
+      "request": "DomainWatchRequest",
+      "response": "LibraryRecordEvent",
       "streaming": true,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.roots.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesCreate",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryCreateRequest",
+      "response": "LibraryMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "library.roots.write",
+      "permission": "library.roots.create",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesUpdate",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryUpdateRequest",
+      "response": "LibraryMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "library.roots.write",
+      "permission": "library.roots.update",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesRemove",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainRemoveRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.roots.delete",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesAddRoot",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryRootAddRequest",
+      "response": "LibraryMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "library.roots.write",
+      "permission": "library.roots.create",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesUpdateRoot",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryRootUpdateRequest",
+      "response": "LibraryMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "library.roots.write",
+      "permission": "library.roots.update",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "LibrariesRemoveRoot",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "LibraryRootRemoveRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.roots.delete",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainListRequest",
+      "response": "RuntimesListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.runtime.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainGetRequest",
+      "response": "RuntimeRecordReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.runtime.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesWatch",
-      "request": "ResourceRequest",
-      "response": "ResourceEvent",
+      "request": "DomainWatchRequest",
+      "response": "RuntimeRecordEvent",
       "streaming": true,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.runtime.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesRegister",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "RuntimeRegisterRequest",
+      "response": "RuntimeMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "game.runtime.write",
+      "permission": "game.runtime.create",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesUpdate",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "RuntimeUpdateRequest",
+      "response": "RuntimeMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
-      "permission": "game.runtime.write",
+      "permission": "game.runtime.update",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "RuntimesRemove",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DomainRemoveRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.runtime.delete",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamesRegisterContent",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ContentRegistrationRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "library.discovery",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "StorageDiagnosticsPublishBenchmark",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "BenchmarkReportRequest",
+      "response": "ReportMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.diagnostics.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "StorageDiagnosticsPublishSmart",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "SmartReportRequest",
+      "response": "ReportMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.diagnostics.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ComputerPublishHardware",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "HardwareReportRequest",
+      "response": "ReportMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "computer.hardware.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamePresencePublish",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PresencePublishRequest",
+      "response": "ReportMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.presence.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamePresenceClear",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PresenceClearRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.presence.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamePerformancePublishSamples",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PerformanceSamplesRequest",
+      "response": "ReportMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.performance.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "GamePerformanceEndSeries",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PerformanceEndSeriesRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "game.performance.publish",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "DataPublish",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DataPublishRequest",
+      "response": "DataMutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "data.publish or domain-specific publish grant; storage.persist for durable mode",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
-        "private/session-only by default; durable mode requires storage.persist; producer does not grant recipient read access"
-      ]
+        "private/session-only by default; durable mode requires storage.persist; producer does not grant recipient read access",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "DataGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DataGetRequest",
+      "response": "DataGetReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
       "semantics": [
-        "common records excluded unless explicitly requested; category selector grant checked"
-      ]
+        "common records excluded unless explicitly requested; category selector grant checked",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "DataList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "DataListRequest",
+      "response": "DataListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
       "semantics": [
         "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
-        "common records excluded unless explicitly requested; category selector grant checked"
-      ]
+        "common records excluded unless explicitly requested; category selector grant checked",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "DataWatch",
-      "request": "ResourceRequest",
-      "response": "ResourceEvent",
+      "request": "DataWatchRequest",
+      "response": "DataEvent",
       "streaming": true,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "declared dataset/category read grant; common inclusion is per-query opt-in",
       "semantics": [
-        "common records excluded unless explicitly requested; category selector grant checked"
-      ]
+        "common records excluded unless explicitly requested; category selector grant checked",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PersistenceGetUsage",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PersistenceUsageRequest",
+      "response": "PersistenceUsageReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.persist (own namespace)",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PersistenceListEntries",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PersistenceListRequest",
+      "response": "PersistenceListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.persist (own namespace)",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PersistenceDeleteEntries",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PersistenceDeleteRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.persist (own namespace)",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PersistenceClear",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PersistenceClearRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.persist (own namespace)",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PersistenceSetRetentionPolicy",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "RetentionPolicyRequest",
+      "response": "MutationReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "storage.persist (own namespace)",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ToolsList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ToolsListRequest",
+      "response": "ToolsListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "tools.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ToolsRequestApply",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ToolApplyRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "tools.apply",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "ToolsRequestRemove",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "ToolRemoveRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "tools.remove",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PortsList",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PortsListRequest",
+      "response": "PortsListReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "ports.read",
       "semantics": [
-        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors"
-      ]
+        "cursor/page_size fields are available; host enforces method-specific bounds and opaque cursors",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": true,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PortsDetail",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PortDetailRequest",
+      "response": "PortDetailReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "ports.read",
       "semantics": [
-        "resource ownership and bounds are enforced by the host; see API contract design"
-      ]
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "PortsRequestInstall",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "PortInstallRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "ports.install",
       "semantics": [
-        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit"
-      ]
+        "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "JobsGet",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "JobGetRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "underlying operation grant (caller-owned job)",
       "semantics": [
-        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
-      ]
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "JobsWatch",
-      "request": "ResourceRequest",
-      "response": "ResourceEvent",
+      "request": "JobWatchRequest",
+      "response": "JobEvent",
       "streaming": true,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "underlying operation grant (caller-owned job)",
       "semantics": [
-        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
-      ]
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": false,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     },
     {
       "method": "JobsCancel",
-      "request": "ResourceRequest",
-      "response": "ResourceReply",
+      "request": "JobCancelRequest",
+      "response": "JobReply",
       "streaming": false,
       "owner": "authenticated caller/plugin; host owns global facts and attribution",
       "permission": "underlying operation grant (caller-owned job)",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
-        "caller-owned job; terminal outcome and cancellation semantics are host-defined"
-      ]
+        "caller-owned job; terminal outcome and cancellation semantics are host-defined",
+        "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
+        "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
+      ],
+      "contract": {
+        "operation_owner": "authenticated plugin session; host owns cross-plugin attribution and global facts",
+        "resource_owner": "caller-owned records by default; foreign shared records require the named grant and explicit scope",
+        "pagination": {
+          "supported": false,
+          "max_page_size": 200,
+          "cursor": "opaque, caller/session scoped"
+        },
+        "revision": {
+          "read": "response carries the observed revision where applicable",
+          "mutation": "expected_revision required for existing mutable resources; conflict returns MUTATION_OUTCOME_REVISION_CONFLICT"
+        },
+        "idempotency": {
+          "required": true,
+          "key_scope": "authenticated plugin plus operation",
+          "retry": "same key returns the original committed outcome"
+        },
+        "quota": "enforced per method and owner; byte-bearing methods additionally enforce max_bytes and package/session limits",
+        "commit_authorization": "recheck permission, resource scope and grant revision immediately before side effects"
+      }
     }
   ]
 }

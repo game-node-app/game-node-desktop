@@ -350,11 +350,11 @@ Plugin details SHALL distinguish requested, granted and effective API permission
 - **THEN** the saved effective state and affected unavailable features appear without describing the plugin as sandboxed
 
 ### Requirement: Creator and selected foreign resource scope review
-Domain permission controls SHALL independently present read/write/delete, own-creator scope and explicitly selected foreign runtime/library-root/save-profile records. Review SHALL identify creator and acting plugin/version, resources and allowed effects. All grants SHALL start denied. Removing a runtime registration SHALL disclose affected bindings without implying game-file, save or history deletion.
+Domain controls SHALL separately present read/create/update/delete and own versus selected foreign runtime/library-root/save-profile scope. Category-wide and selected-record grants are distinguishable; create is category-scoped. Review identifies creator, acting plugin/version, resource and effect. Grants start denied. Runtime removal shows affected bindings without implying file/save/history deletion. Public-record deletion remains separate from private own-namespace cleanup.
 
-#### Scenario: Extend one runtime scope
-- **WHEN** the user grants a migration plugin read/write access to one foreign runtime but leaves delete denied
-- **THEN** only those operations and that resource are added to its scope, while unrelated resources and private namespaces remain inaccessible
+#### Scenario: Grant one selected runtime record
+- **WHEN** the user grants a migration plugin read and update access to one foreign runtime but leaves category-wide read and delete denied
+- **THEN** the plugin can query and update only that selected record without a category grant, while unrelated records and private namespaces remain inaccessible
 
 ### Requirement: Configure delegates functional configuration
 The inventory SHALL offer Configure for enabled compatible plugins with an authorized configuration mode. It SHALL prefer a declared plugin-owned window, focus an existing one and use a declarative form only as a separately supported option. Installation, grants, activation, updates and licensing SHALL remain administered in GameNode.

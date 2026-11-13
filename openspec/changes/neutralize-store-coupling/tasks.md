@@ -192,7 +192,7 @@
     - the Epic card and rows show no shared text;
     - achievement messages name their provider in English and pt-BR.
   - Verify: screenshots attached to the PR.
-- [ ] 7.4 Accept the Windows package natively.
+- [x] 7.4 Accept the Windows package natively.
   - Run `scripts/package-windows-wsl.sh` and install with `install.ps1` under a path with spaces.
   - Confirm that the Steam and Epic plugins start, Steam achievement icons load, and
     `uninstall.ps1` removes every plugin file.

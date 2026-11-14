@@ -412,3 +412,15 @@ Não estão no design; foram escolhidos por raciocínio, sem medir, e podem muda
 | Jobs terminados guardados | 32 por plugin, 1 hora | Dá para ler o desfecho depois de um reinício do plugin, sem crescer. |
 | Chaves de idempotência | 1.024 por plugin, 24 h | O mesmo limite das outras mutações. |
 | Espera do cancelamento | 2 s | A chamada continua curta; trabalho lento é reportado como ainda rodando. |
+
+## P. Decisões sobre a tarefa 7.2 (2026-11-14)
+
+Tomadas com o usuário; **nada foi implementado**, a 7.2 continua aberta.
+
+| Decisão | Alcance |
+| --- | --- |
+| **O modelo da intenção do usuário (`user_intent_id`) fica para a tarefa 10.10**: token de uso único emitido pelo host a partir de uma ação explícita do usuário na UI do Core. Vínculo, validade e escopo para jogos de outro provedor são decididos lá, no design, antes de implementar. | 7.2, 10.10. |
+| **`GamesRequestLaunch` e `GamesRequestInstall` esperam a 10.10** e continuam `UNIMPLEMENTED` até lá. A instalação não abre o diálogo da loja sem intenção (alternativa A, descartada). | 7.2. |
+| **O lançamento padrão não tem campos de override.** Lançamento customizado sem `game.custom_launch` é negado de forma explícita, e o host nunca o rebaixa para um lançamento padrão; o plugin pode fazer esse fallback por conta própria. Uma mensagem no formato customizado enviada ao método padrão tem os campos extras descartados pelo protobuf e não é detectada: está dito na documentação. | 7.2, spec `desktop-plugin-api`. |
+| Consequência: o registro de jobs da 7.1 continua sem nenhuma operação que o use; o primeiro uso real vem com a 10.10 ou com a 7.3. | 7.1, 7.2. |
+

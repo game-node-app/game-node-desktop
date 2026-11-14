@@ -12,6 +12,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+use super::namespace::ExternalNamespaceResolver;
+use super::profile::PluginProfiles;
+
 const MAX_OPERATIONS: usize = 32;
 const COMMAND_QUEUE: usize = 32;
 const HISTORY: usize = 128;
@@ -115,9 +118,18 @@ pub trait HostServices: Send + Sync {
     }
 }
 
+/// Who composed a registration. Official providers are bundled with GameNode; third-party
+/// providers come from managed packages and are bound to the active GameNode account profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegistrationOrigin {
+    Official,
+    ThirdParty { publisher_fingerprint: String },
+}
+
 pub struct Registration {
     pub provider_id: String,
     pub plugin_id: String,
+    pub origin: RegistrationOrigin,
     pub capabilities: Vec<String>,
     /// Whether this provider's trusted manifest declares shared catalog access.
     pub shared_catalog: bool,
@@ -126,6 +138,8 @@ pub struct Registration {
 
 struct Provider {
     registration: Registration,
+    /// Set for third-party providers: their profile epoch is the account profile's epoch.
+    profiles: Option<Arc<PluginProfiles>>,
     account_epoch: std::sync::atomic::AtomicU64,
     profile_epoch: std::sync::atomic::AtomicU64,
     identity_revision: std::sync::atomic::AtomicU64,
@@ -177,6 +191,7 @@ struct State {
 #[derive(Clone, Default)]
 pub struct ProviderApi {
     state: Arc<Mutex<State>>,
+    profiles: Arc<PluginProfiles>,
 }
 
 pub struct Launch {
@@ -304,6 +319,33 @@ impl Lease {
         self.api.authorize(&self.context, permission).map(|_| ())
     }
 
+    /// Host-owned namespace of the authenticated third-party plugin in its active account
+    /// profile. Ownership comes from the registration and profile, never from the request.
+    pub fn namespace(&self) -> Result<ExternalNamespaceResolver, Status> {
+        let provider = self.api.authorize(&self.context, self.permission)?;
+        let RegistrationOrigin::ThirdParty {
+            publisher_fingerprint,
+        } = &provider.registration.origin
+        else {
+            return Err(Status::failed_precondition(
+                "official providers use trusted host adapters",
+            ));
+        };
+        let profiles = provider
+            .profiles
+            .as_ref()
+            .ok_or_else(super::profile::no_profile)?;
+        let resolver = profiles.resolver(
+            &provider.registration.plugin_id,
+            publisher_fingerprint,
+            Some(&provider.registration.provider_id),
+        )?;
+        if !resolver.is_current_profile_epoch(self.context.profile_epoch) {
+            return Err(Status::failed_precondition("provider operation is stale"));
+        }
+        Ok(resolver)
+    }
+
     /// Reject a host-side scope mismatch with the same machine-readable denial
     /// contract used for missing grants.
     pub fn deny_scope(&self) -> Status {
@@ -427,7 +469,10 @@ fn epoch(provider: &Provider) -> (u64, u64) {
     use std::sync::atomic::Ordering;
     (
         provider.account_epoch.load(Ordering::Acquire),
-        provider.profile_epoch.load(Ordering::Acquire),
+        match &provider.profiles {
+            Some(profiles) => profiles.epoch(),
+            None => provider.profile_epoch.load(Ordering::Acquire),
+        },
     )
 }
 
@@ -768,6 +813,8 @@ impl ProviderApi {
         state.providers.insert(
             registration.provider_id.clone(),
             Arc::new(Provider {
+                profiles: matches!(registration.origin, RegistrationOrigin::ThirdParty { .. })
+                    .then(|| self.profiles.clone()),
                 registration,
                 account_epoch: 1.into(),
                 profile_epoch: 1.into(),
@@ -785,6 +832,14 @@ impl ProviderApi {
             .get(provider_id)
             .cloned()
             .ok_or_else(|| Status::not_found("provider is unavailable"))?;
+        // A third-party process runs only inside an active GameNode account profile.
+        if provider
+            .profiles
+            .as_ref()
+            .is_some_and(|profiles| !profiles.may_start_third_party())
+        {
+            return Err(super::profile::no_profile());
+        }
         if state.pending.len() + state.sessions.len() >= 16 {
             return Err(Status::resource_exhausted("provider session capacity"));
         }
@@ -997,6 +1052,45 @@ impl ProviderApi {
         }
     }
 
+    /// The account-bound profile source shared by every third-party registration.
+    pub fn profiles(&self) -> Arc<PluginProfiles> {
+        self.profiles.clone()
+    }
+
+    /// Stops every third-party session after an account profile change. The profile epoch has
+    /// already advanced, so their contexts are stale; waiting for each commit guard lets a commit
+    /// that passed its check finish in the previous profile before the session goes away.
+    /// Official providers are not account-profile scoped and keep running.
+    pub async fn fence_third_party_sessions(&self) {
+        let providers: Vec<_> = lock(&self.state)
+            .providers
+            .values()
+            .filter(|provider| provider.profiles.is_some())
+            .cloned()
+            .collect();
+        for provider in providers {
+            drop(provider.commits.lock().await);
+            self.disconnect(&provider.registration.provider_id).await;
+        }
+    }
+
+    /// Follows account profile changes for the lifetime of this API: each change fences and
+    /// stops third-party sessions. Call once from the host runtime.
+    pub fn spawn_profile_fencing(&self, runtime: &tokio::runtime::Handle) {
+        let api = self.clone();
+        let mut changes = self.profiles.subscribe();
+        runtime.spawn(async move {
+            let mut epoch = api.profiles.epoch();
+            while changes.changed().await.is_ok() {
+                let current = api.profiles.epoch();
+                if current != epoch {
+                    epoch = current;
+                    api.fence_third_party_sessions().await;
+                }
+            }
+        });
+    }
+
     /// Called by the profile owner before replacing profile-backed adapters.
     /// Existing sessions cannot acquire authority over the next profile.
     pub async fn invalidate_profile(&self) {
@@ -1061,6 +1155,15 @@ impl ProviderApi {
             drop(state);
             self.record_authorization_denial(event);
             return Err(denial(DenialReason::ScopeDenied, permission, revision));
+        }
+        // Without an account profile, profile-scoped services are unavailable, not denied.
+        if session
+            .provider
+            .profiles
+            .as_ref()
+            .is_some_and(|profiles| profiles.current().is_none())
+        {
+            return Err(super::profile::no_profile());
         }
         if context.session_kind != session.kind || context.target_game != session.target_game {
             let event = denial_event(session, permission, DenialReason::ScopeDenied);

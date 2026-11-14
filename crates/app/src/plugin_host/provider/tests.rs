@@ -6,6 +6,8 @@ use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession};
 
 #[path = "permissions_tests.rs"]
 mod permissions_tests;
+#[path = "profile_tests.rs"]
+mod profile_tests;
 
 #[derive(Default)]
 struct Services {
@@ -70,12 +72,35 @@ impl Harness {
     }
 
     async fn build(extra: &[&'static str], shared_catalog: bool) -> Self {
+        Self::build_with(extra, shared_catalog, RegistrationOrigin::Official, None).await
+    }
+
+    /// A harness for a third-party provider running inside the profile of `account`.
+    async fn third_party(account: &str) -> Self {
+        Self::build_with(
+            &[],
+            false,
+            RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "ab".repeat(32),
+            },
+            Some(account),
+        )
+        .await
+    }
+
+    async fn build_with(
+        extra: &[&'static str],
+        shared_catalog: bool,
+        origin: RegistrationOrigin,
+        account: Option<&str>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let endpoint = temp.path().join("plugins.sock");
         let root = super::super::PluginApi::default();
         let api = root.providers.clone();
+        api.profiles().update(account, true);
         let services = Arc::new(Services::default());
         let mut capabilities = vec![
             cap::CONTEXT,
@@ -90,6 +115,7 @@ impl Harness {
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
+            origin,
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog,
             services: services.clone(),

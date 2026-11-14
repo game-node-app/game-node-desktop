@@ -108,6 +108,34 @@ provider API; it is not yet a unified audit stream for all API 1.6 services.
 The separate permission-grant store has a bounded persisted domain-mutation
 audit model, but it is not yet connected to live RPC authorization.
 
+## Account-bound plugin profiles
+
+Third-party plugins run inside the profile of the signed-in GameNode account.
+GameNode has no signed-out or local usage mode, so there is no anonymous plugin
+profile. The engine reports the verified account, or the cached last account
+while a restored session is still being verified offline. Without an account,
+`ProviderApi` issues no profile context, refuses to start a third-party process
+and answers profile-scoped services with `UNAVAILABLE`. That is a missing
+session, not a permission denial, so it records no denial event.
+
+Sign-out, a rejected session and a verified account that differs from the
+cached one are profile changes. Each advances the profile epoch, so every
+context, lease and namespace resolver issued for the previous profile becomes
+stale before its session stops. The host then disconnects the third-party
+sessions. Verifying the cached account is not a change and keeps them running.
+Official bundled providers are not bound to the profile and keep running across
+these changes.
+
+Profile IDs are opaque hashes of the account ID, safe as directory names, and
+do not reveal the account in paths or namespace keys. State is layered per OS
+user: installed packages (`packages/`) and publisher trust (`trust/`) are
+shared by every account of that OS user, while activation, grants,
+configuration and private data live in `accounts/<profile id>/`. Another
+account on the same OS user sees the installed packages but not the previous
+account's activation, grants or data. The layout is modelled by
+`PluginStateLayout`; it is not yet bound to an application-data root, because
+managed third-party packages are not installed by the desktop yet.
+
 This audit describes API enforcement. A native plugin process can still access
 resources available to its operating-system identity, so API grants do not
 constrain direct filesystem, network, or process access. Show that distinction

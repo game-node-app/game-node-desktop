@@ -65,6 +65,7 @@ impl Harness {
             api.register(Registration {
                 provider_id: provider.into(),
                 plugin_id: plugin.into(),
+                origin: RegistrationOrigin::Official,
                 capabilities: grants.iter().map(|v| (*v).into()).collect(),
                 shared_catalog: false,
                 services: guarded.clone(),

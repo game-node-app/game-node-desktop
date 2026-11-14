@@ -831,6 +831,7 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.login".into(),
+            origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
             shared_catalog: false,
             services: Arc::new(Services(broker.clone(), login_policy)),

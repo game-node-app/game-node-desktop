@@ -730,7 +730,7 @@ fn valid_identity_part(value: &str, max_len: usize) -> bool {
 }
 
 #[cfg(unix)]
-fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => Err(io::Error::new(
@@ -751,7 +751,7 @@ fn ensure_private_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -764,7 +764,7 @@ fn ensure_private_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn ensure_private_file(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_file(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() || !meta.is_file() {
@@ -780,7 +780,7 @@ fn ensure_private_file(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_file(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_file(path: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() || !meta.is_file() {
         return Err(io::Error::new(
@@ -791,7 +791,7 @@ fn ensure_private_file(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn sync_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
     #[cfg(not(unix))]
@@ -799,7 +799,7 @@ fn sync_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;

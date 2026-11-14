@@ -173,6 +173,8 @@ struct Shared {
     runtime: Handle,
     storage: StorageWorker,
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
+    /// Third-party plugin profiles follow the signed-in GameNode account.
+    plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
     /// Serialize checks and catalog commits without delaying account cancellation.
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
@@ -255,6 +257,7 @@ impl Engine {
             runtime,
             storage: StorageWorker::new(),
             providers: Mutex::new(None),
+            plugin_profiles: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
             achievement_queues: Mutex::new(std::collections::HashMap::new()),
@@ -868,6 +871,34 @@ impl Engine {
         self.publish(&mut state);
     }
 
+    /// Binds third-party plugin profiles to who is signed in. The engine applies the same account
+    /// it opens the library for, so plugins see the cached last account while a restored session
+    /// is unverified, and no profile at all after sign-out or a rejected session.
+    pub fn set_plugin_profiles(&self, profiles: Arc<crate::plugin_host::profile::PluginProfiles>) {
+        *self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profiles);
+        let mut state = self.lock();
+        self.sync_library(&mut state);
+    }
+
+    fn sync_plugin_profile(&self, account: Option<&LastAccount>, access: Access) {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(profiles) = profiles {
+            profiles.update(
+                account.map(|account| account.id.as_str()),
+                access == Access::Verified,
+            );
+        }
+    }
+
     /// Brings the library in line with who is signed in: opens the cached library of the last
     /// account while the session is being verified, enables GameNode features once it is, and
     /// closes the library on sign-out or a rejected session.
@@ -887,6 +918,7 @@ impl Engine {
             // Nothing is known yet, or a different session is being set up.
             AuthState::Starting | AuthState::Pending { .. } | AuthState::Verifying(_) => return,
         };
+        self.sync_plugin_profile(account.as_ref(), access);
         match &account {
             Some(account) if state.last_account.as_ref() != Some(account) => {
                 state.last_account = Some(account.clone());

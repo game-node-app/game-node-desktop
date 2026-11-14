@@ -23,6 +23,7 @@ pub mod managed_packages;
 pub mod namespace;
 pub mod package;
 pub mod process;
+pub mod profile;
 pub mod provider;
 pub mod publisher_trust;
 pub mod runtime;

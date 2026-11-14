@@ -71,6 +71,12 @@ that have not committed. The host fences later work with operation, account, pro
 revisions. The SDK bounds concurrent work and control dispatch; it calls `shutdown` after the host
 sends `Shutdown` or the stream ends, with a three-second shutdown wait.
 
+A third-party plugin runs only while a GameNode account is signed in, and its grants, activation
+and private data belong to that account. Treat `UNAVAILABLE` from a profile-scoped service as "no
+account session", not as a denial. When the account signs out or changes, the host fences the
+profile and stops the process; do not cache data from one account for use after a restart. See
+[account-bound plugin profiles](plugin-api-permissions.md#account-bound-plugin-profiles).
+
 ## RPC inventory and API 1.6 status
 
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6

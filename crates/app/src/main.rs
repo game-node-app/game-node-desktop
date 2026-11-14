@@ -326,6 +326,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(provider_runtime) = provider_runtime.clone() {
         engine.set_provider_runtime(provider_runtime);
     }
+    // Third-party plugin profiles follow the signed-in GameNode account; each change fences and
+    // stops third-party sessions.
+    plugin_api.providers.spawn_profile_fencing(runtime.handle());
+    engine.set_plugin_profiles(plugin_api.providers.profiles());
 
     let mut builder = tauri::Builder::default();
     builder = gamenode_app::protocol::register_asset_protocol(

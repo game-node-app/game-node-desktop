@@ -110,6 +110,7 @@ impl HostedProviders {
             api.register(Registration {
                 provider_id: descriptor.provider_id.clone(),
                 plugin_id: descriptor.plugin_id.clone(),
+                origin: crate::plugin_host::provider::RegistrationOrigin::Official,
                 capabilities: descriptor.capabilities.clone(),
                 shared_catalog: descriptor.shared_catalog,
                 services: services.clone(),

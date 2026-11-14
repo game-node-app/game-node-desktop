@@ -967,3 +967,80 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
     }
     assert_eq!(covered, COVERS as usize, "the final snapshot lost a cover");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_profiles_follow_the_cached_then_verified_account_and_end_at_sign_out() {
+    use crate::plugin_host::profile::{PluginProfiles, profile_id_for_account};
+    let api = FakeApi::new();
+    *api.delay.lock().unwrap() = Duration::from_millis(300);
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    seed_cache(&h, Some(account("u2", "Bo")));
+    let profiles = std::sync::Arc::new(PluginProfiles::default());
+    h.engine.set_plugin_profiles(profiles.clone());
+    assert!(profiles.current().is_none(), "no profile before a session");
+    h.engine.start();
+
+    // An unverified restore runs on the cached account.
+    h.until("cached library while verifying", |s| {
+        s.auth == AuthView::Verifying && view(s).is_some()
+    })
+    .await;
+    let cached = profiles.current().expect("cached account profile");
+    assert_eq!(cached.profile_id(), profile_id_for_account("u2"));
+    assert!(!cached.verified());
+
+    // The session belongs to a different account: the cached profile is fenced.
+    h.until("verified", |s| matches!(s.auth, AuthView::SignedIn { .. }))
+        .await;
+    let verified = profiles.current().expect("verified account profile");
+    assert_eq!(verified.profile_id(), profile_id_for_account("u1"));
+    assert!(verified.verified());
+    assert!(verified.epoch() > cached.epoch());
+    assert!(!profiles.is_current(cached.epoch()));
+
+    h.engine.dispatch(Input::SignOut);
+    h.until("signed out", |s| s.auth == AuthView::SignedOut)
+        .await;
+    assert!(profiles.current().is_none());
+    assert!(!profiles.is_current(verified.epoch()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn verifying_the_cached_account_keeps_its_plugin_profile() {
+    use crate::plugin_host::profile::PluginProfiles;
+    let api = FakeApi::new();
+    *api.delay.lock().unwrap() = Duration::from_millis(300);
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    seed_cache(&h, Some(account("u1", "Ana")));
+    let profiles = std::sync::Arc::new(PluginProfiles::default());
+    h.engine.set_plugin_profiles(profiles.clone());
+    h.engine.start();
+
+    h.until("cached library while verifying", |s| {
+        s.auth == AuthView::Verifying && view(s).is_some()
+    })
+    .await;
+    let cached = profiles.current().expect("cached account profile");
+    h.until("verified", |s| matches!(s.auth, AuthView::SignedIn { .. }))
+        .await;
+    let verified = profiles.current().expect("verified account profile");
+    assert!(verified.verified());
+    assert_eq!(verified.epoch(), cached.epoch());
+    assert_eq!(verified.profile_id(), cached.profile_id());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_restore_issues_no_plugin_profile() {
+    use crate::plugin_host::profile::PluginProfiles;
+    let api = FakeApi::new();
+    *api.session.lock().unwrap() = Some(Err(SessionError::Rejected));
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    seed_cache(&h, Some(account("u1", "Ana")));
+    let profiles = std::sync::Arc::new(PluginProfiles::default());
+    h.engine.set_plugin_profiles(profiles.clone());
+    h.engine.start();
+
+    h.until("signed out", |s| s.auth == AuthView::SignedOut)
+        .await;
+    assert!(profiles.current().is_none());
+}

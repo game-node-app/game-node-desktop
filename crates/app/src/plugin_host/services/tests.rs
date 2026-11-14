@@ -97,6 +97,7 @@ impl Harness {
         api.register(Registration {
             provider_id: "steam".into(),
             plugin_id: "fixture.steam".into(),
+            origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: cap::ALL.iter().map(|c| (*c).into()).collect(),
             shared_catalog: false,
             services: services.clone(),

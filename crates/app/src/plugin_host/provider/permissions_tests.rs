@@ -625,6 +625,30 @@ async fn every_service_rejects_cross_provider_credentials_and_obsolete_sessions(
     }
 }
 
+#[test]
+fn authorization_audit_is_bounded_and_contains_no_request_payload_fields() {
+    let api = ProviderApi::default();
+    for sequence in 0..=AUTHORIZATION_AUDIT_LIMIT {
+        api.record_authorization_denial(AuthorizationAuditEvent {
+            plugin_id: format!("fixture.plugin.{sequence}"),
+            provider_id: "fixture-provider".into(),
+            permission_id: "secrets.read".into(),
+            reason: DenialReason::NotGranted,
+            grant_revision: sequence as u64,
+        });
+    }
+
+    let events = api.authorization_audit();
+    assert_eq!(events.len(), AUTHORIZATION_AUDIT_LIMIT);
+    assert_eq!(events.first().unwrap().plugin_id, "fixture.plugin.1");
+    assert_eq!(events.last().unwrap().plugin_id, "fixture.plugin.256");
+
+    let rendered = format!("{events:?}");
+    for sensitive in ["session_credential", "cookie-value", "secret-value", "raw-request"] {
+        assert!(!rendered.contains(sensitive));
+    }
+}
+
 #[tokio::test]
 async fn a_granted_permission_cannot_be_borrowed_by_an_unrelated_operation() {
     for &case in CASES.iter().filter(|case| !matches!(case, Access::Context)) {

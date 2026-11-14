@@ -62,7 +62,7 @@ pub struct PluginIdentity {
 }
 
 impl PluginIdentity {
-    fn validate(&self) -> Result<(), GrantError> {
+    pub(crate) fn validate(&self) -> Result<(), GrantError> {
         if !valid_identity_part(&self.plugin_id, 256)
             || !valid_identity_part(&self.profile_id, 256)
             || self.publisher_fingerprint.len() > 128

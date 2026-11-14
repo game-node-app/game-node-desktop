@@ -14,6 +14,7 @@ pub mod compatibility;
 pub mod grants;
 pub mod login;
 pub mod managed_packages;
+pub mod namespace;
 pub mod package;
 pub mod process;
 pub mod provider;

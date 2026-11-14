@@ -97,6 +97,11 @@ impl ExternalNamespaceResolver {
         })
     }
 
+    /// The authenticated identity this resolver was built from.
+    pub(crate) fn identity(&self) -> &PluginIdentity {
+        &self.identity
+    }
+
     /// Owner for the plugin's private key/value storage, independent of provider sub-identity.
     pub fn storage_owner(&self) -> NamespaceOwner {
         self.owner(OwnerKind::Storage, false)

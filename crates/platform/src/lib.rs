@@ -26,6 +26,7 @@ pub mod plugin_artwork;
 pub mod plugin_environment;
 pub mod plugin_packages;
 pub mod plugin_registry;
+pub mod plugin_storage;
 pub mod ports;
 pub mod ports_db;
 pub mod processes;

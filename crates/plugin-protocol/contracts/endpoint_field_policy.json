@@ -773,8 +773,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Storage/Get",
-      "request_policy": "Typed own key/revision; selection",
-      "response_policy": "Typed value metadata and bytes",
+      "request_policy": "Typed own key; the namespace is the authenticated plugin, publisher and profile, never a request field",
+      "response_policy": "Typed value bytes, revision, durability and expiry; no path",
       "extension_or_opaque_policy": "Opaque application bytes, not a Struct interpreted by Core",
       "access_model": "Private namespace",
       "status": "protobuf_contract",
@@ -786,8 +786,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Storage/Put",
-      "request_policy": "Typed own key/revision; opaque bytes and requested durability",
-      "response_policy": "Typed revision/durability/expiry",
+      "request_policy": "Typed own key and expected revision; opaque bytes, explicit SESSION_ONLY or PERSISTENT durability and optional lifetime",
+      "response_policy": "Typed revision, actual durability, expiry, usage and quota; no path",
       "extension_or_opaque_policy": "Opaque application bytes, not a Struct interpreted by Core",
       "access_model": "Private namespace",
       "status": "protobuf_contract",
@@ -799,8 +799,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Storage/Delete",
-      "request_policy": "Typed own key/revision; selection",
-      "response_policy": "Typed deletion result",
+      "request_policy": "Typed own key and expected revision",
+      "response_policy": "Typed deletion result and the revision removed",
       "extension_or_opaque_policy": "Opaque application bytes, not a Struct interpreted by Core",
       "access_model": "Private namespace",
       "status": "protobuf_contract",

@@ -319,8 +319,14 @@ message StorageGetRequest { ServiceContext context = 1; string key = 2; }
 message StoragePutRequest { MutationContext mutation = 1; string key = 2; bytes value = 3; StorageDurability durability = 4; uint64 ttl_seconds = 5; }
 message StorageDeleteRequest { MutationContext mutation = 1; string key = 2; }
 enum StorageDurability { STORAGE_DURABILITY_UNSPECIFIED = 0; STORAGE_DURABILITY_SESSION_ONLY = 1; STORAGE_DURABILITY_PERSISTENT = 2; }
-message StorageGetReply { bytes value = 1; uint64 revision = 2; bool found = 3; }
-message StorageMutationReply { uint64 revision = 1; uint64 usage_bytes = 2; uint64 quota_bytes = 3; MutationOutcome outcome = 4; }
+// A key lives in exactly one durability at a time. `durability` is the one the value has now and
+// `expires_at` its Unix-seconds expiry (0 when it never expires); both are unset when
+// `found` is false. In a put reply, `usage_bytes` and `quota_bytes` describe the namespace of
+// the durability that was written, and `revision` is the key's new revision (the current one on a
+// conflict). A key's revision is 0 while it does not exist, and is the `expected_revision` of
+// the next put or delete.
+message StorageGetReply { bytes value = 1; uint64 revision = 2; bool found = 3; StorageDurability durability = 4; int64 expires_at = 5; }
+message StorageMutationReply { uint64 revision = 1; uint64 usage_bytes = 2; uint64 quota_bytes = 3; MutationOutcome outcome = 4; StorageDurability durability = 5; int64 expires_at = 6; }
 message FilesRequestAccessRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; repeated string requested_operations = 4; repeated string resource_kinds = 5; }
 message FileHandle { string handle = 1; string display_name = 2; string resource_kind = 3; bool writable = 4; }
 message FileAccessReply { repeated FileHandle handles = 1; }

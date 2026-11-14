@@ -6,6 +6,7 @@ use crate::plugin_host::library::{
     StoredArtwork,
 };
 use crate::plugin_host::provider::{HostServices, Lease, Registration, RegistrationOrigin};
+use crate::plugin_host::storage::PluginStorage;
 use gamenode_core::library::{ArtworkWrite, DisplayWrite};
 use gamenode_platform::plugin_artwork::Prepared;
 use gamenode_plugin_sdk::{HostClient, Launch, Session, SessionOptions};
@@ -17,6 +18,7 @@ use tonic::Code;
 use tonic::transport::Channel;
 
 mod sdk;
+mod storage;
 
 struct NoServices;
 
@@ -42,6 +44,12 @@ impl HostServices for NoServices {
 struct Fixture {
     api: ProviderApi,
     feed: Arc<LibraryFeed>,
+    storage: Arc<PluginStorage>,
+    /// The seconds the storage clock reads; tests move it to expire values.
+    clock: Arc<std::sync::atomic::AtomicI64>,
+    plugin_data: std::path::PathBuf,
+    endpoint: std::path::PathBuf,
+    capabilities: Vec<&'static str>,
     host: HostClient,
     _commands: tonic::Streaming<ProviderCommand>,
     _server: crate::plugin_host::PluginApiServer,
@@ -55,11 +63,34 @@ impl Fixture {
     }
 
     async fn build(grants: &[&'static str], api_1_6: bool) -> Self {
+        Self::start(grants, api_1_6, None).await
+    }
+
+    /// Like [`new`](Self::new) over the plugin data folder of an earlier fixture, as after a
+    /// restart of the host: durable values are still there, session-only ones are not.
+    async fn restarted(grants: &[&'static str], plugin_data: std::path::PathBuf) -> Self {
+        Self::start(grants, true, Some(plugin_data)).await
+    }
+
+    async fn start(
+        grants: &[&'static str],
+        api_1_6: bool,
+        plugin_data: Option<std::path::PathBuf>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let endpoint = temp.path().join("plugins.sock");
-        let root = crate::plugin_host::PluginApi::default();
+        let plugin_data = plugin_data.unwrap_or_else(|| temp.path().join("plugin-data"));
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(1_000_000));
+        let storage = Arc::new(PluginStorage::new(&plugin_data).with_clock({
+            let clock = clock.clone();
+            move || clock.load(Ordering::SeqCst)
+        }));
+        let root = crate::plugin_host::PluginApi {
+            storage: storage.clone(),
+            ..Default::default()
+        };
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -92,7 +123,7 @@ impl Fixture {
         )
         .unwrap();
         let client_launch = Launch {
-            endpoint,
+            endpoint: endpoint.clone(),
             credential,
             operation_id: "launch".into(),
         };
@@ -121,6 +152,11 @@ impl Fixture {
         Self {
             api,
             feed,
+            storage,
+            clock,
+            plugin_data,
+            endpoint,
+            capabilities: capabilities.clone(),
             host: session.host,
             _commands: session.commands,
             _server: server,
@@ -492,7 +528,11 @@ async fn watch_positions_outside_the_history_must_resync() {
 #[tokio::test]
 async fn a_session_may_hold_only_a_bounded_number_of_watches() {
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
-    let service = ResourceApi::new(fixture.api.clone(), fixture.feed.clone());
+    let service = ResourceApi::new(
+        fixture.api.clone(),
+        fixture.feed.clone(),
+        fixture.storage.clone(),
+    );
     let request = || {
         Request::new(LibraryWatchRequest {
             context: Some(fixture.context()),
@@ -526,7 +566,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .storage_get(StorageGetRequest::default())
+        .files_list(FilesListRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -550,6 +590,9 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("MatchingAssign", 0),
             ("ArtworkRead", 0),
             ("ArtworkSet", 0),
+            ("StorageGet", 0),
+            ("StoragePut", 0),
+            ("StorageDelete", 0),
         ]
     );
 }

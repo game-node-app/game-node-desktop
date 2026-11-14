@@ -20,12 +20,14 @@ use tonic::{Request, Response, Status};
 mod artwork;
 mod matching;
 mod mutations;
+mod storage;
 
 use super::library::{
     Change, CursorBinding, CursorError, DEFAULT_PAGE_SIZE, LibraryFeed, MAX_PAGE_SIZE,
     MAX_SEARCH_BYTES, ResumeError, Scope,
 };
 use super::provider::{ProviderApi, ResourceCaller};
+use super::storage::PluginStorage;
 
 /// Open `LibraryWatch` streams allowed per plugin session.
 pub const MAX_WATCHES_PER_SESSION: usize = 8;
@@ -51,11 +53,20 @@ pub const SERVED: &[Served] = &[
     Served::new("MatchingAssign", cap::MATCHING_WRITE, false, OWN_ENTRIES),
     Served::new("ArtworkRead", cap::ARTWORK_READ, false, OWN_ENTRIES),
     Served::new("ArtworkSet", cap::ARTWORK_WRITE, false, OWN_ENTRIES),
+    Served::new("StorageGet", cap::STORAGE_READ, false, PRIVATE_NAMESPACE),
+    Served::new("StoragePut", cap::STORAGE_WRITE, false, PRIVATE_NAMESPACE),
+    Served::new(
+        "StorageDelete",
+        cap::STORAGE_DELETE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
 ];
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
 const CATALOG: &str = "GameNode catalog (title search)";
+const PRIVATE_NAMESPACE: &str = "own plugin/publisher/profile namespace";
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {
@@ -92,13 +103,20 @@ pub struct ResourceApi {
     searches: Arc<matching::SearchLimiter>,
     /// Bounds the plugin pictures being decoded at once.
     decoders: Arc<tokio::sync::Semaphore>,
+    /// The plugins' private key/value storage.
+    storage: Arc<PluginStorage>,
 }
 
 impl ResourceApi {
-    pub fn new(providers: ProviderApi, library: Arc<LibraryFeed>) -> Self {
+    pub fn new(
+        providers: ProviderApi,
+        library: Arc<LibraryFeed>,
+        storage: Arc<PluginStorage>,
+    ) -> Self {
         Self {
             providers,
             library,
+            storage,
             watches: Arc::default(),
             mutations: Arc::default(),
             searches: Arc::default(),
@@ -470,15 +488,33 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.set_artwork(request).await
     }
 
+    async fn storage_get(
+        &self,
+        request: Request<StorageGetRequest>,
+    ) -> Result<Response<StorageGetReply>, Status> {
+        self.get_stored(request).await
+    }
+
+    async fn storage_put(
+        &self,
+        request: Request<StoragePutRequest>,
+    ) -> Result<Response<StorageMutationReply>, Status> {
+        self.put_stored(request).await
+    }
+
+    async fn storage_delete(
+        &self,
+        request: Request<StorageDeleteRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.delete_stored(request).await
+    }
+
     not_served! {
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
         games_request_install(GameInstallRequest) -> JobReply;
-        storage_get(StorageGetRequest) -> StorageGetReply;
-        storage_put(StoragePutRequest) -> StorageMutationReply;
-        storage_delete(StorageDeleteRequest) -> MutationReply;
         files_request_access(FilesRequestAccessRequest) -> FileAccessReply;
         files_list(FilesListRequest) -> FilesListReply;
         files_read(FilesReadRequest) -> FileReadReply;

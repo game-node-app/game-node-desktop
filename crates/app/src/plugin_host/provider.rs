@@ -177,6 +177,9 @@ pub(crate) struct ResourceCaller {
     pub grants: BTreeSet<String>,
     pub grant_revision: u64,
     pub profile_epoch: u64,
+    /// Host-owned private-resource namespace of an authenticated third-party plugin in the
+    /// active profile; `None` for official providers, which use trusted host adapters.
+    pub namespace: Option<ExternalNamespaceResolver>,
 }
 
 impl ResourceCaller {
@@ -1312,13 +1315,37 @@ impl ProviderApi {
             self.record_authorization_denial(event);
             return Err(denial(DenialReason::NotGranted, permission, revision));
         }
+        let namespace = match (
+            &session.provider.registration.origin,
+            session.provider.profiles.as_ref(),
+        ) {
+            (
+                RegistrationOrigin::ThirdParty {
+                    publisher_fingerprint,
+                },
+                Some(profiles),
+            ) => profiles
+                .resolver(
+                    &session.provider.registration.plugin_id,
+                    publisher_fingerprint,
+                    Some(&session.provider.registration.provider_id),
+                )
+                .ok(),
+            _ => None,
+        };
         Ok(ResourceCaller {
             session_id: context.session_id.clone(),
             provider_id: session.provider.registration.provider_id.clone(),
             grants: session.grants.clone(),
             grant_revision: session.grant_revision,
             profile_epoch,
+            namespace,
         })
+    }
+
+    /// Whether the plugin session `session_id` is still open.
+    pub(crate) fn session_is_open(&self, session_id: &str) -> bool {
+        lock(&self.state).sessions.contains_key(session_id)
     }
 
     fn lease(

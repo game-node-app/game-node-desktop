@@ -80,6 +80,22 @@ application data directory (`DataPaths::covers_dir`). The folder is created on
 first use. Files are written atomically and are kept when a game is uninstalled
 or the user signs out. Unreferenced files are not cleaned up yet.
 
+## Third-party plugin storage
+
+The private key/value data of third-party plugins is stored outside the application database, in
+`plugin-data/<publisher fingerprint>/<plugin id>/<profile id>/storage.sqlite3` below the application
+data directory (`DataPaths::plugin_data_dir`). There is one small SQLite file per plugin and account
+profile, created the first time the plugin writes a `PERSISTENT` value; reading never creates one.
+Directory names are the identity with unsafe characters written as `%XX` (or a digest when the name
+would be too long), so no name can leave the folder. The `entries` table holds each key, value,
+revision and optional expiry, and `meta` the highest revision ever used so revisions keep growing
+across deletions and restarts. Session-only values are never written to disk.
+
+The location is for the user and the host only: the plugin API never accepts or returns it. Nothing
+cleans these folders up yet (unused-data cleanup and the uninstall keep/delete choice are separate
+tasks), so removing a plugin leaves its data in place. A store written by a newer version is refused
+and left untouched, and a damaged file is reported as unavailable, never replaced.
+
 Opening a fresh database creates migration history and applies every
 migration. A step 1 database gains the library tables and keeps its settings;
 a step 1 build refuses the upgraded database under its newer-schema rule and

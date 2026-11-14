@@ -123,6 +123,12 @@ impl DataPaths {
         self.data_dir.join("plugin-packages")
     }
 
+    /// Private data of third-party plugins, one namespace per plugin and account profile. Only
+    /// the host reads or reveals this location; the plugin API never accepts or returns it.
+    pub fn plugin_data_dir(&self) -> PathBuf {
+        self.data_dir.join("plugin-data")
+    }
+
     pub fn private_dir(&self) -> PathBuf {
         self.data_dir.join(PRIVATE_DIR)
     }

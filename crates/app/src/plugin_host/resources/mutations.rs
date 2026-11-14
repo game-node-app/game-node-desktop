@@ -31,6 +31,8 @@ const IDEMPOTENCY_PER_PLUGIN: usize = 1024;
 struct Seen {
     hash: [u8; 32],
     reply: MutationReply,
+    /// A fact some replies carry beyond [`MutationReply`] (a storage value's expiry); 0 if none.
+    extra: i64,
     at: Instant,
 }
 
@@ -49,6 +51,16 @@ impl Mutations {
         key: &str,
         hash: [u8; 32],
     ) -> Result<Option<MutationReply>, Status> {
+        Ok(self.replay_with(caller, key, hash)?.map(|(reply, _)| reply))
+    }
+
+    /// [`replay`](Self::replay), also returning the `extra` value stored with the outcome.
+    pub(crate) fn replay_with(
+        &self,
+        caller: &ResourceCaller,
+        key: &str,
+        hash: [u8; 32],
+    ) -> Result<Option<(MutationReply, i64)>, Status> {
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
         let id = (
             caller.provider_id.clone(),
@@ -60,7 +72,7 @@ impl Mutations {
                 seen.remove(&id);
                 Ok(None)
             }
-            Some(entry) if entry.hash == hash => Ok(Some(entry.reply.clone())),
+            Some(entry) if entry.hash == hash => Ok(Some((entry.reply.clone(), entry.extra))),
             Some(_) => Err(Status::failed_precondition(
                 "the idempotency key was already used for a different request",
             )),
@@ -74,6 +86,18 @@ impl Mutations {
         key: &str,
         hash: [u8; 32],
         reply: &MutationReply,
+    ) {
+        self.remember_with(caller, key, hash, reply, 0);
+    }
+
+    /// [`remember`](Self::remember), keeping `extra` beside the outcome.
+    pub(crate) fn remember_with(
+        &self,
+        caller: &ResourceCaller,
+        key: &str,
+        hash: [u8; 32],
+        reply: &MutationReply,
+        extra: i64,
     ) {
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, entry| entry.at.elapsed() < IDEMPOTENCY_TTL);
@@ -98,6 +122,7 @@ impl Mutations {
             Seen {
                 hash,
                 reply: reply.clone(),
+                extra,
                 at: Instant::now(),
             },
         );

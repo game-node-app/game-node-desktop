@@ -169,7 +169,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processes: Arc<dyn gamenode_core::ports::Processes> =
         Arc::new(gamenode_platform::processes::HostProcesses::new());
 
-    let plugin_api = gamenode_app::plugin_host::PluginApi::default();
+    let plugin_api = gamenode_app::plugin_host::PluginApi {
+        storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
+            paths.plugin_data_dir(),
+        )),
+        ..Default::default()
+    };
     #[cfg(target_os = "linux")]
     let plugin_api_server = match gamenode_app::plugin_host::PluginApiServer::start(
         runtime.handle(),

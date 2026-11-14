@@ -61,7 +61,7 @@ by the host.
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
 | `JobsGet`, `JobsWatch`, `JobsCancel` | the permission of the operation that created the job, plus ownership of the job (see [Jobs](#jobs)) |
 
-The domain services use these grants:
+The domain services use these grants (of them, only the `Saves` profile methods are served by this build; see [Save profiles](#save-profiles)):
 
 | Service methods | Permission |
 | --- | --- |
@@ -779,6 +779,62 @@ Not in the design; chosen by reasoning, not measured, and open to change.
 Jobs live in the host's memory. A host restart forgets them and their keys, and the work does not
 resume; an operation that must not repeat across a restart has to be idempotent in its own domain
 (an install that is already installed is not installed twice).
+
+## Save profiles
+
+The `Saves` service (`ListProfiles`, `GetProfile`, `CreateProfile`, `UpdateProfile`, `RemoveProfile`;
+`game.saves.read`, `.create`, `.update` and `.delete`, independent of each other) lets a plugin say
+where one runtime keeps a game's saves. A profile is **configuration only**: it grants no access and
+reads nothing.
+
+- **What a profile is.** A name, one to eight folders, an optional `runtime_id`, `format_id` and
+  `format_version`, and bounded descriptive metadata. Several profiles may exist for one game entry,
+  for example one per emulator, each with its own folders. The name is unique per game entry, without
+  regard to case. A profile is for one of the plugin's own library entries; the game it was matched to
+  when it was made is stored with it and a later catalog rematch does not change it.
+- **Folders the user already approved.** Each folder is a handle the plugin got for a folder the
+  user approved for the same plugin and the same game entry ([Files](#files)), or for a directory below
+  it. Anything else is `NOT_FOUND` (forged, edited, another session's, revoked) or `PERMISSION_DENIED`
+  (approved for another entry). The rules can only narrow inside the folder, so a profile never
+  reaches further than the approvals do. A new folder needs a new approval; revoking an approval
+  leaves the profile and its rules but gives the folder no handle in replies (an empty
+  `approved_resource_handle`) until it is approved again.
+- **Naming rules.** At most 16 per folder, each at most 256 bytes: a relative path of `/`-separated
+  names with `*` and `?` inside a name and `**` as a whole name for any depth. A leading `!` makes it an
+  exclusion. No absolute path, `..`, `.`, empty name, drive, backslash, brackets or braces.
+- **Ids and limits.** `runtime_id` and `format_id` hold letters, digits, `.`, `_` and `-`, at most 128
+  bytes. Names and folder names are one line of plain text, at most 120 bytes. Descriptive metadata is
+  a `Struct` of at most 8 KiB, 4 levels and 64 keys and items, with no control characters or non-finite
+  numbers (the structural rules of task 12.6 will replace these bounds). At most 16 profiles per game
+  entry and 256 per plugin (`RESOURCE_EXHAUSTED`).
+- **Revisions.** The profile id is the host's (`profile-…`); `profile_id`, `creator_plugin_id` and
+  `revision` in a create request must be empty. Creating takes `expected_revision` 0; updating and
+  removing take the profile's current revision. A stale revision is an outcome
+  (`REVISION_CONFLICT` with the current revision), not an error, and changes nothing. All revisions of
+  a plugin come from one counter, so a removed and recreated profile never repeats one. Idempotency
+  keys work as for every mutation.
+- **Updates** name the fields they change in `field_mask`: `name`, `directories`, `runtime_id`,
+  `format_id`, `format_version`, `descriptive_metadata`. The id, the entry, the game and the creator
+  cannot change; a profile that moved would be a different profile.
+- **Removing** a profile deletes the configuration only. It never touches a file in the folders and
+  never deletes backup archives.
+- **Where profiles live.** In the plugin's own store for the active account profile (task 13.1,
+  decision S of the pending-decisions document): they survive a plugin restart and signing out and in
+  to the same account, a different account sees none of them, and a profile never exists without the
+  approvals it rests on.
+- **Another plugin's profile** is reached only through a provisional grant the host holds for that
+  profile and operation (read, update, delete): without it the profile is `NOT_FOUND`. A reader sees
+  the creator in `creator_plugin_id` and no folder handles; an updater may change the name, runtime,
+  format and metadata but never the folders, which are the creator's own approved folders; a deleter
+  removes the creator's profile. The grant source is a port the application connects
+  (`SaveAccess::set_grants`); **nothing is connected in the real app yet**, so today no plugin reaches
+  another's profiles. It is provisional until the shared data plane (section 12) and the permissions
+  screen define sharing. List and get return another plugin's profile only when its id is named in
+  `shared_records.selected_record_ids`; common-data `categories` are `UNIMPLEMENTED`.
+- **Not covered.** Backing up and restoring from a profile is not served (`BackupsRequestCreate` and
+  `BackupsRequestRestore` stay `UNIMPLEMENTED`), and nothing parses, converts or loads a save. A
+  profile says where saves are; it does not make them readable: reading needs `files.read` and the
+  approval.
 
 ## Launching and installing
 

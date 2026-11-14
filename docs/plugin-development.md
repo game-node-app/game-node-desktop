@@ -112,7 +112,10 @@ search bounds and assignment results are in
 and read budget are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#artwork); jobs are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#jobs)).
-Every other `ResourceHost` method and all domain services answer `UNIMPLEMENTED`, so generated
+The `Saves` domain service is also served (`ListProfiles`, `GetProfile`, `CreateProfile`,
+`UpdateProfile`, `RemoveProfile`; see
+[`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles); the Rust SDK exposes the raw
+`HostClient::saves_client()`). Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
 instead of inferring availability from the protobuf contract.
 
@@ -342,6 +345,25 @@ install flow. Rules and limits are under "Launching and installing" in
   Anything else is `NOT_FOUND`.
 - `SUCCEEDED` with `opened` means the operating system accepted the link, not that the game is
   running. Playtime is detected by GameNode as for the user's own Play button.
+
+## Save profiles
+
+Use the `Saves` service to tell GameNode where your runtime keeps a game's saves. Rules and limits are
+under "Save profiles" in `docs/plugin-api-permissions.md`; what to do about them:
+
+- First get the user's approval for the folder with `FilesRequestAccess` (kind `save` or `prefix`).
+  Put the folder handle (the root handle it returned, or a directory handle from `FilesList`) in
+  `SaveDirectory.approved_resource_handle`. A profile cannot name a path.
+- One profile per runtime and game entry: a ROM that two emulators can load gets two profiles with
+  their own `runtime_id` and folders. Pick a name that tells the user which is which.
+- Use naming rules to say which files inside the folder are saves (`GC/**/*.gci`) and which are not
+  (`!cache/**`). They narrow; they cannot reach outside the approved folder.
+- Keep the profile id from the create reply. Update with the revision you last saw, and on
+  `REVISION_CONFLICT` read the profile again and decide. A handle in a reply is for the current session
+  only; an empty one means the folder's approval is gone and you need to ask the user again.
+- A profile is not permission to read, back up or restore anything, and removing it deletes nothing
+  of the user's. Describe the format (`format_id`, `format_version`, metadata) only as a hint for
+  other tools: GameNode does not parse or convert saves.
 
 ## Utility helpers and recipes (Rust SDK)
 

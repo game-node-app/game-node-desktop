@@ -154,6 +154,14 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a requested relative path escapes its granted root through traversal, symlink or junction replacement
 - **THEN** the operation is refused before reading or changing the target
 
+#### Scenario: Declared folder suggestions grant nothing
+- **WHEN** a plugin declares default save or prefix folders in a file-access request
+- **THEN** the host shows them to the user only as folders declared by the plugin and not verified, checks only whether they exist, grants nothing until the user confirms a folder, records whether the chosen folder was one of them, and tells the plugin nothing about which exist or were taken
+
+#### Scenario: Declared folder suggestion cannot apply or is malformed
+- **WHEN** a suggestion uses a placeholder or path of another system, names a missing system folder or a private host folder, or is a relative path, contains `..`, uses an unknown placeholder, exceeds eight for its kind, or is for an installation
+- **THEN** a well-formed suggestion that cannot apply here is dropped without an error, and anything else is refused before the user is asked
+
 #### Scenario: Network redirect leaves granted origin
 - **WHEN** a request redirects to an unapproved origin or a private/local destination
 - **THEN** the host refuses the redirected request without forwarding credentials

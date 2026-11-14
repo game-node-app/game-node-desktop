@@ -369,3 +369,20 @@ Sem perguntas ao usuário: o design e a tarefa já fixam o essencial (campo adit
 | O host lê o arquivo (até 4 MiB + 1 byte, só para distinguir "maior que o limite") no worker do namespace do plugin e depois decodifica no worker de imagens, com os mesmos limites de pixels e formatos. A mensagem de arquivo grande é a mesma dos bytes inline. | 6.6. |
 | Idempotência: o hash do pedido usa o handle e o tipo declarado (os bytes só são conhecidos depois da leitura, e a repetição é respondida antes). Um arquivo que mudou depois não muda a resposta à mesma chave; outro arquivo precisa de outra chave. `files.read` é verificado de novo no commit, antes de `artwork.write`, para a recusa nomear a permissão perdida. | 6.6. |
 | Não há limite de taxa próprio, como nas capas inline. O SDK Rust ganha `Resources::set_cover_from_file`. | 6.6. |
+
+## N. Decisões adotadas na implementação da tarefa 6.7 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 6.7 (as sete primeiras linhas); o resto é detalhe de engenharia.
+
+| Decisão | Alcance |
+| --- | --- |
+| **Sugestão de outro sistema é descartada em silêncio.** Placeholder do outro SO (`{appdata}`/`{localappdata}` no Linux, `{xdg_*}` no Windows), caminho de unidade ou compartilhamento do Windows no Linux, caminho Unix no Windows, ou pasta do sistema que não existe (`{documents}` sem XDG) não é erro: o plugin lista todas as plataformas numa só lista. Placeholder desconhecido, caminho relativo, `..`, texto vazio, longo ou com controle, mais de 8 por tipo e tipo inválido recusam o pedido (`INVALID_ARGUMENT`), antes de perguntar ao usuário. | 6.7. |
+| **Caminho absoluto literal é aceito**, como candidato não verificado igual aos demais. `/` e `\` separam nomes. | 6.7. |
+| **Mais de 8 candidatos por tipo recusam o pedido**, para a prioridade não ser alterada em silêncio. | 6.7. |
+| **Descrição é texto puro** (não Markdown): uma linha, até 120 bytes, mesmas regras de caracteres das notificações (6.4). Está no diálogo de consentimento, a pior superfície para disfarce, e formatação enfraqueceria o rótulo "declarado pelo plugin, não verificado". Markdown poderia vir depois como campo aditivo próprio, com revisão de segurança. | 6.7. |
+| **A origem é decidida pelo host**, comparando o caminho canônico escolhido com o dos candidatos que existem; o aprovador não alega "declarado". Valores: `declared` e `user` (a pasta que o host sugere para uma instalação conta como `user`). Coluna nova `origin` no schema v3 do armazenamento (aprovações antigas viram `user`). | 6.7. |
+| **Aprovação vigente que já cobre o pedido ignora a lista declarada**, sem pergunta nova; a lista malformada continua sendo recusada mesmo assim. Ampliar de leitura para escrita pergunta de novo, com as sugestões de novo. | 6.7. |
+| **Só `save` e `prefix` aceitam sugestão**; `installation` com sugestão é `INVALID_ARGUMENT`, porque o host sabe onde a instalação está. A raiz de descoberta de jogos (por exemplo a biblioteca padrão de uma loja) é outro conceito: não é aprovação de pasta de uma entrada, e foi registrada na tarefa 14.1. | 6.7, 14.1. |
+| Pasta reservada do host (dados privados do GameNode) nunca é oferecida e é descartada sem erro. Duplicatas (mesma pasta escrita de outro jeito) colapsam, mantendo a primeira. Declarar para um tipo que o pedido não pede é ignorado. | 6.7. |
+| A pré-seleção é a sugestão própria do host (instalação), senão a primeira declarada que existe; a verificação é só de existência, nada é listado nem lido, e nada volta ao plugin. O diálogo real é a 10.9. | 6.7, 10.9. |
+

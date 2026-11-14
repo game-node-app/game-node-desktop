@@ -48,7 +48,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 5. Library and presentation adapters
 
-- [ ] 5.1 Implement Library list/get/watch with own-provider filtering, separately granted whole-library reads and bounded events/cursors; expose matched GameNode `game_id` separately from stable opaque host-issued `installation_id`; verify unmatched entries, multiple installations per game, ID stability across rescans/match changes, cross-provider disclosure and stale cursor cases with domain fixtures.
+- [x] 5.1 Implement Library list/get/watch with own-provider filtering, separately granted whole-library reads and bounded events/cursors; expose matched GameNode `game_id` separately from stable opaque host-issued `installation_id`; verify unmatched entries, multiple installations per game, ID stability across rescans/match changes, cross-provider disclosure and stale cursor cases with domain fixtures.
 - [ ] 5.2 Implement validated display-metadata and favorite read/write adapters with resource revisions; target provider-owned display metadata by `installation_id` while keeping favorites keyed to a known GameNode `game_id`; verify idempotent writes, conflicts and rejection of foreign-provider mutations and document writable fields.
 - [ ] 5.3 Implement bounded matching search/assignment through existing Core policies; verify ownership, unavailable catalog and match-conflict outcomes with fixtures and document result semantics.
 - [ ] 5.4 Implement artwork read/set with bounded input, approved resource references and worker-side decoding/resizing; target the caller-owned installation identity; verify unmatched installations, malformed images, oversized data and unauthorized targets cannot change library artwork.

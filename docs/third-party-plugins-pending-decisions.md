@@ -126,3 +126,20 @@ Há 19 tarefas abertas adicionais no retrato consultado: Steam 11, package manag
 ## Limites da revisão
 
 Não foram executados novos testes de implementação para produzir este registro. A auditoria identifica pontos a reconciliar; não certifica que todo código existente satisfaz as specs. A autorização para publicar este documento mantém as sugestões como propostas e deixa pendentes sua resolução conjunta e a atualização normativa correspondente.
+
+## D. Decisões adotadas na implementação da tarefa 5.1 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 5.1 e implementadas apenas para `Library.List/Get/Watch`. Valem para as demais tarefas só onde dizem respeito a elas.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| D02 | Contexto de recurso emitido pelo host em `OpenSessionReply.resource_context` (API 1.6+), vinculado a sessão, tipo, jogo-alvo e perfil; não concede autoridade. Perfil ausente é `UNAVAILABLE`; contexto de perfil anterior é obsoleto. | Library em 5.1; extensões e renovação ficam em 8.1 e 14.5. |
+| D03 | `Watch` vive enquanto sessão, perfil e concessões valem; cada entrega revalida e a mudança de concessão encerra o stream. Máximo de 8 watches por sessão. | Library em 5.1; demais Watch em 7.1 e 12.4. |
+| D04 | `installation_id` aleatório (128 bits), persistido pelo host (`library_installations`), atribuído uma vez por entrada e nunca alterado. Entrada sem id durável não é projetada. | Uma instalação por entrada `<provider>:<store id>`. |
+| D05 | Divisão de um item de catálogo em várias instalações continua em 14.2 e herdará esses ids. | Adiada para 14.2. |
+| D06 | A instalação é o alvo; `game_id` sozinho só vale com exatamente uma instalação admitida; ambiguidade é `FAILED_PRECONDITION`; informar os dois exige correspondência. | Library.Get. |
+| D08 | `library.read.all` libera apenas a projeção básica (provider, nome, estado, ids, revisão), sem caminhos, store id nem campos de varredura. | Library. |
+| D09 | A projeção tipada de disponibilidade ROM/runtime não entra em 5.1; selecionar categoria ou registro comum em Library é recusado com `UNIMPLEMENTED`. | Adiada para 14.4 e 18.7. |
+| D20 | Ordem por `installation_id`; cursor assinado (HMAC) ligado a consulta, sessão, perfil, revisão de concessões e revisão da biblioteca, com validade de 5 minutos; qualquer mudança da biblioteca invalida o cursor. Watch sem backlog por padrão, 256 eventos retidos, posição mais antiga exige nova listagem. | Library; demais listagens reaproveitam a política em suas tarefas. |
+
+Efeito no protocolo: campo aditivo `resource_context = 7` em `OpenSessionReply`. Banco de dados: migração 10 (`library_installations`).

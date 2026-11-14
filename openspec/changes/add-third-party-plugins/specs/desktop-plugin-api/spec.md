@@ -68,6 +68,18 @@ The API SHALL provide paginated library list/get/watch, display-metadata updates
 - **WHEN** a list cursor is stale or no longer matches its original query scope
 - **THEN** the host rejects the page request without returning entries and the caller must restart the list
 
+#### Scenario: Plugin-initiated resource call
+- **WHEN** a plugin calls a library service
+- **THEN** the call carries the host-issued resource context from its API 1.6 session, which is checked against the session, active profile and grants and confers no authority of its own
+
+#### Scenario: Watch after a grant change
+- **WHEN** a plugin's permissions change while it watches the library
+- **THEN** the host ends the watch with the denial instead of delivering further events
+
+#### Scenario: Watch position no longer retained
+- **WHEN** a plugin resumes a watch from a revision older than the retained history
+- **THEN** the host rejects it and the caller must list again
+
 #### Scenario: Metadata revision conflict
 - **WHEN** a plugin updates metadata using an obsolete revision
 - **THEN** the host reports a conflict without overwriting the newer value

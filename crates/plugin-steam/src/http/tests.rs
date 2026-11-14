@@ -12,7 +12,7 @@ use tracing::span;
 use tracing::{Event, Metadata, Subscriber};
 use url::Url;
 
-use super::{OWNED_GAMES_PATH, SteamClient};
+use super::{ACHIEVEMENT_SCHEMA_PATH, OWNED_GAMES_PATH, PLAYER_ACHIEVEMENTS_PATH, SteamClient};
 
 const STEAM_ID: &str = "76561198000000001";
 const TOKEN: &str = "webapi-token-secret";
@@ -482,6 +482,131 @@ async fn an_empty_array_config_fallback_means_expired() {
 }
 
 #[tokio::test]
+async fn an_expired_access_cookie_is_renewed_from_the_refresh_cookie() {
+    let server = MockServer::start_async().await;
+    let stored = "steamLoginSecure=76561198000000001%7C%7Cold; sessionid=session-secret; \
+                  steamRefresh_steam=76561198000000001%7C%7Crefresh-secret";
+    let renewed = "steamLoginSecure=76561198000000001%7C%7Cnew; sessionid=session-secret; \
+                   steamRefresh_steam=76561198000000001%7C%7Crefreshed-secret";
+    let expired = server.mock(|when, then| {
+        when.method(GET)
+            .path("/explore/")
+            .header_includes("cookie", "steamLoginSecure=76561198000000001%7C%7Cold");
+        then.status(200).body(page(
+            "{&quot;logged_in&quot;:false,&quot;steamid&quot;:&quot;76561198000000001&quot;}",
+            "{}",
+        ));
+    });
+    let finalize = server.mock(|when, then| {
+        when.method(POST)
+            .path("/jwt/finalizelogin")
+            .body_includes("nonce=refresh-secret")
+            .body_includes("sessionid=session-secret");
+        then.status(200).json_body(json!({
+            "steamID": STEAM_ID,
+            "transfer_info": [{
+                "url": format!("{}/login/settoken", server.base_url()),
+                "params": {"nonce": "transfer-nonce", "auth": "transfer-auth"}
+            }]
+        }));
+    });
+    let settoken = server.mock(|when, then| {
+        when.method(POST)
+            .path("/login/settoken")
+            .header_includes("cookie", "sessionid=session-secret")
+            .body_includes("steamID=76561198000000001")
+            .body_includes("nonce=transfer-nonce")
+            .body_includes("auth=transfer-auth");
+        then.status(200)
+            .header(
+                "set-cookie",
+                "steamLoginSecure=76561198000000001%7C%7Cnew; Path=/; Secure; HttpOnly",
+            )
+            .header(
+                "set-cookie",
+                "steamRefresh_steam=76561198000000001%7C%7Crefreshed-secret; Path=/; Secure; \
+                 HttpOnly",
+            );
+    });
+    let fresh = server.mock(|when, then| {
+        when.method(GET)
+            .path("/explore/")
+            .header_includes("cookie", "steamLoginSecure=76561198000000001%7C%7Cnew");
+        then.status(200).body(logged_in_page());
+    });
+
+    let expired_error = client(&server).session(&cred(stored)).await.unwrap_err();
+    assert_eq!(expired_error, SteamError::Expired);
+    let renewed_cookie = client(&server)
+        .renew_session(&cred(stored))
+        .await
+        .unwrap()
+        .expect("a renewal cookie");
+    let session = client(&server).session(&renewed_cookie).await.unwrap();
+
+    expired.assert_async().await;
+    finalize.assert_async().await;
+    settoken.assert_async().await;
+    fresh.assert_async().await;
+    assert_eq!(session.token.expose(), TOKEN);
+    assert_eq!(session.cookie.expose(), renewed);
+}
+
+#[tokio::test]
+async fn a_valid_access_cookie_never_calls_the_login_host() {
+    let server = MockServer::start_async().await;
+    let store = server.mock(|when, then| {
+        when.method(GET).path("/explore/");
+        then.status(200).body(logged_in_page());
+    });
+    let finalize = server.mock(|when, then| {
+        when.method(POST).path("/jwt/finalizelogin");
+        then.status(500);
+    });
+
+    let session = client(&server).session(&cred(COOKIE)).await.unwrap();
+
+    store.assert_async().await;
+    finalize.assert_calls_async(0).await;
+    assert_eq!(session.token.expose(), TOKEN);
+}
+
+#[tokio::test]
+async fn a_session_without_a_refresh_cookie_cannot_be_renewed() {
+    let server = MockServer::start_async().await;
+    let finalize = server.mock(|when, then| {
+        when.method(POST).path("/jwt/finalizelogin");
+        then.status(500);
+    });
+
+    let renewed = client(&server).renew_session(&cred(COOKIE)).await.unwrap();
+
+    assert!(renewed.is_none());
+    finalize.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn a_rejected_refresh_cookie_means_the_session_is_expired() {
+    let server = MockServer::start_async().await;
+    let stored = "steamLoginSecure=76561198000000001%7C%7Cold; sessionid=session-secret; \
+                  steamRefresh_steam=76561198000000001%7C%7Cdead-refresh";
+    let finalize = server.mock(|when, then| {
+        when.method(POST)
+            .path("/jwt/finalizelogin")
+            .body_includes("nonce=dead-refresh");
+        then.status(403);
+    });
+
+    let error = client(&server)
+        .renew_session(&cred(stored))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, SteamError::Expired);
+    finalize.assert_async().await;
+}
+
+#[tokio::test]
 async fn the_owned_catalog_keeps_numeric_ids_with_clean_names() {
     let server = MockServer::start_async().await;
     let owned = server.mock(|when, then| {
@@ -879,4 +1004,229 @@ fn errors_and_logs_never_contain_the_cookie_token_url_or_body() {
         "logs name only the endpoint path: {logs}"
     );
     assert!(logs.contains("500"), "logs keep the status: {logs}");
+}
+
+fn achievement_definitions_params() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("access_token", TOKEN),
+        ("key", ""),
+        ("appid", "620"),
+        ("l", "english"),
+        ("format", "json"),
+    ]
+}
+
+fn achievement_states_params() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("access_token", TOKEN),
+        ("key", ""),
+        ("steamid", STEAM_ID),
+        ("appid", "620"),
+        ("l", "english"),
+        ("format", "json"),
+    ]
+}
+
+#[tokio::test]
+async fn achievement_reads_send_the_token_and_an_empty_key() {
+    let server = MockServer::start_async().await;
+    let schema = server.mock(|when, then| {
+        when.method(GET)
+            .path(ACHIEVEMENT_SCHEMA_PATH)
+            .is_true(exact_params(&achievement_definitions_params()));
+        then.status(200).json_body(json!({
+            "game": {
+                "gameName": "Portal 2",
+                "gameVersion": "1",
+                "availableGameStats": {
+                    "stats": [{"name": "s", "defaultvalue": 0, "displayName": "S"}],
+                    "achievements": [{
+                        "name": "ACH_WIN",
+                        "defaultvalue": 0,
+                        "displayName": "Win",
+                        "hidden": 0,
+                        "description": "Win once",
+                        "icon": "https://cdn.example/a.jpg",
+                        "icongray": "https://cdn.example/a_gray.jpg"
+                    }]
+                }
+            }
+        }));
+    });
+    let player = server.mock(|when, then| {
+        when.method(GET)
+            .path(PLAYER_ACHIEVEMENTS_PATH)
+            .is_true(exact_params(&achievement_states_params()));
+        then.status(200).json_body(json!({
+            "playerstats": {
+                "steamID": STEAM_ID,
+                "gameName": "Portal 2",
+                "success": true,
+                "achievements": [{
+                    "apiname": "ACH_WIN",
+                    "achieved": 1,
+                    "unlocktime": 1_700_000_000,
+                    "name": "Vitória",
+                    "description": "Vença uma vez"
+                }]
+            }
+        }));
+    });
+
+    let steam_client = client(&server);
+    let definitions = steam_client
+        .achievement_definitions(&session(), "620", "english")
+        .await
+        .unwrap()
+        .unwrap();
+    let states = steam_client
+        .achievement_states(&session(), "620", "english")
+        .await
+        .unwrap()
+        .unwrap();
+    schema.assert_async().await;
+    player.assert_async().await;
+    assert_eq!(definitions[0].api_name, "ACH_WIN");
+    assert!(!definitions[0].hidden);
+    assert_eq!(states[0].display_name, "Vitória");
+    assert!(states[0].achieved);
+    assert_eq!(states[0].unlock_time, Some(1_700_000_000));
+}
+
+#[tokio::test]
+async fn an_app_without_stats_is_none_and_a_missing_achievements_key_is_none() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(ACHIEVEMENT_SCHEMA_PATH);
+        then.status(200).json_body(json!({"game": {}}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path(PLAYER_ACHIEVEMENTS_PATH);
+        then.status(400).json_body(json!({
+            "playerstats": {"error": "Requested app has no stats", "success": false}
+        }));
+    });
+    let steam_client = client(&server);
+    assert!(
+        steam_client
+            .achievement_definitions(&session(), "620", "english")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        steam_client
+            .achievement_states(&session(), "620", "english")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(ACHIEVEMENT_SCHEMA_PATH);
+        then.status(200).json_body(json!({
+            "game": {"availableGameStats": {"stats": [{"name": "s"}]}}
+        }));
+    });
+    assert!(
+        client(&server)
+            .achievement_definitions(&session(), "620", "english")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn private_achievements_report_privacy_and_denied_tokens_expire() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(PLAYER_ACHIEVEMENTS_PATH);
+        then.status(403).json_body(json!({
+            "playerstats": {"error": "Profile is not public", "success": false}
+        }));
+    });
+    assert_eq!(
+        client(&server)
+            .achievement_states(&session(), "620", "english")
+            .await
+            .unwrap_err(),
+        SteamError::Privacy
+    );
+
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(ACHIEVEMENT_SCHEMA_PATH);
+        then.status(403)
+            .header("content-type", "text/html; charset=UTF-8")
+            .body("<html><head><title>Forbidden</title></head><body>Access is denied. Retrying will not help.</body></html>");
+    });
+    assert_eq!(
+        client(&server)
+            .achievement_definitions(&session(), "620", "english")
+            .await
+            .unwrap_err(),
+        SteamError::Expired
+    );
+}
+
+#[tokio::test]
+async fn achievement_rate_limits_retry_then_report_rate_limited() {
+    let server = MockServer::start_async().await;
+    let mock = server.mock(|when, then| {
+        when.method(GET).path(ACHIEVEMENT_SCHEMA_PATH);
+        then.status(429).header("retry-after", "0");
+    });
+    assert_eq!(
+        client(&server)
+            .achievement_definitions(&session(), "620", "english")
+            .await
+            .unwrap_err(),
+        SteamError::RateLimited
+    );
+    assert_eq!(mock.calls_async().await, 4);
+}
+
+#[tokio::test]
+async fn an_unexpected_achievement_shape_is_changed_without_exposing_the_body() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(ACHIEVEMENT_SCHEMA_PATH);
+        then.status(200)
+            .json_body(json!({"unexpected": "webapi-token-secret"}));
+    });
+    let error = client(&server)
+        .achievement_definitions(&session(), "620", "english")
+        .await
+        .unwrap_err();
+    assert_eq!(error, SteamError::Changed);
+    let shown = format!("{error} {error:?}");
+    assert!(!shown.contains(TOKEN));
+    assert!(!shown.contains("unexpected"));
+}
+
+#[tokio::test]
+async fn an_unlocked_achievement_with_unlocktime_zero_has_no_time() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET).path(PLAYER_ACHIEVEMENTS_PATH);
+        then.status(200).json_body(json!({
+            "playerstats": {
+                "success": true,
+                "achievements": [{
+                    "apiname": "ACH_WIN",
+                    "achieved": 1,
+                    "unlocktime": 0
+                }]
+            }
+        }));
+    });
+    let states = client(&server)
+        .achievement_states(&session(), "620", "english")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(states[0].achieved);
+    assert_eq!(states[0].unlock_time, None);
 }

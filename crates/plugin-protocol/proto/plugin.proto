@@ -19,7 +19,7 @@ message OpenSessionRequest {
   uint32 api_minor = 4;
   bytes session_credential = 5;
   repeated string requested_capabilities = 6;
-  // API 1.4+: range and feature fields. Empty range preserves API 1.1–1.3 behavior.
+  // API 1.6+: range and feature fields. Empty range preserves API 1.1–1.5 behavior.
   uint32 min_api_major = 7;
   uint32 min_api_minor = 8;
   uint32 max_api_major = 9;
@@ -188,7 +188,7 @@ service ProviderHost {
   rpc DeclareActions (ActionRequest) returns (ActionReply);
 }
 
-// API 1.4 resource surface. Every request is scoped to a host-issued session
+// API 1.6 resource surface. Every request is scoped to a host-issued session
 // and operation; implementations must recheck grants/revisions at commit.
 service ResourceHost {
   rpc LibraryList (LibraryListRequest) returns (LibraryListReply);
@@ -306,7 +306,7 @@ service GamePerformance {
   rpc Aggregate (PerformanceAggregateRequest) returns (PerformanceAggregateReply);
 }
 
-// Typed operation messages for the API 1.4 services. Common identity,
+// Typed operation messages for the API 1.6 services. Common identity,
 // revision, pagination and idempotency values remain explicit protobuf fields.
 message CustomLaunchRemoveRequest { MutationContext mutation = 1; string game_id = 2; string recipe_id = 3; }
 message GameInstallRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string user_intent_id = 4; string idempotency_key = 5; }
@@ -448,7 +448,7 @@ message ResourceRequest {
   uint64 max_bytes = 8;
   string durability = 9;
   bytes payload = 10;
-  // Deprecated API 1.4 draft fields. Kept at their original wire numbers so
+  // Deprecated API 1.6 draft fields. Kept at their original wire numbers so
   // clients compiled against the draft remain wire-decodable; hosts MUST NOT
   // use these untyped fields to authorize or include shared records.
   bool include_common = 11 [deprecated = true];
@@ -694,10 +694,12 @@ enum ProviderOperation {
   PROVIDER_OPERATION_SETTINGS_DESCRIBE_READ = 13;
   PROVIDER_OPERATION_SETTINGS_SUBMIT = 14;
   PROVIDER_OPERATION_SETTINGS_CANCEL = 15;
-  PROVIDER_OPERATION_CONFIGURATION_OPEN = 16;
-  PROVIDER_OPERATION_CONFIGURATION_FOCUS = 17;
-  PROVIDER_OPERATION_CONFIGURATION_CLOSE = 18;
-  PROVIDER_OPERATION_RUNTIME_SESSION_RESULT = 19;
+  PROVIDER_OPERATION_READ_ACHIEVEMENTS = 16;
+  // API 1.6+ (third-party).
+  PROVIDER_OPERATION_CONFIGURATION_OPEN = 17;
+  PROVIDER_OPERATION_CONFIGURATION_FOCUS = 18;
+  PROVIDER_OPERATION_CONFIGURATION_CLOSE = 19;
+  PROVIDER_OPERATION_RUNTIME_SESSION_RESULT = 20;
 }
 
 message ProviderCommand {
@@ -705,7 +707,9 @@ message ProviderCommand {
   ProviderOperation operation = 2;
   string target_operation_id = 3;
   optional SettingsRequest settings = 4;
-  optional RuntimeSessionResult runtime_session_result = 5;
+  optional AchievementsRequest achievements = 5;
+  // API 1.6+ (third-party).
+  optional RuntimeSessionResult runtime_session_result = 6;
 }
 
 message ProviderContext {
@@ -745,7 +749,7 @@ enum CatalogFailure {
   CATALOG_FAILURE_EXPIRED = 4;
   CATALOG_FAILURE_PRIVACY = 5;
   CATALOG_FAILURE_CHANGED = 6;
-  CATALOG_FAILURE_INVALID_COOKIES = 7;
+  CATALOG_FAILURE_INVALID_CREDENTIAL = 7;
   CATALOG_FAILURE_FAMILY_UNAVAILABLE = 8;
 }
 
@@ -765,7 +769,7 @@ message AccountStatus {
   SecretStorage storage = 6;
   bool persist_failed = 7;
   optional CatalogFailure catalog_error = 8;
-  optional CatalogFailure family_error = 9;
+  optional CatalogFailure shared_error = 9;
 }
 
 message AccountRequest {
@@ -868,12 +872,15 @@ message ActionReply {
 message CatalogGame {
   string id = 1;
   string name = 2;
+  // Named facts for matching and actions. The host bounds this to 16 entries
+  // with keys of at most 64 and values of at most 256 bytes.
+  map<string, string> fields = 3;
 }
 
 enum CatalogCategory {
   CATALOG_CATEGORY_UNSPECIFIED = 0;
   CATALOG_CATEGORY_OWNED = 1;
-  CATALOG_CATEGORY_FAMILY = 2;
+  CATALOG_CATEGORY_SHARED = 2;
 }
 
 message CatalogChunk {
@@ -894,7 +901,9 @@ message CatalogCompletion {
 message CounterObservation {
   string id = 1;
   int64 seconds = 2;
-  int64 last_played = 3;
+  // Absent when the provider cannot report a last-played time. proto3 field
+  // presence is wire-compatible with the previous plain int64 value.
+  optional int64 last_played = 3;
 }
 
 enum OperationDisposition {
@@ -928,7 +937,40 @@ message OperationResult {
   optional AccountLoginOutcome login_outcome = 10;
   optional bool focused = 11;
   optional SettingsReply settings = 12;
-  optional ConfigurationResult configuration = 13;
+  repeated AchievementOutcome achievements = 13;
+  // API 1.6+ (third-party).
+  optional ConfigurationResult configuration = 14;
+}
+
+// One bounded batch of provider game ids whose achievements are requested.
+message AchievementsRequest {
+  repeated string game_ids = 1;
+  string language = 2;
+}
+
+message Achievement {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool hidden = 4;
+  string icon_url = 5;
+  string icon_gray_url = 6;
+  bool unlocked = 7;
+  optional int64 unlocked_at = 8;
+}
+
+message AchievementGame {
+  repeated Achievement achievements = 1;
+}
+
+// Per-game result: ready, a successful "no achievements", or a failure category.
+message AchievementOutcome {
+  string game_id = 1;
+  oneof outcome {
+    AchievementGame ready = 2;
+    bool none = 3;
+    CatalogFailure failed = 4;
+  }
 }
 
 message ConfigurationResult {

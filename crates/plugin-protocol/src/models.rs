@@ -1,6 +1,6 @@
 //! Public provider-account values. No application-internal types or OS access.
 
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,8 +62,8 @@ pub enum CatalogError {
     Expired,
     Privacy,
     Changed,
-    InvalidCookies,
-    FamilyUnavailable,
+    InvalidCredential,
+    SharedUnavailable,
 }
 
 impl CatalogError {
@@ -75,8 +75,8 @@ impl CatalogError {
             Self::Expired => "expired",
             Self::Privacy => "privacy",
             Self::Changed => "changed",
-            Self::InvalidCookies => "invalidCookies",
-            Self::FamilyUnavailable => "familyUnavailable",
+            Self::InvalidCredential => "invalidCredential",
+            Self::SharedUnavailable => "sharedUnavailable",
         }
     }
 
@@ -89,8 +89,10 @@ impl CatalogError {
             "expired" => Some(Self::Expired),
             "privacy" => Some(Self::Privacy),
             "changed" => Some(Self::Changed),
-            "invalidCookies" => Some(Self::InvalidCookies),
-            "familyUnavailable" => Some(Self::FamilyUnavailable),
+            // Rows written before the provider-neutral rename still say "invalidCookies".
+            "invalidCredential" | "invalidCookies" => Some(Self::InvalidCredential),
+            // Rows written before the provider-neutral rename still say "familyUnavailable".
+            "sharedUnavailable" | "familyUnavailable" => Some(Self::SharedUnavailable),
             _ => None,
         }
     }
@@ -110,12 +112,119 @@ impl FromStr for CatalogError {
     }
 }
 
-/// One game from a provider's owned or family-shared catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One game from a provider's owned or shared catalog.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogRecord {
     pub id: String,
     pub name: String,
+    /// Named facts used for matching and action templates. Construction through
+    /// [`CatalogRecord::with_field`] keeps them within the wire bounds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+}
+
+/// The most catalog fields one game may carry.
+pub const MAX_CATALOG_FIELDS: usize = 16;
+/// The longest catalog field key, in bytes.
+pub const MAX_CATALOG_FIELD_KEY: usize = 64;
+/// The longest catalog field value, in bytes.
+pub const MAX_CATALOG_FIELD_VALUE: usize = 256;
+
+fn bounded_field_text(value: &str, max: usize, allow_empty: bool) -> bool {
+    (allow_empty || !value.is_empty()) && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+impl CatalogRecord {
+    /// A record without fields. Add facts with [`CatalogRecord::with_field`].
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// Adds one bounded field, rejecting the whole record when it is invalid instead of
+    /// truncating or dropping the value. Replacing an existing key keeps one entry.
+    pub fn with_field(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, crate::WireError> {
+        let key = key.into();
+        let value = value.into();
+        if !bounded_field_text(&key, MAX_CATALOG_FIELD_KEY, false)
+            || !bounded_field_text(&value, MAX_CATALOG_FIELD_VALUE, true)
+            || (!self.fields.contains_key(&key) && self.fields.len() >= MAX_CATALOG_FIELDS)
+        {
+            return Err(crate::WireError);
+        }
+        self.fields.insert(key, value);
+        Ok(self)
+    }
+
+    /// Checks the same bounds the host applies when reading fields from the wire.
+    pub fn validate_fields(&self) -> Result<(), crate::WireError> {
+        if self.fields.len() > MAX_CATALOG_FIELDS
+            || self.fields.iter().any(|(key, value)| {
+                !bounded_field_text(key, MAX_CATALOG_FIELD_KEY, false)
+                    || !bounded_field_text(value, MAX_CATALOG_FIELD_VALUE, true)
+            })
+        {
+            return Err(crate::WireError);
+        }
+        Ok(())
+    }
+}
+
+/// A bounded achievement read: up to [`crate::achievements::MAX_GAMES`] provider game ids and the
+/// UI language the store should localize to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AchievementsRequest {
+    pub game_ids: Vec<String>,
+    pub language: String,
+}
+
+/// One achievement definition joined with the connected account's unlock state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Achievement {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub hidden: bool,
+    pub icon_url: String,
+    pub icon_gray_url: String,
+    pub unlocked: bool,
+    /// Unix seconds Steam reported. An unlocked achievement without a time has `None`.
+    pub unlocked_at: Option<i64>,
+}
+
+/// One game's complete achievement result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AchievementOutcome {
+    Ready {
+        game_id: String,
+        achievements: Vec<Achievement>,
+    },
+    /// The provider confirmed the game has no achievements.
+    None { game_id: String },
+    Failed {
+        game_id: String,
+        error: CatalogError,
+    },
+}
+
+impl AchievementOutcome {
+    pub fn game_id(&self) -> &str {
+        match self {
+            Self::Ready { game_id, .. } | Self::None { game_id } | Self::Failed { game_id, .. } => {
+                game_id
+            }
+        }
+    }
 }
 
 /// A catalog sync result: `None` means that fact set was not attempted, `Ok` replaces it and
@@ -123,7 +232,7 @@ pub struct CatalogRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogUpdate {
     pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    pub shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     pub now: i64,
 }
 
@@ -173,7 +282,7 @@ pub struct AccountStatus {
     /// A credential or account-row write failed, so a restart may not restore this state.
     pub persist_failed: bool,
     pub catalog_error: Option<CatalogError>,
-    pub family_error: Option<CatalogError>,
+    pub shared_error: Option<CatalogError>,
 }
 
 impl AccountStatus {
@@ -239,8 +348,8 @@ pub struct CatalogOutcome {
     pub status: AccountStatus,
     /// `None` when no catalog was attempted (no account, or the request joined a check).
     pub owned: Option<Result<Vec<CatalogRecord>, CatalogError>>,
-    /// `None` when family sync was not attempted.
-    pub family: Option<Result<Vec<CatalogRecord>, CatalogError>>,
+    /// `None` when shared sync was not attempted.
+    pub shared: Option<Result<Vec<CatalogRecord>, CatalogError>>,
     pub now: i64,
     pub account_changed: bool,
     pub superseded: bool,

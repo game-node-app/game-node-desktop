@@ -1030,7 +1030,7 @@ impl<'de> Deserialize<'de> for NoDuplicateJson {
 mod tests {
     use super::*;
 
-    const VALID: &str = r#"{"schema":1,"id":"org.example.reader","kind":"provider","provider_id":"example-reader","name":"Example Reader","version":"1.2.3","api":{"min":"1.4.0","max":"1.5.0"},"permissions":[{"id":"library.read","required":false,"scope":"own-provider","reason":"Read imported games"}],"targets":[{"os":"linux","arch":"x86_64","abi":"gnu","entrypoint":"bin/linux-x64/plugin"}],"publisher":{"key_id":"dev-key","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},"license":{"expression":"MIT","files":["licenses/LICENSE"]},"configuration":{"external":true,"declarative":false},"resources":{"provider":"provider.toml"}}"#;
+    const VALID: &str = r#"{"schema":1,"id":"org.example.reader","kind":"provider","provider_id":"example-reader","name":"Example Reader","version":"1.2.3","api":{"min":"1.6.0","max":"1.7.0"},"permissions":[{"id":"library.read","required":false,"scope":"own-provider","reason":"Read imported games"}],"targets":[{"os":"linux","arch":"x86_64","abi":"gnu","entrypoint":"bin/linux-x64/plugin"}],"publisher":{"key_id":"dev-key","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},"license":{"expression":"MIT","files":["licenses/LICENSE"]},"configuration":{"external":true,"declarative":false},"resources":{"provider":"provider.toml"}}"#;
     const VALID_SCHEMA: &str = r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"supports_cloud_sync":{"type":"boolean","x-gamenode-classification":"public"},"notes":{"type":"string","maxLength":512,"x-gamenode-classification":"sensitive"}},"required":["supports_cloud_sync"],"additionalProperties":false}"#;
 
     fn manifest_with_schema(
@@ -1081,7 +1081,7 @@ mod tests {
             VALID.replace("\"schema\":1", "\"schema\":2"),
             VALID.replace("\"provider_id\":\"example-reader\",", ""),
             VALID.replace("\"kind\":\"provider\"", "\"kind\":\"extension\""),
-            VALID.replace("\"max\":\"1.5.0\"", "\"max\":\"1.3.0\""),
+            VALID.replace("\"max\":\"1.7.0\"", "\"max\":\"1.5.0\""),
             VALID.replace(
                 "\"entrypoint\":\"bin/linux-x64/plugin\"",
                 "\"entrypoint\":\"bin/linux-x64/plugin\",\"requires\":{\"windows\":{\"min_build\":22000}}",

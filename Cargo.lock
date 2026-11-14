@@ -1512,7 +1512,6 @@ name = "gamenode-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "flate2",
  "gamenode-core",
  "httpmock",
  "percent-encoding",
@@ -1588,6 +1587,7 @@ dependencies = [
  "dirs",
  "gamenode-core",
  "getrandom 0.4.3",
+ "httpmock",
  "keyring-core",
  "notify",
  "open",
@@ -1610,6 +1610,28 @@ dependencies = [
  "windows-sys 0.61.2",
  "zbus-secret-service-keyring-store",
  "zip",
+]
+
+[[package]]
+name = "gamenode-plugin-epic"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gamenode-plugin-protocol",
+ "gamenode-plugin-sdk",
+ "httpmock",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml 1.2.0+spec-1.1.0",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "winreg",
 ]
 
 [[package]]
@@ -1671,6 +1693,7 @@ dependencies = [
  "flate2",
  "gamenode-plugin-protocol",
  "gamenode-plugin-sdk",
+ "getrandom 0.4.3",
  "httpmock",
  "hyper-util",
  "percent-encoding",
@@ -4110,6 +4133,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -4516,6 +4540,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

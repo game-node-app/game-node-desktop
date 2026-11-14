@@ -80,3 +80,21 @@ pub trait SteamLoginWindow: Send + Sync {
     /// not the UI thread.
     fn cleanup_profile(&self);
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_trusted_login_asset_still_parses_and_validates() {
+        let policy: gamenode_plugin_protocol::login::LoginPolicy =
+            toml::from_str(include_str!("../assets/login.toml")).expect("trusted login policy");
+        policy.validate().expect("valid login policy");
+        assert!(!policy.cookie_urls.is_empty());
+        assert!(!policy.cookie_names.is_empty());
+        assert!(
+            policy
+                .cookie_names
+                .iter()
+                .any(|name| name == "steamRefresh_steam")
+        );
+    }
+}

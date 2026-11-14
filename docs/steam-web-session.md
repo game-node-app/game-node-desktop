@@ -4,10 +4,30 @@ GameNode imports a Steam account's owned and Steam Family games without a Steam 
 only stored secret is the Steam store session cookie. A short-lived web API token is derived from
 the authenticated store page on every check and never persisted.
 
-The client lives in `crates/api/src/steam.rs` and implements the `SteamWebApi` port from
-`crates/core/src/steam.rs`. It uses the same HTTP stack as the GameNode client: rustls, the system
-proxy, a realistic desktop Chrome User-Agent, a 20-second request timeout, redirects limited to a
-Steam host, and no cookie store (the cookie header is always explicit).
+The implementation lives entirely in the official Steam plugin, not in the host crates:
+
+| Concern | Path |
+| --- | --- |
+| Store session, owned and Family HTTP client | `crates/plugin-steam/src/http.rs` |
+| Session and catalog types, error categories | `crates/plugin-steam/src/steam.rs` |
+| Account state machine, catalog sync, achievements | `crates/plugin-steam/src/account.rs` |
+| Provider operations and plugin lifecycle | `crates/plugin-steam/src/runtime.rs` |
+| SDK-backed storage and login ports | `crates/plugin-steam/src/bridge.rs` |
+| Trusted login policy | `crates/plugin-steam/assets/login.toml` |
+| Installed-game scanner and playtime counter | `crates/plugin-steam/src/discovery/` |
+| Steam provider manifest | `providers/steam.toml` |
+
+The plugin runs as its own process. The host exposes the scoped services it uses:
+`crates/app/src/plugin_host/provider.rs` routes provider operations,
+`crates/app/src/plugin_host/login.rs` owns the isolated sign-in window, and
+`crates/app/src/plugin_host/services.rs` resolves the plugin's `session` secret and account row.
+No store HTTP client, cookie parser or scanner is linked into `gamenode-core`, `gamenode-api` or
+the host process.
+
+The client uses rustls, the system proxy, a realistic desktop Chrome User-Agent, a 20-second
+request timeout, redirects limited to a Steam host, and no cookie store (the cookie header is
+always explicit). Response decompression enables gzip, deflate, brotli and zstd like a browser
+does.
 
 Two details keep it equivalent to Playnite's WebView, which is the reference for this flow:
 
@@ -15,7 +35,7 @@ Two details keep it equivalent to Playnite's WebView, which is the reference for
   the client did not advertise `Accept-Encoding` (the recommendation queue does this for its
   redirect and page responses alike). A client that does not decode `Content-Encoding` sees binary
   garbage, fails the UTF-8 check and reports `changed` on every check, no matter how fresh the
-  cookie is. The client enables gzip, deflate, brotli and zstd like a browser does.
+  cookie is. The plugin enables the browser encodings for this reason.
 - **Browser request headers and cookie bootstrap.** Store page requests send a Chrome-style
   `Accept` and `Accept-Language`; the token fallback also sends the store `Referer`. More
   importantly, Steam replies to a request that lacks its frontend cookies with a 302 back to the
@@ -27,21 +47,56 @@ status, `Content-Type`, `Content-Encoding`, body size and whether the `applicati
 `data-userinfo` and `data-store_user_config` markers were present. Bodies, cookies and tokens are
 never logged.
 
+## Sign-in window
+
+Steam sign-in is opt-in and uses the host's isolated sign-in window, approved by
+`crates/plugin-steam/assets/login.toml`:
+
+```toml
+start_url = "https://store.steampowered.com/explore/"
+cookie_urls = ["https://store.steampowered.com/", "https://login.steampowered.com/"]
+probe_origin = "https://store.steampowered.com"
+allowed_hosts = ["steampowered.com", "steamcommunity.com", "steamstatic.com"]
+cookie_names = ["steamLoginSecure", "sessionid", "steamRefresh_steam"]
+```
+
+- The window loads the store's own login page in an ephemeral profile owned by the host.
+- The host reads the store session cookies from `store.steampowered.com` and the long-lived
+  `steamRefresh_steam` renewal cookie from `login.steampowered.com`. Other cookies stay in the
+  window.
+- A bounded probe on the approved origin reads `steam_id`, `account_name` and the short-lived
+  `webapi_token` from the authenticated page. The probe result is secret-bearing and is never
+  logged or placed in a snapshot.
+- `crates/plugin-steam/src/bridge.rs` builds the minimal cookie header and requires both the
+  cookies and a valid probe result before a session is accepted. A page or cookie alone is not
+  enough.
+- Closing, cancelling or timing out the attempt saves nothing and restores the previous account
+  state. A late result that arrives after cancel or sign-out is reported as superseded and never
+  writes a credential.
+
 ## Stored credential
 
 The credential is the minimal store cookie header:
 
 ```text
-steamLoginSecure=<steamid>%7C%7C<session secret>; sessionid=<session id>
+steamLoginSecure=<steamid>%7C%7C<access token>; sessionid=<session id>; steamRefresh_steam=<steamid>%7C%7C<refresh token>
 ```
 
 - `steamLoginSecure` is percent-encoded; `%7C%7C` is the literal `||` between the SteamID and the
   session secret. The SteamID can be recovered from it when the store page cannot be parsed.
-- `sessionid` is the accompanying store session cookie.
-- Other cookies the store returned (for example `steamCountry`) are preserved if present.
-- Steam rotates either cookie through `Set-Cookie`. The client replaces the rotated values,
-  keeps the rest of the header, and returns the updated header in `SteamSession::cookie` so the app
-  can persist it before the catalog sync finishes.
+- `sessionid` is the accompanying store session cookie; Steam treats it as a CSRF value.
+- `steamRefresh_steam` is the long-lived renewal cookie. Steam sets it on `login.steampowered.com`
+  only when "remember me" is checked, which is the default. Without it, the access cookie cannot be
+  renewed and the account needs a new sign-in when that cookie expires.
+- Other cookies the store returned (for example `steamCountry`) are requested but filtered out by
+  `crates/plugin-steam/src/bridge.rs` before the header is built.
+- Steam rotates any of the three cookies through `Set-Cookie`. The client replaces the rotated
+  values, keeps the rest of the header, and returns the updated header in `SteamSession::cookie`.
+  The plugin saves it before reporting the account connected, before the catalog sync finishes and
+  after an achievement session validation.
+- The plugin addresses the logical secret slot `session`. The host maps it to Steam's existing
+  physical slot: the `steam` keyring account on Windows and the `steam-token` private file on
+  Linux. No migration is needed for an existing Steam credential.
 - Neither the cookie nor the token is written to SQLite, settings, snapshots, logs or error text.
 
 ## Requests
@@ -75,9 +130,36 @@ Cookie: <stored header>
   client try the store home page (`GET https://store.steampowered.com/`, same contract) before the
   token fallback below. The recommendation queue is Playnite's page; the home page keeps working if
   that page changes shape.
-- `Set-Cookie` values for `steamLoginSecure` and `sessionid` become the rotated cookie header.
+- `Set-Cookie` values for `steamLoginSecure`, `sessionid` and `steamRefresh_steam` become the
+  rotated cookie header.
 
-### 2. Token fallback
+### 2. Renew the session
+
+```http
+POST https://login.steampowered.com/jwt/finalizelogin
+Cookie: steamRefresh_steam=<steamid>%7C%7C<refresh token>; sessionid=<session id>
+Content-Type: application/x-www-form-urlencoded
+
+nonce=<refresh token>&sessionid=<session id>&redir=https://store.steampowered.com/login/?redir=&redir_ssl=1
+```
+
+- The `nonce` is the token after `%7C%7C` in the refresh cookie, not the whole cookie value.
+
+- Runs only after the store page answers `expired` and the credential has `steamRefresh_steam`.
+- The answer names per-domain transfer endpoints in `transfer_info`. The client posts
+  `nonce`, `auth` and `steamID` to the **store** endpoint
+  (`https://store.steampowered.com/login/settoken`) with the session cookie. Steam now issues
+  separate tokens per domain, so a community transfer cannot be reused for store requests.
+- `Set-Cookie` from the transfer supplies a fresh `steamLoginSecure` (and may rotate
+  `sessionid`/`steamRefresh_steam`). The account service persists the renewed header **before**
+  validating it, so a later failure cannot lose a rotated refresh cookie.
+- The renewed header is then validated with the normal store-page request.
+- Only when the renewal itself is rejected, or the credential has no refresh cookie, does the
+  session become `expired`. A network or page-shape failure keeps the credential.
+- Concurrent store validations (check, catalog sync, achievement reads) are serialized inside the
+  account service so two renewals cannot invalidate each other's refresh token.
+
+### 3. Token fallback
 
 ```http
 GET https://store.steampowered.com/pointssummary/ajaxgetasyncconfig
@@ -93,9 +175,9 @@ Expected body:
 - Used only when the store page has no parseable `application_config`/token.
 - `success != 1`, a missing `data`, or an empty token means `expired`.
 - The fallback has no identity fields, so the SteamID is decoded from `steamLoginSecure`; the
-  account name is left empty and the app keeps the last known name from `store_accounts`.
+  account name is left empty and the plugin keeps the last known name from the account row.
 
-### 3. Owned games
+### 4. Owned games
 
 ```http
 GET https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/
@@ -113,9 +195,9 @@ GET https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/
   deduplicates by app id.
 - A 200 answer with a missing `response`/`games` array is `privacy`: Steam did not disclose the
   library. `game_count == 0` with an empty `games` array is a successful empty catalog.
-- 401/403 is `expired`.
+- 401/403 is `expired`; 404 is `changed`.
 
-### 4. Steam Family group
+### 5. Steam Family group
 
 ```http
 GET https://api.steampowered.com/IFamilyGroupsService/GetFamilyGroupForUser/v1/
@@ -127,7 +209,7 @@ GET https://api.steampowered.com/IFamilyGroupsService/GetFamilyGroupForUser/v1/
 - Otherwise `family_groupid` is used for the shared-apps request. A missing group id is also
   treated as "no family".
 
-### 5. Steam Family shared apps
+### 6. Steam Family shared apps
 
 ```http
 GET https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/
@@ -145,19 +227,124 @@ GET https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/
 - Keeps entries with a numeric app id, a non-empty cleaned name and `exclude_reason == 0`.
 - Excluded apps are counted in a debug log but neither their names nor the response are logged.
 - Duplicates are removed. The app merge treats owned as winning over family-shared.
-- A family failure is isolated: owned catalog updates still apply, and the app records the family
-  error as `familyUnavailable`.
+- A family failure is isolated: owned catalog updates still apply, and the plugin reports the
+  family error as `familyUnavailable` without failing the owned category.
+
+## Achievements
+
+Achievement definitions and the connected account's unlock state are read for one Steam app at a
+time with the same session, in `crates/plugin-steam/src/http.rs` and joined in
+`crates/plugin-steam/src/account.rs`:
+
+```http
+GET https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/
+    ?access_token=<webapi_token>
+    &key=
+    &appid=<app id>
+    &l=<english|brazilian>
+    &format=json
+```
+
+```http
+GET https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/
+    ?access_token=<webapi_token>
+    &key=
+    &steamid=<steamid>
+    &appid=<app id>
+    &l=<english|brazilian>
+    &format=json
+```
+
+`access_token` alone is not accepted by these two endpoints: Steam answers HTTP 400 HTML with
+"Required parameter 'key' is missing", and `key=<token>` alone answers HTTP 403 HTML. A request
+that carries both the derived `access_token` and an empty `key` parameter succeeds. This is
+undocumented Steam behavior; the plugin sends the empty `key` and treats an unexpected 400/403
+HTML answer as a categorized failure rather than assuming the shape.
+
+### Observed response shapes
+
+Sanitized with `l=english&format=json`; no cookie, token or SteamID is recorded here.
+
+Normal game with achievements:
+
+```json
+{
+  "game": {
+    "gameName": "str",
+    "gameVersion": "str",
+    "availableGameStats": {
+      "stats": [{ "name": "str", "defaultvalue": 0, "displayName": "str" }],
+      "achievements": [{
+        "name": "str",
+        "defaultvalue": 0,
+        "displayName": "str",
+        "hidden": 0,
+        "description": "str",
+        "icon": "str",
+        "icongray": "str"
+      }]
+    }
+  }
+}
+```
+
+```json
+{
+  "playerstats": {
+    "steamID": "str",
+    "gameName": "str",
+    "achievements": [{
+      "apiname": "str",
+      "achieved": 1,
+      "unlocktime": 1760000000,
+      "name": "str",
+      "description": "str"
+    }],
+    "success": true
+  }
+}
+```
+
+The player payload's `name` and `description` are localized by `l`; definitions and unlocks are
+joined by the schema `name` and the player `apiname`.
+
+| Case | Schema | Player | Meaning |
+| --- | --- | --- | --- |
+| App with no stats at all | 200 `{"game":{}}` | 400 JSON `{"playerstats":{"error":"Requested app has no stats","success":false}}` | none |
+| Nonexistent app id | 400 JSON `{}` | 400 JSON with the same no-stats error | none |
+| Stats but no achievements | 200 with `availableGameStats.stats` only, no `achievements` key | 200 `{"playerstats":{"steamID","gameName","success":true}}`, no `achievements` key | none |
+| Private profile / undisclosed game details | 403 JSON `{"game":{}}` | 403 JSON `{"playerstats":{"error":"Profile is not public","success":false}}` | privacy |
+| Invalid or expired token | 403 `text/html`, body starts `<html><head><title>Forbidden</title>... Access is denied. Retrying will not help.` | same | expired |
+| Rate limiting / server error | 429 or 5xx after the shared bounded retries | same | rateLimited / server |
+| Unexpected body or shape | 200 with an unparseable or incomplete body | any | changed |
+
+An unlocked achievement with `unlocktime` 0 was not reproduced live in the first 100 games of the
+probed account. The "no time" behavior is implemented from the specification and covered by a
+fixture; it is not a captured response.
 
 ## Token lifetime
 
-The `webapi_token` is short-lived (roughly one day, and Steam may rotate it sooner). GameNode never
-stores it: every startup check, Stores check and catalog sync validates the cookie and reads a fresh
-token first. An API 401/403 makes the account `expired`, and the app removes the dead credential
-while keeping the cached installed/owned/family facts visible.
+Steam uses three different lifetimes:
+
+- `webapi_token` is short-lived (roughly one day, and Steam may rotate it sooner). GameNode never
+  stores it: every startup check, Stores check and catalog sync validates the cookie and reads a
+  fresh token first.
+- `steamLoginSecure` is the store access cookie. Its JWT also expires in about a day; a browser
+  silently renews it from `steamRefresh_steam` before it does. GameNode performs the same renewal
+  (see "Renew the session") so the account stays connected.
+- `steamRefresh_steam` is the long-lived renewal cookie set on `login.steampowered.com` when
+  "remember me" is checked. Steam keeps it for roughly two hundred days and renews it during the
+  exchange. It is the credential that makes a sign-in survive restarts for months, matching the
+  browser's "remember me" behavior.
+
+An API 401/403 after a successful store validation makes the catalog report `expired`, but it no
+longer deletes the credential: the access token can be derived again on the next check. The plugin
+removes the credential only when the store page itself rejects the session and renewal is
+impossible.
 
 ## Retries and error categories
 
-All five requests share the retry policy:
+All Steam requests share the retry policy in `crates/plugin-steam/src/http.rs`:
 
 - 429 and 5xx are retried at most three times (four attempts total) with a 100 ms, 200 ms, 400 ms
   backoff.
@@ -165,7 +352,7 @@ All five requests share the retry policy:
   the backoff.
 - After the retries: 429 is `rateLimited`, 5xx is `server`.
 
-Failure categories (`SteamError`):
+Failure categories (`SteamError` in `crates/plugin-steam/src/steam.rs`):
 
 | Category | Meaning |
 | --- | --- |
@@ -177,11 +364,11 @@ Failure categories (`SteamError`):
 | `changed` | The store page or JSON no longer matches the parsed contract |
 | `invalidCookies` | The stored cookie header is not a valid HTTP header value |
 
-`SteamError` maps to the stable `CatalogError` categories; family failures use
-`FamilyUnavailable`. Errors and logs contain the endpoint path (never the query string), the HTTP
-status and the category. They never contain the cookie, the token, a full URL, a header or a page
-body. The one location detail is a redirect the client did not follow: its host and path are
-logged as `Steam redirect was not followed`, without the query string.
+`SteamError` maps to the stable catalog categories; family failures use `FamilyUnavailable`.
+Errors and logs contain the endpoint path (never the query string), the HTTP status and the
+category. They never contain the cookie, the token, a full URL, a header or a page body. The one
+location detail is a redirect the plugin did not follow: its host and path are logged as
+`Steam redirect was not followed`, without the query string.
 
 ## Breakage behavior
 
@@ -191,28 +378,46 @@ degrades instead of guessing:
 - A store page layout change becomes `changed`, after the JSON token fallback has been tried. The
   app shows "Steam changed its response"; previously imported owned and family games stay cached and
   installed games are unaffected.
-- A token or cookie rejection becomes `expired`; the app keeps the cached library and asks for a
-  new sign-in.
-- A network outage becomes `unreachable`; the credential is kept and the cached library remains
-  visible.
+- An access-cookie expiry is renewed from `steamRefresh_steam` and is invisible to the user.
+- A rejected refresh cookie, or a credential saved without one, becomes `expired`; the plugin
+  removes the dead credential, the app keeps the cached library and asks for a new sign-in.
+- A catalog token rejection keeps the credential and marks the catalog `expired`; the next check
+  can mint a new token.
+- A network outage becomes `unreachable`; the credential is kept by the plugin and the cached
+  library remains visible.
 - Rate limits and server errors are retried briefly and then reported without a second sync
   starting.
 - Steam Family can fail independently; the owned catalog and installed scan still complete.
+- A superseded operation (sign-out or a newer attempt while one runs) returns no observations, so a
+  late result cannot restore a catalog or credential.
+
+## Automated coverage
+
+Unit and fixture tests live next to the implementation:
+
+- `crates/plugin-steam/src/http/tests.rs` covers logged-in and logged-out store pages, compressed
+  pages and token fallbacks, browser request headers, the home-page fallback, entity decoding,
+  rotated cookies, the fallback token, missing attributes, the body cap, the renew exchange and its
+  rejected/missing-refresh cases, owned/empty/private libraries, 401/403, family/no-family/excluded
+  apps, rate-limit recovery, bounded 5xx retries, the secret-free error/log assertion and the
+  achievement responses.
+- `crates/plugin-steam/src/account.rs` covers the account state machine, rotation, persistence
+  failures, sign-in outcomes and catalog/counter handling with fake ports.
+- `crates/plugin-steam/src/runtime/tests.rs` runs the real plugin against a public reference host:
+  restore, sign-in, cancel, close, timeout, late results, rotation, renewal persistence,
+  expired versus unreachable, failed deletion and an independent family failure.
+- `crates/plugin-steam/src/discovery/tests.rs` and `crates/plugin-steam/src/discovery/counter.rs`
+  cover installed discovery and playtime totals over fixture Steam files.
 
 ## Manual acceptance still required
-
-The automated coverage uses `httpmock` fixtures: logged-in and logged-out store pages, gzip-decoded
-store pages and token fallbacks, browser request headers, the home-page fallback, entity decoding,
-rotated cookies, fallback token, missing attributes, the 4 MiB cap, owned/empty/private libraries,
-401/403, family/no-family/excluded apps, rate-limit recovery, bounded 5xx retries, and the
-secret-free error/log assertion.
 
 The following cannot be verified in this Linux container and still need a real account and OS:
 
 - Real Steam Guard sign-in and the isolated WebKitGTK/WebView2 login window.
 - A real 300+ game library, its import time and the installed-first cover queue.
 - A real Steam Family group, invited/excluded apps and leaving a group.
-- Cookie and token rotation across a real session, plus Steam's actual rate limits.
+- Cookie and token rotation across a real session, the silent refresh after the one-day access
+  cookie expires, plus Steam's actual rate limits.
 - Linux: Secret Service storage versus the 0600 private-file fallback and its warning.
 - Windows: Credential Manager storage, WebView2 sign-in and Steam Guard.
 
@@ -228,5 +433,8 @@ Record those results in the change notes when the acceptance pass runs.
 - The app card showed `Connected` with 100 owned, 1282 shared and 6 installed games, and the
   credential stored in Windows Credential Manager.
 
-Still manual: Steam Guard sign-in inside the real WebView2/WebKitGTK window, credential storage on
-each OS, and observing Steam rotate the session cookie during a long-lived session.
+The flow was later moved into `crates/plugin-steam`; the automated suite above runs against that
+plugin. Still manual: Steam Guard sign-in inside the real WebView2/WebKitGTK window, credential
+storage on each OS, observing Steam rotate the session cookie during a long-lived session, and
+confirming that the login host renews an expired access cookie without asking for the password
+again.

@@ -80,14 +80,14 @@ impl plugin_host_server::PluginHost for ReferenceHost {
             session_id: "session".into(),
             granted_capabilities: hello.requested_capabilities,
             api_major: 1,
-            api_minor: 4,
+            api_minor: 6,
             features: hello
                 .features
                 .iter()
                 .map(|feature| FeatureStatus {
                     id: feature.id.clone(),
                     availability: FeatureAvailability::Supported as i32,
-                    introduced_minor: 4,
+                    introduced_minor: 6,
                 })
                 .collect(),
             support_window: None,
@@ -111,7 +111,7 @@ impl plugin_host_server::PluginHost for ReferenceHost {
         }
         Ok(Response::new(DescribeApiReply {
             api_major: 1,
-            api_minor: 4,
+            api_minor: 6,
             support_window: None,
             features: vec![],
             methods: vec![],
@@ -201,6 +201,7 @@ impl provider_host_server::ProviderHost for ReferenceHost {
                 },
                 settings: None,
                 runtime_session_result: None,
+                achievements: None,
             };
             for (operation, id) in [
                 (ProviderOperation::Initialize, "initialize"),
@@ -351,7 +352,7 @@ impl ProviderPlugin for FixturePlugin {
                         outcome: Some(catalog_completion::Outcome::CompletedRecords(0)),
                     },
                     CatalogCompletion {
-                        category: CatalogCategory::Family as i32,
+                        category: CatalogCategory::Shared as i32,
                         outcome: Some(catalog_completion::Outcome::Failed(
                             CatalogFailure::FamilyUnavailable as i32,
                         )),
@@ -364,7 +365,7 @@ impl ProviderPlugin for FixturePlugin {
                 counters: vec![CounterObservation {
                     id: "620".into(),
                     seconds: 3_600,
-                    last_played: 1_700_000_000,
+                    last_played: Some(1_700_000_000),
                 }],
                 ..Default::default()
             },
@@ -444,7 +445,7 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
             min_api_major: 1,
             min_api_minor: 1,
             max_api_major: 1,
-            max_api_minor: 4,
+            max_api_minor: 6,
             features: vec![(capability::FEATURE_API_METADATA.into(), true)],
             session_kind: SessionKind::Provider,
             target_game: None,
@@ -452,7 +453,7 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
     )
     .await
     .unwrap();
-    assert_eq!(session.host.describe_api().await.unwrap().api_minor, 4);
+    assert_eq!(session.host.describe_api().await.unwrap().api_minor, 6);
     assert_eq!(
         session.host.get_permissions().await.unwrap().grants[0].permission_id,
         capability::CONTEXT
@@ -512,6 +513,10 @@ async fn independent_plugin_uses_brokers_and_cancels_a_pending_login() {
         ))
     );
     assert_eq!(results["counter"].counters[0].seconds, 3_600);
+    assert_eq!(
+        results["counter"].counters[0].last_played,
+        Some(1_700_000_000)
+    );
     assert!(results["sign-out"].signed_out);
     assert_eq!(
         results["config-open"]

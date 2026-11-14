@@ -35,12 +35,17 @@ not OpenSSL.
 
 Install Visual Studio 2022 Build Tools with **Desktop development with C++**,
 the x64 MSVC tools and Windows SDK. Install LLVM (including libclang), CMake,
-Ninja, Python 3, Git and rustup. Use an x64 Native Tools command prompt or a
+Ninja, Python 3.11+, Git and rustup. Use an x64 Native Tools command prompt or a
 PowerShell session with that developer environment initialized. Ensure these
 tools are on PATH; if libclang cannot be located, set `LIBCLANG_PATH` to the LLVM
 `bin` directory. Use the `x86_64-pc-windows-msvc` Rust host toolchain. Windows
 Credential Manager is the credential backend and has no file fallback. Tauri v2
 uses WebView2 on Windows.
+
+Native Windows development with `scripts/run-desktop.ps1` requires Python 3.11+
+on `PATH` (available as `py -3` or `python`). The launcher uses the standard-library
+helper `scripts/bundled_plugins.py` to derive the bundled plugin executables from
+`plugins/*.toml`, and fails with an actionable message when Python 3.11+ is missing.
 
 Native Linux and Windows builds require their corresponding prerequisites above.
 This change does not configure hosted CI runners; its verification commands are
@@ -355,8 +360,8 @@ process), then run from WSL:
 scripts/dev-windows-wsl.sh
 ```
 
-The launcher builds the Windows desktop and Steam plugin under
-`target/windows-hmr`, verifies the plugin sits beside the host, prepares its
+The launcher builds the Windows desktop and its bundled plugins under
+`target/windows-hmr`, verifies the plugins sit beside the host, prepares its
 backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes
@@ -373,7 +378,7 @@ GameNode process or a server on port 4777 is running. If interrupted with
 Ctrl+C, quit any development app still running in the tray before restarting.
 The normal installed executable and URI registration are not replaced.
 
-The launcher needs the WSL build tools listed above, Node.js, pnpm, Python 3,
+The launcher needs the WSL build tools listed above, Node.js, pnpm, Python 3.11+,
 `curl`, `flock`, and Windows interoperability (`powershell.exe` and
 `wslpath`). The first build can take several minutes and preparing backup
 assets can download the project's pinned inputs. Windows must be able to reach

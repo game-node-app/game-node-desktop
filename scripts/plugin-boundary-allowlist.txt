@@ -1,0 +1,17 @@
+# Reviewed exceptions for the production store-boundary source scan.
+#
+# Format: <repo-relative-path>:<line> <rule> -- <justification>
+#   Rules: store-host, store-module-path, store-uri-scheme, provider-id-literal, store-identifier
+#
+# Keep this file small and reviewed. There is no way to exempt a directory, a pattern or a rule:
+# every entry excuses exactly one line and must carry a reason. The checker fails on stale entries,
+# so remove one when the code moves or the finding disappears.
+
+# Ludusavi's manifest uses `steam`/`gog` ids as data vocabulary to match DRM-free games. The parser
+# reads the id; it does not branch on a provider or talk to a store. DRM-free matching stays a Core
+# feature (proposal: "DRM-free/manual games ... stay Core features").
+crates/core/src/drm_free/identity.rs:194 provider-id-literal -- Ludusavi's `steam` manifest identity field (the paired `gog` field is the same kind of data vocabulary); read as a manifest id, never a provider branch.
+
+# The UI localizes the built-in Linux package-manager provider name. It is not a store: this maps a
+# known built-in provider id to a translated label and performs no host or store branching.
+ui/src/i18n/providerLabel.ts:3 provider-id-literal -- Built-in package-manager provider label; the UI maps its id to a translation, with no store branching.

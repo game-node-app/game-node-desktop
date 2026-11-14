@@ -65,7 +65,7 @@ archive. If a dependency's license or source cannot be verified, that
 dependency must be removed or replaced before the affected archive is
 published.
 
-After the API 1.4 protocol/SDK additions, the current locked closure resolves
+After the API 1.6 protocol/SDK additions, the current locked closure resolves
 168 packages, again with no missing Cargo license expressions. The new
 dependencies remain within the same reviewed permissive/Unicode-compatible
 license families. This updated count was checked with

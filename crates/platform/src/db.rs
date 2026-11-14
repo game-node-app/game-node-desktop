@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -59,6 +59,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "ports",
         sql: include_str!("../migrations/0008_ports.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "achievements",
+        sql: include_str!("../migrations/0009_achievements.sql"),
     },
 ];
 
@@ -221,6 +226,11 @@ impl SqliteSettingsStore {
         crate::ports_db::SqlitePortStore::new(Arc::clone(&self.conn))
     }
 
+    /// The achievement cache on the same serialized connection.
+    pub fn achievement_store(&self) -> crate::achievement_db::SqliteAchievementStore {
+        crate::achievement_db::SqliteAchievementStore::new(Arc::clone(&self.conn))
+    }
+
     /// Opens and migrates the database at `path`.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         open(path).map(Self::new)
@@ -342,7 +352,8 @@ mod tests {
                 (5, "game_tools".to_string()),
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
-                (8, "ports".to_string())
+                (8, "ports".to_string()),
+                (9, "achievements".to_string())
             ]
         );
     }
@@ -439,13 +450,13 @@ mod tests {
         }
     }
 
-    const V9_OK: Migration = Migration {
-        version: 9,
+    const V10_OK: Migration = Migration {
+        version: 10,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V9_BAD: Migration = Migration {
-        version: 9,
+    const V10_BAD: Migration = Migration {
+        version: 10,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -470,7 +481,8 @@ mod tests {
             MIGRATIONS[5],
             MIGRATIONS[6],
             MIGRATIONS[7],
-            V9_OK,
+            MIGRATIONS[8],
+            V10_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -484,7 +496,8 @@ mod tests {
                 (6, "store_accounts_and_catalog".into()),
                 (7, "favorites".into()),
                 (8, "ports".into()),
-                (9, "add_notes".into())
+                (9, "achievements".into()),
+                (10, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -524,11 +537,12 @@ mod tests {
                 MIGRATIONS[5],
                 MIGRATIONS[6],
                 MIGRATIONS[7],
-                V9_BAD,
+                MIGRATIONS[8],
+                V10_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 9 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 10 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -542,6 +556,7 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
+                (9, "achievements".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -571,19 +586,20 @@ mod tests {
                     MIGRATIONS[5],
                     MIGRATIONS[6],
                     MIGRATIONS[7],
-                    V9_OK,
+                    MIGRATIONS[8],
+                    V10_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows version 8
+        let err = open(&path).unwrap_err(); // this build only knows schema 9
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 9,
-                supported: 8
+                found: 10,
+                supported: 9
             }
         );
         assert_eq!(
@@ -605,7 +621,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 8,
+                found: 9,
                 supported: 7
             }
         );
@@ -645,6 +661,7 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
+                (9, "achievements".to_string()),
             ]
         );
         for table in [
@@ -680,7 +697,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 8,
+                found: 9,
                 supported: 1
             }
         );
@@ -704,8 +721,8 @@ mod tests {
     fn migration_lists_must_be_sequential() {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
-            version: 9,
-            ..V9_OK
+            version: 4,
+            ..V10_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -746,6 +763,7 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
+                (9, "achievements".to_string()),
             ]
         );
 
@@ -875,6 +893,7 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
+                (9, "achievements".to_string()),
             ]
         );
 
@@ -1071,6 +1090,7 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
+                (9, "achievements".to_string()),
             ]
         );
 
@@ -1317,8 +1337,11 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 8);
-        assert_eq!(versions(&conn).last(), Some(&(8, "ports".to_owned())));
+        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(9, "achievements".to_owned()))
+        );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
                 "SELECT name, install_dir, installed, owned, family_shared
@@ -1361,23 +1384,25 @@ mod tests {
             "port_install_jobs",
             "port_installations",
             "port_preferences",
+            "achievement_games",
+            "achievements",
         ] {
             assert_eq!(
                 conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
                 0,
-                "new ports table {table} starts empty"
+                "new table {table} starts empty"
             );
         }
     }
 
     #[test]
-    fn opening_a_populated_schema8_profile_preserves_steam_and_ports_rows() {
+    fn a_populated_schema8_profile_upgrades_to_schema9_preserving_steam_and_ports_rows() {
         let dir = TempDir::new().unwrap();
         let path = db_path(&dir);
         {
-            let store = SqliteSettingsStore::open(&path).unwrap();
+            let store = SqliteSettingsStore::new(open_with(&path, &MIGRATIONS[..8]).unwrap());
             let conn = store.conn();
             conn.execute_batch(
                 r#"
@@ -1415,7 +1440,11 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(versions(&conn).last(), Some(&(8, "ports".to_owned())));
+        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(9, "achievements".to_owned()))
+        );
         assert_eq!(
             conn.query_row(
                 "SELECT name FROM library_entries WHERE key='steam:570'",
@@ -1471,6 +1500,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(preferences, ("list".into(), "E:/Ports".into()));
+        for table in ["achievement_games", "achievements"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "the new achievement table {table} starts empty"
+            );
+        }
     }
 
     #[test]
@@ -1496,6 +1534,8 @@ mod tests {
         assert_eq!(
             sorted,
             [
+                "achievement_games",
+                "achievements",
                 "auto_matches",
                 "backup_destinations",
                 "backup_jobs",

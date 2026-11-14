@@ -16,7 +16,7 @@ fn row(provider: &str, id: &str, title: &str, status: MatchStatus) -> Row {
         provider_name: provider.to_uppercase(),
         installed: true,
         owned: false,
-        family_shared: false,
+        shared: false,
         status,
         cover_file: None,
         release_year: None,
@@ -307,7 +307,8 @@ fn provider_counts_reach_the_frontend_with_the_keys_it_reads() {
             "count": 2,
             "installedCount": 0,
             "ownedCount": 0,
-            "familyCount": 0
+            "sharedCount": 0,
+            "sharedLabel": null
         })
     );
 }
@@ -429,7 +430,7 @@ fn an_owned_only_game_is_a_row_with_unknown_playtime() {
 
     let rows = machine.visible_rows("");
     assert_eq!(keys(&rows), ["steam:70"]);
-    assert!(!rows[0].installed && rows[0].owned && !rows[0].family_shared);
+    assert!(!rows[0].installed && rows[0].owned && !rows[0].shared);
     assert_eq!(
         rows[0].playtime.seconds, None,
         "unknown, not a made-up zero"
@@ -457,8 +458,8 @@ fn provider_counts_add_up_each_visible_fact() {
         entries: vec![
             stored("steam", "1", "Installed", true),
             stored_with("steam", "2", "Owned", false, true, false),
-            stored_with("steam", "3", "Family", false, false, true),
-            stored_with("steam", "4", "Owned and family", false, true, true),
+            stored_with("steam", "3", "Shared", false, false, true),
+            stored_with("steam", "4", "Owned and shared", false, true, true),
             stored_with("steam", "5", "Gone", false, false, false),
         ],
         ..LibraryCache::default()
@@ -468,17 +469,17 @@ fn provider_counts_add_up_each_visible_fact() {
 
     let count = &machine.provider_counts()[0];
     assert_eq!((count.count, count.installed_count), (4, 1));
-    assert_eq!((count.owned_count, count.family_count), (2, 1));
+    assert_eq!((count.owned_count, count.shared_count), (2, 1));
     let rows = machine.visible_rows("");
     assert_eq!(
         keys(&rows),
-        ["steam:3", "steam:1", "steam:2", "steam:4"],
+        ["steam:1", "steam:2", "steam:4", "steam:3"],
         "invisible entries are not rows"
     );
-    let family = rows.iter().find(|row| row.key == "steam:3").unwrap();
-    assert!(family.family_shared && !family.owned);
+    let shared = rows.iter().find(|row| row.key == "steam:3").unwrap();
+    assert!(shared.shared && !shared.owned);
     let both = rows.iter().find(|row| row.key == "steam:4").unwrap();
-    assert!(both.owned && !both.family_shared, "owned wins in the row");
+    assert!(both.owned && !both.shared, "owned wins in the row");
 }
 
 fn filters(change: impl FnOnce(&mut LibraryFilters)) -> LibraryFilters {
@@ -500,13 +501,13 @@ fn availability_facts_are_alternatives_and_empty_means_any() {
     let mut rows = vec![
         row("steam", "1", "Installed", MatchStatus::Unmatched),
         row("steam", "2", "Owned", MatchStatus::Unmatched),
-        row("steam", "3", "Family", MatchStatus::Unmatched),
+        row("steam", "3", "Shared", MatchStatus::Unmatched),
     ];
     rows[0].installed = true;
     rows[1].installed = false;
     rows[1].owned = true;
     rows[2].installed = false;
-    rows[2].family_shared = true;
+    rows[2].shared = true;
 
     let all = SidebarSelection::All;
     assert_eq!(
@@ -516,20 +517,20 @@ fn availability_facts_are_alternatives_and_empty_means_any() {
     );
     let installed = filters(|f| f.availability.installed = true);
     assert_eq!(keys(&filter(&rows, &all, &installed, "", 0)), ["steam:1"]);
-    let owned_or_family = filters(|f| {
+    let owned_or_shared = filters(|f| {
         f.availability.owned = true;
-        f.availability.family = true;
+        f.availability.shared = true;
     });
     assert_eq!(
-        keys(&filter(&rows, &all, &owned_or_family, "", 0)),
+        keys(&filter(&rows, &all, &owned_or_shared, "", 0)),
         ["steam:2", "steam:3"]
     );
-    let installed_and_family = filters(|f| {
+    let installed_and_shared = filters(|f| {
         f.availability.installed = true;
-        f.availability.family = true;
+        f.availability.shared = true;
     });
     assert_eq!(
-        keys(&filter(&rows, &all, &installed_and_family, "", 0)),
+        keys(&filter(&rows, &all, &installed_and_shared, "", 0)),
         ["steam:1", "steam:3"],
         "selected facts are alternatives"
     );

@@ -3,6 +3,8 @@
 //! Implements the `gamenode-core` ports that need the OS: per-user data locations, the SQLite
 //! database and its migrations, credential storage, single-instance IPC and the system browser.
 
+pub mod achievement_db;
+pub mod achievement_icons;
 pub mod archive;
 pub mod backups;
 pub mod browser;

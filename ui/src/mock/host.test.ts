@@ -45,6 +45,38 @@ describe('UI mock host', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('serves achievement summaries and filtered lists', async () => {
+    const host = createMockHost();
+    const snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const row = snapshot.library!.rows.find((entry) => entry.provider === 'steam')!;
+    await host.invoke('library_input', {
+      input: { select: { key: row.key, mode: 'replace' } },
+    });
+    const selected = await host.invoke('get_snapshot') as Snapshot;
+    expect(selected.library?.detail?.achievementBackend).toBe(true);
+    expect(selected.library?.detail?.achievements?.state).toBe('ready');
+    expect(selected.library?.detail?.achievements?.total).toBe(5);
+
+    const all = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'all',
+    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
+    expect(all.achievements).toHaveLength(5);
+    const unlocked = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'unlocked',
+    }) as { achievements: Array<{ unlocked: boolean }> };
+    expect(unlocked.achievements).toHaveLength(2);
+    expect(unlocked.achievements.every((entry) => entry.unlocked)).toBe(true);
+    const locked = await host.invoke('achievement_list', {
+      key: row.key,
+      filter: 'locked',
+    }) as { achievements: Array<{ unlocked: boolean; hidden: boolean }> };
+    expect(locked.achievements).toHaveLength(3);
+    expect(locked.achievements.some((entry) => entry.hidden)).toBe(true);
+    expect(await host.invoke('achievement_list', { key: 'gog:2', filter: 'all' })).toBeNull();
+  });
+
   it('does not route unsupported commands to any real service', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const host = createMockHost();
@@ -61,23 +93,49 @@ describe('UI mock host', () => {
 
     for (const scenario of scenarios) {
       const snapshot = await createMockHost({ storeAccount: scenario }).invoke('get_snapshot') as Snapshot;
-      expect(snapshot.storeAccounts).toHaveLength(1);
-      expect(snapshot.storeAccounts[0].provider).toBe('steam');
-      expect(snapshot.storeAccounts[0].state).toBe(scenario === 'persistFailed' ? 'connected' : scenario);
-      expect(snapshot.storeAccounts[0].persistFailed).toBe(scenario === 'persistFailed');
+      expect(snapshot.storeAccounts).toHaveLength(2);
+      expect(snapshot.storeAccounts.map((account) => account.provider)).toEqual(['steam', 'epic']);
+      const steam = snapshot.storeAccounts[0];
+      expect(steam.state).toBe(scenario === 'persistFailed' ? 'connected' : scenario);
+      expect(steam.persistFailed).toBe(scenario === 'persistFailed');
     }
   });
 
+  it('keeps Epic connected and without shared data while a Steam card action runs', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const epic = snapshot.storeAccounts.find((account) => account.provider === 'epic')!;
+    const steam = snapshot.storeAccounts.find((account) => account.provider === 'steam')!;
+    expect(epic.state).toBe('connected');
+    expect(epic.sharedCount).toBe(0);
+    expect(epic.sharedError).toBeNull();
+    expect(epic.sharedLabel).toBeNull();
+    expect(steam.sharedLabel).toBe('Steam Family');
+
+    await host.invoke('provider_sign_out', { providerId: 'epic' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'epic')!.state).toBe('notConnected');
+    expect(snapshot.storeAccounts.find((account) => account.provider === 'steam')!.state).toBe('connected');
+    expect(snapshot.library!.providers.find((provider) => provider.id === 'steam')!.ownedCount).toBe(5);
+  });
+
   it('returns trusted plugin inventory without credential data and respects the mock platform', async () => {
-    const windowsPlugin = (await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[])[0];
+    const windowsPlugins = await createMockHost({ platform: 'windows' }).invoke('plugin_inventory') as PluginInfo[];
+    const windowsPlugin = windowsPlugins[0];
     expect(windowsPlugin.source).toBe('official');
     expect(windowsPlugin.status).toBe('installed');
     expect(windowsPlugin.capabilities).toContain('library.discovery');
     expect(windowsPlugin.nativeAccess).toContain('registry');
     expect(JSON.stringify(windowsPlugin)).not.toMatch(/token|cookieValue|password|credentialValue/i);
 
+    const epicPlugin = windowsPlugins.find((plugin) => plugin.providerId === 'epic');
+    expect(epicPlugin?.name).toBe('Epic Games Store');
+    expect(epicPlugin?.capabilities).toContain('playtime.counter');
+    expect(epicPlugin?.capabilities).not.toContain('auth.webview.cookies.read');
+
     const linuxPlugins = await createMockHost({ platform: 'linux' }).invoke('plugin_inventory') as PluginInfo[];
     expect(linuxPlugins[0].nativeAccess).not.toContain('registry');
+    expect(linuxPlugins.some((plugin) => plugin.providerId === 'epic')).toBe(false);
     const packagePlugin = linuxPlugins.find((plugin) => plugin.providerId === 'packagekit');
     expect(packagePlugin?.name).toBe('Gerenciador de pacotes Linux');
     expect(packagePlugin?.capabilities).toEqual(['provider.context.read', 'library.discovery']);
@@ -95,21 +153,25 @@ describe('UI mock host', () => {
     expect(snapshot.ports.preferences.lastParentFolder).toBe('D:\\Ports');
   });
 
-  it('marks rows with installed, owned and family facts and keeps counts consistent', async () => {
+  it('marks rows with installed, owned and shared facts and keeps counts consistent', async () => {
     const snapshot = await createMockHost().invoke('get_snapshot') as Snapshot;
     const rows = snapshot.library!.rows;
 
     expect(rows).toHaveLength(12);
     expect(rows.every((row) => typeof row.installed === 'boolean')).toBe(true);
     expect(rows.some((row) => row.owned)).toBe(true);
-    expect(rows.some((row) => row.familyShared && !row.owned)).toBe(true);
+    expect(rows.some((row) => row.shared && !row.owned)).toBe(true);
+    expect(rows.every((row) => !row.shared || row.provider === 'steam')).toBe(true);
     expect(snapshot.library!.installedTotal).toBe(rows.filter((row) => row.installed).length);
 
     const steam = snapshot.library!.providers.find((provider) => provider.id === 'steam')!;
     expect(steam.count).toBe(rows.filter((row) => row.provider === 'steam').length);
     expect(steam.installedCount).toBe(rows.filter((row) => row.provider === 'steam' && row.installed).length);
     expect(steam.ownedCount).toBe(rows.filter((row) => row.provider === 'steam' && row.owned).length);
-    expect(steam.familyCount).toBe(rows.filter((row) => row.provider === 'steam' && row.familyShared && !row.owned).length);
+    expect(steam.sharedCount).toBe(rows.filter((row) => row.provider === 'steam' && row.shared && !row.owned).length);
+    expect(steam.sharedLabel).toBe('Steam Family');
+    const epic = snapshot.library!.providers.find((provider) => provider.id === 'epic')!;
+    expect(epic.sharedLabel).toBeNull();
   });
 
   it('reacts to Steam checking, sign-out and sign-in commands with published snapshots', async () => {
@@ -155,7 +217,7 @@ describe('UI mock host', () => {
     const host = createMockHost();
     const installed = {
       ...createDefaultFilters(),
-      availability: { installed: true, owned: false, family: false },
+      availability: { installed: true, owned: false, shared: false },
     };
     await host.invoke('library_input', { input: { setFilters: installed } });
     let snapshot = await host.invoke('get_snapshot') as Snapshot;
@@ -202,7 +264,7 @@ describe('mock library filters and sorting', () => {
     const favoritesInstalled = await withFilters({
       ...createDefaultFilters(),
       favoritesOnly: true,
-      availability: { installed: true, owned: false, family: false },
+      availability: { installed: true, owned: false, shared: false },
     });
     expect(favoritesInstalled.library!.rows.map((row) => row.key)).toEqual([
       'gog:2',
@@ -229,7 +291,7 @@ describe('mock library filters and sorting', () => {
   it('counts providers over the filtered rows but keeps the raw facts', async () => {
     const snapshot = await withFilters({
       ...createDefaultFilters(),
-      availability: { installed: true, owned: false, family: false },
+      availability: { installed: true, owned: false, shared: false },
     });
     const steam = snapshot.library!.providers.find((provider) => provider.id === 'steam')!;
     expect(steam.count).toBe(3);

@@ -45,8 +45,8 @@ describe('features/shell', () => {
     total: 42,
     installedTotal: 42,
     providers: [
-      { id: 'steam', name: 'Steam', count: 30, installedCount: 30, ownedCount: 0, familyCount: 0 },
-      { id: 'gog', name: 'GOG', count: 12, installedCount: 12, ownedCount: 0, familyCount: 0 },
+      { id: 'steam', name: 'Steam', count: 30, installedCount: 30, ownedCount: 0, sharedCount: 0, sharedLabel: 'Steam Family' },
+      { id: 'gog', name: 'GOG', count: 12, installedCount: 12, ownedCount: 0, sharedCount: 0, sharedLabel: null },
     ],
     rows: [],
     scanning: false,

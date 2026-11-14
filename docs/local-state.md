@@ -5,14 +5,29 @@ The platform `DataPaths` adapter resolves these locations for the current user:
 | Platform | Application data | Settings database | Linux-only fallback credential |
 | --- | --- | --- | --- |
 | Windows | `%LOCALAPPDATA%\GameNode\Desktop` | `gamenode.sqlite3` below application data | None; Windows Credential Manager only |
-| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token` and `private/steam-token` below application data |
+| Linux | `$XDG_DATA_HOME/gamenode-desktop`, or `~/.local/share/gamenode-desktop` | `gamenode.sqlite3` below application data | `private/session-token`, `private/provider-<provider id>.secret` and the legacy `private/steam-token` alias below application data |
 
-The Linux fallback directory has mode `0700` and the credential files `0600`. The GameNode
-session and the Steam session cookie use separate keyring accounts and separate fallback files;
-deleting one never touches the other.
+The Linux fallback directory has mode `0700` and the credential files `0600`.
 Only an absent Secret Service permits fallback; locked or failing services
 produce an error. Credentials are never settings. The keyring/fallback adapter
 handles tokens separately from SQLite.
+
+Credential slots are named by the host, never by a plugin:
+
+- The GameNode account session uses the `session` keyring account and
+  `private/session-token` on Linux.
+- Each provider's plugin sees the logical key `session`, mapped to that provider's own physical
+  slot: keyring account `provider.<provider id>` and Linux file
+  `private/provider-<provider id>.secret`. A provider cannot address another provider's slot or the
+  GameNode session.
+- Trusted descriptor data may name an existing physical slot instead. Steam keeps its historical
+  `steam` keyring account and `private/steam-token` file, so existing Steam credentials need no
+  migration or new sign-in.
+
+Isolated sign-in profiles live under `private/login/<provider>` and are removed when each attempt
+ends. Startup also removes the legacy profile directories listed by trusted descriptors, such as
+`private/steam-login`.
+
 
 The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
@@ -217,3 +232,15 @@ upgraded schema without modifying it.
 Catalog and overlay data are not credentials and contain no GameNode account or device
 identifier. The tables belong to the OS user and are shared across GameNode accounts.
 
+
+## Achievements (migration `0009_achievements.sql`)
+
+| Table | Holds |
+| --- | --- |
+| `achievement_games` | One row per `(provider, store_account_id, entry_id)` ever read: `state` (`ready`, `none` or `failed`), the `language` of the last successful read, `last_success_at`, `last_attempt_at` and the last failure category. A failed read keeps a previous success's state and data. |
+| `achievements` | The complete definitions of one game, keyed by `(provider, store_account_id, entry_id, achievement_id)`: name, description, hidden flag, icon URLs, unlocked state, optional unlock time and the store's schema `position`. Each complete read replaces a game's rows in one transaction. |
+
+The cache is keyed by the connected store account, independently of any GameNode
+account, and contains no credential. Explicit store sign-out and replacement by a
+different store account delete that account's rows; session expiry and an
+unreachable store keep them.

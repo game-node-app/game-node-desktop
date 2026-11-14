@@ -8,7 +8,11 @@ use url::Url;
 #[serde(deny_unknown_fields)]
 pub struct LoginPolicy {
     pub start_url: String,
-    pub cookie_url: String,
+    /// Where the host may read the declared cookies. Empty for probe-only
+    /// policies such as an authorization-code flow. Several URLs allow a
+    /// session spread over more than one Steam host.
+    #[serde(default)]
+    pub cookie_urls: Vec<String>,
     pub probe_origin: String,
     pub title: String,
     pub allowed_hosts: Vec<String>,
@@ -47,7 +51,9 @@ impl LoginPolicy {
                         b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.'
                     })
             })
-            || self.cookie_names.is_empty()
+            // A policy either reads cookies from at least one URL or reads no cookies at all.
+            || self.cookie_urls.is_empty() != self.cookie_names.is_empty()
+            || self.cookie_urls.len() > 4
             || self.cookie_names.len() > 16
             || self.cookie_names.iter().any(|name| {
                 name.is_empty()
@@ -60,10 +66,14 @@ impl LoginPolicy {
             return Err(bad);
         }
         let start = Url::parse(&self.start_url).map_err(|_| bad)?;
-        let cookie = Url::parse(&self.cookie_url).map_err(|_| bad)?;
+        let cookie_urls = self
+            .cookie_urls
+            .iter()
+            .map(|url| Url::parse(url).map_err(|_| bad))
+            .collect::<Result<Vec<_>, _>>()?;
         let probe = Url::parse(&self.probe_origin).map_err(|_| bad)?;
         if !self.allows(&start)
-            || !self.allows(&cookie)
+            || cookie_urls.iter().any(|url| !self.allows(url))
             || !self.allows(&probe)
             || probe.path() != "/"
             || probe.query().is_some()
@@ -80,5 +90,96 @@ impl LoginPolicy {
             return Err(bad);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy(cookie_urls: &[&str], cookie_names: &[&str]) -> LoginPolicy {
+        LoginPolicy {
+            start_url: "https://store.example.test/login".into(),
+            cookie_urls: cookie_urls.iter().map(|url| (*url).into()).collect(),
+            probe_origin: "https://store.example.test".into(),
+            title: "Example".into(),
+            allowed_hosts: vec!["example.test".into()],
+            cookie_names: cookie_names.iter().map(|name| (*name).into()).collect(),
+            probe_script: "null".into(),
+            width: 600,
+            height: 760,
+            timeout_seconds: 600,
+        }
+    }
+
+    #[test]
+    fn a_cookie_free_policy_is_valid() {
+        policy(&[], &[]).validate().unwrap();
+    }
+
+    #[test]
+    fn a_cookie_policy_is_valid() {
+        policy(&["https://store.example.test/"], &["session"])
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn several_cookie_urls_are_allowed_for_one_session() {
+        policy(
+            &["https://store.example.test/", "https://login.example.test/"],
+            &["session", "refresh"],
+        )
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn cookie_urls_and_cookie_names_must_agree() {
+        assert!(
+            policy(&["https://store.example.test/"], &[])
+                .validate()
+                .is_err()
+        );
+        assert!(policy(&[], &["session"]).validate().is_err());
+    }
+
+    #[test]
+    fn a_cookie_url_must_stay_on_an_allowed_host() {
+        assert!(
+            policy(&["https://other.test/"], &["session"])
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn an_empty_cookie_url_is_rejected() {
+        assert!(policy(&[""], &["session"]).validate().is_err());
+    }
+
+    #[test]
+    fn invalid_cookie_names_are_rejected_even_when_the_url_is_absent() {
+        assert!(policy(&[], &["bad name"]).validate().is_err());
+    }
+
+    #[test]
+    fn a_missing_cookie_urls_list_deserializes_as_cookie_free() {
+        let policy: LoginPolicy = serde_json::from_str(
+            r#"{
+                "start_url": "https://store.example.test/login",
+                "probe_origin": "https://store.example.test",
+                "title": "Example",
+                "allowed_hosts": ["example.test"],
+                "cookie_names": [],
+                "probe_script": "null",
+                "width": 600,
+                "height": 760,
+                "timeout_seconds": 600
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(policy.cookie_urls, Vec::<String>::new());
+        policy.validate().unwrap();
     }
 }

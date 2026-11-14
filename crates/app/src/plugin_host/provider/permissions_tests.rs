@@ -66,6 +66,7 @@ impl Harness {
                 provider_id: provider.into(),
                 plugin_id: plugin.into(),
                 capabilities: grants.iter().map(|v| (*v).into()).collect(),
+                shared_catalog: false,
                 services: guarded.clone(),
             })
             .unwrap();
@@ -140,7 +141,7 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
     assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
 
     let metadata = h.client.host.describe_api().await.unwrap();
-    assert_eq!((metadata.api_major, metadata.api_minor), (1, 4));
+    assert_eq!((metadata.api_major, metadata.api_minor), (1, 6));
     let permissions = h.client.host.get_permissions().await.unwrap();
     assert_eq!(permissions.revision, 1);
     assert!(
@@ -202,6 +203,7 @@ async fn queued_storage_is_fenced_when_revocation_wins_commit_lock() {
             secret_deleted: false,
             identity_accepted: false,
             settings: None,
+            requested_achievements: Default::default(),
         },
     );
     let held = provider.commits.clone().lock_owned().await;
@@ -327,6 +329,7 @@ enum Access {
     SecretDelete,
     Counter,
     Actions,
+    Achievements,
 }
 
 const CASES: &[Access] = &[
@@ -344,6 +347,7 @@ const CASES: &[Access] = &[
     Access::SecretDelete,
     Access::Counter,
     Access::Actions,
+    Access::Achievements,
 ];
 
 impl Access {
@@ -362,6 +366,7 @@ impl Access {
             Self::SecretDelete => cap::SECRET_DELETE,
             Self::Counter => cap::COUNTER,
             Self::Actions => cap::ACTIONS,
+            Self::Achievements => cap::ACHIEVEMENTS,
         }
     }
     fn operation(self) -> ProviderOperation {
@@ -371,13 +376,14 @@ impl Access {
             Self::Login | Self::Cookies | Self::Page => ProviderOperation::SignIn,
             Self::Counter => ProviderOperation::ReadCounter,
             Self::Actions => ProviderOperation::Initialize,
+            Self::Achievements => ProviderOperation::ReadAchievements,
             _ => ProviderOperation::Check,
         }
     }
     fn required_to_dispatch(self) -> bool {
         matches!(
             self,
-            Self::Discovery | Self::Catalog | Self::Login | Self::Counter
+            Self::Discovery | Self::Catalog | Self::Login | Self::Counter | Self::Achievements
         )
     }
 
@@ -471,9 +477,19 @@ impl Access {
                     games: vec![CatalogGame {
                         id: "42".into(),
                         name: "A game".into(),
+                        fields: Default::default(),
                     }],
                 })))
                 .await
+            }
+            Self::Achievements => {
+                let mut result = completed();
+                result.achievements = vec![AchievementOutcome {
+                    game_id: "42".into(),
+                    outcome: Some(achievement_outcome::Outcome::None(true)),
+                }];
+                api.event(event(provider_event::Event::Result(result)))
+                    .await
             }
             Self::Discovery | Self::Counter => {
                 let mut result = completed();
@@ -486,7 +502,7 @@ impl Access {
                     result.counters = vec![CounterObservation {
                         id: "42".into(),
                         seconds: 60,
-                        last_played: 10,
+                        last_played: Some(10),
                     }];
                 }
                 api.event(event(provider_event::Event::Result(result)))
@@ -529,11 +545,23 @@ async fn every_missing_host_grant_is_rejected_before_adapter_or_domain_effects()
         }
         let (mut h, entered) = Harness::with_grants(&grants).await;
         if case.required_to_dispatch() {
-            let error = h
-                .api
-                .execute("fixture", case.operation())
-                .await
-                .unwrap_err();
+            let error = if matches!(case, Access::Achievements) {
+                h.api
+                    .execute_achievements(
+                        "fixture",
+                        models::AchievementsRequest {
+                            game_ids: vec!["42".into()],
+                            language: "en".into(),
+                        },
+                    )
+                    .await
+                    .unwrap_err()
+            } else {
+                h.api
+                    .execute("fixture", case.operation())
+                    .await
+                    .unwrap_err()
+            };
             assert_eq!(error.code(), tonic::Code::PermissionDenied, "{case:?}");
             let detail = DenialDetail::decode(error.details()).unwrap();
             assert_eq!(detail.reason, DenialReason::NotGranted as i32, "{case:?}");
@@ -644,8 +672,130 @@ fn authorization_audit_is_bounded_and_contains_no_request_payload_fields() {
     assert_eq!(events.last().unwrap().plugin_id, "fixture.plugin.256");
 
     let rendered = format!("{events:?}");
-    for sensitive in ["session_credential", "cookie-value", "secret-value", "raw-request"] {
+    for sensitive in [
+        "session_credential",
+        "cookie-value",
+        "secret-value",
+        "raw-request",
+    ] {
         assert!(!rendered.contains(sensitive));
+    }
+}
+
+#[tokio::test]
+async fn shared_catalog_data_requires_declared_shared_access() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    let error = h.api.event(shared_chunk(&context, 0)).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        error.message(),
+        "shared catalog data requires declared shared access"
+    );
+
+    // A shared failure without chunks is rejected once the transfer is finalized too.
+    let error = h.api.event(shared_failure(&context)).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "the sync fails instead of completing without the shared facts"
+    );
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_shared_completion_without_records_still_requires_the_declaration() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(0)),
+    }];
+    let error = h
+        .api
+        .event(ProviderEvent {
+            context: Some(context),
+            event: Some(provider_event::Event::Result(result)),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_declared_provider_may_send_shared_catalog_data() {
+    let mut h = Harness::with_shared_catalog().await;
+    let pending = h.execute(ProviderOperation::SyncCatalog);
+    let context = h
+        .next(ProviderOperation::SyncCatalog)
+        .await
+        .context()
+        .clone();
+
+    h.api.event(shared_chunk(&context, 0)).await.unwrap();
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(1)),
+    }];
+    h.api
+        .event(ProviderEvent {
+            context: Some(context),
+            event: Some(provider_event::Event::Result(result)),
+        })
+        .await
+        .unwrap();
+
+    let completion = pending.await.unwrap().unwrap();
+    assert_eq!(completion.catalog.shared.unwrap().unwrap()[0].id, "42");
+    assert_eq!(h.services.publications.load(Ordering::SeqCst), 0);
+}
+
+fn shared_chunk(context: &ServiceContext, index: u32) -> ProviderEvent {
+    ProviderEvent {
+        context: Some(context.clone()),
+        event: Some(provider_event::Event::CatalogChunk(CatalogChunk {
+            category: CatalogCategory::Shared as i32,
+            index,
+            games: vec![CatalogGame {
+                id: "42".into(),
+                name: "A game".into(),
+                fields: Default::default(),
+            }],
+        })),
+    }
+}
+
+fn shared_failure(context: &ServiceContext) -> ProviderEvent {
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        category: CatalogCategory::Shared as i32,
+        outcome: Some(catalog_completion::Outcome::Failed(
+            CatalogFailure::Privacy as i32,
+        )),
+    }];
+    ProviderEvent {
+        context: Some(context.clone()),
+        event: Some(provider_event::Event::Result(result)),
     }
 }
 

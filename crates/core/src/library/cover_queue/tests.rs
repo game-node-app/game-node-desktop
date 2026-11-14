@@ -344,7 +344,7 @@ fn losing_the_account_drops_pending_downloads() {
 }
 
 #[test]
-fn installed_covers_are_queued_before_owned_and_family_covers() {
+fn installed_covers_are_queued_before_owned_and_shared_covers() {
     use crate::library::machine::tests::stored_with;
 
     let mut cache = LibraryCache::default();

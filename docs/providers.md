@@ -44,9 +44,9 @@ the host resolves them through the provider context and bounded file-access serv
 | `exclude_ids` | no | Provider ids that are never shown: tools, runtimes and redistributables. |
 | `roots.windows`, `roots.linux` | no | Declarative provider roots for host implementations that use them. Plugin policy may instead keep OS-specific roots in trusted plugin data and query them through host services. |
 
-Registry roots are only valid under `roots.windows` and must start with `HKCU\`. A root that does
-not exist is not an error: the scan simply finds nothing there. Roots that resolve to the same
-folder (for example a symbolic link) are scanned once.
+Registry roots are only valid under `roots.windows` and must start with `HKCU\` or `HKLM\`. A root
+that does not exist is not an error: the scan simply finds nothing there. Roots that resolve to the
+same folder (for example a symbolic link) are scanned once.
 
 ## Records
 

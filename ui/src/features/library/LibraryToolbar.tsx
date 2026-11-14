@@ -31,6 +31,7 @@ import {
 import { appTheme } from '../../AppProviders';
 import { openSettingsModal } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { providerLabel } from '../../i18n/providerLabel';
 import { formatI18n } from './formatters';
 
 const bannerBase =
@@ -82,7 +83,11 @@ interface Chip {
   clear: () => LibraryFilters;
 }
 
-function activeChips(filters: LibraryFilters, t: (key: string) => string): Chip[] {
+function activeChips(
+  filters: LibraryFilters,
+  t: (key: string) => string,
+  showShared: boolean,
+): Chip[] {
   const chips: Chip[] = [];
   const availability = (patch: Partial<LibraryFilters['availability']>) => ({
     ...filters,
@@ -102,11 +107,11 @@ function activeChips(filters: LibraryFilters, t: (key: string) => string): Chip[
       clear: () => availability({ owned: false }),
     });
   }
-  if (filters.availability.family) {
+  if (showShared && filters.availability.shared) {
     chips.push({
-      id: 'family',
-      label: t('Library::Family shared'),
-      clear: () => availability({ family: false }),
+      id: 'shared',
+      label: t('Library::Shared'),
+      clear: () => availability({ shared: false }),
     });
   }
   if (filters.runningOnly) {
@@ -283,11 +288,24 @@ export const LibraryToolbar: React.FC = () => {
   const scanning = library?.scanning ?? false;
   const failedProviders = library?.failedProviders ?? [];
   const access = library?.access ?? 'verified';
-  const steamAccount = storeAccounts?.find((account) => account.provider === 'steam');
-  const steamExpired = steamAccount?.state === 'expired';
-  const steamUnreachable = steamAccount?.state === 'unreachable';
+  const storeWarning = storeAccounts?.find(
+    (account) => account.state === 'expired' || account.state === 'unreachable',
+  );
+  const showShared = (library?.providers ?? []).some(
+    (provider) => provider.sharedLabel !== null,
+  );
+  const storeWarningProvider = storeWarning
+    ? providerLabel(
+        storeWarning.provider,
+        library?.providers.find((provider) => provider.id === storeWarning.provider)?.name,
+        t,
+      )
+    : '';
 
-  const chips = useMemo(() => activeChips(filters, t), [filters, t]);
+  const chips = useMemo(
+    () => activeChips(filters, t, showShared),
+    [filters, t, showShared],
+  );
 
   const setFilters = (next: LibraryFilters) => {
     commands.libraryInput({ setFilters: next });
@@ -405,36 +423,19 @@ export const LibraryToolbar: React.FC = () => {
         </div>
       )}
 
-      {steamExpired && (
+      {storeWarning && (
         <div
-          data-testid="banner-steam-expired"
+          data-testid={`banner-store-${storeWarning.state}`}
           className={`${bannerBase} flex flex-wrap items-center gap-compact bg-warning-subtle text-warning`}
         >
           <span>
-            {t('Library::Steam sign-in expired. Showing your saved Steam library.')}
+            {storeWarning.state === 'expired'
+              ? t('library.storeSignInExpired', { provider: storeWarningProvider })
+              : t('library.storeCannotBeReached', { provider: storeWarningProvider })}
           </span>
           <button
             type="button"
-            data-testid="banner-steam-fix-btn"
-            onClick={handleFixInSettings}
-            className="cursor-pointer rounded-xs border border-warning bg-transparent px-2 py-0.5 text-xs font-medium text-warning transition-colors hover:bg-surface"
-          >
-            {t('Library::Fix in Settings')}
-          </button>
-        </div>
-      )}
-
-      {steamUnreachable && (
-        <div
-          data-testid="banner-steam-unreachable"
-          className={`${bannerBase} flex flex-wrap items-center gap-compact bg-warning-subtle text-warning`}
-        >
-          <span>
-            {t('Library::Steam cannot be reached. Showing your saved Steam library.')}
-          </span>
-          <button
-            type="button"
-            data-testid="banner-steam-fix-btn"
+            data-testid="banner-store-fix-btn"
             onClick={handleFixInSettings}
             className="cursor-pointer rounded-xs border border-warning bg-transparent px-2 py-0.5 text-xs font-medium text-warning transition-colors hover:bg-surface"
           >
@@ -549,22 +550,24 @@ export const LibraryToolbar: React.FC = () => {
                   color="brand"
                   size="xs"
                 />
-                <Checkbox
-                  data-testid="filter-family"
-                  label={t('Library::Family shared')}
-                  checked={filters.availability.family}
-                  onChange={(event) =>
-                    setFilters({
-                      ...filters,
-                      availability: {
-                        ...filters.availability,
-                        family: event.currentTarget.checked,
-                      },
-                    })
-                  }
-                  color="brand"
-                  size="xs"
-                />
+                {showShared && (
+                  <Checkbox
+                    data-testid="filter-shared"
+                    label={t('Library::Shared')}
+                    checked={filters.availability.shared}
+                    onChange={(event) =>
+                      setFilters({
+                        ...filters,
+                        availability: {
+                          ...filters.availability,
+                          shared: event.currentTarget.checked,
+                        },
+                      })
+                    }
+                    color="brand"
+                    size="xs"
+                  />
+                )}
               </div>
 
               <div className="flex items-center justify-between gap-sm">

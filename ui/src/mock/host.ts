@@ -49,21 +49,26 @@ export type MockSteamScenario =
 const titles = ['Aster Vale', 'Beyond the Pines', 'Clockwork Harbor', 'Distant Skies', 'Emberfall', 'Forgotten Atlas', 'Glass Garden', 'Hollow Mountain', 'Infinite Coast', 'Juniper Station', 'Kingdom of Rain', 'Lunar Circuit'];
 
 /**
- * The mock library mixes installed, owned-only and family-shared rows so every
+ * The mock library mixes installed, owned-only and shared rows so every
  * indicator and count can be exercised from `VITE_UI_MOCK=1`.
  */
 const NOW = Math.floor(Date.now() / 1000);
 
 const allRows: Row[] = titles.map((title, index) => {
   const steam = index % 2 === 0;
+  // GOG keeps the two favorites; the remaining odd rows stand in for Epic Games Store.
+  const gog = index === 1 || index === 3;
+  const provider = steam ? 'steam' : gog ? 'gog' : 'epic';
+  const providerName = steam ? 'Steam' : gog ? 'GOG' : 'Epic Games Store';
   const installed = steam ? index === 0 || index === 2 || index === 8 : true;
-  const familyShared = index === 4;
-  const owned = steam && !familyShared;
+  // Only Steam declares shared access in this fixture; an Epic row must stay owned.
+  const shared = index === 6;
+  const owned = !gog && !shared;
   return {
-    key: `${steam ? 'steam' : 'gog'}:${index + 1}`,
+    key: `${provider}:${index + 1}`,
     title, detectedName: title, matchedName: index === 2 ? null : title,
-    provider: steam ? 'steam' : 'gog', providerName: steam ? 'Steam' : 'GOG',
-    installed, owned, familyShared,
+    provider, providerName,
+    installed, owned, shared,
     running: false, status: index === 2 ? 'unmatched' : { matched: { gameId: index + 1, source: 'automatic' } },
     coverFile: `mock-${index}.svg`,
     playtime: {
@@ -87,13 +92,13 @@ function within(at: number | null | undefined, now: number, window: number): boo
 /** The same facet rules as `crates/core/src/library/query.rs`, in memory. */
 function matchesFilters(row: Row, filters: LibraryFilters, now: number): boolean {
   const availability = filters.availability;
-  const anyAvailability = availability.installed || availability.owned || availability.family;
+  const anyAvailability = availability.installed || availability.owned || availability.shared;
   if (
     anyAvailability &&
     !(
       (availability.installed && row.installed) ||
       (availability.owned && row.owned) ||
-      (availability.family && row.familyShared)
+      (availability.shared && row.shared)
     )
   ) return false;
   if (filters.runningOnly && !row.running) return false;
@@ -216,7 +221,13 @@ function compareRows(a: Row, b: Row, sort: { key: LibraryView['layout']['sort'][
   }
 }
 
-function summarizeProvider(filtered: Row[], raw: Row[], id: string, name: string): ProviderCount {
+function summarizeProvider(
+  filtered: Row[],
+  raw: Row[],
+  id: string,
+  name: string,
+  sharedLabel: string | null,
+): ProviderCount {
   const providerRows = filtered.filter((row) => row.provider === id);
   const rawRows = raw.filter((row) => row.provider === id);
   return {
@@ -225,15 +236,48 @@ function summarizeProvider(filtered: Row[], raw: Row[], id: string, name: string
     count: providerRows.length,
     installedCount: rawRows.filter((row) => row.installed).length,
     ownedCount: rawRows.filter((row) => row.owned).length,
-    familyCount: rawRows.filter((row) => row.familyShared && !row.owned).length,
+    sharedCount: rawRows.filter((row) => row.shared && !row.owned).length,
+    sharedLabel,
   };
 }
 
 function providerCounts(filtered: Row[], raw: Row[]): ProviderCount[] {
   return [
-    summarizeProvider(filtered, raw, 'steam', 'Steam'),
-    summarizeProvider(filtered, raw, 'gog', 'GOG'),
+    summarizeProvider(filtered, raw, 'steam', 'Steam', 'Steam Family'),
+    summarizeProvider(filtered, raw, 'gog', 'GOG', null),
+    summarizeProvider(filtered, raw, 'epic', 'Epic Games Store', null),
   ];
+}
+
+const MOCK_ACHIEVEMENTS = [
+  { id: 'ACH_FIRST', name: 'First steps', description: 'Finish the opening chapter.', hidden: false, unlocked: true, unlockedAt: NOW - 300, position: 0 },
+  { id: 'ACH_COLLECT', name: 'Collector', description: 'Find every hidden relic.', hidden: false, unlocked: true, unlockedAt: NOW - 7_200, position: 1 },
+  { id: 'ACH_HIDDEN', name: 'A secret', description: 'A spoiler description.', hidden: true, unlocked: false, unlockedAt: null, position: 2 },
+  { id: 'ACH_BOSS', name: 'Boss rush', description: 'Defeat every boss.', hidden: false, unlocked: false, unlockedAt: null, position: 3 },
+  { id: 'ACH_NIGHT', name: 'Night owl', description: 'Play after midnight.', hidden: false, unlocked: false, unlockedAt: null, position: 4 },
+];
+
+function mockAchievementList(filter: string) {
+  const records = MOCK_ACHIEVEMENTS
+    .map((achievement) => ({
+      ...achievement,
+      iconUrl: '',
+      iconGrayUrl: '',
+    }))
+    .filter((achievement) =>
+      filter === 'unlocked'
+        ? achievement.unlocked
+        : filter === 'locked'
+          ? !achievement.unlocked
+          : true,
+    );
+  return {
+    connected: true,
+    state: 'ready' as const,
+    lastSuccessAt: NOW - 60,
+    failure: null,
+    achievements: records,
+  };
 }
 
 function createLibrary(source: Row[]): LibraryView {
@@ -248,7 +292,7 @@ function createLibrary(source: Row[]): LibraryView {
 
 /**
  * Optional large-library fixture (`?library=large`): 320 owned Steam games, exactly 18 installed,
- * and a few family-shared games, so virtualization, counts and the Installed filter can be checked
+ * and a few shared games, so virtualization, counts and the Installed filter can be checked
  * against a realistic catalog. It is additive; the default scenario stays at 12 games.
  */
 function createLargeLibraryRows(): Row[] {
@@ -264,7 +308,7 @@ function createLargeLibraryRows(): Row[] {
       providerName: 'Steam',
       installed,
       owned: true,
-      familyShared: false,
+      shared: false,
       running: false,
       status: index % 5 === 0 ? 'unmatched' : { matched: { gameId: index + 1, source: 'automatic' } },
       coverFile: `mock-${index % 12}.svg`,
@@ -277,14 +321,14 @@ function createLargeLibraryRows(): Row[] {
   for (let index = 0; index < 8; index += 1) {
     rows.push({
       key: `steam:${5000 + index}`,
-      title: `Family Shelf ${index + 1}`,
-      detectedName: `Family Shelf ${index + 1}`,
+      title: `Shared Shelf ${index + 1}`,
+      detectedName: `Shared Shelf ${index + 1}`,
       matchedName: null,
       provider: 'steam',
       providerName: 'Steam',
       installed: false,
       owned: false,
-      familyShared: true,
+      shared: true,
       running: false,
       status: 'unmatched',
       coverFile: `mock-${index % 12}.svg`,
@@ -297,15 +341,16 @@ function createLargeLibraryRows(): Row[] {
   return rows;
 }
 
-function installedOnlyRows(source: Row[]): Row[] {
+function installedOnlyRows(source: Row[], provider: string): Row[] {
   return source
-    .map((row) => row.provider === 'steam' ? { ...row, owned: false, familyShared: false } : { ...row })
-    .filter((row) => row.installed || row.owned || row.familyShared);
+    .map((row) => row.provider === provider ? { ...row, owned: false, shared: false } : { ...row })
+    .filter((row) => row.installed || row.owned || row.shared);
 }
 
 function makeStoreAccount(
+  provider: 'steam' | 'epic',
   scenario: MockSteamScenario,
-  counts: Pick<StoreAccountView, 'ownedCount' | 'familyCount' | 'installedCount'>,
+  counts: Pick<StoreAccountView, 'ownedCount' | 'sharedCount' | 'installedCount'>,
   storage: StorageMethod,
 ): StoreAccountView {
   const disconnected = scenario === 'notConnected';
@@ -313,24 +358,27 @@ function makeStoreAccount(
   const state: StoreAccountState = scenario === 'persistFailed' ? 'connected' : scenario;
   const identity = scenario === 'notConnected' || signingIn
     ? null
-    : { accountId: '76561198000000000', accountName: 'cassi' };
+    : provider === 'steam'
+      ? { accountId: '76561198000000000', accountName: 'cassi' }
+      : { accountId: 'epic-account-1', accountName: 'EpicPlayer' };
   const catalogError =
     scenario === 'expired' ? 'expired' : scenario === 'unreachable' ? 'unreachable' : null;
 
   return {
-    provider: 'steam',
+    provider,
     state,
     accountId: identity?.accountId ?? null,
     accountName: identity?.accountName ?? null,
     ownedCount: disconnected ? 0 : counts.ownedCount,
-    familyCount: disconnected ? 0 : counts.familyCount,
+    sharedCount: disconnected || provider === 'epic' ? 0 : counts.sharedCount,
+    sharedLabel: provider === 'steam' ? 'Steam Family' : null,
     installedCount: counts.installedCount,
     lastCheckedAt: disconnected || signingIn ? null : Math.floor(Date.now() / 1000) - 120,
     lastSyncedAt: state === 'connected' ? Math.floor(Date.now() / 1000) : null,
     storage,
     persistFailed: scenario === 'persistFailed',
     catalogError,
-    familyError: null,
+    sharedError: null,
     canSignIn: scenario === 'notConnected' || scenario === 'expired' || scenario === 'credentialError',
     canCancelSignIn: signingIn,
     canFocusSignIn: signingIn,
@@ -720,37 +768,64 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
   const snapshot = createDefaultSnapshot();
   const ports = createMockPortsView(options.portsScenario ?? 'default');
   snapshot.ports = ports;
+  const platform = options.platform ?? 'windows';
+  const epicEnabled = platform !== 'linux';
   const baseRows = options.largeLibrary ? createLargeLibraryRows() : allRows;
   let rows = structuredClone(baseRows);
-  let steamScenario: MockSteamScenario = options.storeAccount ?? 'connected';
-  const steamStorage: StorageMethod = options.steamStorage ?? 'secretService';
-  let steamGeneration = 0;
-  let previousSteamScenario: MockSteamScenario =
-    steamScenario === 'signingIn' ? 'notConnected' : steamScenario;
 
-  function steamCounts() {
+  type StoreId = 'steam' | 'epic';
+  const storeIds: StoreId[] = epicEnabled ? ['steam', 'epic'] : ['steam'];
+  const scenarios: Record<StoreId, MockSteamScenario> = {
+    steam: options.storeAccount ?? 'connected',
+    epic: 'connected',
+  };
+  const previousScenarios: Record<StoreId, MockSteamScenario> = {
+    steam: scenarios.steam === 'signingIn' ? 'notConnected' : scenarios.steam,
+    epic: scenarios.epic === 'signingIn' ? 'notConnected' : scenarios.epic,
+  };
+  const storage: Record<StoreId, StorageMethod> = {
+    steam: options.steamStorage ?? 'secretService',
+    epic: 'secretService',
+  };
+  const generations: Record<StoreId, number> = { steam: 0, epic: 0 };
+
+  function providerCountsOf(provider: StoreId) {
     return {
-      ownedCount: rows.filter((row) => row.provider === 'steam' && row.owned).length,
-      familyCount: rows.filter((row) => row.provider === 'steam' && row.familyShared && !row.owned).length,
-      installedCount: rows.filter((row) => row.provider === 'steam' && row.installed).length,
+      ownedCount: rows.filter((row) => row.provider === provider && row.owned).length,
+      sharedCount: rows.filter((row) => row.provider === provider && row.shared && !row.owned).length,
+      installedCount: rows.filter((row) => row.provider === provider && row.installed).length,
     };
   }
 
-  function applySteamScenario(scenario: MockSteamScenario) {
-    steamScenario = scenario;
-    snapshot.storeAccounts = [makeStoreAccount(scenario, steamCounts(), steamStorage)];
+  function syncStoreAccounts() {
+    snapshot.storeAccounts = storeIds.map((provider) =>
+      makeStoreAccount(provider, scenarios[provider], providerCountsOf(provider), storage[provider]),
+    );
   }
 
-  function clearSteamCatalog() {
+  function rowsForScenarios(): Row[] {
+    let next: Row[] = structuredClone(baseRows);
+    if (!epicEnabled) {
+      next = next.filter((row) => row.provider !== 'epic');
+    }
+    for (const provider of storeIds) {
+      if (scenarios[provider] === 'notConnected') {
+        next = installedOnlyRows(next, provider);
+      }
+    }
+    return next;
+  }
+
+  function clearCatalog(provider: StoreId) {
     rows = rows
-      .map((row) => row.provider === 'steam' ? { ...row, owned: false, familyShared: false } : row)
-      .filter((row) => row.installed || row.owned || row.familyShared);
+      .map((row) => row.provider === provider ? { ...row, owned: false, shared: false } : row)
+      .filter((row) => row.installed || row.owned || row.shared);
   }
 
-  function scheduleSteam(delay: number, action: () => void) {
-    const generation = ++steamGeneration;
+  function scheduleStore(provider: StoreId, delay: number, action: () => void) {
+    const generation = ++generations[provider];
     setTimeout(() => {
-      if (generation !== steamGeneration) return;
+      if (generation !== generations[provider]) return;
       action();
     }, delay);
   }
@@ -1069,11 +1144,11 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
 
   function signIn() {
     snapshot.auth = { signedIn: { user: { id: 'mock-user', username: 'UI Developer', email: 'ui@example.invalid' } } };
-    rows = steamScenario === 'notConnected' ? installedOnlyRows(baseRows) : structuredClone(baseRows);
+    rows = rowsForScenarios();
     snapshot.library = createLibrary(rows);
   }
   if (!options.signedOut) signIn();
-  applySteamScenario(steamScenario);
+  syncStoreAccounts();
   const copy = () => structuredClone(snapshot);
   function updateLibrary() {
     const lib = snapshot.library;
@@ -1081,7 +1156,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     const filter = lib.layout.filter;
     const sort = lib.layout.sort;
     const filters = lib.layout.filters;
-    const visible = rows.filter((row) => row.installed || row.owned || row.familyShared);
+    const visible = rows.filter((row) => row.installed || row.owned || row.shared);
     const byFacets = visible
       .filter((row) => matchesFilters(row, filters, NOW))
       .filter((row) => row.title.toLowerCase().includes(lib.search.toLowerCase()));
@@ -1093,7 +1168,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
       .sort((a, b) => compareRows(a, b, sort));
     const availability = filters.availability;
     const installedOnly =
-      availability.installed && !availability.owned && !availability.family;
+      availability.installed && !availability.owned && !availability.shared;
     if (visible.length === 0) {
       lib.empty = { noGames: { stores: ['Steam', 'GOG'] } };
     } else if (installedOnly && lib.installedTotal === 0) {
@@ -1108,7 +1183,29 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     const disabled = { disabled: 'nothingSelected' as const };
     lib.actions = { selected: selected.length, play: one ? 'available' : disabled, install: disabled,
       matchGame: one ? 'available' : disabled, addToGamenode: selected.some((row) => typeof row.status === 'object') ? 'available' : disabled, changeMatch: !!one };
-    lib.detail = one ? { row: one, running: false, installDir: `/games/${one.title}`, releaseYear: one.releaseYear ?? 2022, hasArtwork: true, membership: 'notInLibrary' } : null;
+    lib.detail = one ? {
+      row: one,
+      running: false,
+      installDir: `/games/${one.title}`,
+      releaseYear: one.releaseYear ?? 2022,
+      hasArtwork: true,
+      membership: 'notInLibrary',
+      achievementBackend: one.provider === 'steam',
+      achievements: one.provider === 'steam'
+        ? {
+            state: 'ready',
+            unlocked: MOCK_ACHIEVEMENTS.filter((achievement) => achievement.unlocked).length,
+            total: MOCK_ACHIEVEMENTS.length,
+            latestUnlock: {
+              id: 'ACH_FIRST',
+              name: 'First steps',
+              unlockedAt: NOW - 300,
+            },
+            lastSuccessAt: NOW - 60,
+            failure: null,
+          }
+        : null,
+    } : null;
   }
   function publish() { updateLibrary(); const next = copy(); listeners.forEach((listener) => listener(next)); }
   function libraryInput(input: LibraryInput) {
@@ -1182,10 +1279,25 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
             'secrets.write', 'secrets.delete', 'playtime.counter',
             'provider.actions.declare',
           ],
-          session: steamScenario === 'notConnected' ? 'stopped' : 'active',
+          session: scenarios.steam === 'notConnected' ? 'stopped' : 'active',
           nativeAccess: platform === 'windows'
             ? ['files', 'network', 'registry']
             : ['files', 'network'],
+        };
+        const epicPlugin: PluginInfo = {
+          providerId: 'epic',
+          pluginId: 'org.gamenode.plugin.epic',
+          name: 'Epic Games Store',
+          source: 'official',
+          status: 'installed',
+          capabilities: [
+            'provider.context.read', 'library.discovery', 'library.catalog',
+            'account.state.read', 'account.state.publish', 'auth.webview',
+            'auth.webview.page.read', 'secrets.read', 'secrets.write',
+            'secrets.delete', 'playtime.counter', 'provider.actions.declare',
+          ],
+          session: scenarios.epic === 'notConnected' ? 'stopped' : 'active',
+          nativeAccess: ['files', 'network', 'registry'],
         };
         if (platform === 'linux') {
           const packageManagerPlugin: PluginInfo = {
@@ -1200,7 +1312,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
           };
           return [steamPlugin, packageManagerPlugin];
         }
-        return [steamPlugin];
+        return [steamPlugin, epicPlugin];
       }
       if (cmd === 'get_app_info') {
         return {
@@ -1231,27 +1343,46 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
       else if (cmd === 'set_sync_enabled') snapshot.sync.enabled = args.enabled as boolean;
       else if (cmd === 'dismiss_sync_explanation') snapshot.sync.explained = true;
       else if (cmd === 'set_playtime_source') snapshot.playtimeSource = args.source as Snapshot['playtimeSource'];
-      else if (cmd === 'provider_sign_in' && args.providerId === 'steam') {
-        previousSteamScenario = steamScenario === 'signingIn' ? 'notConnected' : steamScenario;
-        applySteamScenario('signingIn');
-        scheduleSteam(1500, () => {
-          rows = structuredClone(baseRows);
-          applySteamScenario('connected');
+      else if (cmd === 'provider_sign_in') {
+        const provider = args.providerId as StoreId;
+        if (!storeIds.includes(provider)) return undefined;
+        previousScenarios[provider] = scenarios[provider] === 'signingIn' ? 'notConnected' : scenarios[provider];
+        scenarios[provider] = 'signingIn';
+        syncStoreAccounts();
+        publish();
+        scheduleStore(provider, 1500, () => {
+          rows = rowsForScenarios();
+          scenarios[provider] = 'connected';
+          syncStoreAccounts();
           publish();
         });
-      } else if (cmd === 'provider_cancel_sign_in' && args.providerId === 'steam') {
-        steamGeneration += 1;
-        applySteamScenario(steamScenario === 'signingIn' ? previousSteamScenario : steamScenario);
-      } else if (cmd === 'provider_focus_sign_in' && args.providerId === 'steam') { /* the mock has no separate window to focus */ }
-      else if (cmd === 'provider_sign_out' && args.providerId === 'steam') {
-        steamGeneration += 1;
-        clearSteamCatalog();
-        applySteamScenario('notConnected');
-      } else if (cmd === 'provider_check' && args.providerId === 'steam') {
-        applySteamScenario('checking');
-        scheduleSteam(900, () => {
-          rows = structuredClone(baseRows);
-          applySteamScenario('connected');
+      } else if (cmd === 'provider_cancel_sign_in') {
+        const provider = args.providerId as StoreId;
+        if (!storeIds.includes(provider)) return undefined;
+        generations[provider] += 1;
+        scenarios[provider] = scenarios[provider] === 'signingIn' ? previousScenarios[provider] : scenarios[provider];
+        syncStoreAccounts();
+        publish();
+      } else if (cmd === 'provider_focus_sign_in') {
+        // The mock has no separate window to focus.
+      } else if (cmd === 'provider_sign_out') {
+        const provider = args.providerId as StoreId;
+        if (!storeIds.includes(provider)) return undefined;
+        generations[provider] += 1;
+        clearCatalog(provider);
+        scenarios[provider] = 'notConnected';
+        syncStoreAccounts();
+        publish();
+      } else if (cmd === 'provider_check') {
+        const provider = args.providerId as StoreId;
+        if (!storeIds.includes(provider)) return undefined;
+        scenarios[provider] = 'checking';
+        syncStoreAccounts();
+        publish();
+        scheduleStore(provider, 900, () => {
+          rows = rowsForScenarios();
+          scenarios[provider] = 'connected';
+          syncStoreAccounts();
           publish();
         });
       } else if (cmd === 'rescan_library' || cmd === 'update_window_geometry' || cmd === 'dismiss_launch') { /* no external effects */ }
@@ -1261,6 +1392,11 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
         }
       } else if (cmd === 'ports_refresh') {
         refreshPortCatalog();
+      } else if (cmd === 'achievement_list') {
+        const key = (args.key as string | undefined) ?? '';
+        const filter = (args.filter as string | undefined) ?? 'all';
+        if (!key.startsWith('steam:')) return null;
+        return mockAchievementList(filter);
       } else if (cmd === 'ports_detail') {
         const entry = ports.entries.find((item) => item.catalogId === args.catalogId);
         return entry ? mockDetailFor(entry) : null;

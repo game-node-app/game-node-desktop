@@ -30,7 +30,9 @@ interface GameTileProps extends RowHandlers {
   isSelected: boolean;
   isFocused: boolean;
   showInstalled: boolean;
-  showFamily: boolean;
+  showShared: boolean;
+  /** The row provider's declared shared-access label, or null when it declares none. */
+  sharedLabel: string | null;
   x: number;
   y: number;
 }
@@ -40,7 +42,8 @@ const GameTile = memo(function GameTile({
   isSelected,
   isFocused,
   showInstalled,
-  showFamily,
+  showShared,
+  sharedLabel,
   x,
   y,
   onClick,
@@ -50,6 +53,9 @@ const GameTile = memo(function GameTile({
   const { t } = useI18n();
   const dotColor = getMatchDotColor(row.status);
   const playtimeStr = formatDuration(row.playtime?.seconds, t);
+  const sharedText = sharedLabel
+    ? t('Library::Shared through {label}', { label: sharedLabel })
+    : null;
 
   const selectionClass = isFocused
     ? 'border-2 border-text-default'
@@ -125,12 +131,12 @@ const GameTile = memo(function GameTile({
               <IconDeviceDesktop size={12} stroke={1.75} aria-hidden />
             </span>
           )}
-          {showFamily && row.familyShared && !row.owned && (
+          {showShared && sharedText && row.shared && !row.owned && (
             <span
-              data-testid={`game-tile-family-${row.key}`}
+              data-testid={`game-tile-shared-${row.key}`}
               role="img"
-              aria-label={t('Library::Shared through Steam Family')}
-              title={t('Library::Shared through Steam Family')}
+              aria-label={sharedText}
+              title={sharedText}
             >
               <IconUsersGroup size={12} stroke={1.75} aria-hidden />
             </span>
@@ -155,7 +161,11 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
   const focusedKey = library?.focused;
   const filters = library?.layout?.filters;
   const showInstalled = !(filters?.availability.installed ?? false);
-  const showFamily = !(filters?.availability.family ?? false);
+  const showShared = !(filters?.availability.shared ?? false);
+  const sharedLabels = new Map<string, string>();
+  for (const provider of library?.providers ?? []) {
+    if (provider.sharedLabel !== null) sharedLabels.set(provider.id, provider.sharedLabel);
+  }
 
   // Track the column count (not the raw width): the ResizeObserver fires every
   // frame while resizing, but React bails out when the count is unchanged.
@@ -257,7 +267,8 @@ export const GameGrid: React.FC<GameGridProps> = ({ className, style }) => {
           isSelected={selectedKeys.has(row.key)}
           isFocused={focusedKey === row.key}
           showInstalled={showInstalled}
-          showFamily={showFamily}
+          showShared={showShared}
+          sharedLabel={sharedLabels.get(row.provider) ?? null}
           x={GAP + col * (TILE_WIDTH + GAP)}
           y={virtualRow.start + ROW_PADDING_Y}
           {...handlers}

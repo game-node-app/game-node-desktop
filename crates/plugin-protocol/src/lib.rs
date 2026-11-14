@@ -19,10 +19,12 @@ pub mod settings;
 mod wire;
 
 pub const API_MAJOR: u32 = 1;
-pub const API_MINOR: u32 = 4;
-/// Last minor understood by the pre-1.4 single-minor handshake.
-pub const LEGACY_API_MINOR: u32 = 3;
+pub const API_MINOR: u32 = 6;
+/// Last minor understood by the pre-1.6 single-minor handshake used by official providers.
+pub const LEGACY_API_MINOR: u32 = 5;
 pub const MIN_API_MINOR: u32 = 1;
+
+pub mod achievements;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid public plugin value")]

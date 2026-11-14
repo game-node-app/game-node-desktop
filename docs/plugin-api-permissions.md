@@ -1,6 +1,6 @@
-# Plugin API 1.4 method permissions
+# Plugin API 1.6 method permissions
 
-This page maps the API 1.4 methods to their required grants. `ResourceHost`
+This page maps the API 1.6 methods to their required grants. `ResourceHost`
 routes are listed in the checked
 [`resource_host.json`](../crates/plugin-protocol/contracts/resource_host.json)
 catalog; Saves, Locations, StorageDiagnostics, Computer, GamePresence and
@@ -104,7 +104,7 @@ the acting plugin and provider, requested permission, denial reason, and grant
 revision. The history is available only to host code; it is not exposed through
 plugin RPCs. Session credentials, operation identifiers, cookies, and request
 payloads are omitted. This is currently an in-memory denial history for the
-provider API; it is not yet a unified audit stream for all API 1.4 services.
+provider API; it is not yet a unified audit stream for all API 1.6 services.
 The separate permission-grant store has a bounded persisted domain-mutation
 audit model, but it is not yet connected to live RPC authorization.
 

@@ -628,7 +628,7 @@ mod tests {
             "provider_id":"example-reader",
             "name":"Reader",
             "version":"1.0.0",
-            "api":{"min":"1.4.0","max":"1.4.0"},
+            "api":{"min": "1.6.0", "max": "1.6.0"},
             "targets":[{"os":"linux","arch":"x86_64","abi":"gnu","entrypoint":"bin/plugin","tested_on":[{"distribution":"fedora","version":"40"}]}],
             "publisher":{"key_id":"fixture","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
             "license":{"expression":"MIT","files":["licenses/LICENSE"]}

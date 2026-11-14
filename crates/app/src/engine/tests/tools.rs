@@ -79,6 +79,7 @@ fn tools_harness() -> ToolsHarness {
     }];
 
     let ports = Ports {
+        achievements: super::test_achievement_store(),
         backups: None,
         local_games: None,
         installations: None,
@@ -97,7 +98,6 @@ fn tools_harness() -> ToolsHarness {
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
-        steam: None,
         pc_ports: None,
         port_store: None,
         port_progress: Arc::new(crate::engine::PortProgressPublisher::disabled(
@@ -155,6 +155,7 @@ fn tools_harness() -> ToolsHarness {
         files,
         uri,
         covers,
+        achievements: super::test_achievement_store(),
     };
 
     ToolsHarness {
@@ -407,11 +408,15 @@ async fn clear_tool_cache_resets_bytes_and_archives() {
     let th = tools_harness();
     add_test_game(&th, "game1", "Cyberpunk 2077");
 
+    let icon_dir =
+        gamenode_platform::achievement_icons::achievement_icon_dir(th.harness.covers.path());
+    std::fs::create_dir_all(&icon_dir).unwrap();
+    std::fs::write(icon_dir.join(format!("{}.img", "a".repeat(64))), b"icon").unwrap();
     th.harness.engine.recover_and_load_tools();
     eventually(|| th.harness.engine.snapshot().tools.total_cache_bytes > 0).await;
 
     let snapshot = th.harness.engine.snapshot();
-    assert_eq!(snapshot.tools.total_cache_bytes, 5_000_000);
+    assert_eq!(snapshot.tools.total_cache_bytes, 5_000_004);
     assert_eq!(snapshot.tools.total_cache_archives, 1);
 
     th.harness.engine.clear_tool_cache();
@@ -420,4 +425,8 @@ async fn clear_tool_cache_resets_bytes_and_archives() {
     let snapshot = th.harness.engine.snapshot();
     assert_eq!(snapshot.tools.total_cache_bytes, 0);
     assert_eq!(snapshot.tools.total_cache_archives, 0);
+    assert!(
+        !icon_dir.join(format!("{}.img", "a".repeat(64))).exists(),
+        "clearing the settings cache removes achievement icons"
+    );
 }

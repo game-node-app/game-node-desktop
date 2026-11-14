@@ -132,7 +132,11 @@ The public API SHALL NOT expose raw SQL, Core credentials, foreign plugin secret
 - **THEN** no generic dispatch route exists and the request fails
 
 ### Requirement: Third-party version negotiation
-Third-party sessions SHALL negotiate the highest overlapping supported API minor within a compatible major, starting at API 1.4. Required unsupported features or no version overlap SHALL prevent provider work. Optional unsupported features SHALL produce explicit unavailable states permitting documented fallback.
+Third-party sessions SHALL negotiate the highest overlapping supported API minor within a compatible major, starting at API 1.6. Minors 1.1–1.5 are the official provider baseline and keep their single-minor handshake. Required unsupported features or no version overlap SHALL prevent provider work. Optional unsupported features SHALL produce explicit unavailable states permitting documented fallback.
+
+#### Scenario: Official single-minor client
+- **WHEN** an official provider opens a session with the single-minor handshake for any API minor from 1.1 through 1.5
+- **THEN** the host selects that minor with its existing grants and no third-party range feature is required or implied
 
 #### Scenario: Supported older client
 - **WHEN** an older third-party client offers a supported API minor without newer optional methods
@@ -147,7 +151,7 @@ Third-party sessions SHALL negotiate the highest overlapping supported API minor
 - **THEN** it remains installed but inactive with an actionable incompatibility reason
 
 ### Requirement: Published compatibility window
-The host SHALL support third-party minors within the current major for at least twelve months after their successor release and retain at least the last two released minors. It SHALL publish release dates, support floor and deprecations. This retirement policy SHALL NOT remove existing official API 1.1–1.3 behavior.
+The host SHALL support third-party minors within the current major for at least twelve months after their successor release and retain at least the last two released minors. It SHALL publish release dates, support floor and deprecations. This retirement policy SHALL NOT remove existing official API 1.1–1.5 behavior.
 
 #### Scenario: Host upgrade retires a minor
 - **WHEN** an installed third-party package has no overlap with the published support window

@@ -209,6 +209,7 @@ impl Harness {
                 target_operation_id: String::new(),
                 settings: Some(settings.clone().into()),
                 runtime_session_result: None,
+                achievements: None,
             }))
             .await
             .unwrap();

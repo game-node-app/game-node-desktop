@@ -1,0 +1,11 @@
+{
+  "AppName": "GameAlpha",
+  "DisplayName": "Alpha Adventure",
+  "CatalogNamespace": "0123456789abcdef0123456789abcdef",
+  "CatalogItemId": "catalog-alpha",
+  "AppCategories": ["public", "games", "applications"],
+  "bIsIncompleteInstall": false,
+  "InstallLocation": "C:\\Games\\Alpha",
+  "MainGameAppName": "GameAlpha",
+  "Namespace": "alpha"
+}

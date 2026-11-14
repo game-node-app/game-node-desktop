@@ -44,6 +44,13 @@ pub trait ProviderRuntime: Send + Sync {
         provider: &str,
         operation: ProviderOperation,
     ) -> Result<Completion, Status>;
+    async fn execute_achievements(
+        &self,
+        _provider: &str,
+        _request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        Err(Status::unimplemented("achievement reads are unavailable"))
+    }
     async fn shutdown(&self);
 }
 
@@ -85,18 +92,15 @@ impl HostedProviders {
         .ok_or_else(|| Status::unavailable("provider directory unavailable"))?;
         let mut entries = BTreeMap::new();
         let mut configs = vec![];
-        for descriptor in super::PLUGINS
-            .iter()
-            .filter(|p| p.capabilities.contains(&cap::CONTEXT))
-        {
+        for descriptor in super::descriptors().iter().filter(|p| p.has(cap::CONTEXT)) {
             if gamenode_core::provider::Platform::current()
-                .is_none_or(|platform| !descriptor.platforms.contains(&platform))
+                .is_none_or(|platform| !descriptor.supports(platform))
             {
                 continue;
             }
             let services = Arc::new(
                 ProviderServices::bundled(
-                    descriptor.provider_id,
+                    &descriptor.provider_id,
                     paths.clone(),
                     library.clone(),
                     login.clone(),
@@ -104,13 +108,10 @@ impl HostedProviders {
                 .await?,
             );
             api.register(Registration {
-                provider_id: descriptor.provider_id.into(),
-                plugin_id: descriptor.plugin_id.into(),
-                capabilities: descriptor
-                    .capabilities
-                    .iter()
-                    .map(|c| (*c).into())
-                    .collect(),
+                provider_id: descriptor.provider_id.clone(),
+                plugin_id: descriptor.plugin_id.clone(),
+                capabilities: descriptor.capabilities.clone(),
+                shared_catalog: descriptor.shared_catalog,
                 services: services.clone(),
             })?;
             let executable = executable_dir.join(descriptor.executable_name());
@@ -119,7 +120,7 @@ impl HostedProviders {
                 .await
                 .unwrap_or(false);
             configs.push(ProcessConfig {
-                provider_id: descriptor.provider_id.into(),
+                provider_id: descriptor.provider_id.clone(),
                 executable,
                 arguments: vec![],
                 environment: vec![],
@@ -127,12 +128,12 @@ impl HostedProviders {
                 integrity: None,
             });
             entries.insert(
-                descriptor.provider_id.into(),
+                descriptor.provider_id.clone(),
                 Entry {
                     services,
                     initialized: tokio::sync::Mutex::new(None),
                     packaged,
-                    initialize: descriptor.capabilities.contains(&cap::CONTEXT),
+                    initialize: descriptor.has(cap::CONTEXT),
                 },
             );
         }
@@ -205,6 +206,32 @@ impl HostedProviders {
         Ok(())
     }
 
+    fn record_result(&self, id: &str, result: &Result<Completion, Status>) {
+        match result {
+            Ok(_) => {
+                lock(&self.failures).remove(id);
+            }
+            Err(error)
+                if !matches!(
+                    error.code(),
+                    tonic::Code::FailedPrecondition | tonic::Code::Cancelled
+                ) =>
+            {
+                lock(&self.failures).insert(
+                    id.into(),
+                    if error.code() == tonic::Code::Unimplemented {
+                        "incompatible"
+                    } else {
+                        "provider_unavailable"
+                    }
+                    .into(),
+                );
+            }
+            Err(_) => {}
+        }
+        self.notify();
+    }
+
     fn notify(&self) {
         if let Some(observer) = lock(&self.observer).clone() {
             observer();
@@ -255,29 +282,20 @@ impl ProviderRuntime for HostedProviders {
             self.processes.execute(id, operation).await
         }
         .await;
-        match &result {
-            Ok(_) => {
-                lock(&self.failures).remove(id);
-            }
-            Err(error)
-                if !matches!(
-                    error.code(),
-                    tonic::Code::FailedPrecondition | tonic::Code::Cancelled
-                ) =>
-            {
-                lock(&self.failures).insert(
-                    id.into(),
-                    if error.code() == tonic::Code::Unimplemented {
-                        "incompatible"
-                    } else {
-                        "provider_unavailable"
-                    }
-                    .into(),
-                );
-            }
-            Err(_) => {}
+        self.record_result(id, &result);
+        result
+    }
+    async fn execute_achievements(
+        &self,
+        id: &str,
+        request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        let result = async {
+            self.initialized(id).await?;
+            self.processes.execute_achievements(id, request).await
         }
-        self.notify();
+        .await;
+        self.record_result(id, &result);
         result
     }
     async fn shutdown(&self) {

@@ -12,7 +12,7 @@ const CONTRACT: &str = include_str!("../contracts/common_data_selector.json");
 #[test]
 fn common_data_fixture_matches_the_generated_wire_contract() {
     let contract: Value = serde_json::from_str(CONTRACT).unwrap();
-    assert_eq!(contract["api"], "1.4");
+    assert_eq!(contract["api"], "1.6");
     assert_eq!(contract["field"]["private_default"], true);
 
     let descriptor = FileDescriptorSet::decode(DESCRIPTOR).unwrap();

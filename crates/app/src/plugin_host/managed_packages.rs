@@ -320,7 +320,7 @@ mod tests {
             "provider_id": "lifecycle-fixture",
             "name": "Lifecycle Fixture",
             "version": version,
-            "api": {"min": "1.4.0", "max": "1.4.0"},
+            "api": {"min": "1.6.0", "max": "1.6.0"},
             "targets": [{"os": os, "arch": "x86_64", "abi": abi, "entrypoint": "bin/plugin"}],
             "publisher": {
                 "key_id": "fixture-key",

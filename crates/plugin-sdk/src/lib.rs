@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use gamenode_plugin_protocol::{capability, extensions, models, prost_types, proto, settings};
+pub use gamenode_plugin_protocol::{
+    achievements, capability, extensions, models, prost_types, proto, settings,
+};
 use proto::{plugin_host_client::PluginHostClient, provider_host_client::ProviderHostClient, *};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -271,7 +273,7 @@ fn request<T>(message: T) -> tonic::Request<T> {
 }
 
 impl HostClient {
-    /// Raw generated client for the API 1.4 resource surface. It remains bound
+    /// Raw generated client for the API 1.6 resource surface. It remains bound
     /// to the same local authenticated channel; callers provide scoped request
     /// contexts explicitly so the SDK adds no authority implicitly.
     pub fn resource_client(&self) -> proto::resource_host_client::ResourceHostClient<Channel> {
@@ -360,6 +362,26 @@ impl HostClient {
         {
             return Err(Error::Protocol);
         }
+        Ok(request)
+    }
+
+    /// Validate the host-issued achievement request before any provider I/O. The request is
+    /// bounded and must be scoped to this immutable service context.
+    pub fn achievements_request(
+        &self,
+        command: &ProviderCommand,
+    ) -> Result<models::AchievementsRequest, Error> {
+        if command.operation != ProviderOperation::ReadAchievements as i32
+            || command.context.as_ref() != Some(&self.context)
+            || command.settings.is_some()
+        {
+            return Err(Error::Protocol);
+        }
+        let request: models::AchievementsRequest = command
+            .achievements
+            .clone()
+            .ok_or(Error::Protocol)?
+            .try_into()?;
         Ok(request)
     }
 
@@ -489,6 +511,14 @@ impl HostClient {
         category: CatalogCategory,
         records: Vec<models::CatalogRecord>,
     ) -> Result<CatalogCompletion, Error> {
+        // Reject unbounded or malformed field maps instead of sending data the
+        // host would drop with the whole catalog category.
+        if records
+            .iter()
+            .any(|record| record.validate_fields().is_err())
+        {
+            return Err(Error::Protocol);
+        }
         let count = u32::try_from(records.len()).map_err(|_| Error::Protocol)?;
         for (index, chunk) in records.chunks(256).enumerate() {
             self.send(provider_event::Event::CatalogChunk(CatalogChunk {
@@ -617,8 +647,8 @@ impl Session {
         .await
     }
 
-    /// API 1.4+ handshake with an explicit compatibility range and optional
-    /// feature requests. The legacy `from_channel` method keeps its API 1.1–1.3
+    /// API 1.6+ handshake with an explicit compatibility range and optional
+    /// feature requests. The legacy `from_channel` method keeps its API 1.1–1.5
     /// request shape for existing official plugins.
     pub async fn from_channel_with_options(
         channel: Channel,
@@ -703,6 +733,11 @@ impl Session {
         }
         let settings_supported = capabilities.contains(&capability::SETTINGS);
         if settings_supported && reply.api_minor < capability::SETTINGS_API_MINOR {
+            return Err(Error::Protocol);
+        }
+        if capabilities.contains(&capability::ACHIEVEMENTS)
+            && reply.api_minor < capability::ACHIEVEMENTS_API_MINOR
+        {
             return Err(Error::Protocol);
         }
         let context = ServiceContext {

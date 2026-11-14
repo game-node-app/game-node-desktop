@@ -10,7 +10,7 @@ const FIELD_POLICY: &str = include_str!("../contracts/endpoint_field_policy.json
 #[test]
 fn checked_resource_catalog_matches_generated_protobuf_service() {
     let catalog: Value = serde_json::from_str(CATALOG).unwrap();
-    assert_eq!(catalog["api"], "1.4");
+    assert_eq!(catalog["api"], "1.6");
     assert_eq!(catalog["service"], "ResourceHost");
     assert_eq!(catalog["unknown_route"], "UNIMPLEMENTED");
 
@@ -259,7 +259,7 @@ fn endpoint_field_policy_covers_all_current_services_and_marks_future_routes() {
 #[test]
 fn domain_catalog_matches_generated_contracts_and_operation_grants() {
     let catalog: Value = serde_json::from_str(DOMAIN_CATALOG).unwrap();
-    assert_eq!(catalog["api"], "1.4");
+    assert_eq!(catalog["api"], "1.6");
     let routes = catalog["routes"].as_array().unwrap();
     assert_eq!(routes.len(), 26);
     assert!(

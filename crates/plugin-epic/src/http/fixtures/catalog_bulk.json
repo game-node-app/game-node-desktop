@@ -1,0 +1,19 @@
+{
+  "catalog-alpha": {
+    "id": "catalog-alpha",
+    "title": "Alpha Adventure",
+    "namespace": "0123456789abcdef0123456789abcdef",
+    "categories": [{ "path": "games" }, { "path": "applications" }],
+    "mainGameItem": null
+  },
+  "catalog-beta": {
+    "id": "catalog-beta",
+    "title": "Beta Quest Bonus Pack",
+    "namespace": "fedcba9876543210fedcba9876543210",
+    "categories": [{ "path": "addons" }, { "path": "games/addons" }],
+    "mainGameItem": {
+      "id": "catalog-beta-base",
+      "title": "Beta Quest"
+    }
+  }
+}

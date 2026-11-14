@@ -30,7 +30,8 @@ pub enum ScanError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CounterValue {
     pub seconds: i64,
-    pub last_played: i64,
+    /// `None` when the store has no date for the total, which is different from a known zero.
+    pub last_played: Option<i64>,
 }
 pub type CounterFn = fn(&ScanInput<'_>) -> std::collections::BTreeMap<String, CounterValue>;
 
@@ -50,6 +51,7 @@ pub struct PluginBackend {
     pub catalog: bool,
     pub counter: bool,
     pub actions: bool,
+    pub achievements: bool,
 }
 
 fn plugin_scan(_: &ScanInput<'_>) -> Result<Vec<RawRecord>, ScanError> {
@@ -141,9 +143,26 @@ impl Provider {
         self.manifest.matching.as_ref().map(|m| m.external_category)
     }
 
-    /// Whether the provider can read an owned/family catalog beyond installed games.
+    /// The record field that holds this provider's external id, when the manifest names one.
+    pub fn uid_field(&self) -> Option<&str> {
+        self.manifest
+            .matching
+            .as_ref()
+            .and_then(|matching| matching.uid_field.as_deref())
+            .filter(|field| !field.trim().is_empty())
+    }
+
+    /// Whether the provider can read an owned/shared catalog beyond installed games.
     pub fn has_catalog(&self) -> bool {
         self.manifest.catalog.is_some()
+    }
+
+    /// The declared shared-access label, if this provider declares shared catalog access.
+    pub fn shared_label(&self) -> Option<&str> {
+        self.manifest
+            .shared
+            .as_ref()
+            .map(|shared| shared.label.as_str())
     }
 
     /// The built-in catalog backend the manifest names, if any.
@@ -163,6 +182,14 @@ impl Provider {
             .playtime
             .as_ref()
             .and_then(|p| p.plugin.as_deref())
+    }
+
+    /// The plugin that reads this provider's achievements, if the manifest declares one.
+    pub fn achievement_plugin(&self) -> Option<&str> {
+        self.manifest
+            .achievements
+            .as_ref()
+            .map(|achievements| achievements.plugin.as_str())
     }
 
     pub fn is_manual_executable(&self) -> bool {
@@ -271,11 +298,18 @@ fn convert_root(platform: Platform, spec: &RootSpec) -> Result<Root, String> {
             if platform != Platform::Windows {
                 return Err("a registry root is only valid under `roots.windows`".to_owned());
             }
-            let Some(relative) = key.strip_prefix("HKCU\\").filter(|rest| !rest.is_empty()) else {
-                return Err(format!("registry root `{key}` must start with `HKCU\\`"));
-            };
+            // The hive stays in the key so resolvers can read either a per-user or a
+            // machine-wide value. Steam's existing `HKCU\Software\Valve\Steam` is unchanged.
+            let recognized = key
+                .split_once('\\')
+                .is_some_and(|(hive, rest)| !rest.is_empty() && matches!(hive, "HKCU" | "HKLM"));
+            if !recognized {
+                return Err(format!(
+                    "registry root `{key}` must start with `HKCU\\` or `HKLM\\`"
+                ));
+            }
             Ok(Root::Registry {
-                key: relative.to_owned(),
+                key: key.clone(),
                 value: value.clone(),
             })
         }
@@ -328,6 +362,7 @@ fn validate(
         catalog: true,
         counter: true,
         actions: true,
+        achievements: true,
     };
     let plugin = |id: &str| -> Result<&PluginBackend, String> {
         if !active {
@@ -355,6 +390,20 @@ fn validate(
             None => return Err(format!("unknown catalog backend `{}`", catalog.native)),
         }
     }
+    if let Some(shared) = &manifest.shared {
+        if manifest.catalog.is_none() {
+            return Err("`shared` requires `catalog`".into());
+        }
+        if shared.label.trim().is_empty() {
+            return Err("`shared.label` is empty".into());
+        }
+        if shared.label.chars().count() > 32 {
+            return Err("`shared.label` is longer than 32 characters".into());
+        }
+        if shared.label.chars().any(char::is_control) {
+            return Err("`shared.label` contains a control character".into());
+        }
+    }
     if let Some(playtime) = &manifest.playtime {
         match &playtime.plugin {
             Some(id) if playtime.counter.is_empty() && plugin(id)?.counter => {}
@@ -362,6 +411,11 @@ fn validate(
             None if counter(&playtime.counter).is_some() => {}
             None => return Err(format!("unknown playtime counter `{}`", playtime.counter)),
         }
+    }
+    if let Some(achievements) = &manifest.achievements
+        && (achievements.plugin.is_empty() || !plugin(&achievements.plugin)?.achievements)
+    {
+        return Err("invalid or unauthorized achievement backend declaration".into());
     }
     if let Some(id) = &manifest.scan.plugin
         && (manifest.launch.is_some() || manifest.install.is_some())

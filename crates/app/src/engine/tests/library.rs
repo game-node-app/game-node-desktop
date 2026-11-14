@@ -130,6 +130,7 @@ pub(super) struct FakeLibrary {
     pub(super) catalogs: Mutex<Vec<(String, CatalogUpdate)>>,
     pub(super) cleared: Mutex<Vec<String>>,
     pub(super) favorites: Mutex<Vec<FavoriteRecord>>,
+    pub(super) store_accounts: Mutex<Vec<StoreAccount>>,
 }
 
 impl FakeLibrary {
@@ -172,12 +173,19 @@ impl LibraryStore for FakeLibrary {
         Ok(())
     }
     fn load_store_accounts(&self) -> Result<Vec<StoreAccount>, StorageError> {
-        Ok(Vec::new())
+        Ok(self.store_accounts.lock().unwrap().clone())
     }
-    fn save_store_account(&self, _account: &StoreAccount) -> Result<(), StorageError> {
+    fn save_store_account(&self, account: &StoreAccount) -> Result<(), StorageError> {
+        let mut accounts = self.store_accounts.lock().unwrap();
+        accounts.retain(|existing| existing.provider != account.provider);
+        accounts.push(account.clone());
         Ok(())
     }
-    fn clear_store_account(&self, _provider: &str) -> Result<(), StorageError> {
+    fn clear_store_account(&self, provider: &str) -> Result<(), StorageError> {
+        self.store_accounts
+            .lock()
+            .unwrap()
+            .retain(|account| account.provider != provider);
         Ok(())
     }
     fn save_auto_matches(&self, matches: &[AutoMatch]) -> Result<(), StorageError> {
@@ -275,7 +283,7 @@ fn cached_portal_2() -> StoredEntry {
         fields: Default::default(),
         installed: true,
         owned: false,
-        family_shared: false,
+        shared: false,
         first_seen: 1,
         last_seen: 1,
     }
@@ -892,7 +900,7 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
             fields: Default::default(),
             installed: false,
             owned: true,
-            family_shared: false,
+            shared: false,
             first_seen: 1,
             last_seen: 1,
         });

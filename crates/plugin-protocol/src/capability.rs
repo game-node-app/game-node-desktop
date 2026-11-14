@@ -13,6 +13,10 @@ pub const SECRET_WRITE: &str = "secrets.write";
 pub const SECRET_DELETE: &str = "secrets.delete";
 pub const COUNTER: &str = "playtime.counter";
 pub const ACTIONS: &str = "provider.actions.declare";
+/// Per-game achievement definitions and the connected account's unlock state.
+pub const ACHIEVEMENTS: &str = "achievements.read";
+/// Achievement reads negotiate a new operation and bounded payload at this minor.
+pub const ACHIEVEMENTS_API_MINOR: u32 = 4;
 /// Optional feature. Deliberately excluded from ALL so existing bundled grants
 /// cannot silently gain configuration authority when the protocol is updated.
 pub const SETTINGS: &str = "ui.settings";
@@ -65,9 +69,10 @@ pub const TOOLS_APPLY: &str = "tools.apply";
 pub const TOOLS_REMOVE: &str = "tools.remove";
 pub const PORTS_READ: &str = "ports.read";
 pub const PORTS_INSTALL: &str = "ports.install";
-pub const THIRD_PARTY_API_MINOR: u32 = 4;
+/// First minor of the third-party API. Minors 1–5 are the official provider baseline.
+pub const THIRD_PARTY_API_MINOR: u32 = 6;
 
-/// Public API feature descriptors used by API 1.4 range negotiation.
+/// Public API feature descriptors used by API 1.6 range negotiation.
 pub const FEATURE_API_METADATA: &str = "api.metadata";
 pub const FEATURE_PERMISSION_WATCH: &str = "permissions.watch";
 pub const FEATURE_EXTENSION_SESSION: &str = "session.extension";
@@ -137,6 +142,7 @@ pub fn negotiate_range(
             | FEATURE_EXTENSION_SESSION
             | CONFIGURE => THIRD_PARTY_API_MINOR,
             SETTINGS => SETTINGS_API_MINOR,
+            ACHIEVEMENTS => ACHIEVEMENTS_API_MINOR,
             _ => 0,
         };
         let supported = introduced != 0 && introduced <= selected;
@@ -191,6 +197,7 @@ pub const ALL: &[&str] = &[
     SECRET_DELETE,
     COUNTER,
     ACTIONS,
+    ACHIEVEMENTS,
 ];
 
 /// All identifiers understood by this API. Unlike [`ALL`], this list is not a
@@ -209,6 +216,7 @@ pub const KNOWN: &[&str] = &[
     SECRET_DELETE,
     COUNTER,
     ACTIONS,
+    ACHIEVEMENTS,
     SETTINGS,
     CONFIGURE,
     LIBRARY_READ,
@@ -259,7 +267,7 @@ pub const KNOWN: &[&str] = &[
     PORTS_READ,
     PORTS_INSTALL,
 ];
-pub const API_14_CAPABILITIES: &[&str] = &[
+pub const THIRD_PARTY_CAPABILITIES: &[&str] = &[
     CONFIGURE,
     LIBRARY_READ,
     LIBRARY_READ_ALL,
@@ -338,13 +346,16 @@ pub fn negotiate(
         if name != DISCOVERY && selected < 2 {
             return Err(NegotiationError::Unsupported);
         }
+        if name == ACHIEVEMENTS && selected < ACHIEVEMENTS_API_MINOR {
+            return Err(NegotiationError::Unsupported);
+        }
         if name == SETTINGS && selected < SETTINGS_API_MINOR {
             return Err(NegotiationError::Unsupported);
         }
         if name == CONFIGURE && selected < THIRD_PARTY_API_MINOR {
             return Err(NegotiationError::Unsupported);
         }
-        if API_14_CAPABILITIES.contains(&name.as_str()) && selected < THIRD_PARTY_API_MINOR {
+        if THIRD_PARTY_CAPABILITIES.contains(&name.as_str()) && selected < THIRD_PARTY_API_MINOR {
             return Err(NegotiationError::Unsupported);
         }
     }

@@ -109,7 +109,8 @@ fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
             .unwrap_or_default();
         Ok(StoredEntry {
             owned: read_flag(row.get(7)?, &key, "owned"),
-            family_shared: read_flag(row.get(8)?, &key, "family_shared"),
+            // The SQL column keeps its historical `family_shared` name; no migration is needed.
+            shared: read_flag(row.get(8)?, &key, "family_shared"),
             key,
             provider: row.get(1)?,
             store_id: row.get(2)?,
@@ -124,16 +125,19 @@ fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
     rows.collect()
 }
 
+/// Which catalog fact set a phase covers. The SQL columns keep their historical
+/// `family_shared` / `family_error` / `last_family_at` names; the values are provider-neutral.
 #[derive(Clone, Copy)]
 enum CatalogFact {
     Owned,
-    Family,
+    Shared,
 }
 
 /// Applies one successful catalog phase inside the caller's transaction. The rules mirror
 /// `LibraryMachine::merge_catalog`: the phase's own fact set is replaced, installed facts,
-/// `install_dir`, `fields`, first-seen time, matches and covers are untouched, the installed name
-/// wins, and an existing non-empty name is only replaced when it is empty.
+/// `install_dir`, first-seen time, matches and covers are untouched, the installed name wins, and
+/// an existing non-empty name is only replaced when it is empty. Catalog fields only fill keys the
+/// entry does not have yet, so an installed scan's fields are never erased.
 fn apply_catalog_records(
     tx: &rusqlite::Transaction<'_>,
     provider: &str,
@@ -144,7 +148,7 @@ fn apply_catalog_records(
     const UPSERT_OWNED: &str = "INSERT INTO library_entries
             (key, provider, store_id, name, install_dir, fields_json, installed, owned,
              family_shared, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, '', '{}', 0, 1, 0, ?5, ?5)
+         VALUES (?1, ?2, ?3, ?4, '', ?6, 0, 1, 0, ?5, ?5)
          ON CONFLICT(key) DO UPDATE SET
             name = CASE
                 WHEN library_entries.installed THEN library_entries.name
@@ -152,12 +156,14 @@ fn apply_catalog_records(
                      AND trim(library_entries.name) <> '' THEN library_entries.name
                 ELSE excluded.name
             END,
+            fields_json = excluded.fields_json,
             owned = 1,
             last_seen = excluded.last_seen";
-    const UPSERT_FAMILY: &str = "INSERT INTO library_entries
+    // The column keeps its historical family name; the fact it stores is now called shared.
+    const UPSERT_SHARED: &str = "INSERT INTO library_entries
             (key, provider, store_id, name, install_dir, fields_json, installed, owned,
              family_shared, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, '', '{}', 0, 0, 1, ?5, ?5)
+         VALUES (?1, ?2, ?3, ?4, '', ?6, 0, 0, 1, ?5, ?5)
          ON CONFLICT(key) DO UPDATE SET
             name = CASE
                 WHEN library_entries.installed THEN library_entries.name
@@ -165,6 +171,7 @@ fn apply_catalog_records(
                      AND trim(library_entries.name) <> '' THEN library_entries.name
                 ELSE excluded.name
             END,
+            fields_json = excluded.fields_json,
             family_shared = CASE WHEN library_entries.owned THEN 0 ELSE 1 END,
             last_seen = excluded.last_seen";
 
@@ -173,7 +180,7 @@ fn apply_catalog_records(
     let mut upsert = tx
         .prepare(match fact {
             CatalogFact::Owned => UPSERT_OWNED,
-            CatalogFact::Family => UPSERT_FAMILY,
+            CatalogFact::Shared => UPSERT_SHARED,
         })
         .map_err(failed)?;
     for record in records {
@@ -183,8 +190,10 @@ fn apply_catalog_records(
             dropped += 1;
             continue;
         }
+        let key = entry_key(provider, id);
+        let fields = merge_catalog_fields(tx, &key, &record.fields)?;
         upsert
-            .execute(params![entry_key(provider, id), provider, id, name, now])
+            .execute(params![key, provider, id, name, now, fields])
             .map_err(failed)?;
     }
     if dropped > 0 {
@@ -195,6 +204,33 @@ fn apply_catalog_records(
         );
     }
     Ok(())
+}
+
+/// Fills the entry's missing field keys with the catalog's, keeping installed discovery values.
+fn merge_catalog_fields(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    incoming: &BTreeMap<String, String>,
+) -> Result<String, StorageError> {
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT fields_json FROM library_entries WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(failed)?;
+    let mut fields: BTreeMap<String, String> = existing
+        .and_then(|json| {
+            serde_json::from_str(&json)
+                .inspect_err(|error| tracing::warn!(%error, key, "ignored unreadable entry fields"))
+                .ok()
+        })
+        .unwrap_or_default();
+    for (name, value) in incoming {
+        fields.entry(name.clone()).or_insert_with(|| value.clone());
+    }
+    serde_json::to_string(&fields).map_err(failed)
 }
 
 fn save_catalog_fact(
@@ -208,7 +244,7 @@ fn save_catalog_fact(
         Ok(records) => {
             let clear = match fact {
                 CatalogFact::Owned => "UPDATE library_entries SET owned = 0 WHERE provider = ?1",
-                CatalogFact::Family => {
+                CatalogFact::Shared => {
                     "UPDATE library_entries SET family_shared = 0 WHERE provider = ?1"
                 }
             };
@@ -221,7 +257,7 @@ fn save_catalog_fact(
                      ON CONFLICT(provider) DO UPDATE SET
                         last_catalog_at = excluded.last_catalog_at, catalog_error = NULL"
                 }
-                CatalogFact::Family => {
+                CatalogFact::Shared => {
                     "INSERT INTO provider_scans (provider, last_family_at, family_error)
                      VALUES (?1, ?2, NULL)
                      ON CONFLICT(provider) DO UPDATE SET
@@ -238,7 +274,7 @@ fn save_catalog_fact(
                     "INSERT INTO provider_scans (provider, catalog_error) VALUES (?1, ?2)
                      ON CONFLICT(provider) DO UPDATE SET catalog_error = excluded.catalog_error"
                 }
-                CatalogFact::Family => {
+                CatalogFact::Shared => {
                     "INSERT INTO provider_scans (provider, family_error) VALUES (?1, ?2)
                      ON CONFLICT(provider) DO UPDATE SET family_error = excluded.family_error"
                 }
@@ -297,8 +333,9 @@ impl LibraryStore for SqliteLibraryStore {
                 Ok(ProviderScanState {
                     last_catalog_at: row.get(3)?,
                     catalog_error: read_catalog_error(&provider, "catalog_error", row.get(4)?),
-                    last_family_at: row.get(5)?,
-                    family_error: read_catalog_error(&provider, "family_error", row.get(6)?),
+                    // The columns keep their historical family names; the fields are shared.
+                    last_shared_at: row.get(5)?,
+                    shared_error: read_catalog_error(&provider, "family_error", row.get(6)?),
                     provider,
                     last_success_at: row.get(1)?,
                     last_error: row.get(2)?,
@@ -478,12 +515,12 @@ impl LibraryStore for SqliteLibraryStore {
     fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(failed)?;
-        // Owned goes first so a family merge sees the new owned facts and lets owned win.
+        // Owned goes first so a shared merge sees the new owned facts and lets owned win.
         if let Some(owned) = &update.owned {
             save_catalog_fact(&tx, provider, owned, update.now, CatalogFact::Owned)?;
         }
-        if let Some(family) = &update.family {
-            save_catalog_fact(&tx, provider, family, update.now, CatalogFact::Family)?;
+        if let Some(shared) = &update.shared {
+            save_catalog_fact(&tx, provider, shared, update.now, CatalogFact::Shared)?;
         }
         tx.commit().map_err(failed)
     }

@@ -5,10 +5,12 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 ## 1. Public licensing and official compatibility baseline
 
 - [x] 1.1 Record the consolidated main plugin/service/provider specs, current official descriptors, grants, credential mappings, packaging and API 1.1–1.3 outcomes as regression fixtures; verify those fixtures pass before introducing third-party paths and distinguish the delivered baseline from pending native acceptance.
+  - Audit history: on 2026-11-14 main delivered official API 1.4 (achievement reads) and 1.5 (catalog fields, last-played absence, invalid-credential failure, cookie-free login policies). Their contract and Steam/Epic runtime fixtures came with that merge and are tracked by task 1.4.
 - [x] 1.2 Review provenance of SDK, protocol and example source; deliver a file-level licensing-authority record and resolve unauthorized material before MIT distribution, preserving existing third-party notices.
 - [x] 1.3 Add explicit MIT notices/licenses for approved public assets and retain GPL-3.0-only on host/Core; verify package metadata and dependency closures and document the public-only licensing boundary.
+- [x] 1.4 Rebase the third-party API onto the official 1.4/1.5 baseline from main: make API 1.6 the first third-party minor, keep the single-minor handshake through 1.5 (`LEGACY_API_MINOR`), keep main's achievement wire numbers and move unreleased third-party enum/field numbers after them; verify official 1.4/1.5 negotiation, achievement grants and Steam/Epic runtime fixtures pass alongside third-party range negotiation.
 
-## 2. Public API 1.4 and optional SDK
+## 2. Public API 1.6 and optional SDK
 
 - [x] 2.1 Add backward-compatible third-party version-range/feature negotiation, provider/extension session kinds, scoped target-game contexts and support-window metadata to the public protocol; verify lower/higher overlap, required/optional unavailable features and unchanged official handshakes with contract tests.
 - [x] 2.2 Define public RPC/message contracts for every row of design section 4, including operation ownership, pagination, revisions, quotas, idempotency and separate game.launch/game.custom_launch contracts; cover all 26 previously planned Saves, Locations, StorageDiagnostics, Computer, GamePresence and GamePerformance routes; verify protobuf generation and route/field-policy fixtures while documenting method-to-permission mappings, including category and selected-record reads and distinct create/update/delete grants.
@@ -187,7 +189,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 - [ ] 18.6 Exercise the combined two-plugin data flow: selected per-game read/write, private-only query defaults, explicit performance-history inclusion under a category grant, separately authorized persistent history, producer uninstall, category-scoped archived-data reuse and own/global cleanup; record no leakage across games/namespaces and clear native-process API-only disclosure.
 
-- [ ] 18.7 Verify the entire endpoint matrix against generated contract fixtures and both clients, including per-query common-data selectors and defaults, same-console ROM/runtime availability projections, common category grants versus sensitive/custom sharing, unknown metadata preservation, rejected Struct authority injection and unchanged official 1.1–1.3 behavior; record coverage without treating annotation exchange as execution approval.
+- [ ] 18.7 Verify the entire endpoint matrix against generated contract fixtures and both clients, including per-query common-data selectors and defaults, same-console ROM/runtime availability projections, common category grants versus sensitive/custom sharing, unknown metadata preservation, rejected Struct authority injection and unchanged official 1.1–1.5 behavior; record coverage without treating annotation exchange as execution approval.
 
 - [ ] 18.8 Exercise common launch-plan consent end to end for runtime, mod and parameter-only overlays on official/third-party game fixtures; record accurate provenance/differences, changed-plan refusal, unchanged remembered Play, no unauthorized operation bypass and explicit limits on native-program behavior certification.
 

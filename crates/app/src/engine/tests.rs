@@ -25,15 +25,24 @@ use url::Url;
 
 use super::{Engine, PortProgressPublisher, Ports};
 
+mod achievements;
 mod drm_free;
 mod favorites;
 mod library;
 mod pc_ports;
 mod playtime;
 pub(super) mod provider_runtime;
-mod steam;
 mod tools;
 use library::{FakeLibrary, FakeUri, SlowFiles};
+
+/// A real in-memory achievement cache for engine fixtures.
+pub(crate) fn test_achievement_store() -> Arc<dyn gamenode_core::achievements::AchievementStore> {
+    Arc::new(
+        gamenode_platform::achievement_db::SqliteAchievementStore::new(Arc::new(Mutex::new(
+            gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+        ))),
+    )
+}
 
 fn ana() -> User {
     User {
@@ -384,6 +393,7 @@ struct Harness {
     files: Arc<SlowFiles>,
     uri: Arc<FakeUri>,
     covers: tempfile::TempDir,
+    achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
 }
 
 fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
@@ -406,15 +416,16 @@ fn harness_over(
     creds: Arc<FakeCreds>,
     remote: Option<Arc<gamenode_api::GameNodeClient>>,
 ) -> Harness {
-    harness_with_steam(api, creds, remote, None)
+    let providers = crate::providers::load_bundled_for_tests(Platform::Linux).providers;
+    harness_with_providers(api, creds, remote, providers)
 }
 
-/// Like [`harness_over`], with Steam store-account adapters when given.
-fn harness_with_steam(
+/// Like [`harness_over`], with the provider manifests a test needs.
+fn harness_with_providers(
     api: Arc<FakeApi>,
     creds: Arc<FakeCreds>,
     remote: Option<Arc<gamenode_api::GameNodeClient>>,
-    steam: Option<super::SteamPorts>,
+    providers: Vec<gamenode_core::provider::Provider>,
 ) -> Harness {
     let browser = Arc::new(FakeBrowser::default());
     let settings = Arc::new(FakeSettings::default());
@@ -426,7 +437,9 @@ fn harness_with_steam(
         gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
     );
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
+    let achievements = test_achievement_store();
     let ports = Ports {
+        achievements: achievements.clone(),
         backups: None,
         local_games: None,
         installations: None,
@@ -451,7 +464,6 @@ fn harness_with_steam(
         files: files.clone(),
         roots: Arc::new(FixedRoots::with_home("/home/me")),
         uri: uri.clone(),
-        steam,
         pc_ports: None,
         port_store: None,
         port_progress: Arc::new(PortProgressPublisher::disabled(
@@ -481,7 +493,6 @@ fn harness_with_steam(
         store_accounts: Vec::new(),
         ports: Default::default(),
     });
-    let providers = crate::providers::load_bundled_for_tests(Platform::Linux).providers;
     let publishes = Arc::new(AtomicUsize::new(0));
     let publish_count = publishes.clone();
     let engine = Engine::new(
@@ -508,6 +519,7 @@ fn harness_with_steam(
         files,
         uri,
         covers,
+        achievements,
     }
 }
 

@@ -52,6 +52,24 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::build(&[], false).await
+    }
+
+    /// A harness whose trusted descriptor declares shared catalog access.
+    async fn with_shared_catalog() -> Self {
+        Self::build(&[], true).await
+    }
+
+    /// A harness whose descriptor also grants the counter capability.
+    async fn with_counter() -> Self {
+        Self::with_extra_capabilities(&[cap::COUNTER]).await
+    }
+
+    async fn with_extra_capabilities(extra: &[&'static str]) -> Self {
+        Self::build(extra, false).await
+    }
+
+    async fn build(extra: &[&'static str], shared_catalog: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -59,18 +77,21 @@ impl Harness {
         let root = super::super::PluginApi::default();
         let api = root.providers.clone();
         let services = Arc::new(Services::default());
-        let capabilities = [
+        let mut capabilities = vec![
             cap::CONTEXT,
             cap::DISCOVERY,
             cap::CATALOG,
             cap::ACCOUNT_PUBLISH,
             cap::LOGIN,
             cap::SETTINGS,
+            cap::ACHIEVEMENTS,
         ];
+        capabilities.extend_from_slice(extra);
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
+            shared_catalog,
             services: services.clone(),
         })
         .unwrap();
@@ -117,6 +138,18 @@ impl Harness {
         kind: ProviderOperation,
     ) -> tokio::task::JoinHandle<Result<Completion, Status>> {
         let api = self.api.clone();
+        if kind == ProviderOperation::ReadAchievements {
+            return tokio::spawn(async move {
+                api.execute_achievements(
+                    "fixture",
+                    models::AchievementsRequest {
+                        game_ids: vec!["42".into()],
+                        language: "en".into(),
+                    },
+                )
+                .await
+            });
+        }
         tokio::spawn(async move { api.execute("fixture", kind).await })
     }
 
@@ -229,6 +262,7 @@ async fn incomplete_catalog_cannot_complete_successfully() {
             vec![models::CatalogRecord {
                 id: "1".into(),
                 name: "A game".into(),
+                fields: Default::default(),
             }],
         )
         .await
@@ -244,6 +278,62 @@ async fn incomplete_catalog_cannot_complete_successfully() {
         tonic::Code::InvalidArgument
     );
     assert_eq!(h.services.publications.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn catalog_chunks_keep_bounded_fields_for_core() {
+    let mut h = Harness::new().await;
+    let operation = h.execute(ProviderOperation::SyncCatalog);
+    let client = h.next(ProviderOperation::SyncCatalog).await;
+    let record = models::CatalogRecord::new("1", "A game")
+        .with_field("namespace", "catalog-namespace")
+        .unwrap()
+        .with_field("catalog_item_id", "item-1")
+        .unwrap();
+    let completion = client
+        .catalog_chunks(CatalogCategory::Owned, vec![record.clone()])
+        .await
+        .unwrap();
+    let mut result = completed();
+    result.catalogs = vec![CatalogCompletion {
+        outcome: Some(catalog_completion::Outcome::CompletedRecords(1)),
+        ..completion
+    }];
+    client.finish(result).await.unwrap();
+
+    let completion = operation.await.unwrap().unwrap();
+    let owned = completion.catalog.owned.unwrap().unwrap();
+    assert_eq!(owned, vec![record]);
+}
+
+#[tokio::test]
+async fn counter_dates_accept_absence_and_reject_negative_values() {
+    let mut h = Harness::with_counter().await;
+    let operation = h.execute(ProviderOperation::ReadCounter);
+    let client = h.next(ProviderOperation::ReadCounter).await;
+    let mut result = completed();
+    result.counters = vec![CounterObservation {
+        id: "42".into(),
+        seconds: 60,
+        last_played: None,
+    }];
+    client.finish(result).await.unwrap();
+    let completion = operation.await.unwrap().unwrap();
+    assert_eq!(completion.result.counters[0].last_played, None);
+
+    let operation = h.execute(ProviderOperation::ReadCounter);
+    let client = h.next(ProviderOperation::ReadCounter).await;
+    let mut result = completed();
+    result.counters = vec![CounterObservation {
+        id: "42".into(),
+        seconds: 60,
+        last_played: Some(-1),
+    }];
+    client.finish(result).await.unwrap();
+    assert_eq!(
+        operation.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
 }
 
 #[tokio::test]
@@ -517,4 +607,135 @@ async fn typed_settings_failure_is_accepted_and_keeps_the_session_alive() {
     let client = h.next(ProviderOperation::Check).await;
     client.finish(completed()).await.unwrap();
     check.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn achievement_batches_and_strings_are_bounded_before_dispatch() {
+    let mut h = Harness::new().await;
+    let too_many = models::AchievementsRequest {
+        game_ids: (0..=gamenode_plugin_protocol::achievements::MAX_GAMES)
+            .map(|index| index.to_string())
+            .collect(),
+        language: "en".into(),
+    };
+    assert_eq!(
+        h.api
+            .execute_achievements("fixture", too_many)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::InvalidArgument
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), h.client.commands.message())
+            .await
+            .is_err(),
+        "an oversized batch never reaches the plugin"
+    );
+
+    let pending = h.execute(ProviderOperation::ReadAchievements);
+    let host = h.next(ProviderOperation::ReadAchievements).await;
+    let mut result = completed();
+    result.achievements = vec![AchievementOutcome {
+        game_id: "42".into(),
+        outcome: Some(achievement_outcome::Outcome::Ready(AchievementGame {
+            achievements: vec![Achievement {
+                id: "a".into(),
+                name: "n".repeat(gamenode_plugin_protocol::achievements::MAX_NAME + 1),
+                ..Default::default()
+            }],
+        })),
+    }];
+    let _ = host.finish(result).await;
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
+#[tokio::test]
+async fn achievement_results_for_unrequested_ids_are_rejected() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::ReadAchievements);
+    let host = h.next(ProviderOperation::ReadAchievements).await;
+    let mut result = completed();
+    result.achievements = vec![AchievementOutcome {
+        game_id: "99".into(),
+        outcome: Some(achievement_outcome::Outcome::None(true)),
+    }];
+    let _ = host.finish(result).await;
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+
+    // A completed result must also cover every requested id, so a silent partial batch cannot
+    // look like success.
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::ReadAchievements);
+    let host = h.next(ProviderOperation::ReadAchievements).await;
+    let mut result = completed();
+    result.achievements = Vec::new();
+    let _ = host.finish(result).await;
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
+#[tokio::test]
+async fn achievement_results_from_a_previous_account_are_fenced() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::ReadAchievements);
+    let host = h.next(ProviderOperation::ReadAchievements).await;
+
+    // A sign-in increments the account epoch and invalidates account-scoped work.
+    let api = h.api.clone();
+    tokio::spawn(async move {
+        let _ = api.execute("fixture", ProviderOperation::SignIn).await;
+    });
+    for _ in 0..50 {
+        if tokio::time::timeout(Duration::from_millis(5), h.client.commands.message())
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let mut result = completed();
+    result.achievements = vec![AchievementOutcome {
+        game_id: "42".into(),
+        outcome: Some(achievement_outcome::Outcome::None(true)),
+    }];
+    let _ = host.finish(result).await;
+    assert!(
+        pending.await.unwrap().is_err(),
+        "an achievement result from the previous account is discarded"
+    );
+    h.api.disconnect("fixture").await;
+}
+
+#[tokio::test]
+async fn achievement_text_with_raw_control_characters_is_still_rejected_by_the_host() {
+    let mut h = Harness::new().await;
+    let pending = h.execute(ProviderOperation::ReadAchievements);
+    let host = h.next(ProviderOperation::ReadAchievements).await;
+    let mut result = completed();
+    result.achievements = vec![AchievementOutcome {
+        game_id: "42".into(),
+        outcome: Some(achievement_outcome::Outcome::Ready(AchievementGame {
+            achievements: vec![Achievement {
+                id: "a".into(),
+                name: "Tab\there\u{85}".into(),
+                ..Default::default()
+            }],
+        })),
+    }];
+    let _ = host.finish(result).await;
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "the host keeps its control-character rejection as defense"
+    );
 }

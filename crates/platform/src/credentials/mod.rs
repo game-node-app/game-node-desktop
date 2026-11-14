@@ -1,10 +1,11 @@
-//! Session credential storage.
+//! Session and provider credential storage.
 //!
 //! * Windows: Credential Manager. No file fallback.
 //! * Linux: Secret Service. Only when no Secret Service exists is a private file used
 //!   (`file` module); a locked or failing service is reported, never bypassed.
 //!
-//! The credential is stored under the stable service/account key below.
+//! Each provider's plugin sees one logical `session` secret. The host maps it to that provider's
+//! physical slot, derived from the provider id unless trusted descriptor data names an alias.
 
 #[cfg(unix)]
 mod file;
@@ -25,35 +26,84 @@ use crate::paths::DataPaths;
 pub const KEYRING_SERVICE: &str = "app.gamenode.desktop";
 /// Stable keyring account name for the GameNode session.
 pub const KEYRING_ACCOUNT: &str = "session";
-/// Stable keyring account name for the Steam session cookie.
-pub const KEYRING_ACCOUNT_STEAM: &str = "steam";
+
+/// Existing physical names for a provider credential.
+///
+/// Only trusted descriptor data supplies an alias. The Steam descriptor keeps its historical
+/// `steam` keyring account and `steam-token` private file, so no credential migration is needed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialAlias {
+    pub keyring_account: String,
+    pub private_file: String,
+}
+
+impl CredentialAlias {
+    /// A plain keyring account and file name that does not collide with the GameNode session.
+    pub fn is_valid(&self) -> bool {
+        plain_name(&self.keyring_account)
+            && plain_name(&self.private_file)
+            && self.keyring_account != KEYRING_ACCOUNT
+            && self.private_file != crate::paths::CREDENTIAL_FILE
+    }
+}
+
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
 
 /// Which stored secret a credential store is for.
 ///
-/// The GameNode session and the Steam store session are separate credentials with separate
-/// keyring entries and separate Linux private files. Deleting one never touches the other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The GameNode session and provider credentials are separate secrets with separate keyring
+/// entries and separate Linux private files. Deleting one never touches another.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CredentialSlot {
     /// The GameNode account session token.
     Session,
-    /// The Steam browser session cookie header.
-    Steam,
+    /// A provider's own credential, derived from its provider id or descriptor alias.
+    Provider {
+        keyring_account: String,
+        private_file: String,
+    },
 }
 
 impl CredentialSlot {
+    /// The logical slot for a provider. The default keyring account is `provider.<provider id>`
+    /// and the Linux private file is `provider-<provider id>.secret`.
+    pub fn provider(provider_id: &str, alias: Option<CredentialAlias>) -> Self {
+        match alias {
+            Some(alias) => Self::Provider {
+                keyring_account: alias.keyring_account,
+                private_file: alias.private_file,
+            },
+            None => Self::Provider {
+                keyring_account: format!("provider.{provider_id}"),
+                private_file: format!("provider-{provider_id}.secret"),
+            },
+        }
+    }
+
     /// The keyring account name used by Windows Credential Manager and Secret Service.
-    pub const fn keyring_account(self) -> &'static str {
+    pub fn keyring_account(&self) -> &str {
         match self {
             Self::Session => KEYRING_ACCOUNT,
-            Self::Steam => KEYRING_ACCOUNT_STEAM,
+            Self::Provider {
+                keyring_account, ..
+            } => keyring_account,
         }
     }
 
     /// The Linux private-file fallback path for this slot.
-    pub fn private_file(self, paths: &DataPaths) -> PathBuf {
+    pub fn private_file(&self, paths: &DataPaths) -> PathBuf {
         match self {
             Self::Session => paths.credential_file(),
-            Self::Steam => paths.steam_credential_file(),
+            Self::Provider { private_file, .. } => paths.private_dir().join(private_file),
         }
     }
 }
@@ -67,10 +117,11 @@ pub fn open_store(paths: &DataPaths, slot: CredentialSlot) -> Arc<dyn Credential
     use gamenode_core::StorageMethod;
     use zbus_secret_service_keyring_store::Store;
 
+    let keyring_account = slot.keyring_account().to_owned();
     select_linux(
         || {
             let store = Store::new().map_err(|_| Absent)?;
-            keyring::os_backend(store, KEYRING_SERVICE, slot.keyring_account()).map_err(|_| Absent)
+            keyring::os_backend(store, KEYRING_SERVICE, &keyring_account).map_err(|_| Absent)
         },
         paths,
         StorageMethod::SecretService,
@@ -139,33 +190,57 @@ mod tests {
         gamenode_core::SessionCredential::new(value).unwrap()
     }
 
-    #[test]
-    fn slots_name_their_keyring_accounts_and_private_files() {
-        assert_eq!(CredentialSlot::Session.keyring_account(), "session");
-        assert_eq!(CredentialSlot::Steam.keyring_account(), "steam");
-        assert_ne!(
-            CredentialSlot::Session.keyring_account(),
-            CredentialSlot::Steam.keyring_account()
-        );
+    fn alias(keyring_account: &str, private_file: &str) -> CredentialAlias {
+        CredentialAlias {
+            keyring_account: keyring_account.into(),
+            private_file: private_file.into(),
+        }
+    }
 
+    #[test]
+    fn provider_slots_use_aliases_or_default_names() {
         let dir = TempDir::new().unwrap();
         let paths = DataPaths::at(dir.path().join("data"));
+
+        let steam = CredentialSlot::provider("steam", Some(alias("steam", "steam-token")));
+        assert_eq!(steam.keyring_account(), "steam");
         assert_eq!(
-            CredentialSlot::Session.private_file(&paths),
-            paths.credential_file()
+            steam.private_file(&paths),
+            paths.private_dir().join("steam-token")
         );
+
+        let epic = CredentialSlot::provider("epic", None);
+        assert_eq!(epic.keyring_account(), "provider.epic");
         assert_eq!(
-            CredentialSlot::Steam.private_file(&paths),
-            paths.steam_credential_file()
+            epic.private_file(&paths),
+            paths.private_dir().join("provider-epic.secret")
         );
+        assert_ne!(epic.private_file(&paths), paths.credential_file());
         assert_ne!(
-            CredentialSlot::Session.private_file(&paths),
-            CredentialSlot::Steam.private_file(&paths)
+            epic.keyring_account(),
+            CredentialSlot::Session.keyring_account()
         );
     }
 
     #[test]
-    fn the_file_fallback_keeps_both_slots_independent() {
+    fn aliases_must_be_plain_names_and_never_the_session_slot() {
+        assert!(alias("steam", "steam-token").is_valid());
+        assert!(alias("provider.epic", "provider-epic.secret").is_valid());
+        for invalid in [
+            alias("", "token"),
+            alias("session", "steam-token"),
+            alias("steam", "session-token"),
+            alias("../escape", "token"),
+            alias("steam", "dir/token"),
+            alias("steam", ".."),
+            alias("steam", "token\n"),
+        ] {
+            assert!(!invalid.is_valid(), "{invalid:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn the_file_fallback_keeps_slots_independent() {
         let dir = TempDir::new().unwrap();
         let paths = DataPaths::at(dir.path().join("data"));
         let session = select_linux(
@@ -174,23 +249,23 @@ mod tests {
             StorageMethod::PrivateFile,
             CredentialSlot::Session,
         );
-        let steam = select_linux(
+        let provider = select_linux(
             || Err(Absent),
             &paths,
             StorageMethod::PrivateFile,
-            CredentialSlot::Steam,
+            CredentialSlot::provider("steam", Some(alias("steam", "steam-token"))),
         );
         session.save(&cred("gamenode-session")).unwrap();
-        steam.save(&cred("steamLoginSecure=cookie")).unwrap();
+        provider.save(&cred("steamLoginSecure=cookie")).unwrap();
 
         // Deleting one slot does not touch the other.
-        steam.delete().unwrap();
+        provider.delete().unwrap();
         assert_eq!(
             session.load().unwrap().unwrap().expose(),
             "gamenode-session"
         );
-        assert_eq!(steam.load().unwrap(), None);
+        assert_eq!(provider.load().unwrap(), None);
         assert!(paths.credential_file().exists());
-        assert!(!paths.steam_credential_file().exists());
+        assert!(!paths.private_dir().join("steam-token").exists());
     }
 }

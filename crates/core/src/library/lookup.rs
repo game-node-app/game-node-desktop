@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::game_api::{ApiError, ExternalMatch, GameSummary};
 
 use super::machine::{Access, Effect, LibraryMachine, Phase};
-use super::store::{AutoMatch, GameRecord};
+use super::store::{AutoMatch, GameRecord, StoredEntry};
 
 /// How long an answer is trusted before the id is asked about again.
 pub const LOOKUP_MAX_AGE_SECS: i64 = 24 * 60 * 60;
@@ -25,6 +25,24 @@ pub(super) struct LookupRun {
 }
 
 impl LibraryMachine {
+    /// The category and uid this entry is looked up under, when its provider declares matching.
+    ///
+    /// A provider may name a record field as its external id; entries without that field are not
+    /// looked up at all. Otherwise the store id is the uid, exactly as before.
+    pub(super) fn lookup_key(&self, entry: &StoredEntry) -> Option<(u32, String)> {
+        let provider = self.provider(&entry.provider)?;
+        let category = provider.external_category()?;
+        let uid = match provider.uid_field() {
+            Some(field) => entry
+                .fields
+                .get(field)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()?,
+            None => entry.store_id.clone(),
+        };
+        Some((category, uid))
+    }
+
     /// Starts a lookup for each category that has ids to ask about and none under way.
     pub(super) fn plan_lookups(&mut self, now: i64) -> Vec<Effect> {
         if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
@@ -37,21 +55,15 @@ impl LibraryMachine {
 
         let mut wanted: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
         for entry in self.visible_entries() {
-            let Some(category) = self
-                .provider(&entry.provider)
-                .and_then(|provider| provider.external_category())
-            else {
+            let Some((category, uid)) = self.lookup_key(entry) else {
                 continue;
             };
             let fresh = self
                 .auto_matches
-                .get(&(category, entry.store_id.clone()))
+                .get(&(category, uid.clone()))
                 .is_some_and(|auto| now.saturating_sub(auto.checked_at) <= LOOKUP_MAX_AGE_SECS);
             if !fresh {
-                wanted
-                    .entry(category)
-                    .or_default()
-                    .insert(entry.store_id.clone());
+                wanted.entry(category).or_default().insert(uid);
             }
         }
 

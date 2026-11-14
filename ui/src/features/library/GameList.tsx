@@ -22,7 +22,9 @@ interface GameListRowProps extends RowHandlers {
   isSelected: boolean;
   isFocused: boolean;
   showInstalled: boolean;
-  showFamily: boolean;
+  showShared: boolean;
+  /** The row provider's declared shared-access label, or null when it declares none. */
+  sharedLabel: string | null;
 }
 
 const GameListRow = memo(function GameListRow({
@@ -33,7 +35,8 @@ const GameListRow = memo(function GameListRow({
   isSelected,
   isFocused,
   showInstalled,
-  showFamily,
+  showShared,
+  sharedLabel,
   onClick,
   onContextMenu,
   onDoubleClick,
@@ -42,6 +45,9 @@ const GameListRow = memo(function GameListRow({
   const dotColor = getMatchDotColor(row.status);
   const matchText = formatMatchStatus(row.status, t);
   const playtimeStr = formatDuration(row.playtime?.seconds, t);
+  const sharedText = sharedLabel
+    ? t('Library::Shared through {label}', { label: sharedLabel })
+    : null;
 
   return (
     <div
@@ -99,12 +105,12 @@ const GameListRow = memo(function GameListRow({
             <IconDeviceDesktop size={13} stroke={1.75} aria-hidden />
           </span>
         )}
-        {showFamily && row.familyShared && !row.owned && (
+        {showShared && sharedText && row.shared && !row.owned && (
           <span
-            data-testid={`game-row-family-${row.key}`}
+            data-testid={`game-row-shared-${row.key}`}
             role="img"
-            aria-label={t('Library::Shared through Steam Family')}
-            title={t('Library::Shared through Steam Family')}
+            aria-label={sharedText}
+            title={sharedText}
             className="shrink-0 text-text-dimmed"
           >
             <IconUsersGroup size={13} stroke={1.75} aria-hidden />
@@ -146,7 +152,11 @@ export const GameList: React.FC<GameListProps> = ({ className, style }) => {
   const focusedKey = library?.focused;
   const filters = library?.layout?.filters;
   const showInstalled = !(filters?.availability.installed ?? false);
-  const showFamily = !(filters?.availability.family ?? false);
+  const showShared = !(filters?.availability.shared ?? false);
+  const sharedLabels = new Map<string, string>();
+  for (const provider of library?.providers ?? []) {
+    if (provider.sharedLabel !== null) sharedLabels.set(provider.id, provider.sharedLabel);
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -220,7 +230,8 @@ export const GameList: React.FC<GameListProps> = ({ className, style }) => {
                 isSelected={selectedKeys.has(row.key)}
                 isFocused={focusedKey === row.key}
                 showInstalled={showInstalled}
-                showFamily={showFamily}
+                showShared={showShared}
+                sharedLabel={sharedLabels.get(row.provider) ?? null}
                 {...handlers}
               />
             );

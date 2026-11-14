@@ -360,6 +360,43 @@ impl crate::steam::SteamWebApi for Client {
     ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
         Err(crate::steam::SteamError::Server)
     }
+    async fn achievement_definitions(
+        &self,
+        _: &crate::steam::SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<crate::steam::SteamAchievementDefinition>>, crate::steam::SteamError>
+    {
+        if app_id == "none" {
+            return Ok(None);
+        }
+        assert_eq!(language, "english");
+        Ok(Some(vec![crate::steam::SteamAchievementDefinition {
+            api_name: "ACH_WIN".into(),
+            display_name: "Win".into(),
+            description: "Win once".into(),
+            hidden: false,
+            icon: "https://cdn.example/a.jpg".into(),
+            icon_gray: "https://cdn.example/a_gray.jpg".into(),
+        }]))
+    }
+    async fn achievement_states(
+        &self,
+        _: &crate::steam::SteamSession,
+        app_id: &str,
+        _language: &str,
+    ) -> Result<Option<Vec<crate::steam::SteamAchievementState>>, crate::steam::SteamError> {
+        if app_id == "none" {
+            return Ok(None);
+        }
+        Ok(Some(vec![crate::steam::SteamAchievementState {
+            api_name: "ACH_WIN".into(),
+            achieved: true,
+            unlock_time: Some(1_700_000_000),
+            display_name: "Vitória".into(),
+            description: "Vença uma vez".into(),
+        }]))
+    }
 }
 
 async fn execute(
@@ -400,6 +437,42 @@ async fn execute(
     })
     .await
     .expect("provider operation completes without retaining an observer queue")
+}
+
+async fn execute_achievements(
+    commands: &mpsc::Sender<Result<ProviderCommand, Status>>,
+    events: &mut mpsc::Receiver<ProviderEvent>,
+    epoch: u64,
+    id: &str,
+    request: models::AchievementsRequest,
+) -> OperationResult {
+    commands
+        .send(Ok(ProviderCommand {
+            context: Some(ServiceContext {
+                session_id: "reference".into(),
+                session_credential: vec![9; 32],
+                provider_id: "steam".into(),
+                operation_id: id.into(),
+                account_epoch: epoch,
+                profile_epoch: 1,
+                session_kind: SessionKind::Unspecified as i32,
+                target_game: None,
+            }),
+            operation: ProviderOperation::ReadAchievements as i32,
+            achievements: Some(request.into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("provider operation completes")
+            .expect("plugin stream alive");
+        if let Some(provider_event::Event::Result(result)) = event.event {
+            return result;
+        }
+    }
 }
 
 #[tokio::test]
@@ -478,6 +551,36 @@ async fn full_provider_restores_logs_in_syncs_and_handles_failed_then_successful
     assert_eq!(
         lock(&host.credential).as_deref(),
         Some(b"saved-cookie-secret".as_slice())
+    );
+    let achievements = execute_achievements(
+        &commands,
+        &mut results,
+        1,
+        "achievements",
+        models::AchievementsRequest {
+            game_ids: vec!["620".into(), "none".into()],
+            language: "en".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        achievements.achievements[0].outcome,
+        Some(achievement_outcome::Outcome::Ready(AchievementGame {
+            achievements: vec![Achievement {
+                id: "ACH_WIN".into(),
+                name: "Vitória".into(),
+                description: "Vença uma vez".into(),
+                hidden: false,
+                icon_url: "https://cdn.example/a.jpg".into(),
+                icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
+                unlocked: true,
+                unlocked_at: Some(1_700_000_000),
+            }],
+        }))
+    );
+    assert_eq!(
+        achievements.achievements[1].outcome,
+        Some(achievement_outcome::Outcome::None(true))
     );
     let (signed_in, _) = execute(
         &commands,
@@ -575,6 +678,10 @@ struct Harness {
 
 impl Harness {
     async fn open(connected: bool) -> Self {
+        Self::open_with(connected, Arc::new(Client)).await
+    }
+
+    async fn open_with(connected: bool, client: Arc<dyn crate::steam::SteamWebApi>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let endpoint = temp.path().join("reference.sock");
         let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
@@ -618,7 +725,7 @@ impl Harness {
         .await
         .unwrap();
         let plugin = Arc::new(SteamPlugin {
-            client: Arc::new(Client),
+            client,
             account: Mutex::new(None),
             login: LoginAttempt::default(),
             contexts: Mutex::new(Contexts::default()),
@@ -856,5 +963,116 @@ async fn real_plugin_does_not_resurrect_a_signed_out_account_from_a_late_login_p
     assert!(lock(&h.host.credential).is_none());
     assert!(lock(&h.host.account).is_none());
     assert!(lock(&h.host.login.handle).is_none());
+    h.close().await;
+}
+
+/// A saved session whose cookie matches the reference host's stored credential.
+fn saved_session() -> crate::steam::SteamSession {
+    crate::steam::SteamSession {
+        steam_id: "76561198000000001".into(),
+        account_name: Some("player".into()),
+        token: models::SessionCredential::new("temporary-token-secret").unwrap(),
+        cookie: models::SessionCredential::new("saved-cookie-secret").unwrap(),
+    }
+}
+
+/// Steam rotated the cookie while validating the saved session.
+struct Rotating;
+
+#[async_trait::async_trait]
+impl crate::steam::SteamWebApi for Rotating {
+    async fn session(
+        &self,
+        _: &models::SessionCredential,
+    ) -> Result<crate::steam::SteamSession, crate::steam::SteamError> {
+        Ok(crate::steam::SteamSession {
+            steam_id: "76561198000000001".into(),
+            account_name: Some("player".into()),
+            token: models::SessionCredential::new("temporary-token-secret").unwrap(),
+            cookie: models::SessionCredential::new("steamLoginSecure=rotated; sessionid=abc")
+                .unwrap(),
+        })
+    }
+    async fn owned_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<Vec<crate::steam::SteamOwnedGame>, crate::steam::SteamError> {
+        Ok(vec![])
+    }
+    async fn family_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
+        Ok(crate::steam::SteamFamily::default())
+    }
+}
+
+/// A restore check that can answer with a session or one categorized failure.
+struct Switchable(Mutex<Result<crate::steam::SteamSession, crate::steam::SteamError>>);
+
+impl Switchable {
+    fn new(answer: Result<crate::steam::SteamSession, crate::steam::SteamError>) -> Self {
+        Self(Mutex::new(answer))
+    }
+    fn set(&self, answer: Result<crate::steam::SteamSession, crate::steam::SteamError>) {
+        *self.0.lock().unwrap() = answer;
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::steam::SteamWebApi for Switchable {
+    async fn session(
+        &self,
+        _: &models::SessionCredential,
+    ) -> Result<crate::steam::SteamSession, crate::steam::SteamError> {
+        self.0.lock().unwrap().clone()
+    }
+    async fn owned_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<Vec<crate::steam::SteamOwnedGame>, crate::steam::SteamError> {
+        Ok(vec![])
+    }
+    async fn family_games(
+        &self,
+        _: &crate::steam::SteamSession,
+    ) -> Result<crate::steam::SteamFamily, crate::steam::SteamError> {
+        Ok(crate::steam::SteamFamily::default())
+    }
+}
+
+#[tokio::test]
+async fn real_plugin_persists_a_rotated_cookie_before_reporting_connected() {
+    let h = Harness::open_with(true, Arc::new(Rotating)).await;
+    assert_eq!(
+        lock(&h.host.credential).as_deref(),
+        Some(b"steamLoginSecure=rotated; sessionid=abc".as_slice())
+    );
+    assert_eq!(h.host.login.writes.load(Ordering::Acquire), 1);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn real_plugin_removes_an_expired_credential_but_keeps_an_unreachable_one() {
+    let client = Arc::new(Switchable::new(Ok(saved_session())));
+    let mut h = Harness::open_with(true, client.clone()).await;
+
+    client.set(Err(crate::steam::SteamError::Unreachable));
+    h.send(ProviderOperation::Check, 2, "unreachable").await;
+    let unreachable = h.result("unreachable").await;
+    assert_eq!(
+        unreachable.status.unwrap().state,
+        AccountConnection::Unreachable as i32
+    );
+    assert!(lock(&h.host.credential).is_some());
+
+    client.set(Err(crate::steam::SteamError::Expired));
+    h.send(ProviderOperation::Check, 3, "expired").await;
+    let expired = h.result("expired").await;
+    assert_eq!(
+        expired.status.unwrap().state,
+        AccountConnection::Expired as i32
+    );
+    assert!(lock(&h.host.credential).is_none());
     h.close().await;
 }

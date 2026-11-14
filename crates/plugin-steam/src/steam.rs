@@ -39,6 +39,65 @@ pub struct SteamFamily {
     pub games: Vec<SteamOwnedGame>,
 }
 
+/// One achievement definition read from the game schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamAchievementDefinition {
+    pub api_name: String,
+    pub display_name: String,
+    pub description: String,
+    pub hidden: bool,
+    pub icon: String,
+    pub icon_gray: String,
+}
+
+/// The account's unlock state for one achievement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamAchievementState {
+    pub api_name: String,
+    pub achieved: bool,
+    pub unlock_time: Option<i64>,
+    /// Localized by Steam for the requested language; the schema text is the fallback.
+    pub display_name: String,
+    pub description: String,
+}
+
+/// A definition joined with the account's unlock state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamAchievement {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub hidden: bool,
+    pub icon_url: String,
+    pub icon_gray_url: String,
+    pub unlocked: bool,
+    pub unlocked_at: Option<i64>,
+}
+
+/// Steam text occasionally contains tabs and C1 controls. They are valid JSON strings but the
+/// plugin protocol rejects control characters, so replace each with a space and collapse runs.
+pub(crate) fn clean_achievement_text(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut previous_space = false;
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if character == ' ' {
+            if !previous_space {
+                text.push(' ');
+            }
+            previous_space = true;
+        } else {
+            text.push(character);
+            previous_space = false;
+        }
+    }
+    text.trim().to_owned()
+}
+
 /// Why a Steam request failed. Every variant is a category: no cookie, token, URL or page body is
 /// carried in the value, its `Debug`, or its `Display`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -58,7 +117,6 @@ pub enum SteamError {
     #[error("the saved Steam cookies are invalid")]
     InvalidCookies,
 }
-
 impl SteamError {
     /// The stable catalog category for a failed owned-catalog fetch.
     pub const fn catalog_error(self) -> CatalogError {
@@ -69,14 +127,14 @@ impl SteamError {
             Self::Expired => CatalogError::Expired,
             Self::Privacy => CatalogError::Privacy,
             Self::Changed => CatalogError::Changed,
-            Self::InvalidCookies => CatalogError::InvalidCookies,
+            Self::InvalidCookies => CatalogError::InvalidCredential,
         }
     }
 
-    /// The category for a failed family fetch. Family failures are always reported as a
-    /// family-specific category so they never look like an owned-catalog failure.
+    /// The category for a failed family fetch. Family failures are always reported as the
+    /// shared-unavailable category so they never look like an owned-catalog failure.
     pub const fn family_catalog_error(self) -> CatalogError {
-        CatalogError::FamilyUnavailable
+        CatalogError::SharedUnavailable
     }
 }
 
@@ -93,12 +151,48 @@ pub trait SteamWebApi: Send + Sync {
     /// the short-lived token and the (possibly rotated) minimal cookie header.
     async fn session(&self, cookie: &SessionCredential) -> Result<SteamSession, SteamError>;
 
+    /// Exchanges the long-lived `steamRefresh_steam` cookie for a fresh store access cookie.
+    ///
+    /// The account service persists the returned header before validating it, so a renewal that
+    /// rotates the refresh cookie is never lost. `None` means the credential has no refresh
+    /// cookie and cannot be renewed without a new sign-in.
+    async fn renew_session(
+        &self,
+        cookie: &SessionCredential,
+    ) -> Result<Option<SessionCredential>, SteamError> {
+        let _ = cookie;
+        Ok(None)
+    }
+
     /// Every game the account owns, using the session's web API token.
     async fn owned_games(&self, session: &SteamSession) -> Result<Vec<SteamOwnedGame>, SteamError>;
 
     /// The games shared with the account through Steam Family. An account in no family yields an
     /// empty result.
     async fn family_games(&self, session: &SteamSession) -> Result<SteamFamily, SteamError>;
+
+    /// The game's achievement definitions. `None` means Steam confirmed the app has no stats or no
+    /// achievements.
+    async fn achievement_definitions(
+        &self,
+        session: &SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<SteamAchievementDefinition>>, SteamError> {
+        let _ = (session, app_id, language);
+        Err(SteamError::Changed)
+    }
+
+    /// The connected account's unlock state. `None` means Steam reported no achievements.
+    async fn achievement_states(
+        &self,
+        session: &SteamSession,
+        app_id: &str,
+        language: &str,
+    ) -> Result<Option<Vec<SteamAchievementState>>, SteamError> {
+        let _ = (session, app_id, language);
+        Err(SteamError::Changed)
+    }
 }
 
 #[cfg(test)]
@@ -171,15 +265,15 @@ mod tests {
         );
         assert_eq!(
             CatalogError::from(SteamError::InvalidCookies),
-            CatalogError::InvalidCookies
+            CatalogError::InvalidCredential
         );
         assert_eq!(
             SteamError::Server.family_catalog_error(),
-            CatalogError::FamilyUnavailable
+            CatalogError::SharedUnavailable
         );
         assert_eq!(
             SteamError::Expired.family_catalog_error(),
-            CatalogError::FamilyUnavailable
+            CatalogError::SharedUnavailable
         );
     }
 

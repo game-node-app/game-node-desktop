@@ -2,21 +2,23 @@ use super::*;
 use crate::provider::memory::{FixedRoots, MemoryFiles};
 
 pub(crate) const STEAM_MANIFEST: &str = include_str!("../../../../../providers/steam.toml");
+pub(crate) const EPIC_MANIFEST: &str = include_str!("../../../../../providers/epic.toml");
 
 // The application supplies this registry from trusted distribution metadata.
+pub(crate) fn steam_backend() -> PluginBackend {
+    PluginBackend {
+        plugin_id: "org.gamenode.plugin.steam-discovery".into(),
+        provider_id: "steam".into(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+        achievements: true,
+    }
+}
+
 pub(crate) fn load(sources: &[(&str, &str)], platform: Platform) -> LoadedProviders {
-    super::load_with_plugins(
-        sources,
-        platform,
-        &[PluginBackend {
-            plugin_id: "org.gamenode.plugin.steam-discovery".into(),
-            provider_id: "steam".into(),
-            discovery: true,
-            catalog: true,
-            counter: true,
-            actions: true,
-        }],
-    )
+    super::load_with_plugins(sources, platform, &[steam_backend()])
 }
 
 const MINIMAL: &str = r#"
@@ -50,6 +52,7 @@ launch = { uri = "example://run/{id}" }
         catalog: true,
         counter: true,
         actions: true,
+        achievements: true,
     };
     let loaded = load_with_plugins(
         &[("example.toml", text)],
@@ -115,6 +118,11 @@ fn loads_the_bundled_steam_manifest() {
     assert_eq!(steam.external_category(), Some(1));
     assert!(steam.has_launch() && steam.has_install());
     assert!(steam.has_catalog());
+    assert_eq!(steam.shared_label(), Some("Steam Family"));
+    assert_eq!(
+        steam.achievement_plugin(),
+        Some("org.gamenode.plugin.steam-discovery")
+    );
     assert_eq!(
         steam.catalog_backend(),
         Some("org.gamenode.plugin.steam-discovery")
@@ -125,11 +133,132 @@ fn loads_the_bundled_steam_manifest() {
 }
 
 #[test]
+fn only_the_providers_that_declare_shared_access_expose_a_label() {
+    let steam = load(&[("steam.toml", STEAM_MANIFEST)], Platform::Linux);
+    assert!(steam.diagnostics.is_empty(), "{:?}", steam.diagnostics);
+    assert_eq!(
+        steam.get("steam").unwrap().shared_label(),
+        Some("Steam Family")
+    );
+
+    let epic = load_with_plugins(
+        &[("epic.toml", EPIC_MANIFEST)],
+        Platform::Windows,
+        &[epic_backend()],
+    );
+    assert!(epic.diagnostics.is_empty(), "{:?}", epic.diagnostics);
+    assert_eq!(epic.get("epic").unwrap().shared_label(), None);
+
+    let packagekit: Manifest =
+        toml::from_str(include_str!("../../../../../providers/packagekit.toml")).unwrap();
+    assert!(packagekit.shared.is_none());
+}
+
+fn catalog_backend(provider: &str) -> PluginBackend {
+    PluginBackend {
+        plugin_id: "org.example.catalog".into(),
+        provider_id: provider.into(),
+        discovery: false,
+        catalog: true,
+        counter: false,
+        actions: false,
+        achievements: false,
+    }
+}
+
+/// A minimal manifest with a valid catalog backend, ready to declare shared access.
+fn shared_manifest(label_toml: &str) -> String {
+    format!(
+        "{}\ncatalog = {{ plugin = \"org.example.catalog\" }}\nshared = {{ label = \"{label_toml}\" }}\n",
+        minimal("bad")
+    )
+}
+
+#[test]
+fn shared_access_requires_a_catalog_and_a_valid_label() {
+    let cases = [
+        (
+            "shared without a catalog",
+            format!("{}\nshared = {{ label = \"Family\" }}", minimal("bad")),
+            "`shared` requires `catalog`",
+        ),
+        (
+            "an empty label",
+            shared_manifest(""),
+            "`shared.label` is empty",
+        ),
+        (
+            "a label longer than 32 characters",
+            shared_manifest(&"x".repeat(33)),
+            "`shared.label` is longer than 32 characters",
+        ),
+        (
+            "a label with a control character",
+            shared_manifest(r"one\u0007two"),
+            "`shared.label` contains a control character",
+        ),
+    ];
+
+    for (what, text, expected) in cases {
+        let loaded = load_with_plugins(
+            &[("bad.toml", text.as_str()), ("steam.toml", STEAM_MANIFEST)],
+            Platform::Linux,
+            &[steam_backend(), catalog_backend("bad")],
+        );
+        assert_eq!(
+            loaded.diagnostics.len(),
+            1,
+            "{what}: {:?}",
+            loaded.diagnostics
+        );
+        let diagnostic = &loaded.diagnostics[0];
+        assert_eq!(diagnostic.file, "bad.toml", "{what}");
+        assert_eq!(diagnostic.provider.as_deref(), Some("bad"), "{what}");
+        assert!(
+            diagnostic.problem.contains(expected),
+            "{what}: {:?} should contain {expected:?}",
+            diagnostic.problem
+        );
+        assert!(
+            loaded.get("steam").is_some(),
+            "{what}: the other manifests still load"
+        );
+    }
+
+    let loaded = load_with_plugins(
+        &[("bad.toml", shared_manifest("Steam Family").as_str())],
+        Platform::Linux,
+        &[catalog_backend("bad")],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("bad").unwrap().shared_label(),
+        Some("Steam Family"),
+        "a valid label is accepted"
+    );
+}
+
+#[test]
+fn a_full_length_shared_label_is_accepted() {
+    let label = "x".repeat(32);
+    let loaded = load_with_plugins(
+        &[("bad.toml", shared_manifest(&label).as_str())],
+        Platform::Linux,
+        &[catalog_backend("bad")],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("bad").unwrap().shared_label(),
+        Some(label.as_str())
+    );
+}
+
+#[test]
 fn steam_roots_resolve_per_platform() {
     let loaded = load(&[("steam.toml", STEAM_MANIFEST)], Platform::Windows);
     let steam = loaded.get("steam").unwrap();
     let windows = FixedRoots::with_home("C:\\Users\\me").with_registry(
-        "Software\\Valve\\Steam",
+        "HKCU\\Software\\Valve\\Steam",
         "SteamPath",
         "c:/program files (x86)/steam",
     );
@@ -181,6 +310,7 @@ scan = { plugin = "org.gamenode.plugin.packagekit-discovery" }
         catalog: false,
         counter: false,
         actions: false,
+        achievements: false,
     }];
     let windows = load_with_plugins(&[("packagekit.toml", packagekit)], Platform::Windows, &[]);
     assert!(windows.providers.is_empty());
@@ -257,12 +387,20 @@ fn invalid_manifests_are_reported_one_each_and_the_rest_still_load() {
             "only valid under `roots.windows`",
         ),
         (
-            "registry outside hkcu",
+            "registry outside hkcu and hklm",
             format!(
-                "{}\n[[roots.windows]]\nregistry = 'HKLM\\X'\nvalue = \"v\"",
+                "{}\n[[roots.windows]]\nregistry = 'HKCR\\X'\nvalue = \"v\"",
                 minimal("bad")
             ),
-            "must start with `HKCU\\`",
+            "must start with `HKCU\\` or `HKLM\\`",
+        ),
+        (
+            "registry without a subkey",
+            format!(
+                "{}\n[[roots.windows]]\nregistry = 'HKLM\\'\nvalue = \"v\"",
+                minimal("bad")
+            ),
+            "must start with `HKCU\\` or `HKLM\\`",
         ),
         (
             "empty root",
@@ -441,4 +579,298 @@ fn foreign_platform_manifests_validate_structure_without_requiring_local_plugins
         super::load_with_plugins(&[("packagekit.toml", &invalid)], Platform::Windows, &[]);
     assert_eq!(invalid.diagnostics.len(), 1);
     assert!(invalid.diagnostics[0].problem.contains("name"));
+}
+
+#[test]
+fn achievement_backend_requires_a_registered_granted_plugin() {
+    let text = minimal("example") + "\nachievements = { plugin = \"org.example.provider\" }\n";
+    let approved = PluginBackend {
+        plugin_id: "org.example.provider".into(),
+        provider_id: "example".into(),
+        discovery: false,
+        catalog: false,
+        counter: false,
+        actions: false,
+        achievements: true,
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        std::slice::from_ref(&approved),
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(
+        loaded.get("example").unwrap().achievement_plugin(),
+        Some("org.example.provider")
+    );
+
+    let unregistered = PluginBackend {
+        provider_id: "other".into(),
+        ..approved.clone()
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        &[unregistered],
+    );
+    assert!(loaded.providers.is_empty());
+    assert_eq!(loaded.diagnostics.len(), 1);
+
+    let unauthorized = PluginBackend {
+        achievements: false,
+        ..approved
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text.as_str())],
+        Platform::Windows,
+        &[unauthorized],
+    );
+    assert!(loaded.providers.is_empty());
+
+    let without = load(
+        &[("example.toml", minimal("example").as_str())],
+        Platform::Windows,
+    );
+    assert!(without.diagnostics.is_empty(), "{:?}", without.diagnostics);
+    assert_eq!(without.get("example").unwrap().achievement_plugin(), None);
+}
+
+fn epic_backend() -> PluginBackend {
+    PluginBackend {
+        plugin_id: "org.gamenode.plugin.epic".into(),
+        provider_id: "epic".into(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+        achievements: false,
+    }
+}
+
+#[test]
+fn loads_the_bundled_epic_manifest_with_its_namespace_match_and_hklm_root() {
+    let loaded = load_with_plugins(
+        &[("epic.toml", EPIC_MANIFEST)],
+        Platform::Windows,
+        &[epic_backend()],
+    );
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let epic = loaded.get("epic").expect("epic loads on Windows");
+    assert_eq!(epic.name(), "Epic Games Store");
+    assert_eq!(epic.source(), "epicgames");
+    assert_eq!(epic.external_category(), Some(1001));
+    assert_eq!(epic.uid_field(), Some("namespace"));
+    assert_eq!(epic.discovery_plugin(), Some("org.gamenode.plugin.epic"));
+    assert_eq!(epic.catalog_backend(), Some("org.gamenode.plugin.epic"));
+    assert_eq!(epic.counter_plugin(), Some("org.gamenode.plugin.epic"));
+    assert!(epic.has_launch() && epic.has_install() && epic.has_catalog());
+    assert!(epic.manifest().exclude_ids.is_empty());
+
+    let roots = &epic.manifest().roots.windows;
+    assert_eq!(roots.len(), 2);
+    assert_eq!(
+        roots[0].registry.as_deref(),
+        Some(r"HKLM\SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher")
+    );
+    assert_eq!(roots[0].value.as_deref(), Some("AppDataPath"));
+    assert_eq!(roots[0].path, None);
+    assert_eq!(
+        roots[1].path.as_deref(),
+        Some(r"%ProgramData%\Epic\EpicGamesLauncher\Data")
+    );
+    assert_eq!(roots[1].registry, None);
+    assert_eq!(roots[1].value, None);
+
+    let record = Record {
+        id: "Fortnite".to_owned(),
+        name: Some("Fortnite".to_owned()),
+        install_dir: r"C:\Games\Fortnite".to_owned(),
+        fields: Default::default(),
+    };
+    assert_eq!(
+        epic.launch_uri(&record).unwrap().as_str(),
+        "com.epicgames.launcher://apps/Fortnite?action=launch&silent=true"
+    );
+    assert_eq!(
+        epic.install_uri(&record).unwrap().as_str(),
+        "com.epicgames.launcher://apps/Fortnite?action=install"
+    );
+
+    let linux = load_with_plugins(&[("epic.toml", EPIC_MANIFEST)], Platform::Linux, &[]);
+    assert!(linux.providers.is_empty(), "Epic is Windows-only");
+    assert!(linux.diagnostics.is_empty(), "{:?}", linux.diagnostics);
+}
+
+#[test]
+fn epic_roots_resolve_a_machine_registry_value_then_the_program_data_fallback() {
+    let loaded = load_with_plugins(
+        &[("epic.toml", EPIC_MANIFEST)],
+        Platform::Windows,
+        &[epic_backend()],
+    );
+    let epic = loaded.get("epic").unwrap();
+    let resolver = FixedRoots::default().with_registry(
+        r"HKLM\SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher",
+        "AppDataPath",
+        r"D:\Epic\Launcher\Data",
+    );
+    assert_eq!(
+        epic.resolve_roots(Platform::Windows, &resolver),
+        [
+            r"D:\Epic\Launcher\Data".to_owned(),
+            r"%ProgramData%\Epic\EpicGamesLauncher\Data".to_owned(),
+        ]
+    );
+    assert!(epic.resolve_roots(Platform::Linux, &resolver).is_empty());
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EpicCredentialAlias {
+    #[allow(dead_code)]
+    keyring_account: String,
+    #[allow(dead_code)]
+    private_file: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EpicPluginDescriptor {
+    provider_id: String,
+    plugin_id: String,
+    name: String,
+    platforms: Vec<Platform>,
+    capabilities: Vec<String>,
+    executable: String,
+    provider_manifest: String,
+    #[serde(default)]
+    login_policy: Option<String>,
+    #[serde(default)]
+    credential_alias: Option<EpicCredentialAlias>,
+    native_access: Vec<String>,
+    legacy_login_profiles: Vec<String>,
+}
+
+#[test]
+fn the_epic_plugin_descriptor_is_windows_only_and_loads_its_manifest() {
+    let descriptor: EpicPluginDescriptor =
+        toml::from_str(include_str!("../../../../../plugins/epic.toml")).unwrap();
+    assert_eq!(descriptor.provider_id, "epic");
+    assert_eq!(descriptor.plugin_id, "org.gamenode.plugin.epic");
+    assert_eq!(descriptor.name, "Epic Games Store");
+    assert_eq!(descriptor.platforms, [Platform::Windows]);
+    assert_eq!(descriptor.executable, "gamenode-plugin-epic");
+    assert_eq!(descriptor.provider_manifest, "epic");
+    assert_eq!(
+        descriptor.login_policy.as_deref(),
+        Some("crates/plugin-epic/assets/login.toml")
+    );
+    assert!(
+        descriptor.credential_alias.is_none(),
+        "Epic uses its own default provider slot"
+    );
+    assert_eq!(descriptor.native_access, ["files", "network", "registry"]);
+    assert!(descriptor.legacy_login_profiles.is_empty());
+    assert_eq!(
+        descriptor.capabilities,
+        [
+            "provider.context.read",
+            "library.discovery",
+            "library.catalog",
+            "account.state.read",
+            "account.state.publish",
+            "auth.webview",
+            "auth.webview.page.read",
+            "secrets.read",
+            "secrets.write",
+            "secrets.delete",
+            "playtime.counter",
+            "provider.actions.declare",
+        ]
+    );
+    assert!(
+        !descriptor
+            .capabilities
+            .iter()
+            .any(|capability| capability.contains("cookies") || capability == "achievements.read"),
+        "Epic has no cookie or achievement grant"
+    );
+
+    let backend = PluginBackend {
+        plugin_id: descriptor.plugin_id.clone(),
+        provider_id: descriptor.provider_id.clone(),
+        discovery: true,
+        catalog: true,
+        counter: true,
+        actions: true,
+        achievements: false,
+    };
+    let windows = load_with_plugins(
+        &[(descriptor.provider_manifest.as_str(), EPIC_MANIFEST)],
+        Platform::Windows,
+        &[backend],
+    );
+    assert!(windows.diagnostics.is_empty(), "{:?}", windows.diagnostics);
+    let epic = windows
+        .get("epic")
+        .expect("the descriptor's manifest loads");
+    assert!(
+        descriptor
+            .platforms
+            .iter()
+            .all(|platform| epic.manifest().platforms.contains(platform)),
+        "the descriptor's platforms are a subset of the manifest's"
+    );
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EpicLoginPolicy {
+    start_url: String,
+    #[serde(default)]
+    cookie_urls: Vec<String>,
+    probe_origin: String,
+    title: String,
+    allowed_hosts: Vec<String>,
+    cookie_names: Vec<String>,
+    probe_script: String,
+    width: u32,
+    height: u32,
+    timeout_seconds: u64,
+}
+
+#[test]
+fn the_epic_login_policy_is_cookie_free_and_reads_only_the_authorization_code() {
+    let policy: EpicLoginPolicy = toml::from_str(include_str!(
+        "../../../../../crates/plugin-epic/assets/login.toml"
+    ))
+    .unwrap();
+    assert!(policy.cookie_urls.is_empty());
+    assert!(policy.cookie_names.is_empty());
+    assert_eq!(policy.probe_origin, "https://www.epicgames.com");
+    assert_eq!(policy.title, "Epic Games");
+    assert_eq!(
+        policy.allowed_hosts,
+        [
+            "epicgames.com",
+            "epicgames.dev",
+            "unrealengine.com",
+            "hcaptcha.com"
+        ]
+    );
+    assert_eq!(policy.width, 600);
+    assert_eq!(policy.height, 760);
+    assert_eq!(policy.timeout_seconds, 600);
+    assert_eq!(
+        policy.start_url,
+        "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com%2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a%26responseType%3Dcode"
+    );
+    assert!(
+        policy
+            .probe_script
+            .contains("window.location.pathname !== '/id/api/redirect'")
+    );
+    assert!(policy.probe_script.contains("authorizationCode"));
+    assert!(policy.probe_script.contains("authorization_code"));
+    assert!(!policy.probe_script.to_ascii_lowercase().contains("cookie"));
 }

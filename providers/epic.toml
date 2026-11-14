@@ -1,0 +1,28 @@
+# Epic Games Store on Windows. The official Epic plugin reads the launcher's installed-item
+# manifests, owns the account and catalog flows, and reports Epic's playtime totals. No host crate
+# interprets Epic files or HTTP responses.
+id = "epic"
+name = "Epic Games Store"
+platforms = ["windows"]
+source = "epicgames"
+scan = { plugin = "org.gamenode.plugin.epic" }
+catalog = { plugin = "org.gamenode.plugin.epic" }
+playtime = { plugin = "org.gamenode.plugin.epic" }
+launch = { uri = "com.epicgames.launcher://apps/{id}?action=launch&silent=true" }
+install = { uri = "com.epicgames.launcher://apps/{id}?action=install" }
+
+# game-node-server's EGameExternalGameCategory.EpicGamesNamespace = 1001, whose uids are 32-hex
+# catalog namespaces (for example GTA V: 0584d2013f0149a791e7b9bad0eec102). IGDB's
+# EpicGamesStore category (26) uses store slugs and is a different category, so it must not be used
+# here. The entry key stays `epic:<appName>`; the namespace is the lookup uid.
+match = { external_category = 1001, uid_field = "namespace" }
+
+# The launcher stores its data directory under the 32-bit machine key. A portable or older install
+# may have none, so `%ProgramData%` is the fallback. The plugin expands `%ProgramData%` itself; the
+# host forwards the manifest and does not interpret Epic paths.
+[[roots.windows]]
+registry = 'HKLM\SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher'
+value = "AppDataPath"
+
+[[roots.windows]]
+path = '%ProgramData%\Epic\EpicGamesLauncher\Data'

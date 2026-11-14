@@ -1,5 +1,5 @@
 {
-  "api": "1.4",
+  "api": "1.6",
   "field": {
     "message": "ResourceRequest",
     "name": "common_data_categories",

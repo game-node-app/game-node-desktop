@@ -108,12 +108,19 @@ pub trait HostServices: Send + Sync {
     ) -> Result<ActionReply, Status>;
     fn publish_status(&self, _status: models::AccountStatus) {}
     async fn session_closed(&self, _session_id: &str) {}
+    /// Whether this provider's trusted login policy reads cookies. The transport requires the
+    /// cookie grant only when it does; a probe-only policy needs just the page grant.
+    fn login_reads_cookies(&self) -> bool {
+        true
+    }
 }
 
 pub struct Registration {
     pub provider_id: String,
     pub plugin_id: String,
     pub capabilities: Vec<String>,
+    /// Whether this provider's trusted manifest declares shared catalog access.
+    pub shared_catalog: bool,
     pub services: Arc<dyn HostServices>,
 }
 
@@ -149,6 +156,7 @@ struct Operation {
     kind: ProviderOperation,
     permissions: BTreeSet<&'static str>,
     catalog: CatalogTransfer,
+    requested_achievements: BTreeSet<String>,
     result: oneshot::Sender<Result<Completion, Status>>,
     identity_revision: u64,
     secret_written: bool,
@@ -180,6 +188,8 @@ pub struct Launch {
 pub struct Completion {
     pub result: OperationResult,
     pub catalog: models::CatalogUpdate,
+    /// Validated per-game achievement outcomes for a `ReadAchievements` operation.
+    pub achievements: Vec<models::AchievementOutcome>,
     guard: Option<ResultGuard>,
 }
 
@@ -255,6 +265,20 @@ impl Completion {
         Self {
             result,
             catalog,
+            achievements: Vec::new(),
+            guard: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_achievements(outcomes: Vec<models::AchievementOutcome>) -> Self {
+        Self {
+            result: OperationResult {
+                disposition: OperationDisposition::Completed as i32,
+                ..Default::default()
+            },
+            catalog: models::CatalogUpdate::default(),
+            achievements: outcomes,
             guard: None,
         }
     }
@@ -380,12 +404,13 @@ impl Lease {
     }
 }
 
-// Steam sync performs session validation, owned games, then Family games,
+// A catalog sync may validate the session, read owned games and read shared games,
 // each bounded at 90 seconds. Leave bounded headroom for host storage/RPCs.
 fn operation_timeout(kind: ProviderOperation) -> Duration {
     match kind {
         ProviderOperation::SignIn => Duration::from_secs(615),
         ProviderOperation::SyncCatalog => Duration::from_secs(300),
+        ProviderOperation::ReadAchievements => Duration::from_secs(300),
         ProviderOperation::Initialize | ProviderOperation::Check => Duration::from_secs(105),
         ProviderOperation::SettingsCancel => Duration::from_secs(3),
         _ => Duration::from_secs(90),
@@ -473,6 +498,15 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
             cap::SECRET_WRITE,
             cap::SECRET_DELETE,
             cap::CATALOG,
+        ],
+        ReadAchievements => &[
+            cap::CONTEXT,
+            cap::ACCOUNT_READ,
+            cap::ACCOUNT_PUBLISH,
+            cap::SECRET_READ,
+            cap::SECRET_WRITE,
+            cap::SECRET_DELETE,
+            cap::ACHIEVEMENTS,
         ],
         SignOut => &[
             cap::CONTEXT,
@@ -690,6 +724,7 @@ impl ProviderApi {
                         target_operation_id: String::new(),
                         settings: None,
                         runtime_session_result: None,
+                        achievements: None,
                     }));
                 }
             }
@@ -1009,6 +1044,8 @@ impl ProviderApi {
         services.session_closed(session_id).await;
     }
 
+    /// Delivers the validation error that ended a provider event stream to the operation it
+    /// belongs to, instead of reporting only that the process disconnected.
     fn authorize(
         &self,
         context: &ServiceContext,
@@ -1097,7 +1134,23 @@ impl ProviderApi {
         provider_id: &str,
         kind: ProviderOperation,
     ) -> Result<Completion, Status> {
-        self.execute_payload(provider_id, kind, None).await
+        self.execute_payload(provider_id, kind, None, None).await
+    }
+
+    pub async fn execute_achievements(
+        &self,
+        provider_id: &str,
+        request: models::AchievementsRequest,
+    ) -> Result<Completion, Status> {
+        gamenode_plugin_protocol::achievements::validate_request(&request)
+            .map_err(|_| Status::invalid_argument("invalid achievements request"))?;
+        self.execute_payload(
+            provider_id,
+            ProviderOperation::ReadAchievements,
+            None,
+            Some(request),
+        )
+        .await
     }
 
     pub async fn execute_settings(&self, request: settings::Request) -> Result<Completion, Status> {
@@ -1108,6 +1161,7 @@ impl ProviderApi {
             &request.context.provider_id.clone(),
             request.operation(),
             Some(request),
+            None,
         )
         .await
     }
@@ -1201,9 +1255,12 @@ impl ProviderApi {
         provider_id: &str,
         kind: ProviderOperation,
         settings: Option<settings::Request>,
+        achievements: Option<models::AchievementsRequest>,
     ) -> Result<Completion, Status> {
-        if is_settings(kind) != settings.is_some() {
-            return Err(Status::invalid_argument("missing settings scope"));
+        if is_settings(kind) != settings.is_some()
+            || (kind == ProviderOperation::ReadAchievements) != achievements.is_some()
+        {
+            return Err(Status::invalid_argument("missing operation scope"));
         }
         let provider = lock(&self.state)
             .providers
@@ -1245,6 +1302,7 @@ impl ProviderApi {
                 ProviderOperation::ConfigurationOpen
                 | ProviderOperation::ConfigurationFocus
                 | ProviderOperation::ConfigurationClose => cap::CONFIGURE,
+                ProviderOperation::ReadAchievements => cap::ACHIEVEMENTS,
                 ProviderOperation::SignIn
                 | ProviderOperation::FocusSignIn
                 | ProviderOperation::CancelSignIn => cap::LOGIN,
@@ -1275,6 +1333,7 @@ impl ProviderApi {
                         ..Default::default()
                     },
                     catalog: models::CatalogUpdate::default(),
+                    achievements: Vec::new(),
                     guard: None,
                 });
             }
@@ -1349,6 +1408,10 @@ impl ProviderApi {
                     kind,
                     permissions,
                     catalog: CatalogTransfer::default(),
+                    requested_achievements: achievements
+                        .as_ref()
+                        .map(|request| request.game_ids.iter().cloned().collect())
+                        .unwrap_or_default(),
                     result: complete,
                     identity_revision: provider
                         .identity_revision
@@ -1370,6 +1433,7 @@ impl ProviderApi {
                 target_operation_id: String::new(),
                 settings: settings.map(Into::into),
                 runtime_session_result: None,
+                achievements: achievements.map(Into::into),
             }))
             .is_err()
         {
@@ -1433,6 +1497,15 @@ impl ProviderApi {
                 provider.registration.services.publish_status(status);
             }
             provider_event::Event::CatalogChunk(chunk) => {
+                if matches!(
+                    CatalogCategory::try_from(chunk.category),
+                    Ok(CatalogCategory::Shared)
+                ) && !provider.registration.shared_catalog
+                {
+                    return Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    ));
+                }
                 lock(&self.state)
                     .operations
                     .get_mut(&(context.session_id, context.operation_id))
@@ -1452,6 +1525,7 @@ impl ProviderApi {
                     (result.discovery.is_some(), cap::DISCOVERY),
                     (!result.counters.is_empty(), cap::COUNTER),
                     (!result.catalogs.is_empty(), cap::CATALOG),
+                    (!result.achievements.is_empty(), cap::ACHIEVEMENTS),
                 ] {
                     if present {
                         self.authorize(&context, permission)?;
@@ -1482,9 +1556,17 @@ impl ProviderApi {
                 {
                     return Err(self.scope_denial(&context, cap::LOGIN).unwrap());
                 }
+                if !result.achievements.is_empty()
+                    && operation_kind != ProviderOperation::ReadAchievements
+                {
+                    return Err(self.scope_denial(&context, cap::ACHIEVEMENTS).unwrap());
+                }
                 if result.counters.len() > 50_000
                     || result.counters.iter().any(|c| {
-                        c.id.is_empty() || c.id.len() > 256 || c.seconds < 0 || c.last_played < 0
+                        c.id.is_empty()
+                            || c.id.len() > 256
+                            || c.seconds < 0
+                            || c.last_played.is_some_and(|last_played| last_played < 0)
                     })
                 {
                     return Err(Status::invalid_argument("invalid counter observations"));
@@ -1562,6 +1644,31 @@ impl ProviderApi {
                         return Err(Status::invalid_argument("incomplete catalog"));
                     }
                 };
+                if catalog.shared.is_some() && !provider.registration.shared_catalog {
+                    let _ = operation.result.send(Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    )));
+                    return Err(Status::invalid_argument(
+                        "shared catalog data requires declared shared access",
+                    ));
+                }
+                let achievements = if operation.kind == ProviderOperation::ReadAchievements {
+                    match gamenode_plugin_protocol::achievements::parse_outcomes(
+                        &result.achievements,
+                        &operation.requested_achievements,
+                        disposition == OperationDisposition::Completed,
+                    ) {
+                        Ok(outcomes) => outcomes,
+                        Err(_) => {
+                            let _ = operation
+                                .result
+                                .send(Err(Status::invalid_argument("invalid achievements result")));
+                            return Err(Status::invalid_argument("invalid achievements result"));
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 if let Some(status) = status {
                     provider.registration.services.publish_status(status);
                 }
@@ -1575,6 +1682,7 @@ impl ProviderApi {
                 let _ = operation.result.send(Ok(Completion {
                     result,
                     catalog,
+                    achievements,
                     guard: Some(guard),
                 }));
                 if let Some(commands) = commands {
@@ -1584,6 +1692,7 @@ impl ProviderApi {
                         target_operation_id: String::new(),
                         settings: None,
                         runtime_session_result: None,
+                        achievements: None,
                     }));
                 }
             }
@@ -1757,8 +1866,10 @@ impl provider_host_server::ProviderHost for ProviderApi {
         let request = request.into_inner();
         let (lease, services) = self.lease(request.context.clone(), cap::LOGIN)?;
         if request.operation == LoginOperation::Read as i32 {
-            self.authorize(&lease.context, cap::COOKIES)?;
             self.authorize(&lease.context, cap::PAGE)?;
+            if services.login_reads_cookies() {
+                self.authorize(&lease.context, cap::COOKIES)?;
+            }
         }
         Ok(Response::new(services.login(lease, request).await?))
     }

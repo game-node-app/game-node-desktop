@@ -1,0 +1,11 @@
+# Trusted descriptor for the bundled Linux package-manager plugin. It scans installed packages
+# and has no account, login or catalog grants.
+provider_id = "packagekit"
+plugin_id = "org.gamenode.plugin.packagekit-discovery"
+name = "Gerenciador de pacotes Linux"
+platforms = ["linux"]
+capabilities = ["provider.context.read", "library.discovery"]
+executable = "gamenode-plugin-packagekit"
+provider_manifest = "packagekit"
+native_access = ["files", "process", "dbus"]
+legacy_login_profiles = []

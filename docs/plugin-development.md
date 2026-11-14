@@ -18,10 +18,10 @@ operation identifier is host-supplied launch context, not a substitute for host-
 IDs in later commands.
 
 `OpenSession` authenticates the package identity and negotiates the protocol before the plugin
-opens `ProviderHost.Exchange`. API 1.1–1.3 clients keep using `api_major` and `api_minor`; an
+opens `ProviderHost.Exchange`. API 1.1–1.5 clients keep using `api_major` and `api_minor`; an
 empty API range in the additive fields means the legacy request, where `api_minor` is the newest
 minor the client supports and the host may select any supported minor from the API minimum through
-that value. API 1.4 clients may
+that value. API 1.6 clients may
 declare inclusive minimum/maximum major and minor versions plus required or optional feature IDs.
 The host selects the highest overlapping version. A required unavailable feature rejects the
 session; optional unavailable features are returned as unsupported. The reply includes granted
@@ -33,7 +33,7 @@ The protocol distinguishes `provider` and `extension` sessions. An extension ses
 host-validated `TargetGameContext` (game, installation, profile and revision) and its
 `ServiceContext` repeats that scope on each call. The Rust SDK exposes `Session::open_extension`
 and `run_extension` for that lifecycle. The desktop currently mounts the provider and control
-services described below; the API 1.4 `ResourceHost` is a contract in the `.proto` and is not yet
+services described below; the API 1.6 `ResourceHost` is a contract in the `.proto` and is not yet
 mounted by the desktop server. Do not infer that an RPC is available just because generated
 client code exists. Third-party package metadata and validation are documented in
 [`plugin-package-manifest.md`](plugin-package-manifest.md).
@@ -53,7 +53,7 @@ The existing provider operation families are:
 | Account and login | `SignIn`, `FocusSignIn`, `CancelSignIn`, `Check`, `SignOut`, `Cancel` |
 | Catalog and playtime | `SyncCatalog`, `ReadCounter` |
 | Declarative settings (API 1.3, `ui.settings`) | `SettingsDescribeRead`, `SettingsSubmit`, `SettingsCancel` |
-| External configuration (API 1.4, `ui.configure`) | `ConfigurationOpen`, `ConfigurationFocus`, `ConfigurationClose` |
+| External configuration (API 1.6, `ui.configure`) | `ConfigurationOpen`, `ConfigurationFocus`, `ConfigurationClose` |
 
 Existing `ProviderEvent` families are `Ready`, `AccountStatus`, `CatalogChunk` and `Result`.
 `OperationResult` carries the typed discovery, status, catalog completion, counter, login,
@@ -71,9 +71,9 @@ that have not committed. The host fences later work with operation, account, pro
 revisions. The SDK bounds concurrent work and control dispatch; it calls `shutdown` after the host
 sends `Shutdown` or the stream ends, with a three-second shutdown wait.
 
-## RPC inventory and API 1.4 status
+## RPC inventory and API 1.6 status
 
-The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.4
+The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6
 control RPCs `DescribeApi`, `GetPermissions` and `WatchPermissionChanges`. The three control
 methods authenticate the session and do not require a library/data permission. They return public
 API metadata, the caller's own grants, and changes to those grants. Permission denial details use
@@ -84,7 +84,7 @@ The mounted `ProviderHost` service has `Exchange`, `GetContext`, `Account`, `Sec
 `DeclareActions`. These are the existing provider service methods. Discovery, catalog, counters,
 status and lifecycle results travel through `Exchange`; they are not extra unary RPCs.
 
-The API 1.4 `ResourceHost` and domain-service contracts in `crates/plugin-protocol/proto/plugin.proto`
+The API 1.6 `ResourceHost` and domain-service contracts in `crates/plugin-protocol/proto/plugin.proto`
 define typed request and response messages. The checked
 [`resource_host.json`](../crates/plugin-protocol/contracts/resource_host.json) and
 [`domain_host.json`](../crates/plugin-protocol/contracts/domain_host.json) catalogs record each
@@ -92,7 +92,7 @@ method, message, stream, permission, owner, revision, pagination, quota and idem
 contract tests compare every route to the generated protobuf descriptor. The permission grouping
 is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes are `UNIMPLEMENTED`.
 
-These API 1.4 resource and domain methods remain contract-only: the desktop does not mount their
+These API 1.6 resource and domain methods remain contract-only: the desktop does not mount their
 services, so generated clients cannot call them successfully yet. Provider and control services
 described above are mounted. Do not infer runtime availability from the protobuf contract.
 
@@ -108,7 +108,7 @@ remain excluded, and sensitive/custom datasets require separate sharing review.
 
 The ResourceHost method names, grouped for source/API review, are:
 
-| Area | API 1.4 contract method names |
+| Area | API 1.6 contract method names |
 | --- | --- |
 | Library and presentation | `LibraryList`, `LibraryGet`, `LibraryWatch`, `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`, `ArtworkRead`, `ArtworkSet` |
 | Game execution and install | `GamesRequestLaunch`, `GamesProposeCustomLaunch`, `GamesRequestCustomLaunch`, `GamesRemoveCustomLaunch`, `GamesRequestInstall` |
@@ -134,13 +134,13 @@ Unary SDK service calls have a 15-second request timeout. The local connection a
 to three seconds. Current host operation deadlines are 615 seconds for sign-in, 300 seconds for
 catalog sync, 105 seconds for initialize/check, three seconds for settings cancellation and 90
 seconds for other operations. Login policy additionally bounds its window lifetime and page probe
-size. These provider-host values describe the current implementation. API 1.4 resource request
+size. These provider-host values describe the current implementation. API 1.6 resource request
 and response payloads are capped at 8 MiB; method-specific limits are listed in the route catalog.
 Blocking IO and CPU work belongs on worker
 threads, and async code must remain cancellable. Resource job state, progress, terminal outcome,
 watch sequence and cancellation request fields are defined by `JobReply`, `JobEvent`,
 `JobGetRequest`, `JobWatchRequest` and `JobCancelRequest`; service implementation is not mounted
-yet. API 1.4 method-specific quota values are carried as catalog contract metadata and are not
+yet. API 1.6 method-specific quota values are carried as catalog contract metadata and are not
 claims about current desktop enforcement.
 
 The SDK's legacy `Error` keeps its existing coarse variants for source compatibility. New code
@@ -156,6 +156,50 @@ account. The process communicates with the running desktop through the versioned
 `gamenode-core`, `gamenode-app`, `gamenode-api` or `gamenode-platform`; they must not read or write
 the GameNode database or GameNode credentials.
 
+## Official plugins and trusted descriptors
+
+Official plugins are compiled-in and trusted. Each one is described by a `plugins/<name>.toml`
+descriptor that `crates/app/build.rs` embeds together with the provider manifest it names and the
+login policy it references. The host parses and validates the descriptors once at startup; nothing
+is read from disk at runtime. Adding a store therefore needs a plugin crate, a
+`providers/<provider id>.toml` manifest and a `plugins/<name>.toml` descriptor, not a new Rust
+branch in the host.
+
+The bundled plugins are:
+
+- **Steam** (Windows and Linux): installed discovery, account sign-in/check/sign-out, owned and
+  Family catalog sync, playtime observations, Play/Install actions and achievement reads.
+- **Linux package manager** (Linux): installed package candidates through PackageKit or pacman.
+  It has context and discovery grants only.
+- **[Epic Games Store](epic-games-store.md)** (Windows): installed discovery, launcher actions,
+  owned catalog, playtime totals and an opt-in account.
+
+The manual DRM-free provider is built into Core and is not a plugin.
+
+A descriptor has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `provider_id` | Stable provider id. It must be a plain lowercase id (`a-z`, `0-9`, `-`, `_`). |
+| `plugin_id` | The plugin's public id, matched against the executable's handshake. |
+| `name` | Display name used by inventory, Stores and provider-neutral copy. |
+| `platforms` | Platforms where the plugin is available. They must be a subset of the manifest's platforms. |
+| `capabilities` | The host-service grants approved for this provider. |
+| `executable` | File name of the executable placed next to the desktop host. |
+| `provider_manifest` | Provider id of the embedded `providers/<id>.toml` manifest. It must equal `provider_id`. |
+| `login_policy` | Optional repo-relative path to an embedded login policy. Present exactly when `auth.webview` is granted. |
+| `credential_alias` | Optional existing keyring account and private file for a provider that must keep its historical physical credential. |
+| `native_access` | Declarations of OS access the plugin itself needs. They document intent; they are not sandbox rules. |
+| `legacy_login_profiles` | Profile directory names from older builds that startup cleanup removes. |
+
+Descriptors are validated before use. A descriptor is skipped, with a diagnostic, when its manifest
+is missing or its id differs, it lists a platform its manifest does not, its login policy presence
+does not match `auth.webview`, it grants `auth.webview.cookies.read` without a policy that declares
+cookie names, it names an unknown or duplicate capability, its provider id duplicates another
+descriptor, or its credential alias is not a plain provider-specific name (including the GameNode
+session names). Every other descriptor still loads. Inventory, provider backends and test fixtures
+all derive from the same validated data.
+
 ## Session and operations
 
 The host starts a registered plugin process and provides its local endpoint, a temporary session
@@ -166,11 +210,15 @@ the async `ProviderPlugin` trait. `run(session, Arc::new(plugin))` dispatches ho
 the SDK. Do not retain a command's client to authorize later work: operation, account and profile
 generations fence stale requests.
 
-The existing provider API defines discovery, account, catalog, login, secret, counter and action
-operations. A provider should request only the capabilities it actually needs. The host compares
-the request with trusted packaged metadata and grants the intersection; a plugin cannot grant
-itself additional access. API major/minor negotiation and unknown or duplicate permission checks
-are implemented in `gamenode-plugin-protocol`.
+The current public API is major 1, minor 6. Minors 1–5 are the official provider baseline negotiated
+with the single-minor handshake: minor 5 adds optional last-played counter values, catalog game
+fields, the `invalid credential` catalog failure and cookie-free login policies; minor 4 added
+achievement reads; minor 3 added typed settings; minor 2 added the full operation set. Minor 6 is
+the first third-party API: it adds range negotiation, external configuration and the resource
+surface described below. A plugin negotiates its newest supported minor within major 1, and the
+host grants the intersection of the requested capabilities with its trusted descriptor; a plugin
+cannot grant itself additional access. Unknown or duplicate permissions are rejected in
+`gamenode-plugin-protocol`.
 
 ## Capabilities
 
@@ -184,29 +232,73 @@ The existing provider grant set (`capability::ALL`) is:
 | `account.state.read` | Read this provider's non-secret account identity and status. |
 | `account.state.publish` | Publish validated account transitions and status. Secret values are excluded from account state and GUI snapshots. |
 | `auth.webview` | Open, focus, cancel and close this provider's isolated sign-in attempt. The host enforces the packaged navigation policy. |
-| `auth.webview.cookies.read` | Read only the approved cookie names for the active login attempt. |
-| `auth.webview.page.read` | Read only the bounded page probe at the exact origin in trusted login policy. Plugins cannot submit arbitrary scripts or origins. |
+| `auth.webview.cookies.read` | Read only the approved cookie names for the active login attempt. Required only when the trusted policy declares cookies. |
+| `auth.webview.page.read` | Read only the bounded page probe at the exact origin in the trusted login policy. Plugins cannot submit arbitrary scripts or origins. |
 | `secrets.read` | Read this provider's logical secret slot. |
 | `secrets.write` | Write this provider's logical secret slot. |
 | `secrets.delete` | Delete this provider's logical secret slot. |
 | `playtime.counter` | Return provider-local total-playtime and last-played observations. Core retains tracking, attribution, deduplication and submission policy. |
 | `provider.actions.declare` | Declare approved provider actions that the host validates against trusted URI schemes and templates. It does not authorize arbitrary commands, shells or filesystem changes. |
+| `achievements.read` | Return bounded per-game achievement definitions and the connected account's unlock state for this provider. The host rejects unrequested game ids, oversized batches and strings, and results fenced by an account change. Available from API minor 4. |
 
-Secret read, write and delete are independent grants. The host uses Windows Credential Manager on
-Windows and the existing Secret Service/private-file policy on Linux. For Steam, the logical
-`session` slot is mapped by trusted host metadata to the existing physical `CredentialSlot::Steam`
-alias (`steam` in the keyring and `steam-token` in the Linux private-file fallback). The GameNode
-session remains in its separate `Session` slot. Windows has no plaintext fallback. A plugin must
-not treat a reported storage method as proof that a secret has been persisted successfully.
+A provider should request only the capabilities it actually needs. Capability names are not
+free-form: a descriptor containing an unknown name is invalid and is not loaded.
 
-The protocol also defines the optional `ui.settings` grant (API 1.3), `ui.configure` (API 1.4),
-and API 1.4 resource grants for library reads and metadata, favorites, matching, artwork, game
+## Provider secrets
+
+Every provider sees one logical secret slot named `session`; the host rejects any other key. A
+plugin cannot choose a physical keyring account, file name or another provider's slot.
+
+The physical slot is derived from the provider id, unless the trusted descriptor declares an alias:
+
+- **Default keyring account:** `provider.<provider_id>`.
+- **Default Linux private file:** `private/provider-<provider_id>.secret` below the application data
+  directory.
+- **Steam's legacy alias:** `credential_alias = { keyring_account = "steam", private_file = "steam-token" }`.
+  Existing Steam sessions keep the same physical credential, with no migration, renaming or
+  re-sign-in.
+
+The GameNode account session remains in its own `session` keyring account and
+`private/session-token` file. Descriptor aliases may not reuse those names. On Windows the host
+uses Credential Manager and has no plaintext fallback. On Linux it uses Secret Service and falls
+back to a user-only private file only when no Secret Service exists; a locked or failing service is
+reported as an error. Secret read, write and delete are independent grants, and a reported storage
+method is not proof that a write was durable.
+
+## Login policies and cookie-free extraction
+
+`auth.webview` opens an isolated window with an ephemeral profile scoped to the provider. URLs,
+allowed hosts, the page probe and any cookies come from the trusted login policy. Runtime requests
+supply only window handles and operations. External HTTPS links outside the approved hosts open in
+the system browser. The probe runs only at the exact `probe_origin`, and a navigation change
+invalidates an in-flight result.
+
+A policy may read cookies or only approve a page probe:
+
+- `cookie_urls` is an optional list of URLs to read cookies from. When non-empty,
+  `cookie_names` must be non-empty; when empty, `cookie_names` must be empty. Several URLs let a
+  policy capture a session whose cookies Steam scopes to different hosts.
+- `auth.webview.cookies.read` is valid only with a policy that declares cookie names. A
+  cookie-free policy does not grant it.
+- A login `Read` on a cookie-free policy skips cookie collection entirely and returns only
+  `page_result_json`. This supports authorization-code flows where the plugin receives a one-time
+  code instead of a cookie.
+- `page_result_json` is bounded JSON and is secret-bearing. The host never logs it and never
+  includes it, or any cookie value, in tracing output or GUI snapshots.
+
+Each attempt uses `private/login/<provider>` and the host removes that directory when the attempt
+ends, whether it succeeded, was cancelled or timed out. At startup the host also removes the
+`legacy_login_profiles` named by trusted descriptors. A newer attempt's profile is never deleted by
+a late cleanup from an older attempt.
+
+The protocol also defines the optional `ui.settings` grant (API 1.3), `ui.configure` (API 1.6),
+and API 1.6 resource grants for library reads and metadata, favorites, matching, artwork, game
 launch/install, storage, files, network, notifications, backups, library roots, runtimes,
 diagnostics, computer hardware, game sessions/presence/performance, custom data, tools and ports.
 These identifiers are known to the protocol but are not part of the legacy `ALL` grant set.
 Knowing an identifier never grants it. The complete identifier list is in
 [`capability.rs`](../crates/plugin-protocol/src/capability.rs); method-by-method scopes and
-availability remain subject to the pending API 1.4 permission matrix.
+availability remain subject to the pending API 1.6 permission matrix.
 
 The Steam plugin uses the full capability set above to provide installed discovery, account
 sign-in/check/sign-out, owned and Family catalog sync, Steam playtime observations and Play/Install
@@ -223,23 +315,25 @@ provider, process session and operation, and the host checks the grant on each c
 arbitrary files or the operating system's credential database directly.
 
 Native-access declarations describe what the trusted bundled executable needs to access for its
-own implementation. Steam needs HTTPS access to Steam's store/API, reads of Steam library and
-configuration files (including supported Linux native/Flatpak locations), and the Steam install
-root from the current user's Windows registry. These declarations document expected access; they
-are not operating-system sandbox rules. The plugin is an ordinary process running with the user's
-OS permissions, so filesystem and network access by that process are not confined by the host API.
-Community code is not enabled by these bundled-plugin permissions or declarations.
+own implementation. A store plugin may need HTTPS access to the store's API, reads of store
+library and configuration files (including supported Linux native/Flatpak locations), the store
+install root from the Windows registry, or process and D-Bus access. These declarations document
+expected access; they are not operating-system sandbox rules. The plugin is an ordinary process
+running with the user's OS permissions, so filesystem and network access by that process are not
+confined by the host API. Community code is not enabled by these bundled-plugin permissions or
+declarations.
 
-## Steam-specific implementation rules
+## Implementation rules for store plugins
 
-- Keep Steam parsing, account/session validation, HTTP calls, login interpretation, discovery and
-  Steam's own playtime counter inside the Steam plugin. Use the public host services for login
-  windows, provider secrets, account state, discovery/catalog results and action declarations.
+- Keep store parsing, account/session validation, HTTP calls, login interpretation, discovery and
+  the store's own playtime counter inside that store's plugin. Use the public host services for
+  login windows, provider secrets, account state, discovery/catalog results and action
+  declarations.
 - Keep GameNode authentication, matching, library reconciliation, favorites, artwork, profile
   persistence, playtime attribution and submission policy in the desktop/Core.
-- Steam login URLs, allowed hosts, cookies and page probe come from trusted packaged policy data.
-  Runtime requests must not replace that policy. Do not log cookies, tokens, credentials, raw
-  secret-bearing messages or complete account URLs.
+- Store login URLs, allowed hosts, cookies and page probes come from trusted packaged policy data.
+  Runtime requests must not replace that policy. Do not log cookies, tokens, authorization codes,
+  credentials, raw secret-bearing messages or complete account URLs.
 - Distinguish a successful empty result from a failed or incomplete operation. A failure must not
   be reported as an empty catalog or discovery result; the host preserves prior successful facts
   according to the operation's contract.
@@ -248,5 +342,5 @@ Community code is not enabled by these bundled-plugin permissions or declaration
 
 The concrete DTOs, RPC messages, capability identifiers and compatibility rules are defined in
 [`crates/plugin-protocol`](../crates/plugin-protocol); the async client and provider trait are in
-[`crates/plugin-sdk`](../crates/plugin-sdk). Trusted Steam policy and packaging details are
-maintained alongside the integration implementation.
+[`crates/plugin-sdk`](../crates/plugin-sdk). Trusted descriptors live in [`plugins`](../plugins),
+and provider manifests live in [`providers`](../providers).

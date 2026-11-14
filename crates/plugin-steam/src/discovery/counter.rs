@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CounterValue {
     pub seconds: i64,
-    pub last_played: i64,
+    /// Steam writes 0 for a game it has never recorded a play time for; that is unknown, not
+    /// 1970.
+    pub last_played: Option<i64>,
 }
 
 pub fn read(input: &ScanInput<'_>) -> BTreeMap<String, CounterValue> {
@@ -74,7 +76,7 @@ pub fn read(input: &ScanInput<'_>) -> BTreeMap<String, CounterValue> {
                 };
                 let candidate = CounterValue {
                     seconds,
-                    last_played,
+                    last_played: (last_played != 0).then_some(last_played),
                 };
                 if totals
                     .get(id)
@@ -116,7 +118,7 @@ mod tests {
             })["620"],
             CounterValue {
                 seconds: 45240,
-                last_played: 100
+                last_played: Some(100)
             }
         );
         files = files.with_file(
@@ -132,6 +134,26 @@ mod tests {
             720
         );
     }
+    #[test]
+    fn a_zero_last_played_is_unknown_and_a_date_is_present() {
+        let mut files = MemoryFiles::new();
+        files = files.with_file(
+            "/steam/userdata/1/config/localconfig.vdf",
+            &config("1", "0"),
+        );
+        let totals = read(&ScanInput {
+            files: &files,
+            roots: &["/steam".into()],
+        });
+        assert_eq!(
+            totals["620"],
+            CounterValue {
+                seconds: 60,
+                last_played: None
+            }
+        );
+    }
+
     #[test]
     fn invalid_or_missing_values_produce_no_total() {
         for text in [

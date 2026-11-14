@@ -102,7 +102,7 @@ export interface Row {
   providerName: string;
   installed: boolean;
   owned: boolean;
-  familyShared: boolean;
+  shared: boolean;
   status: MatchStatus;
   coverFile?: string | null;
   /** The matched game's release year; unknown for unmatched entries. */
@@ -113,6 +113,45 @@ export interface Row {
   isFavorite: boolean;
 }
 
+export type AchievementGameState = 'ready' | 'none' | 'failed';
+
+export interface AchievementUnlock {
+  id: string;
+  name: string;
+  unlockedAt?: number | null;
+}
+
+export interface AchievementSummary {
+  state: AchievementGameState;
+  unlocked: number;
+  total: number;
+  latestUnlock?: AchievementUnlock | null;
+  lastSuccessAt?: number | null;
+  failure?: CatalogError | null;
+}
+
+export interface AchievementRecord {
+  id: string;
+  name: string;
+  description: string;
+  hidden: boolean;
+  iconUrl: string;
+  iconGrayUrl: string;
+  unlocked: boolean;
+  unlockedAt?: number | null;
+  position: number;
+}
+
+export type AchievementFilter = 'all' | 'unlocked' | 'locked';
+
+export interface AchievementListView {
+  connected: boolean;
+  state?: AchievementGameState | null;
+  lastSuccessAt?: number | null;
+  failure?: CatalogError | null;
+  achievements: AchievementRecord[];
+}
+
 export interface DetailView {
   running: boolean;
   row: Row;
@@ -120,6 +159,8 @@ export interface DetailView {
   releaseYear?: number | null;
   hasArtwork: boolean;
   membership: Membership;
+  achievementBackend?: boolean;
+  achievements?: AchievementSummary | null;
 }
 
 export type EmptyState =
@@ -164,7 +205,7 @@ export type SidebarSelection = 'all' | { provider: string };
 export interface AvailabilityFilter {
   installed: boolean;
   owned: boolean;
-  family: boolean;
+  shared: boolean;
 }
 
 export type MatchFilter = 'any' | 'matched' | 'ambiguous' | 'unmatched' | 'noGame';
@@ -187,7 +228,7 @@ export interface LibraryFilters {
 
 export function createDefaultFilters(): LibraryFilters {
   return {
-    availability: { installed: false, owned: false, family: false },
+    availability: { installed: false, owned: false, shared: false },
     runningOnly: false,
     matchState: 'any',
     playtime: 'any',
@@ -202,7 +243,7 @@ export function filtersAreDefault(filters: LibraryFilters): boolean {
   return (
     !filters.availability.installed &&
     !filters.availability.owned &&
-    !filters.availability.family &&
+    !filters.availability.shared &&
     !filters.runningOnly &&
     filters.matchState === 'any' &&
     filters.playtime === 'any' &&
@@ -233,7 +274,10 @@ export interface ProviderCount {
   count: number;
   installedCount: number;
   ownedCount: number;
-  familyCount: number;
+  /** Entries shared through the provider's declared shared access and not owned. */
+  sharedCount: number;
+  /** The provider's declared shared-access label; only labelled providers offer the filter. */
+  sharedLabel: string | null;
 }
 
 export type Reason =
@@ -654,7 +698,11 @@ export type CatalogError =
   | 'expired'
   | 'privacy'
   | 'changed'
+  /** Both strings are accepted for one release while hosts are updated. */
+  | 'invalidCredential'
   | 'invalidCookies'
+  | 'sharedUnavailable'
+  /** The pre-rename name is accepted for one release, like the invalid-cookie pair above. */
   | 'familyUnavailable';
 
 export type StoreAccountState =
@@ -672,7 +720,9 @@ export interface StoreAccountView {
   accountId: string | null;
   accountName: string | null;
   ownedCount: number;
-  familyCount: number;
+  sharedCount: number;
+  /** The provider's declared shared-access label; counts and warnings render only with one. */
+  sharedLabel: string | null;
   installedCount: number;
   lastCheckedAt: number | null;
   /** Last successful catalog sync in this run; the connected toast waits for it. */
@@ -680,7 +730,7 @@ export interface StoreAccountView {
   storage: StorageMethod | null;
   persistFailed: boolean;
   catalogError: CatalogError | null;
-  familyError: CatalogError | null;
+  sharedError: CatalogError | null;
   canSignIn: boolean;
   canCancelSignIn: boolean;
   canFocusSignIn: boolean;
@@ -805,6 +855,21 @@ export function artworkAssetUrl(gameId: number | null | undefined, rev?: number 
   if (mockEnabled) return `/mock-covers/mock-${(gameId - 1) % 12}.svg`;
   const suffix = rev !== undefined ? `?rev=${encodeURIComponent(String(rev))}` : '';
   return `${assetProtocolBase()}/artwork/${gameId}${suffix}`;
+}
+
+/**
+ * The host returns the canonical `gamenode-asset://localhost/achievement/<hash>` route. Rewrite
+ * its base to the form this webview loads, like `coverAssetUrl` and `artworkAssetUrl` do, because
+ * WebView2 on Windows cannot load the bare custom scheme.
+ */
+export function achievementIconAssetUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const marker = '/achievement/';
+  const at = url.indexOf(marker);
+  if (at < 0) return null;
+  const hash = url.slice(at + marker.length).split(/[?#]/, 1)[0];
+  if (!hash) return null;
+  return `${assetProtocolBase()}${marker}${hash}`;
 }
 
 /**

@@ -10,7 +10,7 @@ use gamenode_plugin_protocol::{
 
 /// This port is called only on provider storage workers. Waiting here preserves
 /// the Engine's database queue order without blocking a command or UI callback.
-struct EngineAccounts(std::sync::Weak<Shared>);
+pub(super) struct EngineAccounts(pub(super) std::sync::Weak<Shared>);
 
 impl EngineAccounts {
     fn queued<T: Send + 'static>(
@@ -48,9 +48,25 @@ impl AccountPersistence for EngineAccounts {
     ) -> Result<(), tonic::Status> {
         self.queued(move |engine, accounts| {
             let provider = account.provider.clone();
-            let result = accounts.save(account, clear_ownership);
+            let previous = clear_ownership
+                .then(|| accounts.load(&provider).ok().flatten())
+                .flatten();
+            let result = accounts.save(account.clone(), clear_ownership);
             if clear_ownership {
+                if previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.account_id != account.account_id)
+                    && let Some(previous) = previous
+                    && let Err(error) = engine
+                        .shared
+                        .ports
+                        .achievements
+                        .delete_account(&provider, &previous.account_id)
+                {
+                    tracing::warn!(%error, "could not delete the previous account's achievements");
+                }
                 engine.clear_store_catalog_memory(&provider);
+                engine.clear_achievement_memory(&provider);
             }
             result
         })
@@ -59,8 +75,19 @@ impl AccountPersistence for EngineAccounts {
     fn clear(&self, provider: &str) -> Result<(), tonic::Status> {
         let provider = provider.to_owned();
         self.queued(move |engine, accounts| {
+            let previous = accounts.load(&provider).ok().flatten();
             let result = accounts.clear(&provider);
+            if let Some(previous) = previous
+                && let Err(error) = engine
+                    .shared
+                    .ports
+                    .achievements
+                    .delete_account(&provider, &previous.account_id)
+            {
+                tracing::warn!(%error, "could not delete the account's achievements");
+            }
             engine.clear_store_catalog_memory(&provider);
+            engine.clear_achievement_memory(&provider);
             result
         })
     }
@@ -76,9 +103,27 @@ pub(super) fn catalog_error(error: models::CatalogError) -> gamenode_core::libra
         P::Expired => C::Expired,
         P::Privacy => C::Privacy,
         P::Changed => C::Changed,
-        P::InvalidCookies => C::InvalidCookies,
-        P::FamilyUnavailable => C::FamilyUnavailable,
+        P::InvalidCredential => C::InvalidCredential,
+        P::SharedUnavailable => C::SharedUnavailable,
     }
+}
+
+/// Keeps catalog fields within the host's bounds even if a future transport stops enforcing
+/// them. Out-of-bounds fields are ignored; they never panic or reach Core.
+fn catalog_fields(
+    fields: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    fields
+        .into_iter()
+        .filter(|(name, value)| {
+            !name.is_empty()
+                && name.len() <= models::MAX_CATALOG_FIELD_KEY
+                && value.len() <= models::MAX_CATALOG_FIELD_VALUE
+                && !name.chars().any(char::is_control)
+                && !value.chars().any(char::is_control)
+        })
+        .take(models::MAX_CATALOG_FIELDS)
+        .collect()
 }
 
 fn category(
@@ -93,6 +138,7 @@ fn category(
                     .map(|r| gamenode_core::library::CatalogRecord {
                         id: r.id,
                         name: r.name,
+                        fields: catalog_fields(r.fields),
                     })
                     .collect()
             })
@@ -139,9 +185,15 @@ impl Engine {
             .clone()
     }
 
+    /// Whether `id` names a provider the host loaded with an account and catalog.
+    pub fn has_catalog_provider(&self, id: &str) -> bool {
+        crate::commands::catalog_provider_loaded(self.provider_runtime().as_ref(), id)
+    }
+
     pub(super) fn provider_account_views(
         &self,
         library: Option<&gamenode_core::library::LibraryView>,
+        providers: &[gamenode_core::provider::Provider],
     ) -> Vec<StoreAccountView> {
         let Some(runtime) = self.provider_runtime() else {
             return vec![];
@@ -154,6 +206,11 @@ impl Engine {
                 let available = runtime.available(&provider);
                 let count =
                     library.and_then(|view| view.providers.iter().find(|p| p.id == provider));
+                let shared_label = providers
+                    .iter()
+                    .find(|declared| declared.id() == provider)
+                    .and_then(|declared| declared.shared_label())
+                    .map(str::to_owned);
                 let state = match status.state {
                     models::AccountState::NotConnected => StoreAccountState::NotConnected,
                     models::AccountState::Checking => StoreAccountState::Checking,
@@ -169,7 +226,8 @@ impl Engine {
                     account_id: status.account_id.clone(),
                     account_name: status.account_name.clone(),
                     owned_count: count.map_or(0, |c| c.owned_count),
-                    family_count: count.map_or(0, |c| c.family_count),
+                    shared_count: count.map_or(0, |c| c.shared_count),
+                    shared_label,
                     installed_count: count.map_or(0, |c| c.installed_count),
                     last_checked_at: status.last_checked_at,
                     last_synced_at: status.last_synced_at,
@@ -186,7 +244,7 @@ impl Engine {
                     }),
                     persist_failed: status.persist_failed,
                     catalog_error: status.catalog_error.map(catalog_error),
-                    family_error: status.family_error.map(catalog_error),
+                    shared_error: status.shared_error.map(catalog_error),
                     can_sign_in: available && status.can_sign_in(),
                     can_focus_sign_in: available && status.can_focus_sign_in(),
                     can_cancel_sign_in: available && status.can_cancel_sign_in(),
@@ -280,13 +338,19 @@ impl Engine {
                 }
                 if result.login_outcome == Some(AccountLoginOutcome::Connected as i32)
                     || (result.account_changed
-                        && result.status.is_some_and(|s| {
+                        && result.status.as_ref().is_some_and(|s| {
                             s.state
                                 == gamenode_plugin_protocol::proto::AccountConnection::Connected
                                     as i32
                         }))
                 {
                     engine.request_catalog();
+                }
+                if result.status.as_ref().is_some_and(|status| {
+                    status.state
+                        == gamenode_plugin_protocol::proto::AccountConnection::Connected as i32
+                }) {
+                    engine.resume_achievements(&provider);
                 }
                 engine.publish_current();
             })
@@ -362,14 +426,23 @@ impl Engine {
             }
         });
     }
+    /// Whether `provider` declares shared catalog access in its trusted manifest. A provider
+    /// without the declaration may only sync owned facts.
+    fn declares_shared_catalog(&self, provider: &str) -> bool {
+        self.lock()
+            .library
+            .provider(provider)
+            .is_some_and(|provider| provider.shared_label().is_some())
+    }
     pub(super) async fn sync_provider_catalog(&self, op: u64, provider: String) {
         let _check = self.provider_check_gate(&provider).lock_owned().await;
+        let shared_declared = self.declares_shared_catalog(&provider);
         let Some(runtime) = self.provider_runtime() else {
             self.library_input(LibInput::CatalogSynced {
                 op,
                 provider,
                 owned: None,
-                family: None,
+                shared: None,
                 now: unix_now(),
             });
             return;
@@ -387,7 +460,7 @@ impl Engine {
                 op,
                 provider,
                 owned: None,
-                family: None,
+                shared: None,
                 now: unix_now(),
             });
             return;
@@ -398,7 +471,7 @@ impl Engine {
         // A sync may join the startup session check. Once that check is done,
         // request the actual catalog once instead of accepting no observations.
         let retry = completion.as_ref().is_ok_and(|c| {
-            (c.catalog.owned.is_none() && c.catalog.family.is_none()
+            (c.catalog.owned.is_none() && c.catalog.shared.is_none()
                 || c.result.disposition == OperationDisposition::Superseded as i32)
                 && runtime
                     .status(&provider)
@@ -424,7 +497,7 @@ impl Engine {
                 op,
                 provider: provider.clone(),
                 owned: Some(Err(gamenode_core::library::CatalogError::Unreachable)),
-                family: None,
+                shared: None,
                 now: unix_now(),
             })
         };
@@ -446,18 +519,36 @@ impl Engine {
                             }
                             return;
                         }
-                        let (owned, family) =
+                        let (owned, shared) =
                             if result.disposition == OperationDisposition::Completed as i32 {
-                                (category(catalog.owned), category(catalog.family))
+                                (category(catalog.owned), category(catalog.shared))
                             } else {
                                 (None, None)
                             };
-                        if owned.is_some() || family.is_some() {
+                        if shared.is_some() && !shared_declared {
+                            tracing::warn!(
+                                provider = %provider,
+                                "provider sent shared catalog data without declaring shared access"
+                            );
+                            // Defense in depth: the host rejects such data as a protocol error
+                            // before it reaches the engine. Should it still arrive, fail the
+                            // whole sync like the host fallback does; the previous owned and
+                            // shared facts stay unchanged.
+                            engine.library_input(LibInput::CatalogSynced {
+                                op,
+                                provider,
+                                owned: Some(Err(gamenode_core::library::CatalogError::Unreachable)),
+                                shared: None,
+                                now: catalog.now,
+                            });
+                            return;
+                        }
+                        if owned.is_some() || shared.is_some() {
                             engine.persist_catalog(
                                 provider.clone(),
                                 CatalogUpdate {
                                     owned: owned.clone(),
-                                    family: family.clone(),
+                                    shared: shared.clone(),
                                     now: catalog.now,
                                 },
                             );
@@ -466,7 +557,7 @@ impl Engine {
                             op,
                             provider,
                             owned,
-                            family,
+                            shared,
                             now: catalog.now,
                         });
                     })
@@ -474,8 +565,12 @@ impl Engine {
                 if result.is_err() {
                     fallback();
                 }
+                self.request_import_achievements();
             }
-            Err(_) => fallback(),
+            Err(_) => {
+                fallback();
+                self.request_import_achievements();
+            }
         }
     }
 }

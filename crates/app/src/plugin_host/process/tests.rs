@@ -111,6 +111,7 @@ async fn manager(
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             capabilities: vec![capability::CONTEXT.into()],
+            shared_catalog: false,
             services: Arc::new(Services),
         })
         .unwrap();
@@ -196,7 +197,7 @@ async fn incompatible_signed_target_prevents_process_start() {
         "provider_id": "fixture",
         "name": "Fixture",
         "version": "1.0.0",
-        "api": {"min": "1.4.0", "max": "1.4.0"},
+        "api": {"min": "1.6.0", "max": "1.6.0"},
         "targets": [{"os": "windows", "arch": "x86_64", "abi": "msvc", "entrypoint": "bin/fixture"}],
         "publisher": {
             "key_id": "fixture-key",

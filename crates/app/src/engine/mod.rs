@@ -23,31 +23,21 @@ use gamenode_core::ports::{
 };
 use gamenode_core::provider::Platform;
 use gamenode_core::snapshot::StoreAccountView;
-#[cfg(test)]
-use gamenode_core::steam::SteamWebApi;
 use gamenode_core::{
     AuthMachine, Effect, Input, SessionCredential, Settings, SignInFailure, Snapshot,
 };
 use gamenode_platform::covers::{artwork_dir, write_cover};
 use tokio::runtime::Handle;
 
+mod achievements;
 mod artwork;
 mod drm_free;
 pub mod pc_ports;
 mod playtime;
 mod providers;
-#[cfg(test)]
-pub mod steam_account;
-#[cfg(test)]
-pub mod steam_login;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
-
-#[cfg(test)]
-use steam_account::{Clock, SteamAccountPorts, StoreAccountStore};
-#[cfg(test)]
-use steam_login::SteamLoginWindow;
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,10 +66,6 @@ pub struct Ports {
     pub files: Arc<dyn HostFiles>,
     pub roots: Arc<dyn RootResolver>,
     pub uri: Arc<dyn UriOpener>,
-    /// Test-only adapter used by legacy Engine regression fixtures. Production Steam access is
-    /// provided by `ProviderRuntime` and never links the in-process Steam implementation.
-    #[cfg(test)]
-    pub steam: Option<SteamPorts>,
     /// The PC ports service; `None` on builds without port installs and in tests that do not
     /// exercise PC ports.
     pub pc_ports: Option<Arc<PortsService>>,
@@ -90,31 +76,8 @@ pub struct Ports {
     /// Where downloaded covers are stored.
     pub covers_dir: PathBuf,
     pub platform: Platform,
-}
-
-/// The Steam store-account adapters: a credential slot separate from the GameNode session, the
-/// non-secret account row, the web client and the isolated sign-in window.
-#[cfg(test)]
-#[derive(Clone)]
-pub struct SteamPorts {
-    pub credentials: Arc<dyn CredentialStore>,
-    pub accounts: Arc<dyn StoreAccountStore>,
-    pub client: Arc<dyn SteamWebApi>,
-    pub login: Arc<dyn SteamLoginWindow>,
-    pub clock: Arc<dyn Clock>,
-}
-
-#[cfg(test)]
-impl SteamPorts {
-    fn into_account_ports(self) -> SteamAccountPorts {
-        SteamAccountPorts {
-            credentials: self.credentials,
-            accounts: self.accounts,
-            client: self.client,
-            login: self.login,
-            clock: self.clock,
-        }
-    }
+    /// The local achievement cache, keyed by provider and store account.
+    pub achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
 }
 
 fn unix_now() -> i64 {
@@ -187,6 +150,13 @@ struct State {
     published_selection: Option<Vec<String>>,
     /// The PC ports projection built by the service on a worker thread.
     ports_view: gamenode_core::ports::PortsView,
+    /// Cached achievement summaries for the connected store accounts.
+    achievement_summaries: std::collections::BTreeMap<
+        (String, String),
+        gamenode_core::achievements::StoredAchievementSummary,
+    >,
+    /// The UI locale achievement text is requested in.
+    achievement_language: String,
 }
 
 struct Shared {
@@ -207,6 +177,8 @@ struct Shared {
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
     catalog_syncs: Mutex<std::collections::HashMap<String, CatalogSync>>,
+    /// One serialized achievement worker and its priority queue per provider.
+    achievement_queues: Mutex<std::collections::HashMap<String, achievements::Queue>>,
     /// A cover completion is waiting for the coalescing flush task to publish it.
     cover_flush_pending: AtomicBool,
     /// A task is scheduled (or running) to publish the newest cover completions.
@@ -272,6 +244,11 @@ impl Engine {
                 library_loading: false,
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
+                achievement_summaries: Default::default(),
+                achievement_language: crate::commands::normalize_locale(
+                    &crate::commands::system_locale(),
+                )
+                .to_owned(),
             }),
             local_views: Mutex::new(()),
             ports,
@@ -280,6 +257,7 @@ impl Engine {
             providers: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
+            achievement_queues: Mutex::new(std::collections::HashMap::new()),
             cover_flush_pending: AtomicBool::new(false),
             cover_flush_scheduled: AtomicBool::new(false),
             publish: Box::new(publish),
@@ -374,7 +352,25 @@ impl Engine {
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
         self.update_playtime_view(state, unix_now());
         let library = state.library.view();
-        let store_accounts = self.store_accounts(library.as_ref());
+        // Achievements live in the engine cache, not in the library machine. The detail snapshot
+        // carries only the compact summary; the full list comes from the async command.
+        let library = library.map(|mut view| {
+            if let Some(detail) = &mut view.detail {
+                let provider = detail.row.provider.clone();
+                detail.achievement_backend = state
+                    .library
+                    .provider(&provider)
+                    .is_some_and(|provider| provider.achievement_plugin().is_some());
+                if let Some((_, entry_id)) = detail.row.key.split_once(':') {
+                    detail.achievements = state
+                        .achievement_summaries
+                        .get(&(provider, entry_id.to_owned()))
+                        .map(gamenode_core::achievements::AchievementSummaryView::from);
+                }
+            }
+            view
+        });
+        let store_accounts = self.store_accounts(library.as_ref(), state.library.providers());
         // Details loaded for the previous selection do not belong to the new one.
         let selection = library.as_ref().map(|view| view.selected.clone());
         if selection != state.published_selection {
@@ -405,13 +401,15 @@ impl Engine {
         snapshot
     }
 
-    /// Provider account states, with the library's live counts. Counts are zero while no GameNode
-    /// account's library is open; the card itself still renders.
+    /// Provider account states, with the library's live counts and the providers' declared
+    /// shared labels. Counts are zero while no GameNode account's library is open; the card
+    /// itself still renders.
     fn store_accounts(
         &self,
         library: Option<&gamenode_core::library::LibraryView>,
+        providers: &[gamenode_core::provider::Provider],
     ) -> Vec<StoreAccountView> {
-        self.provider_account_views(library)
+        self.provider_account_views(library, providers)
     }
 
     fn publish(&self, state: &mut State) {
@@ -427,6 +425,8 @@ impl Engine {
         self.refresh_local_games();
         self.start_local_discovery();
         self.start_local_manifest_updates();
+        self.load_achievement_cache();
+        self.start_achievement_reconciliation();
         self.recover_and_load_tools();
         let (engine, store) = (self.clone(), self.shared.ports.library.clone());
         self.shared.storage.submit(move || {
@@ -442,33 +442,6 @@ impl Engine {
         });
     }
 
-    /// Test-only compatibility wrappers preserve the Steam regression suite while production
-    /// commands use the provider-neutral operations below.
-    #[cfg(test)]
-    pub async fn steam_sign_in(&self) {
-        self.provider_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_focus_sign_in(&self) {
-        self.provider_focus_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_cancel_sign_in(&self) {
-        self.provider_cancel_sign_in("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_sign_out(&self) {
-        self.provider_sign_out("steam").await;
-    }
-
-    #[cfg(test)]
-    pub async fn steam_check(&self) {
-        self.provider_check("steam").await;
-    }
-
     fn library_is_active(&self) -> bool {
         self.lock().library.is_active()
     }
@@ -482,7 +455,7 @@ impl Engine {
         self.publish(&mut state);
     }
 
-    /// Drops one provider's owned and family facts and persists the clear. Entries, matches and
+    /// Drops one provider's owned and shared facts and persists the clear. Entries, matches and
     /// covers are kept. While the library is loading its cache the in-memory clear is deferred
     /// until the cache is installed, so the old account's cached facts cannot come back.
     fn clear_store_catalog(&self, provider: &str) {
@@ -524,7 +497,7 @@ impl Engine {
                 op,
                 provider,
                 owned: None,
-                family: None,
+                shared: None,
                 now: unix_now(),
             });
             return;
@@ -677,6 +650,14 @@ impl Engine {
             );
         }
         self.sync_tracker(&mut state);
+        let selected_achievement_key =
+            state
+                .library
+                .view()
+                .and_then(|view| match view.selected.as_slice() {
+                    [key] => Some(key.clone()),
+                    _ => None,
+                });
         if read_trigger {
             self.read_counters(&mut state);
         }
@@ -687,6 +668,14 @@ impl Engine {
             self.publish_cover(&mut state);
         } else {
             self.publish(&mut state);
+        }
+        drop(state);
+        if finished_loading {
+            self.load_achievement_cache();
+            self.request_import_achievements();
+        }
+        if let Some(key) = selected_achievement_key {
+            self.refresh_selected_achievements(key);
         }
     }
 
@@ -1049,7 +1038,7 @@ impl Engine {
                 ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
             }),
             // The account service validates the session (persisting a rotated cookie) and fetches
-            // the owned and family catalogs; the engine applies the result here.
+            // the owned and shared catalogs; the engine applies the result here.
             LibEffect::SyncCatalog { op, provider } => {
                 // The machine accepted a pending request: it emitted the sync for it. While the
                 // cache is installing, this is only the scan's own sync and the request stays

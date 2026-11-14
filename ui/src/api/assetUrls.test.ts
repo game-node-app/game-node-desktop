@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { artworkAssetUrl, coverAssetUrl } from './types';
+import { achievementIconAssetUrl, artworkAssetUrl, coverAssetUrl } from './types';
 
 const WEBVIEW2_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0 WebView2/130.0';
@@ -19,12 +19,18 @@ describe('gamenode-asset URLs', () => {
     useUserAgent(WEBKITGTK_USER_AGENT);
     expect(coverAssetUrl('119133.jpg')).toBe('gamenode-asset://localhost/cover/119133.jpg');
     expect(artworkAssetUrl(119133, 2)).toBe('gamenode-asset://localhost/artwork/119133?rev=2');
+    expect(achievementIconAssetUrl('gamenode-asset://localhost/achievement/abc123')).toBe(
+      'gamenode-asset://localhost/achievement/abc123',
+    );
   });
 
   it('uses the http localhost mapping on Windows WebView2, which cannot load the bare scheme', () => {
     useUserAgent(WEBVIEW2_USER_AGENT);
     expect(coverAssetUrl('119133.jpg')).toBe('http://gamenode-asset.localhost/cover/119133.jpg');
     expect(artworkAssetUrl(119133, 2)).toBe('http://gamenode-asset.localhost/artwork/119133?rev=2');
+    expect(achievementIconAssetUrl('gamenode-asset://localhost/achievement/abc123')).toBe(
+      'http://gamenode-asset.localhost/achievement/abc123',
+    );
   });
 
   it('encodes the cover file name and returns null without a cover', () => {
@@ -32,5 +38,8 @@ describe('gamenode-asset URLs', () => {
     expect(coverAssetUrl('a b.jpg')).toBe('http://gamenode-asset.localhost/cover/a%20b.jpg');
     expect(coverAssetUrl(null)).toBeNull();
     expect(artworkAssetUrl(null)).toBeNull();
+    expect(achievementIconAssetUrl(null)).toBeNull();
+    expect(achievementIconAssetUrl('https://cdn.example/icon.jpg')).toBeNull();
+    expect(achievementIconAssetUrl('gamenode-asset://localhost/achievement/')).toBeNull();
   });
 });

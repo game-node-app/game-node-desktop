@@ -1,0 +1,11 @@
+{
+  "AppName": "GameBeta",
+  "DisplayName": "Beta Quest",
+  "CatalogNamespace": "fedcba9876543210fedcba9876543210",
+  "CatalogItemId": "catalog-beta",
+  "AppCategories": ["public", "games"],
+  "bIsIncompleteInstall": false,
+  "InstallLocation": "D:\\Games\\Beta",
+  "MainGameAppName": "",
+  "Namespace": "beta"
+}

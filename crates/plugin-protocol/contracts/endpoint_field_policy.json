@@ -25,7 +25,7 @@
       "route": "/gamenode.plugin.v1.PluginHost/SubmitDiscovery",
       "request_policy": "Existing scoped operation and typed result/failure; legacy record fields retained",
       "response_policy": "Accepted or typed failure",
-      "extension_or_opaque_policy": "Only optional descriptive record extension for negotiated 1.4; legacy fields unchanged",
+      "extension_or_opaque_policy": "Only optional descriptive record extension for negotiated 1.6; legacy fields unchanged",
       "access_model": "Own provider; existing",
       "status": "protobuf_contract",
       "wire_service": "PluginHost",

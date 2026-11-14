@@ -115,6 +115,28 @@ On Linux and Windows, all Steam-specific discovery, authentication, session, acc
 - **WHEN** cached Steam entries and previously validated action declarations exist during a plugin failure
 - **THEN** existing cached Play/Install actions remain usable through generic host execution where their inputs remain valid
 
+### Requirement: Steam web sessions survive the access cookie lifetime
+The Steam plugin SHALL persist the long-lived `steamRefresh_steam` cookie captured from the trusted login window alongside the store access cookie and SHALL renew an expired `steamLoginSecure` through `login.steampowered.com` before the account is considered disconnected. A renewal SHALL be persisted before its follow-up validation, and concurrent session validations SHALL be serialized so a rotated refresh cookie cannot be lost.
+
+#### Scenario: Access cookie expires after a day
+- **WHEN** the store page rejects the saved access cookie but the saved refresh cookie is accepted
+- **THEN** the plugin stores the renewed cookies and reconnects without asking the user to sign in
+
+#### Scenario: Remember me was not selected
+- **WHEN** the login window produced no refresh cookie
+- **THEN** the account becomes expired at the normal access-cookie expiry and the UI asks for a new sign-in
+
+### Requirement: Steam credentials are removed only on definitive rejection
+The plugin SHALL remove a saved Steam credential only when the store session is rejected and no renewal is possible. A catalog API rejection SHALL NOT delete a credential whose store session validated.
+
+#### Scenario: Refresh cookie rejected
+- **WHEN** the login host rejects the saved refresh cookie
+- **THEN** the account becomes expired, the dead credential is removed and cached library facts stay visible
+
+#### Scenario: Catalog token rejected after a valid store check
+- **WHEN** the owned-games API rejects its short-lived token
+- **THEN** the catalog reports expired without deleting the saved refresh cookie
+
 ### Requirement: Steam migration preserves mainline behavior and data
 The plugin migration SHALL preserve the working mainline Steam account, catalog, library and applicable playtime behavior on Linux and Windows. Existing profiles SHALL retain identities, credentials, matches, favorites, covers and history. Generic GameNode and other-provider behavior SHALL remain compatible with the integrated mainline baseline.
 

@@ -60,19 +60,21 @@ pub type SortField = SortKey;
 pub struct AvailabilityFilter {
     pub installed: bool,
     pub owned: bool,
-    /// Shared through Steam Family; never selected together with ownership of the same entry.
-    pub family: bool,
+    /// Shared through the provider's declared shared access; never selected together with
+    /// ownership of the same entry. Layouts saved before the rename say `family`.
+    #[serde(alias = "family")]
+    pub shared: bool,
 }
 
 impl AvailabilityFilter {
     /// Whether no availability fact is selected (every entry passes).
     pub fn is_any(self) -> bool {
-        !(self.installed || self.owned || self.family)
+        !(self.installed || self.owned || self.shared)
     }
 
     /// Only "Installed" is selected; the special "nothing installed" empty state needs this.
     pub fn is_installed_only(self) -> bool {
-        self.installed && !self.owned && !self.family
+        self.installed && !self.owned && !self.shared
     }
 }
 
@@ -327,7 +329,7 @@ mod tests {
             availability: AvailabilityFilter {
                 installed: true,
                 owned: true,
-                family: false,
+                shared: false,
             },
             running_only: true,
             match_state: MatchFilter::Ambiguous,
@@ -354,6 +356,35 @@ mod tests {
     }
 
     #[test]
+    fn a_layout_saved_with_the_family_filter_restores_it_as_shared() {
+        let layout: LibraryLayout =
+            serde_json::from_str(r#"{"filters":{"availability":{"family":true}}}"#).unwrap();
+        assert!(layout.effective_filters().availability.shared);
+        assert!(!layout.effective_filters().availability.owned);
+
+        // New saves write the shared name, and the old key is accepted on load.
+        let json = serde_json::to_value(LibraryLayout {
+            filters: LibraryFilters {
+                availability: AvailabilityFilter {
+                    shared: true,
+                    ..AvailabilityFilter::default()
+                },
+                ..LibraryFilters::default()
+            },
+            ..LibraryLayout::default()
+        })
+        .unwrap();
+        assert_eq!(
+            json.get("filters").and_then(|f| f.get("availability")),
+            Some(&serde_json::json!({
+                "installed": false,
+                "owned": false,
+                "shared": true
+            }))
+        );
+    }
+
+    #[test]
     fn an_old_installed_only_layout_selects_installed_and_is_saved_without_it() {
         let layout: LibraryLayout = serde_json::from_str(r#"{"installedOnly":true}"#).unwrap();
         assert!(layout.effective_filters().availability.installed);
@@ -369,7 +400,7 @@ mod tests {
             Some(&serde_json::json!({
                 "installed": true,
                 "owned": false,
-                "family": false
+                "shared": false
             }))
         );
     }

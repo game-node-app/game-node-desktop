@@ -262,7 +262,7 @@ content are covered by `python3 -m unittest scripts.tests.test_plugin_package_to
   "provider_id": "example-reader",
   "name": "Example Reader",
   "version": "1.2.3",
-  "api": { "min": "1.4.0", "max": "1.5.0" },
+  "api": { "min": "1.6.0", "max": "1.7.0" },
   "permissions": [
     { "id": "library.read", "required": false, "scope": "own-provider", "reason": "Read imported games" }
   ],

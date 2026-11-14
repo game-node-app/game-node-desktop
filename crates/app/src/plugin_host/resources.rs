@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status};
 
 mod artwork;
 mod files;
+mod jobs;
 mod matching;
 mod mutations;
 mod network;
@@ -26,6 +27,7 @@ mod notifications;
 mod storage;
 
 use super::files::FileAccess;
+use super::jobs::Jobs;
 use super::library::{
     Change, CursorBinding, CursorError, DEFAULT_PAGE_SIZE, LibraryFeed, MAX_PAGE_SIZE,
     MAX_SEARCH_BYTES, ResumeError, Scope,
@@ -84,7 +86,14 @@ pub const SERVED: &[Served] = &[
         false,
         OWN_NOTICES,
     ),
+    Served::new("JobsGet", UNDERLYING, false, OWN_JOBS),
+    Served::new("JobsWatch", UNDERLYING, false, OWN_JOBS),
+    Served::new("JobsCancel", UNDERLYING, false, OWN_JOBS),
 ];
+
+/// Jobs have no permission of their own: each needs the one of the operation that made it.
+const UNDERLYING: &str = "";
+const OWN_JOBS: &str = "jobs this plugin started in this profile; the permission of the operation that started the job";
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
@@ -137,6 +146,8 @@ pub struct ResourceApi {
     network: Arc<NetworkAccess>,
     /// The notifications plugins ask Core to show.
     notifications: Arc<Notifications>,
+    /// The long operations plugins started.
+    jobs: Jobs,
 }
 
 impl ResourceApi {
@@ -147,9 +158,11 @@ impl ResourceApi {
         files: Arc<FileAccess>,
         network: Arc<NetworkAccess>,
         notifications: Arc<Notifications>,
+        jobs: Jobs,
     ) -> Self {
         Self {
             providers,
+            jobs,
             library,
             storage,
             files,
@@ -179,7 +192,7 @@ impl ResourceApi {
         let open = watches.entry(session_id.to_owned()).or_default();
         if *open >= MAX_WATCHES_PER_SESSION {
             return Err(Status::resource_exhausted(
-                "too many library watches for this session",
+                "too many open watches for this session",
             ));
         }
         *open += 1;
@@ -596,6 +609,27 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.publish_notification(request).await
     }
 
+    async fn jobs_get(
+        &self,
+        request: Request<JobGetRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.get_job(request).await
+    }
+
+    async fn jobs_watch(
+        &self,
+        request: Request<JobWatchRequest>,
+    ) -> Result<Response<Self::JobsWatchStream>, Status> {
+        self.watch_job(request).await
+    }
+
+    async fn jobs_cancel(
+        &self,
+        request: Request<JobCancelRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.cancel_job(request).await
+    }
+
     not_served! {
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
@@ -643,9 +677,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
         ports_list(PortsListRequest) -> PortsListReply;
         ports_detail(PortDetailRequest) -> PortDetailReply;
         ports_request_install(PortInstallRequest) -> JobReply;
-        jobs_get(JobGetRequest) -> JobReply;
-        jobs_watch(JobWatchRequest) -> Self::JobsWatchStream;
-        jobs_cancel(JobCancelRequest) -> JobReply;
     }
 }
 

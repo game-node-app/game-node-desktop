@@ -24,6 +24,7 @@ use tonic::transport::Channel;
 mod artwork_handles;
 mod declared_locations;
 mod files;
+mod jobs;
 mod network;
 mod notifications;
 mod sdk;
@@ -59,6 +60,8 @@ struct Fixture {
     network: Arc<NetworkAccess>,
     fetcher: Arc<network::FakeFetcher>,
     notifications: Arc<Notifications>,
+    /// The jobs plugins started; tests start some from the host side.
+    jobs: Jobs,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -130,6 +133,7 @@ impl Fixture {
             notifications: notifications.clone(),
             ..Default::default()
         };
+        let jobs = root.jobs.clone();
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -196,6 +200,7 @@ impl Fixture {
             network,
             fetcher,
             notifications,
+            jobs,
             notice_clock,
             notices,
             clock,
@@ -581,6 +586,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.files.clone(),
         fixture.network.clone(),
         fixture.notifications.clone(),
+        fixture.jobs.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {
@@ -649,7 +655,18 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("FilesDelete", 0),
             ("NetworkFetch", 0),
             ("NotificationsPublish", 0),
+            ("JobsGet", 0),
+            ("JobsWatch", 0),
+            ("JobsCancel", 0),
         ]
+    );
+    // A job needs the permission of the operation that made it, so the jobs methods name none.
+    assert!(
+        described
+            .methods
+            .iter()
+            .filter(|method| method.method.starts_with("Jobs"))
+            .all(|method| method.permissions.is_empty())
     );
 }
 

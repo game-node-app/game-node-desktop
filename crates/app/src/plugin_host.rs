@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, transport::Server};
 pub mod compatibility;
 pub mod files;
 pub mod grants;
+pub mod jobs;
 pub mod library;
 pub mod login;
 pub mod managed_packages;
@@ -487,6 +488,8 @@ pub struct PluginApi {
     pub network: Arc<network::NetworkAccess>,
     /// The notifications plugins ask Core to show.
     pub notifications: Arc<notifications::Notifications>,
+    /// The long operations plugins started; each belongs to the plugin that started it.
+    pub jobs: jobs::Jobs,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -595,7 +598,12 @@ impl plugin_host_server::PluginHost for PluginApi {
                 service: "ResourceHost".into(),
                 method: served.method.into(),
                 introduced_minor: capability::THIRD_PARTY_API_MINOR,
-                permissions: vec![served.permission.into()],
+                // The jobs methods need the permission of the operation that made the job.
+                permissions: if served.permission.is_empty() {
+                    vec![]
+                } else {
+                    vec![served.permission.into()]
+                },
                 ownership: served.ownership.into(),
                 max_page_size: if served.paged {
                     library::MAX_PAGE_SIZE as u32
@@ -711,6 +719,7 @@ impl PluginApiServer {
                     api.files.clone(),
                     api.network.clone(),
                     api.notifications.clone(),
+                    api.jobs.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -794,6 +803,7 @@ impl PluginApiServer {
                     api.files.clone(),
                     api.network.clone(),
                     api.notifications.clone(),
+                    api.jobs.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

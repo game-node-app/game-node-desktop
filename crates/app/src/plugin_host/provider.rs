@@ -1265,6 +1265,27 @@ impl ProviderApi {
         context: Option<&ServiceContext>,
         permission: &'static str,
     ) -> Result<ResourceCaller, Status> {
+        self.resource_caller(context, Some(permission))
+    }
+
+    /// [`authorize_resource`](Self::authorize_resource) without naming a permission: the session,
+    /// credential, profile and operation checks only. A call whose permission is only known after
+    /// finding the record it touches (a job's) authorizes here, looks the record up under the
+    /// caller's own identity, and then calls `authorize_resource` with the record's permission.
+    pub(crate) fn authorize_resource_session(
+        &self,
+        context: Option<&ServiceContext>,
+    ) -> Result<ResourceCaller, Status> {
+        self.resource_caller(context, None)
+    }
+
+    fn resource_caller(
+        &self,
+        context: Option<&ServiceContext>,
+        permission: Option<&'static str>,
+    ) -> Result<ResourceCaller, Status> {
+        // What a denial event names when no permission is being asked for.
+        let label = permission.unwrap_or("resource.session");
         let context =
             context.ok_or_else(|| Status::unauthenticated("resource context required"))?;
         let state = lock(&self.state);
@@ -1272,12 +1293,9 @@ impl ProviderApi {
             return Err(Status::unauthenticated("plugin session expired"));
         };
         let scope_denied = |session: &Session| {
-            let event = denial_event(session, permission, DenialReason::ScopeDenied);
+            let event = denial_event(session, label, DenialReason::ScopeDenied);
             let revision = event.grant_revision;
-            (
-                event,
-                denial(DenialReason::ScopeDenied, permission, revision),
-            )
+            (event, denial(DenialReason::ScopeDenied, label, revision))
         };
         if !super::constant_time_eq(&session.credential, &context.session_credential)
             || context.session_kind != session.kind
@@ -1308,7 +1326,9 @@ impl ProviderApi {
         {
             return Err(Status::failed_precondition("resource context is stale"));
         }
-        if !session.grants.contains(permission) {
+        if let Some(permission) = permission
+            && !session.grants.contains(permission)
+        {
             let event = denial_event(session, permission, DenialReason::NotGranted);
             let revision = event.grant_revision;
             drop(state);

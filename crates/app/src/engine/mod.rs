@@ -175,6 +175,8 @@ struct Shared {
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
     /// Third-party plugin profiles follow the signed-in GameNode account.
     plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
+    /// The library projection plugins read through `ResourceHost`.
+    library_feed: Mutex<Option<Arc<crate::plugin_host::library::LibraryFeed>>>,
     /// Serialize checks and catalog commits without delaying account cancellation.
     provider_checks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One catalog sync per provider, coalescing requests made while one runs.
@@ -258,6 +260,7 @@ impl Engine {
             storage: StorageWorker::new(),
             providers: Mutex::new(None),
             plugin_profiles: Mutex::new(None),
+            library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
             achievement_queues: Mutex::new(std::collections::HashMap::new()),
@@ -416,7 +419,83 @@ impl Engine {
     }
 
     fn publish(&self, state: &mut State) {
+        self.sync_library_feed(state);
         (self.shared.publish)(self.snapshot_of(state));
+    }
+
+    /// Feeds the plugin library projection. Plugins see the entries the library shows while an
+    /// account's library is open, each with its current GameNode match; never a store id, path
+    /// or scan field. An entry stays hidden until the storage worker has given it a durable
+    /// installation id, so an id a plugin saw never changes.
+    fn sync_library_feed(&self, state: &State) {
+        use crate::plugin_host::library::{InstallState, LibrarySource};
+        let Some(feed) = self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return;
+        };
+        let library = &state.library;
+        let sources = if library.is_active() {
+            library
+                .visible_entries()
+                .map(|entry| {
+                    let game_id = library.match_status(entry).game_id();
+                    LibrarySource {
+                        entry_key: entry.key.clone(),
+                        provider_id: entry.provider.clone(),
+                        game_id,
+                        name: entry
+                            .name
+                            .clone()
+                            .filter(|name| !name.trim().is_empty())
+                            .or_else(|| {
+                                game_id
+                                    .and_then(|id| library.game(id))
+                                    .map(|g| g.name.clone())
+                            })
+                            .unwrap_or_default(),
+                        install_state: if entry.installed {
+                            InstallState::Installed
+                        } else if entry.owned {
+                            InstallState::Owned
+                        } else {
+                            InstallState::Shared
+                        },
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let missing = feed.sync(sources);
+        if missing.is_empty() {
+            return;
+        }
+        let store = self.shared.ports.library.clone();
+        self.shared
+            .storage
+            .submit(move || match store.installation_ids(&missing) {
+                Ok(ids) => feed.assign_ids(&missing, ids),
+                Err(error) => {
+                    tracing::warn!(%error, "could not assign library installation ids");
+                    feed.ids_failed(&missing);
+                }
+            });
+    }
+
+    /// Connects the plugin library projection and fills it from the current library.
+    pub fn set_library_feed(&self, feed: Arc<crate::plugin_host::library::LibraryFeed>) {
+        *self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(feed);
+        let state = self.lock();
+        self.sync_library_feed(&state);
     }
 
     /// Reads the last signed-in account, then the stored session and, if there is one,

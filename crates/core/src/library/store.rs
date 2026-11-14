@@ -310,6 +310,14 @@ pub trait LibraryStore: Send + Sync {
         Ok(())
     }
 
+    /// The opaque installation ids of the entries in `entry_keys`, as `(entry key, id)` pairs.
+    /// A key without an id is given a new random one in the same transaction, so every returned
+    /// id is durable and never changes for its key. Keys are not checked against the entries.
+    fn installation_ids(
+        &self,
+        entry_keys: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError>;
+
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError>;
     fn save_last_account(&self, account: &LastAccount) -> Result<(), StorageError>;
     /// Removes the last-account record. The cache and chosen matches stay for a later sign-in.

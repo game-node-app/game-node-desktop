@@ -264,6 +264,7 @@ pub struct HostClient {
     plugin_id: std::sync::Arc<str>,
     settings_supported: bool,
     configure_supported: bool,
+    resource_context: Option<ServiceContext>,
 }
 
 fn request<T>(message: T) -> tonic::Request<T> {
@@ -284,6 +285,14 @@ impl HostClient {
 
     pub fn context(&self) -> &ServiceContext {
         &self.context
+    }
+
+    /// The host-issued context for plugin-initiated `ResourceHost` calls, from `OpenSession`.
+    /// `None` when the session negotiated a minor before API 1.6. It is bound to this session
+    /// and the active profile and adds no authority beyond the session's grants; after a profile
+    /// change the host ends the session and a new one issues a new context.
+    pub fn resource_context(&self) -> Option<&ServiceContext> {
+        self.resource_context.as_ref()
     }
 
     pub async fn describe_api(&self) -> Result<DescribeApiReply, DetailedError> {
@@ -342,6 +351,7 @@ impl HostClient {
             plugin_id: self.plugin_id.clone(),
             settings_supported: self.settings_supported,
             configure_supported: self.configure_supported,
+            resource_context: self.resource_context.clone(),
         })
     }
 
@@ -740,6 +750,11 @@ impl Session {
         {
             return Err(Error::Protocol);
         }
+        let resource_context = reply.resource_context.filter(|context| {
+            reply.api_minor >= capability::THIRD_PARTY_API_MINOR
+                && context.session_id == reply.session_id
+                && context.session_credential == launch.credential
+        });
         let context = ServiceContext {
             session_id: reply.session_id,
             session_credential: launch.credential,
@@ -776,6 +791,7 @@ impl Session {
                 plugin_id: plugin_id.into(),
                 settings_supported,
                 configure_supported: capabilities.contains(&capability::CONFIGURE),
+                resource_context,
             },
             commands,
         })

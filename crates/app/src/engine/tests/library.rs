@@ -3,6 +3,7 @@
 //! Every adapter is a double with a switchable delay, so the tests can show that slow scans,
 //! requests and storage never hold up the caller.
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -131,6 +132,10 @@ pub(super) struct FakeLibrary {
     pub(super) cleared: Mutex<Vec<String>>,
     pub(super) favorites: Mutex<Vec<FavoriteRecord>>,
     pub(super) store_accounts: Mutex<Vec<StoreAccount>>,
+    /// Installation ids by entry key, assigned like the SQLite store: once, never changed.
+    pub(super) installations: Mutex<BTreeMap<String, String>>,
+    /// While set, installation id requests fail.
+    pub(super) installations_fail: AtomicBool,
 }
 
 impl FakeLibrary {
@@ -235,6 +240,24 @@ impl LibraryStore for FakeLibrary {
         *self.excluded.lock().unwrap() = excluded.to_vec();
         self.cache.lock().unwrap().excluded = excluded.to_vec();
         Ok(())
+    }
+    fn installation_ids(
+        &self,
+        entry_keys: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        self.pause();
+        if self.installations_fail.load(Ordering::SeqCst) {
+            return Err(StorageError::Failed("installation ids unavailable".into()));
+        }
+        let mut ids = self.installations.lock().unwrap();
+        Ok(entry_keys
+            .iter()
+            .map(|key| {
+                let next = format!("{:032x}", ids.len() as u128 + 0xa5a5_0000);
+                let id = ids.entry(key.clone()).or_insert(next).clone();
+                (key.clone(), id)
+            })
+            .collect())
     }
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {
         Ok(self.account.lock().unwrap().clone())
@@ -1043,4 +1066,85 @@ async fn a_rejected_restore_issues_no_plugin_profile() {
     h.until("signed out", |s| s.auth == AuthView::SignedOut)
         .await;
     assert!(profiles.current().is_none());
+}
+
+/// What a whole-library plugin would list right now: `(installation id, game id, name)`.
+fn feed_entries(
+    feed: &crate::plugin_host::library::LibraryFeed,
+) -> Vec<(String, Option<u64>, String)> {
+    use crate::plugin_host::library::Scope;
+    let scope = Scope {
+        own_provider: "steam".to_owned(),
+        read_all: true,
+        provider_filter: None,
+    };
+    feed.page(&scope, None, None, 200)
+        .1
+        .into_iter()
+        .map(|entry| (entry.installation_id, entry.game_id, entry.name))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_see_entries_with_a_durable_id_and_a_game_id_that_follows_the_match() {
+    use crate::plugin_host::library::LibraryFeed;
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let feed = LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.signed_out().await;
+    assert!(feed_entries(&feed).is_empty());
+    h.sign_in("token").await;
+
+    // The scan lists the entry, then the lookup matches it to game 7.
+    eventually("the entry is matched in the plugin projection", || {
+        feed_entries(&feed)
+            .first()
+            .is_some_and(|(_, game, _)| *game == Some(7))
+    })
+    .await;
+    let entries = feed_entries(&feed);
+    assert_eq!(entries.len(), 1);
+    let (id, game, name) = entries[0].clone();
+    assert_eq!((game, name.as_str()), (Some(7), "Portal 2"));
+    // The id is the one the library store holds for the entry, and it is not derived from it.
+    assert_eq!(
+        h.store.installations.lock().unwrap().get("steam:620"),
+        Some(&id)
+    );
+    assert!(!id.contains("620") && !id.contains("steam"));
+
+    // A rescan and a forced re-sync keep the installation id.
+    h.engine
+        .library_input(gamenode_core::library::Input::ScanRequested);
+    h.until("rescanned", |s| view(s).is_some_and(|v| !v.scanning))
+        .await;
+    assert_eq!(feed_entries(&feed)[0].0, id);
+
+    // Signing out removes the entries from the plugin projection.
+    h.engine.dispatch(Input::SignOut);
+    h.until("signed out", |s| s.auth == AuthView::SignedOut)
+        .await;
+    eventually("the projection is emptied", || {
+        feed_entries(&feed).is_empty()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_stays_hidden_from_plugins_while_its_installation_id_cannot_be_stored() {
+    use crate::plugin_host::library::LibraryFeed;
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.store.installations_fail.store(true, Ordering::SeqCst);
+    let feed = LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("listed in the library", |s| {
+        view(s).is_some_and(|v| v.rows.len() == 1 && !v.scanning)
+    })
+    .await;
+    assert!(feed_entries(&feed).is_empty(), "no id, no projection");
+    assert!(h.store.installations.lock().unwrap().is_empty());
 }

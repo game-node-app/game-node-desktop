@@ -136,6 +136,7 @@ impl plugin_host_server::PluginHost for Host {
             return Err(Status::permission_denied("invalid launch"));
         }
         Ok(Response::new(OpenSessionReply {
+            resource_context: None,
             session_id: "reference".into(),
             api_major: API_MAJOR,
             api_minor: API_MINOR,

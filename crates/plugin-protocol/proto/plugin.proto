@@ -36,6 +36,11 @@ message OpenSessionReply {
   uint32 api_minor = 4;
   repeated FeatureStatus features = 5;
   SupportWindow support_window = 6;
+  // API 1.6+: the host-issued context for plugin-initiated resource calls
+  // (ResourceHost). It is bound to this session, its kind and target game and
+  // the active profile; it carries no authority beyond the session's grants.
+  // Absent for sessions that negotiated an earlier minor.
+  ServiceContext resource_context = 7;
 }
 
 enum SessionKind {

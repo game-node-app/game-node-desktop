@@ -10,7 +10,7 @@
     {
       "route": "/gamenode.plugin.v1.PluginHost/OpenSession",
       "request_policy": "Existing identity, API version, credential and requested grants",
-      "response_policy": "Existing session/version/grant result",
+      "response_policy": "Existing session/version/grant result; API 1.6+ adds the host-issued resource context",
       "extension_or_opaque_policy": "None",
       "access_model": "Control; existing",
       "status": "protobuf_contract",

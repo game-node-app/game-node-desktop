@@ -11,14 +11,18 @@ and commit-time authorization. Contract tests compare every catalog route to
 the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 
 The route tables below describe the API contract, not a claim that every route
-is currently served. At this implementation stage, `PluginApiServer` registers
-`PluginHost` and `ProviderHost`; it does not register `ResourceHost` or the
-domain services. Their RPCs therefore have no live handler that can enforce the
-listed grants yet. The persisted `PermissionGrantStore` also has not been wired
-into those RPC sessions. Treat the per-route checks and common-data selectors
-below as requirements for those handlers, not as evidence that an unavailable
-route is protected by runtime enforcement. Provider operation permissions and
-the permission-control methods that are mounted are enforced by `ProviderApi`.
+is currently served. `PluginApiServer` registers `PluginHost`, `ProviderHost`
+and `ResourceHost`. In `ResourceHost` only `LibraryList`, `LibraryGet` and
+`LibraryWatch` have handlers; every other `ResourceHost` method and every
+domain service (Saves, Locations, StorageDiagnostics, Computer, GamePresence,
+GamePerformance) is not served yet, so those RPCs have no live handler that can
+enforce the listed grants. `DescribeApi` lists exactly the served methods. The
+persisted `PermissionGrantStore` also has not been wired into RPC sessions: the
+Library handlers check the grants negotiated for the session. Treat the
+per-route checks and common-data selectors below as requirements for the
+unserved handlers, not as evidence that an unavailable route is protected by
+runtime enforcement. Provider operation permissions, the permission-control
+methods and the Library reads that are mounted are enforced by the host.
 
 | Methods | Permission |
 | --- | --- |
@@ -107,6 +111,52 @@ payloads are omitted. This is currently an in-memory denial history for the
 provider API; it is not yet a unified audit stream for all API 1.6 services.
 The separate permission-grant store has a bounded persisted domain-mutation
 audit model, but it is not yet connected to live RPC authorization.
+
+## Library reads
+
+`LibraryList`, `LibraryGet` and `LibraryWatch` are plugin-initiated, so they do
+not belong to a provider operation. `OpenSession` returns a `resource_context`
+for sessions that negotiated API 1.6 or later; every Library request carries it.
+It is bound to the session, its kind and target game, and the active profile. It
+adds no authority: the session still needs `library.read`, and a context from
+before a profile change is stale. A missing account profile is `UNAVAILABLE`, an
+unknown or foreign context is denied, and a missing grant is `PERMISSION_DENIED`
+with a recorded audit event.
+
+- **Scope.** With `library.read` a plugin sees only entries of its own provider.
+  Naming another provider in `provider_id` does not widen that. `library.read.all`
+  admits every provider and `provider_id` then narrows the result. A foreign
+  installation is reported as `NOT_FOUND`, indistinguishable from an unknown id.
+- **Identity.** `installation_id` is 128 random bits assigned and stored by the
+  host the first time an entry is projected; it never changes across rescans,
+  renames or match changes and reveals neither the store id nor a path. `game_id`
+  is the matched GameNode game, or empty when the entry has no single match.
+  Several installations may share one `game_id`. An entry is projected only once
+  its id is stored, so a failed write hides it instead of issuing a temporary id.
+- **Get.** The installation is the target. `game_id` alone works when exactly one
+  admitted installation matches it; with several the call fails with
+  `FAILED_PRECONDITION` and the caller names an `installation_id`. Naming both
+  requires them to agree.
+- **Fields.** Entries carry provider, name, install state (`installed`, `owned`,
+  `shared`), a revision and the two ids. They carry no store id, install folder,
+  scan fields, credentials or account data. `version` is empty.
+- **Pagination.** Entries are ordered by `installation_id`. The page size defaults
+  to 50 and is capped at 200. A cursor is signed by the host and bound to the
+  query, session, profile, grant revision and library revision, and it expires
+  after 5 minutes. A cursor from another query or session, an expired one, or one
+  issued before the library changed fails with `FAILED_PRECONDITION` and no
+  entries; the caller restarts the list. A cursor the host did not issue is
+  `INVALID_ARGUMENT`.
+- **Watch.** `after_revision = 0` starts at the current revision without a
+  backlog. Otherwise the host replays up to 256 retained events after that
+  revision; an older position is `FAILED_PRECONDITION` (list again and watch from
+  its revision) and a future one is `OUT_OF_RANGE`. Events are `upserted` or
+  `removed`. Each delivery rechecks the session, profile and grants, and the
+  stream ends with the denial when they change. A session holds at most 8 watches,
+  and a watcher that falls behind is ended and must list again.
+- **Common data.** Selecting a common-data category or record (for example the
+  runtime-availability projection) is refused with `UNIMPLEMENTED` rather than
+  silently narrowed; that projection is planned with task 14.4.
 
 ## Account-bound plugin profiles
 

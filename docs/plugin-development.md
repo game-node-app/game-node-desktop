@@ -98,9 +98,16 @@ method, message, stream, permission, owner, revision, pagination, quota and idem
 contract tests compare every route to the generated protobuf descriptor. The permission grouping
 is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes are `UNIMPLEMENTED`.
 
-These API 1.6 resource and domain methods remain contract-only: the desktop does not mount their
-services, so generated clients cannot call them successfully yet. Provider and control services
-described above are mounted. Do not infer runtime availability from the protobuf contract.
+The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet` and `LibraryWatch`
+(grants, scope, cursors and watch rules are in [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads)).
+Every other `ResourceHost` method and all domain services answer `UNIMPLEMENTED`, so generated
+clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
+instead of inferring availability from the protobuf contract.
+
+Resource calls are plugin-initiated and use the `resource_context` that `OpenSession` returns to API
+1.6 sessions (`HostClient::resource_context()` in the Rust SDK). Put it in the `context` of each
+request, for example `LibraryListRequest.page.context`; the launch operation context is not
+accepted. The context grants nothing by itself.
 
 Public-data reads use a typed per-query `CommonDataSelector` on each query that supports shared
 projections. Its categories and selected record ids are checked independently; a selected-record

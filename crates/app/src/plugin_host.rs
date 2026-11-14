@@ -18,6 +18,7 @@ use tonic::{Request, Response, Status, transport::Server};
 
 pub mod compatibility;
 pub mod grants;
+pub mod library;
 pub mod login;
 pub mod managed_packages;
 pub mod namespace;
@@ -26,6 +27,7 @@ pub mod process;
 pub mod profile;
 pub mod provider;
 pub mod publisher_trust;
+pub mod resources;
 pub mod runtime;
 pub mod services;
 mod transport;
@@ -471,6 +473,8 @@ pub fn backends(platform: Platform) -> Vec<gamenode_core::provider::PluginBacken
 #[derive(Clone, Default)]
 pub struct PluginApi {
     pub providers: provider::ProviderApi,
+    /// The library projection plugins read; the engine keeps it current.
+    pub library: Arc<library::LibraryFeed>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -573,7 +577,27 @@ impl plugin_host_server::PluginHost for PluginApi {
                     quota_bytes: 0,
                     idempotent: true,
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(
+                resources::SERVED
+                    .iter()
+                    .map(|(method, permission, paged)| ApiMethod {
+                        service: "ResourceHost".into(),
+                        method: (*method).into(),
+                        introduced_minor: capability::THIRD_PARTY_API_MINOR,
+                        permissions: vec![(*permission).into()],
+                        ownership: "own provider; library.read.all for every provider".into(),
+                        max_page_size: if *paged {
+                            library::MAX_PAGE_SIZE as u32
+                        } else {
+                            0
+                        },
+                        quota_bytes: 0,
+                        idempotent: true,
+                    }),
+            )
+            .collect(),
         }))
     }
 
@@ -671,6 +695,11 @@ impl PluginApiServer {
             let provider = provider_host_server::ProviderHostServer::new(api.providers.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let resources = resource_host_server::ResourceHostServer::new(
+                resources::ResourceApi::new(api.providers.clone(), api.library.clone()),
+            )
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let host = plugin_host_server::PluginHostServer::new(api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -679,6 +708,7 @@ impl PluginApiServer {
                 .max_concurrent_streams(8)
                 .add_service(host)
                 .add_service(provider)
+                .add_service(resources)
                 .serve_with_incoming_shutdown(incoming, async move {
                     let _ = shutdown_rx.await;
                 })
@@ -742,6 +772,11 @@ impl PluginApiServer {
             let provider = provider_host_server::ProviderHostServer::new(api.providers.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let resources = resource_host_server::ResourceHostServer::new(
+                resources::ResourceApi::new(api.providers.clone(), api.library.clone()),
+            )
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let host = plugin_host_server::PluginHostServer::new(api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -750,6 +785,7 @@ impl PluginApiServer {
                 .max_concurrent_streams(8)
                 .add_service(host)
                 .add_service(provider)
+                .add_service(resources)
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = stopped.await;
                 })

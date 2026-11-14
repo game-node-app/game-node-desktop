@@ -748,6 +748,40 @@ impl LibraryStore for SqliteLibraryStore {
         write_setting(&self.conn(), KEY_EXCLUDED, &json).map_err(failed)
     }
 
+    fn installation_ids(
+        &self,
+        entry_keys: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let mut ids = Vec::with_capacity(entry_keys.len());
+        {
+            // 128 random bits from SQLite's CSPRNG; an (astronomically unlikely) duplicate id
+            // is ignored and the key simply has no id until the next request.
+            let mut assign = tx
+                .prepare(
+                    "INSERT OR IGNORE INTO library_installations (entry_key, installation_id)
+                     VALUES (?1, lower(hex(randomblob(16))))",
+                )
+                .map_err(failed)?;
+            let mut read = tx
+                .prepare("SELECT installation_id FROM library_installations WHERE entry_key = ?1")
+                .map_err(failed)?;
+            for key in entry_keys {
+                assign.execute([key]).map_err(failed)?;
+                if let Some(id) = read
+                    .query_row([key], |row| row.get::<_, String>(0))
+                    .optional()
+                    .map_err(failed)?
+                {
+                    ids.push((key.clone(), id));
+                }
+            }
+        }
+        tx.commit().map_err(failed)?;
+        Ok(ids)
+    }
+
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {
         let conn = self.conn();
         let id = read_setting(&conn, KEY_ACCOUNT_ID).map_err(failed)?;

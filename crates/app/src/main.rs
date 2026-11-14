@@ -330,6 +330,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // stops third-party sessions.
     plugin_api.providers.spawn_profile_fencing(runtime.handle());
     engine.set_plugin_profiles(plugin_api.providers.profiles());
+    // Plugins read the library through a host-owned projection the engine keeps current.
+    engine.set_library_feed(plugin_api.library.clone());
 
     let mut builder = tauri::Builder::default();
     builder = gamenode_app::protocol::register_asset_protocol(

@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -64,6 +64,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "achievements",
         sql: include_str!("../migrations/0009_achievements.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "library_installations",
+        sql: include_str!("../migrations/0010_library_installations.sql"),
     },
 ];
 
@@ -353,7 +358,8 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
-                (9, "achievements".to_string())
+                (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
     }
@@ -450,13 +456,13 @@ mod tests {
         }
     }
 
-    const V10_OK: Migration = Migration {
-        version: 10,
+    const V11_OK: Migration = Migration {
+        version: 11,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V10_BAD: Migration = Migration {
-        version: 10,
+    const V11_BAD: Migration = Migration {
+        version: 11,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -482,7 +488,8 @@ mod tests {
             MIGRATIONS[6],
             MIGRATIONS[7],
             MIGRATIONS[8],
-            V10_OK,
+            MIGRATIONS[9],
+            V11_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -497,7 +504,8 @@ mod tests {
                 (7, "favorites".into()),
                 (8, "ports".into()),
                 (9, "achievements".into()),
-                (10, "add_notes".into())
+                (10, "library_installations".into()),
+                (11, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -538,11 +546,12 @@ mod tests {
                 MIGRATIONS[6],
                 MIGRATIONS[7],
                 MIGRATIONS[8],
-                V10_BAD,
+                MIGRATIONS[9],
+                V11_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 10 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 11 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -557,6 +566,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -587,19 +597,20 @@ mod tests {
                     MIGRATIONS[6],
                     MIGRATIONS[7],
                     MIGRATIONS[8],
-                    V10_OK,
+                    MIGRATIONS[9],
+                    V11_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 9
+        let err = open(&path).unwrap_err(); // this build only knows schema 10
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 10,
-                supported: 9
+                found: 11,
+                supported: 10
             }
         );
         assert_eq!(
@@ -621,7 +632,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 9,
+                found: 10,
                 supported: 7
             }
         );
@@ -662,6 +673,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
         for table in [
@@ -697,7 +709,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 9,
+                found: 10,
                 supported: 1
             }
         );
@@ -722,7 +734,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V10_OK
+            ..V11_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -764,6 +776,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
 
@@ -894,6 +907,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
 
@@ -1091,6 +1105,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_installations".to_string()),
             ]
         );
 
@@ -1337,10 +1352,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(9, "achievements".to_owned()))
+            Some(&(10, "library_installations".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1440,10 +1455,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(9, "achievements".to_owned()))
+            Some(&(10, "library_installations".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1545,6 +1560,7 @@ mod tests {
                 "favorites",
                 "games",
                 "library_entries",
+                "library_installations",
                 "local_inferences",
                 "manual_registrations",
                 "playtime_sessions",

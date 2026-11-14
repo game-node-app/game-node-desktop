@@ -13,4 +13,4 @@ go test ./...
 
 The message bindings are generated from `crates/plugin-protocol/proto/plugin.proto` with
 `protoc-gen-go`; regenerate them when the public wire contract changes. This fixture covers wire
-compatibility only. It does not claim that the API 1.4 `ResourceHost` is mounted by the desktop.
+compatibility only. It does not claim that every `ResourceHost` method is served by the desktop; only the Library reads are.

@@ -41,6 +41,7 @@ impl plugin_host_server::PluginHost for ReferenceHost {
             return Err(Status::permission_denied("not granted"));
         }
         Ok(Response::new(OpenSessionReply {
+            resource_context: None,
             session_id: "session".into(),
             granted_capabilities: self.grants.clone(),
             api_major: 1,

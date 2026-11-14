@@ -163,6 +163,26 @@ struct Session {
     commands: Option<mpsc::Sender<Result<ProviderCommand, Status>>>,
     ready: Option<oneshot::Sender<()>>,
     completed: VecDeque<String>,
+    /// The operation id of the session's resource context (API 1.6+); `None` for sessions that
+    /// negotiated an earlier minor, which cannot call resource services.
+    resource_operation: Option<String>,
+}
+
+/// An authorized plugin-initiated resource call. It snapshots the session's scope at check time;
+/// long-lived streams check again before each delivery.
+#[derive(Clone, Debug)]
+pub(crate) struct ResourceCaller {
+    pub session_id: String,
+    pub provider_id: String,
+    pub grants: BTreeSet<String>,
+    pub grant_revision: u64,
+    pub profile_epoch: u64,
+}
+
+impl ResourceCaller {
+    pub fn has(&self, permission: &str) -> bool {
+        self.grants.contains(permission)
+    }
 }
 
 struct Operation {
@@ -985,6 +1005,21 @@ impl ProviderApi {
         }
         let pending = state.pending.remove(index);
         let session_id = super::random_session_id()?;
+        let resource_context = if minor >= cap::THIRD_PARTY_API_MINOR {
+            let (account_epoch, profile_epoch) = epoch(&pending.provider);
+            Some(ServiceContext {
+                session_id: session_id.clone(),
+                session_credential: pending.credential.to_vec(),
+                provider_id: pending.provider.registration.provider_id.clone(),
+                operation_id: super::random_session_id()?,
+                account_epoch,
+                profile_epoch,
+                session_kind: hello.session_kind,
+                target_game: hello.target_game.clone(),
+            })
+        } else {
+            None
+        };
         state.sessions.insert(
             session_id.clone(),
             Session {
@@ -998,9 +1033,13 @@ impl ProviderApi {
                 commands: None,
                 ready: Some(pending.ready),
                 completed: VecDeque::new(),
+                resource_operation: resource_context
+                    .as_ref()
+                    .map(|context| context.operation_id.clone()),
             },
         );
         Ok(OpenSessionReply {
+            resource_context,
             session_id,
             granted_capabilities: requested.into_iter().collect(),
             api_major: gamenode_plugin_protocol::API_MAJOR,
@@ -1212,6 +1251,74 @@ impl ProviderApi {
             return Err(denial(DenialReason::NotGranted, permission, revision));
         }
         Ok(session.provider.clone())
+    }
+
+    /// Authorizes a plugin-initiated resource call. The context must be the session's resource
+    /// context from `OpenSession`, for the active profile; it adds no authority, so `permission`
+    /// must still be one of the session's grants. A missing account profile makes the call
+    /// unavailable rather than denied.
+    pub(crate) fn authorize_resource(
+        &self,
+        context: Option<&ServiceContext>,
+        permission: &'static str,
+    ) -> Result<ResourceCaller, Status> {
+        let context =
+            context.ok_or_else(|| Status::unauthenticated("resource context required"))?;
+        let state = lock(&self.state);
+        let Some(session) = state.sessions.get(&context.session_id) else {
+            return Err(Status::unauthenticated("plugin session expired"));
+        };
+        let scope_denied = |session: &Session| {
+            let event = denial_event(session, permission, DenialReason::ScopeDenied);
+            let revision = event.grant_revision;
+            (
+                event,
+                denial(DenialReason::ScopeDenied, permission, revision),
+            )
+        };
+        if !super::constant_time_eq(&session.credential, &context.session_credential)
+            || context.session_kind != session.kind
+            || context.target_game != session.target_game
+            || context.provider_id != session.provider.registration.provider_id
+        {
+            let (event, status) = scope_denied(session);
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(status);
+        }
+        if session
+            .provider
+            .profiles
+            .as_ref()
+            .is_some_and(|profiles| profiles.current().is_none())
+        {
+            return Err(super::profile::no_profile());
+        }
+        let Some(operation) = session.resource_operation.as_deref() else {
+            return Err(Status::failed_precondition(
+                "resource services need API 1.6 or later",
+            ));
+        };
+        let (_, profile_epoch) = epoch(&session.provider);
+        if !super::constant_time_eq(operation.as_bytes(), context.operation_id.as_bytes())
+            || context.profile_epoch != profile_epoch
+        {
+            return Err(Status::failed_precondition("resource context is stale"));
+        }
+        if !session.grants.contains(permission) {
+            let event = denial_event(session, permission, DenialReason::NotGranted);
+            let revision = event.grant_revision;
+            drop(state);
+            self.record_authorization_denial(event);
+            return Err(denial(DenialReason::NotGranted, permission, revision));
+        }
+        Ok(ResourceCaller {
+            session_id: context.session_id.clone(),
+            provider_id: session.provider.registration.provider_id.clone(),
+            grants: session.grants.clone(),
+            grant_revision: session.grant_revision,
+            profile_epoch,
+        })
     }
 
     fn lease(

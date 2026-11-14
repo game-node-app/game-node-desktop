@@ -43,6 +43,7 @@ token, callback URL, or pending sign-in secret belongs in this database.
 | Table | Holds |
 | --- | --- |
 | `library_entries` | Every game a provider has detected, keyed `<provider>:<store id>`, with its install folder, extra scan fields, `installed`, `owned` and `family_shared` flags and first/last seen times. Rows are never deleted: a game a completed scan no longer finds is marked `installed = 0`, so its matches and cover return with it. |
+| `library_installations` | The opaque installation id plugins see for each library entry, keyed by entry key. The id is 128 random bits assigned the first time a plugin projection needs it and never changed, so it survives rescans, renames and match changes without revealing the store id or a path. Rows are never deleted. |
 | `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
 | `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |

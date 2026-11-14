@@ -116,6 +116,7 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
     let context = h.client.host.context().clone();
     let api = super::super::super::PluginApi {
         providers: h.api.clone(),
+        library: Default::default(),
     };
 
     // The control plane is authenticated independently of data permissions,

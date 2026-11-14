@@ -1453,3 +1453,44 @@ fn the_favorites_migration_adds_the_table_and_keeps_existing_data() {
     assert_eq!(store.load_cache(Some("ana")).unwrap().entries.len(), 1);
     assert_eq!(store.load_cache(Some("ana")).unwrap().favorites.len(), 1);
 }
+
+#[test]
+fn installation_ids_are_random_durable_and_never_change_for_their_key() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let keys = ["steam:620".to_owned(), "epic:abc".to_owned()];
+    let first = library.installation_ids(&keys).unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].0, "steam:620");
+    assert_ne!(first[0].1, first[1].1);
+    for (key, id) in &first {
+        assert_eq!(id.len(), 32, "{key}");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+    // A rescan, a match change or another request does not touch the ids.
+    library
+        .save_scan("steam", &[record("620", "Portal 2 GOTY")], 2)
+        .unwrap();
+    library
+        .save_auto_matches(&[AutoMatch {
+            category: 1,
+            uid: "620".into(),
+            game_ids: vec![9],
+            checked_at: 3,
+        }])
+        .unwrap();
+    let again = library
+        .installation_ids(&["epic:abc".to_owned(), "steam:620".to_owned()])
+        .unwrap();
+    assert_eq!(again[0], first[1]);
+    assert_eq!(again[1], first[0]);
+    drop(library);
+    drop(store);
+    // And they survive a restart.
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened.library_store().installation_ids(&keys).unwrap(),
+        first
+    );
+}

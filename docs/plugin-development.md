@@ -101,7 +101,8 @@ is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes a
 The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, `LibraryWatch`,
 `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`,
 `ArtworkRead`, `ArtworkSet`, `StorageGet`, `StoragePut`, `StorageDelete`, the five `Files*`
-methods, `NetworkFetch`, `NotificationsPublish`, `JobsGet`, `JobsWatch` and `JobsCancel` (grants,
+methods, `NetworkFetch`, `NotificationsPublish`, `GamesRequestLaunch`, `GamesRequestInstall`, `JobsGet`,
+`JobsWatch` and `JobsCancel` (grants,
 scope, cursors and watch rules are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
 revisions, favorites and idempotency keys are in
@@ -318,6 +319,29 @@ under "Jobs" in `docs/plugin-api-permissions.md`; what to do about them:
 - `JobsCancel` is a request. Check the state in the reply: `CANCELLED` means it stopped; `RUNNING`
   means the work cannot stop halfway and will report what it finally did.
 - Keep at most 8 jobs running at once; more is `RESOURCE_EXHAUSTED`.
+
+## Launching and installing games
+
+`GamesRequestLaunch` and `GamesRequestInstall` ask the host to start a game or open the provider's
+install flow. Rules and limits are under "Launching and installing" in
+`docs/plugin-api-permissions.md`. What to do about them:
+
+- Declare `game.launch` and/or `games.install`. Each answers with a job: follow it as described under
+  Jobs. A launch needs the `expected_revision` you read in `LibraryEntry.revision`; if it changed,
+  read the entry again.
+- Send nothing about *how* to start: no executable, URI or arguments. Use `game.custom_launch` and an
+  approved recipe for that. If it is denied, you may call the standard launch yourself as a
+  fallback; the host will not do it for you.
+- Expect the user to be asked. The job is `QUEUED` with the message `awaiting confirmation` while
+  the dialog is open, and `FAILED` with `declined` or `timed_out` if the user says no or does not
+  answer. Do not retry a decline in a loop; give the user a reason and a button. You can withdraw
+  the request with `JobsCancel`.
+- The user can choose "don't ask again" for your plugin and one game. That is not a permission you
+  can rely on: it ends when the game's launch target changes or when the user revokes it.
+- Only your own library entries (or the game the user selected for an extension) can be named.
+  Anything else is `NOT_FOUND`.
+- `SUCCEEDED` with `opened` means the operating system accepted the link, not that the game is
+  running. Playtime is detected by GameNode as for the user's own Play button.
 
 ## Utility helpers and recipes (Rust SDK)
 

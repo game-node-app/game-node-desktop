@@ -80,7 +80,9 @@ grant. It uses the approved detected target and stored parameters without
 per-call overrides. The custom-launch proposal, execution, and removal methods
 use `CustomLaunchRequest` where applicable and the independent
 `game.custom_launch` grant. Custom recipes require their own user review and
-cannot be authorized by `game.launch`.
+cannot be authorized by `game.launch`. `GamesRequestLaunch` and `GamesRequestInstall` are served
+and need the user's intent, described under [Launching and installing](#launching-and-installing);
+the custom-launch methods are not served yet.
 
 ## Common data is an explicit per-query choice
 
@@ -718,8 +720,8 @@ There is no per-user mute yet and no notification history.
 
 A long operation (an install, a backup, a restore) answers with a job instead of blocking the call.
 `JobsGet`, `JobsWatch` and `JobsCancel` read, follow and stop it. No operation returns a job in this
-build yet (the first ones are `GamesRequestLaunch`, backups, tools and ports); the three calls and
-the registry behind them are ready for them.
+build yet except `GamesRequestLaunch` and `GamesRequestInstall` (backups, tools and ports come next);
+the three calls and the registry behind them serve them all.
 
 - **Ownership.** A job belongs to the authenticated plugin, its pinned publisher and the active
   account profile. The request names the job by its opaque id and nothing else: it has no field for
@@ -777,6 +779,73 @@ Not in the design; chosen by reasoning, not measured, and open to change.
 Jobs live in the host's memory. A host restart forgets them and their keys, and the work does not
 resume; an operation that must not repeat across a restart has to be idempotent in its own domain
 (an install that is already installed is not installed twice).
+
+## Launching and installing
+
+`GamesRequestLaunch` (`game.launch`) starts a game's detected target unchanged, and
+`GamesRequestInstall` (`games.install`) opens the provider's own install flow (for a store game, the
+store's install page, where the store asks the user to confirm). Neither starts anything without the
+**user's intent**, whatever the plugin's grants. The answer to both is a job (see [Jobs](#jobs)).
+
+- **No parameters.** The request names the game (`installation_id`, optionally `game_id`) and, for a
+  launch, the `expected_revision` of the library entry the plugin read (a different revision is
+  `FAILED_PRECONDITION`: read it again). It has no field for an executable, a URI, arguments, a
+  working directory or an environment; what is started is decided by the host. A plugin that wants
+  parameters needs `game.custom_launch` and an approved recipe; without it, a custom launch is
+  denied explicitly and never turned into a standard launch by the host. A plugin may, by its own
+  choice, then make a standard launch request without parameters. A message in the custom-launch
+  shape sent to `GamesRequestLaunch` has its extra fields dropped by protobuf and nothing applies
+  them; the protocol does not detect that, so use the SDK's parameterless call.
+- **Scope per game.** A provider session names only its own library entries; an extension session
+  names only the game the user selected for it. `library.read.all` does not widen this. Anything
+  else is `NOT_FOUND`, the same as an unknown id.
+- **The user's intent** is host state, never a claim the plugin makes. It comes in two forms.
+  - *On request.* Without a `user_intent_id`, the job stays `QUEUED` with the message
+    `awaiting confirmation` while Core asks the user: which plugin (with its publisher), which game
+    and what will happen. Approving runs the job; declining ends it `FAILED` with `declined`; no
+    answer within 5 minutes ends it `FAILED` with `timed_out`; `JobsCancel` withdraws the request.
+    One confirmation per game and operation may wait at once (`FAILED_PRECONDITION` for another),
+    and at most 4 per plugin (`RESOURCE_EXHAUSTED`). A build with no dialog answers
+    `FAILED_PRECONDITION` at once and starts no job.
+  - *Pre-issued.* The host creates an opaque, unguessable id from an explicit user action in Core and
+    gives it to the plugin it concerns. It is bound to the plugin and publisher, the profile, the game
+    and installation, the operation and (for a launch) the game's detected target; it is single
+    use and valid for 60 seconds. An id that is missing, expired, spent, forged or for anything
+    else is refused with the same `FAILED_PRECONDITION`, without saying which; a refusal spends
+    nothing. A retry with the same idempotency key does not spend a second intent. Delivery of the
+    id to a plugin arrives with launch-extension sessions; the host side exists.
+- **Remembering.** The dialog offers "don't ask again for this plugin and this game", off by
+  default and only with an approval. It is remembered per plugin, profile, game and operation, and
+  for a launch it is bound to the game's detected target (the launch URI, or the approved
+  executable, arguments and working directory): when the target changes, the user is asked again. It
+  stays in the plugin's own store, is listed under the plugin in the settings and can be revoked
+  there; the next request then asks again. The call still needs the current permission.
+- **Checked again at the start.** After the user answers (it may take minutes) the host checks the
+  permission and the grants, that the game is still the same and, for a launch, that its target is
+  the one approved, and only then starts it. A permission lost, a changed target or a cancellation
+  in the meantime start nothing (`FAILED` with `permission_denied`, `failed_precondition` or
+  `target_changed`, or `CANCELLED`).
+- **Outcomes.** `SUCCEEDED` with `opened` means the link was handed to the operating system, not
+  that the game finished loading or installing. `FAILED` with `unsupported` (the provider has no
+  such action, for example installing a manually added game), `unavailable` (the store application
+  is missing, the game is already running or being opened, or data is missing) or `failed`. The
+  starting uses the same path as the user's own Play button, so the launch status, the "already
+  running" guard and playtime detection behave as before.
+
+What this does not do: the dialog is the user's consent for the request, not a certificate for the
+programs that run. GameNode checked the scope; the programs may do anything the user can. The dialog
+shows the plugin's id, its publisher and the game's name as plain text; the game's name comes from
+the provider and is not trusted.
+
+### Launch and install limits
+
+Chosen by reasoning, not measured, and open to change.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Pre-issued intent | 60 seconds, single use, 256 held at once | Long enough to be handed over and used, too short to keep. |
+| Dialog wait | 5 minutes | The same as folder approvals. |
+| Waiting confirmations | 1 per game and operation, 4 per plugin | The user is never asked twice for the same thing, nor buried by one plugin. |
 
 ## Utility services are not a sandbox
 

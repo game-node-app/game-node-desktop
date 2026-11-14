@@ -11,6 +11,11 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 
+pub mod resources;
+
+pub use resources::{Cover, LibrarySnapshot, Outcome, Resources, Written, idempotency_key};
+pub use tonic::{Code, Status};
+
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const EVENT_QUEUE: usize = 32;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -281,6 +286,16 @@ impl HostClient {
         proto::resource_host_client::ResourceHostClient::new(self.channel.clone())
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
+    /// Typed convenience calls for the library resources (library reads, display names,
+    /// favorites, catalog matching and covers), bound to this session's resource context. `None`
+    /// when the session negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).
+    /// They send exactly what the raw [`resource_client`](Self::resource_client) would.
+    pub fn resources(&self) -> Option<Resources> {
+        self.resource_context
+            .clone()
+            .map(|context| Resources::new(self.channel.clone(), context))
     }
 
     pub fn context(&self) -> &ServiceContext {

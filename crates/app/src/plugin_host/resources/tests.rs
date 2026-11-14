@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::Code;
 use tonic::transport::Channel;
 
+mod sdk;
+
 struct NoServices;
 
 #[tonic::async_trait]

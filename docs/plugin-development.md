@@ -268,6 +268,22 @@ points:
   GameNode credential.
 - At most 4 fetches per plugin run at once; retry later on `RESOURCE_EXHAUSTED`.
 
+## Notifications
+
+`NotificationsPublish` asks Core to show a short plain-text notice from your plugin. See
+"Notifications" in `docs/plugin-api-permissions.md` for the rules and limits. The practical points:
+
+- Declare `notifications.publish`. Core shows the notice as "From plugin `<your plugin id>`"; you
+  cannot choose the sender.
+- Write plain text: no HTML, Markdown or links (they are shown as typed and never interpreted), no
+  control characters. Keep the title to one short line and the body to a few.
+- Give `translations` for the languages you support. Core picks the user's language, then the
+  same language, then your main text, so the main text should be a language everyone can read.
+- Notify about what the user needs to know, not about progress ticks: you may send 5 a minute. On
+  `RESOURCE_EXHAUSTED` wait the `retry-after-ms` and drop or merge what you wanted to say.
+- Notifications are not delivered if no window is open and are not kept; do not use them as the only
+  record of something important.
+
 ## Bounded work, cancellation and failures
 
 The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most

@@ -158,6 +158,18 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a request redirects to an unapproved origin or a private/local destination
 - **THEN** the host refuses the redirected request without forwarding credentials
 
+#### Scenario: Notification text is untrusted
+- **WHEN** a plugin publishes a notification whose text contains markup, script, a link or control or disguising characters
+- **THEN** the host refuses control and disguising characters, and Core shows everything else as plain text attributed to the authenticated plugin, with no link, markup or action
+
+#### Scenario: Notification rate limit
+- **WHEN** a plugin publishes more notifications than its allowance in the window
+- **THEN** the host reports resource exhaustion with the time to wait, shows nothing more, and the call may be retried after the wait
+
+#### Scenario: Notification localization fallback
+- **WHEN** a notification carries translations and the user's language is not among them exactly
+- **THEN** Core shows the same language if it has one, otherwise the plugin's main text
+
 #### Scenario: Fetch from an origin the user did not approve
 - **WHEN** a plugin holding network.fetch requests a URL whose exact scheme, host and port are not an approved origin, or no origin is approved
 - **THEN** the host sends nothing, denies the request with an audited scope denial, and a revoked or narrowed approval also stops a fetch already running

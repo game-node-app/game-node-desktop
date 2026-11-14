@@ -610,6 +610,59 @@ There is no per-plugin rate limit and no total-bytes quota, so a plugin may fetc
   public server has not been run in this environment.
 - Proxy-only networks are not supported (system proxies are ignored on purpose).
 
+## Notifications
+
+`NotificationsPublish` (`notifications.publish`) lets a plugin ask Core to show a short notice. It
+is plain text, attributed to the plugin, and it can do nothing but be read.
+
+- **Attribution is the host's.** The notice is shown as "From plugin `<plugin id>`", where the id is
+  the authenticated plugin of the session. The request has no field for a name, an icon or a
+  sender, so a plugin cannot pose as Core or as another plugin.
+- **Text.** `title` is required, one line, at most 120 bytes. `body` is optional, at most 512
+  bytes and 8 lines. Both are trimmed. Control characters (other than the line breaks of a body)
+  and characters that can disguise text are `INVALID_ARGUMENT`: bidirectional overrides and
+  isolates, zero-width space, word joiner, byte-order mark, line and paragraph separators,
+  interlinear annotation and tag characters. Joiners that real text needs (emoji sequences,
+  several scripts) are allowed. `locale` is a language tag of letters, digits and hyphens (such
+  as `en`, `pt-BR`) or empty.
+- **Severity** is empty (info) or one of `info`, `success`, `warning`, `error`; anything else is
+  `INVALID_ARGUMENT`.
+- **Localization.** `translations` (at most 8) are other versions of the text, each with its own
+  non-empty `locale`; a locale may appear once, the main text's included. Core shows the version
+  for the user's language: the exact locale, then the same language (the region-less tag first),
+  then the main `title`/`body`. Matching ignores case. A notice with no translation matching is shown
+  in the plugin's main text.
+- **No markup, links or actions.** The host never interprets the text and passes it on exactly. Core
+  renders every field as plain text: `<script>`, HTML, Markdown and `javascript:` strings appear as
+  the characters they are, a URL is not a link, and a notification has no buttons, icons or
+  actions. The UI removes controls and disguising characters again before showing a notice, so
+  its safety does not rest on the host's check alone.
+- **Rate limit.** At most 5 notifications per plugin and 20 for all plugins together in any 60
+  seconds. A call over the limit is `RESOURCE_EXHAUSTED`, with the wait in the message and in the
+  `retry-after-ms` metadata; it counts nothing and is not remembered, so it may be retried with the
+  same idempotency key after the wait.
+- **Idempotency.** A notification needs an idempotency key. A retry of the same request returns
+  the original outcome and shows nothing again; the same key for another request is
+  `FAILED_PRECONDITION`. `expected_revision` must be 0. The grants are checked again right before
+  a notice is counted and delivered.
+- **Delivery is best effort.** A notice is an event, not stored state: it is shown as a toast
+  (eight seconds) while a window listens, and is lost if none does. A host build with nothing
+  connected answers `UNAVAILABLE`. Core keeps no history of plugin notifications.
+
+### Notification limits
+
+The text bounds and the rate limit are not in the design; they were chosen by reasoning, not
+measured, and are open to change.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Title | 120 bytes, one line | A toast is a line of text, not a document. |
+| Body | 512 bytes, 8 lines | Enough for a sentence or two without turning a toast into a page. |
+| Translations | 8 | The languages GameNode and plugin authors are likely to cover. |
+| Rate | 5 per plugin and 20 in all per 60 s | A plugin can report progress and results without being able to bury the window; the shared cap bounds a crowd of plugins. |
+
+There is no per-user mute yet and no notification history.
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

@@ -330,3 +330,30 @@ Sem limite de taxa nem cota total de bytes por plugin. **Não verificado em exec
 
 Efeito no protocolo: nenhum campo novo; `endpoint_field_policy.json` atualizado. Sem mudança de banco.
 
+## L. Decisões adotadas na implementação da tarefa 6.4 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 6.4 (como funciona o fallback de idioma e até onde a tarefa vai); o resto é detalhe de engenharia dentro do escopo do design (texto simples, limitado, atribuído ao plugin, com limite de taxa, sem script nem links).
+
+| Decisão | Alcance |
+| --- | --- |
+| **Traduções opcionais.** Campo aditivo `NotificationPublishRequest.translations` (até 8, cada uma com `locale` próprio e não vazio; um locale aparece uma vez, inclusive o do texto principal). O fallback é feito pela UI, que conhece o idioma do usuário: locale exato, depois o mesmo idioma (a etiqueta sem região primeiro), depois o texto principal. Maiúsculas e minúsculas não importam. | 6.4. |
+| **Toast atribuído, de ponta a ponta.** O host entrega a um `NotificationSink`; o app o liga a um evento do Tauri (`plugin:notification`); a UI mostra um toast de 8 s com "Do plugin `<id>`" e o texto como texto puro. Sem centro de notificações, sem histórico e sem silenciar por plugin. É evento, não estado: sem janela escutando, o aviso se perde. | 6.4. |
+| Atribuição é o id do plugin autenticado; não há campo no pedido para nome, ícone ou remetente. O rótulo é o id (reverso-domínio), não o nome de exibição, que o `Registration` ainda não carrega. | 6.4. |
+| Texto: o host recusa caracteres de controle (exceto quebras de linha no corpo) e caracteres que disfarçam texto (sobreposições e isolados bidirecionais, espaço de largura zero, junção de palavra, BOM, separadores de linha e parágrafo, anotação intercalar e caracteres de tag). Junções de emoji e de escritas que precisam delas são permitidas. A UI remove tudo isso de novo antes de exibir (defesa em profundidade). O host nunca interpreta o texto; marcação, Markdown, `javascript:` e URLs aparecem como os caracteres que são, sem link. | 6.4. |
+| Ações: o design cita "identificadores de ação do host permitidos", mas o protocolo não tem campo para isso e não há ação de host definida; **não há ações nesta versão**. | 6.4. |
+| Limite de taxa: janela deslizante de 60 s, 5 por plugin e 20 no total; excesso é `RESOURCE_EXHAUSTED` com a espera na mensagem e em `retry-after-ms`, não conta nada e não é lembrado (a mesma chave pode ser reenviada depois). Idempotência igual às outras mutações. | 6.4. |
+
+### Limites de notificação e como foram decididos
+
+Escolhidos pelo assistente por raciocínio, **sem medição**; o design só fixa "texto simples limitado, com limite de taxa". Detalhes em `docs/plugin-api-permissions.md#notification-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Título | 120 bytes, uma linha | Assistente: um toast é uma linha. |
+| Corpo | 512 bytes, 8 linhas | Assistente: uma ou duas frases. |
+| Traduções | 8 | Assistente. |
+| Taxa | 5 por plugin e 20 no total por 60 s | Assistente: relata progresso e resultado sem enterrar a janela; o teto comum limita uma multidão de plugins. |
+| Duração do toast | 8 s (os do Core duram 4 s) | Assistente: tem corpo para ler. |
+
+**Não verificado visualmente:** o toast foi coberto por testes de componente (texto hostil vira texto, sem `a`, `script` ou `img`), mas não olhado num navegador nem no app nativo. Efeito no protocolo: campos aditivos `NotificationTranslation` e `translations = 6`; `endpoint_field_policy.json` atualizado. Sem mudança de banco.
+

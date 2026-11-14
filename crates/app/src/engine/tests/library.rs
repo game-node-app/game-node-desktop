@@ -1590,7 +1590,12 @@ async fn a_plugin_assigns_its_own_entry_through_the_library_policy() {
         })
     })
     .await;
-    // The choice and the game it names are stored, marked as the plugin's.
+    // The choice and the game it names are stored, marked as the plugin's. The storage worker
+    // writes them after the library view updates, so wait for the write.
+    eventually("the choice is stored", || {
+        !h.store.chosen.lock().unwrap().is_empty()
+    })
+    .await;
     let chosen = h.store.chosen.lock().unwrap().clone();
     assert_eq!(chosen.len(), 1);
     assert_eq!(chosen[0].1.entry_key, "steam:620");

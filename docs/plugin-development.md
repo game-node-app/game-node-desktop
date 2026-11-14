@@ -197,6 +197,7 @@ host in the desktop's service tests:
 | `rename` | Gives an own entry a display name (or restores the detected one), rereading after a conflict. |
 | `match_by_title` | Searches the catalog, assigns the entry to the exact title, and leaves a choice the user made alone. |
 | `use_cover`, `current_cover` | Sets, clears or reads an entry's cover; a refused image is not retried. |
+| (`Resources::set_cover_from_file`) | Sets a cover from a file you may read, by handle, so you never hold the bytes. Needs `files.read` besides `artwork.write`, and a handle of an approval of the same entry (not another game's folder). |
 | `star_matched_games` | Stars every game one of the plugin's entries is matched to, once each. |
 | `follow_library` | Lists the library, then follows the changes after it, listing again when the host no longer retains the position. |
 

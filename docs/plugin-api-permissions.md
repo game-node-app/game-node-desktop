@@ -303,9 +303,24 @@ anything else is `INVALID_ARGUMENT`.
   (0 while the cover is the game's own). `max_bytes` is the caller's budget: 0 means the 5 MiB
   maximum, a larger value is capped to it, and an image bigger than the budget is
   `RESOURCE_EXHAUSTED` (nothing is truncated).
-- **Resource references.** Only inline bytes are accepted. Approved resource handles for artwork
-  arrive with the file-handle service; until then there is no field that names a file, a path or
-  a URL, and the host never fetches or opens anything on a plugin's behalf for artwork.
+- **Resource references.** The image comes inline (`encoded_image`) or from a file the plugin may
+  read (`file_handle`, with `media_type` set as for inline bytes). Giving both, or a `file_handle`
+  with no `media_type`, is `INVALID_ARGUMENT`. The handle is the only reference there is: there is
+  no field that names a path or a URL, and a made-up, edited, expired or other-session handle is
+  `NOT_FOUND` like any other. The handle is checked as for `FilesRead`, and more:
+  - the plugin needs `files.read` besides `artwork.write` (without it, `PERMISSION_DENIED` and
+    nothing is read);
+  - it must be a regular-file handle of a current approval of **this same installation**; a handle
+    from the approval of another of the plugin's entries is `PERMISSION_DENIED` and a directory is
+    `FAILED_PRECONDITION`. A revoked approval or a revoked grant stops it at once;
+  - the host reads the file itself, at most 4 MiB plus one byte, on the plugin's namespace worker,
+    so a file over the bound is refused as "larger than 4194304 bytes" (the inline wording) without
+    being read whole, and the bytes then go through the same worker-side decode, pixel check and
+    re-encode as inline bytes. A damaged file or one whose type does not match is refused the same
+    way. The plugin never holds the bytes, and the host stores only its own picture;
+  - a retry is answered before the file is read again, from the handle and the declared type, so a
+    file that has since changed or gone does not change the answer to the same key. A different
+    file needs a different key, and `files.read` is checked again at commit.
 - **Idempotency and commit.** The idempotency, serialization and commit-time authorization rules of
   the other mutations apply. A retried key is answered before its image is decoded. The file is
   written before the database row and the replaced file is deleted after it, so a crash leaves at
@@ -321,7 +336,7 @@ pixels are bounded; the numbers are engineering detail.
 
 | Limit | Value | Why |
 | --- | --- | --- |
-| Encoded image | at most 4 MiB | Plugin messages are capped at 8 MiB; this leaves room for the request around the bytes. The host's own cover downloads are capped at 5 MiB, and a 4 MiB source is far more than a cover needs. |
+| Encoded image | at most 4 MiB, inline or read from a file by handle | Plugin messages are capped at 8 MiB; this leaves room for the request around the bytes. The host's own cover downloads are capped at 5 MiB, and a 4 MiB source is far more than a cover needs. |
 | Source pixels | at most 4096 x 4096 (16,777,216), no side over 8192 | A cover is shown at a few hundred pixels, so 16 megapixels is generous. The pixel count is read from the file header and checked *before* decoding, so a small file that expands into a huge bitmap is refused without allocating it. The side limit keeps thin strips from bypassing the count. |
 | Decode memory | 128 MiB allocation limit; two decodes at once | A 16-megapixel RGBA16 image is 128 MiB. Two concurrent decodes bound what plugin pictures can occupy at any moment to a quarter gigabyte; more wait. |
 | Stored size | fits in 600 x 900, aspect kept, never enlarged | The library grid draws covers at roughly 200 to 300 pixels wide; 600 x 900 (2:3, like the game covers) is about twice that for high-density screens. Stored covers are at most a few hundred KiB, so a plugin cannot grow the covers folder much, and each entry keeps at most one override file. |

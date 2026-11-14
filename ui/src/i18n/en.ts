@@ -948,6 +948,7 @@ export const en = {
   "plugins.navTitle": "Plugins",
   "plugins.navDescription": "Installed plugins, their status, and granted permissions.",
   "plugins.details": "Plugin details",
+  "plugins.noticeFrom": "From plugin {plugin}",
   "plugins.identifier": "Plugin ID",
   "plugins.loading": "Loading plugin information…",
   "plugins.loadFailed": "Plugin information could not be loaded.",

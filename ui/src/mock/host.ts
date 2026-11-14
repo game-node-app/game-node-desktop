@@ -32,9 +32,11 @@ import type {
   PortToolsCacheView,
   PortsView,
 } from '../api/ports';
+import type { PluginNotice } from '../api/pluginNotices';
 
 type Listener = (snapshot: Snapshot) => void;
 type ProgressListener = (progress: PortProgress) => void;
+type PluginNoticeListener = (notice: PluginNotice) => void;
 
 export type MockSteamScenario =
   | 'notConnected'
@@ -765,6 +767,7 @@ function createMockPortsView(scenario: 'default' | 'unavailable'): PortsView {
 export function createMockHost(options: { signedOut?: boolean; locale?: string; storeAccount?: MockSteamScenario; steamStorage?: StorageMethod; largeLibrary?: boolean; platform?: PortPlatform; portsScenario?: 'default' | 'unavailable' } = {}) {
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
+  const pluginNoticeListeners = new Set<PluginNoticeListener>();
   const snapshot = createDefaultSnapshot();
   const ports = createMockPortsView(options.portsScenario ?? 'default');
   snapshot.ports = ports;
@@ -1261,6 +1264,15 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     subscribePortProgress(listener: ProgressListener) {
       progressListeners.add(listener);
       return () => { progressListeners.delete(listener); };
+    },
+    /** Plugin notifications, as the host's `plugin:notification` event delivers them. */
+    subscribePluginNotices(listener: PluginNoticeListener) {
+      pluginNoticeListeners.add(listener);
+      return () => { pluginNoticeListeners.delete(listener); };
+    },
+    /** Lets a test or the browser preview publish a notification as a fictional plugin. */
+    publishPluginNotice(notice: PluginNotice) {
+      pluginNoticeListeners.forEach((listener) => listener(notice));
     },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();

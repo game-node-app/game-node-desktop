@@ -950,6 +950,7 @@ export const ptBR: TranslationCatalog = {
   "plugins.navTitle": "Plugins",
   "plugins.navDescription": "Plugins instalados, estado e permissões concedidas.",
   "plugins.details": "Detalhes do plugin",
+  "plugins.noticeFrom": "Do plugin {plugin}",
   "plugins.identifier": "ID do plugin",
   "plugins.loading": "Carregando informações dos plugins…",
   "plugins.loadFailed": "Não foi possível carregar as informações dos plugins.",

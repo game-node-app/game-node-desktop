@@ -9,6 +9,7 @@ import { ToastContainer } from './features/settings/ToastContainer';
 import { useSettingsKeyboardShortcut } from './features/settings/useSettingsKeyboardShortcut';
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
+import { usePluginNotices } from './features/plugins/usePluginNotices';
 import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
@@ -78,6 +79,7 @@ export const App: React.FC = () => {
 
   useSettingsKeyboardShortcut();
   useLocalGameErrorToast();
+  usePluginNotices();
 
   // Adopt the OS locale the host reports once, so a manual switch is not overwritten later.
   const localeApplied = useRef(false);

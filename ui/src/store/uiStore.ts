@@ -17,10 +17,18 @@ export interface ContextMenuState {
   entryKey: string | null;
 }
 
+export type ToastKind = 'success' | 'danger' | 'info' | 'warning';
+
 export interface ToastItem {
   id: string;
-  kind: 'success' | 'danger';
+  kind: ToastKind;
   message: string;
+  /** More text under the message, shown as plain text with its line breaks. */
+  body?: string;
+  /** Who the toast comes from, when it is not Core itself (a plugin id). Plain text. */
+  source?: string;
+  /** How long the toast stays; the default is four seconds. */
+  durationMs?: number;
 }
 
 export interface UiStoreState {
@@ -112,11 +120,17 @@ export function setSettingsTopic(topic: SettingsTopic): void {
   }));
 }
 
-export function pushToast(kind: 'success' | 'danger', message: string): string {
+export interface ToastExtras {
+  body?: string;
+  source?: string;
+  durationMs?: number;
+}
+
+export function pushToast(kind: ToastKind, message: string, extras: ToastExtras = {}): string {
   const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   uiStore.setState((prev) => ({
     ...prev,
-    toasts: [...prev.toasts, { id, kind, message }],
+    toasts: [...prev.toasts, { id, kind, message, ...extras }],
   }));
   return id;
 }

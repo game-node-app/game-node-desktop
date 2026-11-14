@@ -84,6 +84,18 @@ The API SHALL provide paginated library list/get/watch, display-metadata updates
 - **WHEN** a plugin updates metadata using an obsolete revision
 - **THEN** the host reports a conflict without overwriting the newer value
 
+#### Scenario: Foreign-provider metadata mutation
+- **WHEN** a plugin updates the display metadata of an installation owned by another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes nothing
+
+#### Scenario: Idempotent retry
+- **WHEN** a plugin retries a metadata or favorite mutation with the same idempotency key and the same request
+- **THEN** the host returns the original committed outcome, and a different request under that key is refused
+
+#### Scenario: Favorite of an unmatched game
+- **WHEN** a plugin sets the favorite of a GameNode game that none of its own entries is currently matched to
+- **THEN** the host rejects it as not found and changes no favorite
+
 ### Requirement: Game and installation identity
 Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
 

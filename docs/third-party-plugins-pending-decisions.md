@@ -143,3 +143,17 @@ Confirmadas pelo usuário durante a tarefa 5.1 e implementadas apenas para `Libr
 | D20 | Ordem por `installation_id`; cursor assinado (HMAC) ligado a consulta, sessão, perfil, revisão de concessões e revisão da biblioteca, com validade de 5 minutos; qualquer mudança da biblioteca invalida o cursor. Watch sem backlog por padrão, 256 eventos retidos, posição mais antiga exige nova listagem. | Library; demais listagens reaproveitam a política em suas tarefas. |
 
 Efeito no protocolo: campo aditivo `resource_context = 7` em `OpenSessionReply`. Banco de dados: migração 10 (`library_installations`).
+
+## E. Decisões adotadas na implementação da tarefa 5.2 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 5.2 e implementadas para `Metadata.Update`, `Favorites.List` e `Favorites.Set`.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| D31 (parcial) | Só `display_name` é gravável (aparado, até 256 bytes, sem caracteres de controle; valor vazio restaura o nome detectado). Fica separado dos fatos detectados, é o título da linha da biblioteca (antes do nome do jogo associado e do nome detectado) e aparece em `LibraryEntry.display_name` e `metadata_revision`. Lista maior de campos, limites de artwork e redimensionamento continuam em aberto para 5.4. | 5.2; artwork em 5.4. |
+| D07 | O favorito pertence ao jogo GameNode e nunca é movido por rematching. `FavoritesSet` exige entrada do próprio provider atualmente associada ao jogo (senão `NOT_FOUND`) e usa o mesmo caminho local-first da estrela do usuário, então a sincronização com o GameNode segue a configuração dele. A concessão `favorites.write` é o consentimento; sem confirmação por chamada. | 5.2; 5.3 cuida do rematching. |
+| Revisão de favoritos | Favoritos não têm revisão: `expected_revision` deve ser 0 e as respostas trazem revisão 0; a escrita é de estado desejado, última gravação vence. **Desvio explícito** de revisões por recurso, porque o estado local não tem revisão e um booleano idempotente não tem o que conflitar. Revisitar se favoritos ganharem revisão persistida. | Favorites. |
+| D21 | Chave de idempotência obrigatória (1 a 128 bytes). Tabela em memória por plugin e perfil (24 h, 1024 chaves, hash do pedido): mesma chave e mesmo pedido devolve o resultado original; mesma chave com outro pedido é `FAILED_PRECONDITION`; só resultados confirmados são lembrados. Perdida ao reiniciar; a repetição então é protegida pela revisão (metadados) ou pela idempotência natural (favoritos). Persistência em SQLite continua em aberto para efeitos duráveis maiores. | 5.2; demais mutações reaproveitam a política. |
+| D12 | Inalterada: o token de intenção do usuário continua em aberto para ações de lançamento e instalação. | 7.2, 7.9, 10.7. |
+
+Efeito no banco de dados: migração 11 (`library_display_overrides`, revisão por entrada que só cresce; limpar mantém a linha). Efeito no protocolo: campos aditivos `display_name = 8` e `metadata_revision = 9` em `LibraryEntry`.

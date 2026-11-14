@@ -194,3 +194,119 @@ fn directories_never_escape_the_root_and_depend_on_the_identity() {
         assert!(part.as_os_str().len() <= 255);
     }
 }
+
+fn approval(id: &str, installation: &str, kind: &str) -> FileApproval {
+    FileApproval {
+        id: id.into(),
+        installation_id: installation.into(),
+        game_id: "40".into(),
+        kind: kind.into(),
+        root: "/games/portal".into(),
+        root_volume: u64::MAX,
+        root_node: 12345,
+        operations: operation::READ | operation::WRITE,
+        affected: vec!["steam:620".into(), "steam:621".into()],
+        approved_at: 100,
+        revoked_at: None,
+    }
+}
+
+#[test]
+fn approvals_round_trip_survive_reopening_and_are_not_charged_to_the_quota() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = namespace_dir(temp.path(), "pub", "org.example", "profile");
+    let mut first = store(&dir);
+    let saved = approval("a1", "inst-1", "installation");
+    first.save_approval(&saved).unwrap();
+    first.put("k", b"v", 1, None, 0, QUOTA_BYTES).unwrap();
+    drop(first);
+
+    let second = store(&dir);
+    assert_eq!(second.approval("a1").unwrap(), Some(saved.clone()));
+    assert_eq!(
+        second.approval_for("inst-1", "installation").unwrap(),
+        Some(saved.clone())
+    );
+    assert_eq!(second.approval_for("inst-1", "save").unwrap(), None);
+    assert_eq!(second.approval("nope").unwrap(), None);
+    assert_eq!(second.approvals().unwrap(), vec![saved]);
+    assert_eq!(
+        second.usage(0).unwrap(),
+        charge("k", 1),
+        "only entries are charged"
+    );
+}
+
+#[test]
+fn a_new_approval_replaces_the_old_one_for_the_same_installation_and_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .save_approval(&approval("old", "inst-1", "save"))
+        .unwrap();
+    store
+        .save_approval(&approval("other", "inst-2", "save"))
+        .unwrap();
+    let mut wider = approval("new", "inst-1", "save");
+    wider.operations = operation::READ | operation::WRITE | operation::DELETE;
+    store.save_approval(&wider).unwrap();
+
+    assert_eq!(
+        store.approval("old").unwrap(),
+        None,
+        "the replaced id opens nothing"
+    );
+    assert_eq!(store.approval("new").unwrap(), Some(wider));
+    assert_eq!(store.approvals().unwrap().len(), 2);
+}
+
+#[test]
+fn a_revoked_approval_stays_visible_as_revoked_and_revokes_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(temp.path());
+    store
+        .save_approval(&approval("a1", "inst-1", "installation"))
+        .unwrap();
+    assert!(store.revoke_approval("a1", 500).unwrap());
+    assert!(!store.revoke_approval("a1", 600).unwrap());
+    assert!(!store.revoke_approval("missing", 600).unwrap());
+    assert_eq!(store.approval("a1").unwrap().unwrap().revoked_at, Some(500));
+    // Approving again makes a fresh, active record.
+    store
+        .save_approval(&approval("a2", "inst-1", "installation"))
+        .unwrap();
+    assert_eq!(
+        store
+            .approval_for("inst-1", "installation")
+            .unwrap()
+            .unwrap()
+            .revoked_at,
+        None
+    );
+}
+
+#[test]
+fn a_version_1_store_gains_the_approvals_table_and_keeps_its_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL) STRICT;
+             INSERT INTO meta (id, revision) VALUES (1, 4);
+             CREATE TABLE entries (key TEXT PRIMARY KEY, value BLOB NOT NULL,
+                 revision INTEGER NOT NULL, expires_at INTEGER) STRICT;
+             INSERT INTO entries VALUES ('old', x'01', 4, NULL);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    let mut upgraded = store(&dir);
+    assert_eq!(upgraded.get("old", 0).unwrap().unwrap().revision, 4);
+    assert_eq!(upgraded.high_water().unwrap(), 4);
+    upgraded
+        .save_approval(&approval("a1", "inst-1", "installation"))
+        .unwrap();
+    assert!(upgraded.approval("a1").unwrap().is_some());
+}

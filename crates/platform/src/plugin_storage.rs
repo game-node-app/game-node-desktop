@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -128,7 +128,7 @@ impl DurableStore {
         if version > SCHEMA_VERSION {
             return Err(PluginStorageError::NewerVersion);
         }
-        if version < SCHEMA_VERSION {
+        if version < 1 {
             conn.execute_batch(
                 "BEGIN;
                  CREATE TABLE IF NOT EXISTS meta (
@@ -143,6 +143,27 @@ impl DurableStore {
                      expires_at INTEGER
                  ) STRICT;
                  PRAGMA user_version = 1;
+                 COMMIT;",
+            )?;
+        }
+        if version < 2 {
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS file_roots (
+                     id TEXT NOT NULL UNIQUE,
+                     installation_id TEXT NOT NULL,
+                     game_id TEXT NOT NULL,
+                     kind TEXT NOT NULL,
+                     root TEXT NOT NULL,
+                     root_volume INTEGER NOT NULL,
+                     root_node INTEGER NOT NULL,
+                     operations INTEGER NOT NULL CHECK (operations BETWEEN 1 AND 7),
+                     affected TEXT NOT NULL,
+                     approved_at INTEGER NOT NULL,
+                     revoked_at INTEGER,
+                     PRIMARY KEY (installation_id, kind)
+                 ) STRICT;
+                 PRAGMA user_version = 2;
                  COMMIT;",
             )?;
         }
@@ -240,6 +261,142 @@ impl DurableStore {
         tx.execute("DELETE FROM entries WHERE key = ?1", [key])?;
         tx.commit()?;
         Ok(revision.map(|revision| revision as u64))
+    }
+}
+
+/// The file operations a root approval allows.
+pub mod operation {
+    pub const READ: u8 = 1;
+    pub const WRITE: u8 = 2;
+    pub const DELETE: u8 = 4;
+}
+
+/// A folder the user approved for one plugin and one installation of a game.
+///
+/// It is kept per plugin and account profile, apart from the plugin's key/value data and not
+/// charged to its quota. The plugin never sees `root`; it only receives handles issued for the
+/// approval while it is current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileApproval {
+    /// Opaque random id; a new approval of the same installation and kind gets a new one.
+    pub id: String,
+    pub installation_id: String,
+    /// The GameNode game the installation was matched to when approved (empty if none).
+    pub game_id: String,
+    /// What the folder is: `installation`, `save` or `prefix`.
+    pub kind: String,
+    /// The canonical location, valid Unicode.
+    pub root: String,
+    pub root_volume: u64,
+    pub root_node: u64,
+    /// A combination of [`operation`] bits.
+    pub operations: u8,
+    /// The library entries that overlapped the folder when the user approved it, sorted. The
+    /// approval holds only while this is still the complete set.
+    pub affected: Vec<String>,
+    /// Unix seconds.
+    pub approved_at: i64,
+    /// Unix seconds; a revoked approval opens nothing.
+    pub revoked_at: Option<i64>,
+}
+
+fn approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileApproval> {
+    let affected: String = row.get(8)?;
+    Ok(FileApproval {
+        id: row.get(0)?,
+        installation_id: row.get(1)?,
+        game_id: row.get(2)?,
+        kind: row.get(3)?,
+        root: row.get(4)?,
+        root_volume: row.get::<_, i64>(5)? as u64,
+        root_node: row.get::<_, i64>(6)? as u64,
+        operations: row.get::<_, i64>(7)? as u8,
+        affected: serde_json::from_str(&affected).unwrap_or_default(),
+        approved_at: row.get(9)?,
+        revoked_at: row.get(10)?,
+    })
+}
+
+const APPROVAL_COLUMNS: &str = "id, installation_id, game_id, kind, root, root_volume, root_node, \
+     operations, affected, approved_at, revoked_at";
+
+impl DurableStore {
+    /// Records `approval`, replacing the earlier approval of the same installation and kind.
+    pub fn save_approval(&mut self, approval: &FileApproval) -> Result<(), PluginStorageError> {
+        let affected = serde_json::to_string(&approval.affected).unwrap_or_else(|_| "[]".into());
+        self.conn.execute(
+            "INSERT INTO file_roots (id, installation_id, game_id, kind, root, root_volume,
+                 root_node, operations, affected, approved_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(installation_id, kind) DO UPDATE SET
+                 id = excluded.id, game_id = excluded.game_id, root = excluded.root,
+                 root_volume = excluded.root_volume, root_node = excluded.root_node,
+                 operations = excluded.operations, affected = excluded.affected,
+                 approved_at = excluded.approved_at, revoked_at = excluded.revoked_at",
+            params![
+                approval.id,
+                approval.installation_id,
+                approval.game_id,
+                approval.kind,
+                approval.root,
+                approval.root_volume as i64,
+                approval.root_node as i64,
+                i64::from(approval.operations),
+                affected,
+                approval.approved_at,
+                approval.revoked_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The approval of `installation_id` for `kind`, revoked or not.
+    pub fn approval_for(
+        &self,
+        installation_id: &str,
+        kind: &str,
+    ) -> Result<Option<FileApproval>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {APPROVAL_COLUMNS} FROM file_roots
+                     WHERE installation_id = ?1 AND kind = ?2"
+                ),
+                params![installation_id, kind],
+                approval_from,
+            )
+            .optional()?)
+    }
+
+    /// The approval with this id, revoked or not.
+    pub fn approval(&self, id: &str) -> Result<Option<FileApproval>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {APPROVAL_COLUMNS} FROM file_roots WHERE id = ?1"),
+                [id],
+                approval_from,
+            )
+            .optional()?)
+    }
+
+    /// Every approval, in a stable order.
+    pub fn approvals(&self) -> Result<Vec<FileApproval>, PluginStorageError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {APPROVAL_COLUMNS} FROM file_roots ORDER BY installation_id, kind"
+        ))?;
+        let rows = statement.query_map([], approval_from)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Revokes an approval; its handles stop working at once. Returns whether it was active.
+    pub fn revoke_approval(&mut self, id: &str, now: i64) -> Result<bool, PluginStorageError> {
+        let changed = self.conn.execute(
+            "UPDATE file_roots SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(changed > 0)
     }
 }
 

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gamenode_platform::plugin_storage::{
-    self as durable, DurableStore, PluginStorageError, PutResult,
+    self as durable, DurableStore, FileApproval, PluginStorageError, PutResult,
 };
 use tonic::Status;
 
@@ -414,6 +414,60 @@ impl Namespace<'_> {
         Ok(DeleteOutcome::Deleted {
             revision: current.revision,
         })
+    }
+}
+
+/// File-root approvals live beside the key/value data in the same per-namespace store.
+impl Namespace<'_> {
+    /// The current time, Unix seconds, as this operation sees it.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
+    /// The approval of `installation_id` for `kind`, revoked or not.
+    pub fn approval_for(
+        &mut self,
+        installation_id: &str,
+        kind: &str,
+    ) -> Result<Option<FileApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store
+                .approval_for(installation_id, kind)
+                .map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// The approval with this id, revoked or not.
+    pub fn approval(&mut self, id: &str) -> Result<Option<FileApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.approval(id).map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// Records an approval, replacing the earlier one of the same installation and kind.
+    /// `guard` is checked right before the change.
+    pub fn save_approval(
+        &mut self,
+        approval: &FileApproval,
+        guard: &CommitGuard,
+    ) -> Result<(), Status> {
+        guard()?;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        store.save_approval(approval).map_err(unavailable)
+    }
+
+    /// Revokes an approval; its handles stop working at once. Returns whether it was active.
+    #[cfg(test)]
+    pub fn revoke_approval(&mut self, id: &str) -> Result<bool, Status> {
+        let now = self.now;
+        match self.durable(false)? {
+            Some(store) => store.revoke_approval(id, now).map_err(unavailable),
+            None => Ok(false),
+        }
     }
 }
 

@@ -3891,6 +3891,12 @@ func (x *FileReadReply) GetEof() bool {
 	return false
 }
 
+// File access is limited to a folder the user approved for this plugin and one installation of a
+// game (FilesRequestAccess). Handles are opaque and bound to the session that received them.
+// With `name` empty, `file_handle` is an existing file and `contents` go at `offset` (which may not
+// pass the end of the file); with `truncate` the file ends where the write does. With `name` set,
+// `file_handle` is a directory handle and the file `name` (one plain component) is created, or
+// overwritten, inside it. The reply's `resource_id` is the handle of the written file.
 type FilesWriteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mutation      *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
@@ -3898,6 +3904,7 @@ type FilesWriteRequest struct {
 	Offset        uint64                 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
 	Contents      []byte                 `protobuf:"bytes,4,opt,name=contents,proto3" json:"contents,omitempty"`
 	Truncate      bool                   `protobuf:"varint,5,opt,name=truncate,proto3" json:"truncate,omitempty"`
+	Name          string                 `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3965,6 +3972,13 @@ func (x *FilesWriteRequest) GetTruncate() bool {
 		return x.Truncate
 	}
 	return false
+}
+
+func (x *FilesWriteRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
 }
 
 type FilesDeleteRequest struct {
@@ -19396,14 +19410,15 @@ const file_plugin_proto_rawDesc = "" +
 	"\bcontents\x18\x01 \x01(\fR\bcontents\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\x04R\n" +
 	"nextOffset\x12\x10\n" +
-	"\x03eof\x18\x03 \x01(\bR\x03eof\"\xc5\x01\n" +
+	"\x03eof\x18\x03 \x01(\bR\x03eof\"\xd9\x01\n" +
 	"\x11FilesWriteRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1f\n" +
 	"\vfile_handle\x18\x02 \x01(\tR\n" +
 	"fileHandle\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x1a\n" +
 	"\bcontents\x18\x04 \x01(\fR\bcontents\x12\x1a\n" +
-	"\btruncate\x18\x05 \x01(\bR\btruncate\"v\n" +
+	"\btruncate\x18\x05 \x01(\bR\btruncate\x12\x12\n" +
+	"\x04name\x18\x06 \x01(\tR\x04name\"v\n" +
 	"\x12FilesDeleteRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1f\n" +
 	"\vfile_handle\x18\x02 \x01(\tR\n" +

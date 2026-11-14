@@ -1,6 +1,7 @@
 //! ResourceHost library reads over the real local socket, with the SDK as the client.
 
 use super::*;
+use crate::plugin_host::files::FileAccess;
 use crate::plugin_host::library::{
     CatalogGame, CommitGuard, FavoriteWrite, InstallState, LibraryHost, LibrarySource, MatchWrite,
     StoredArtwork,
@@ -9,6 +10,7 @@ use crate::plugin_host::provider::{HostServices, Lease, Registration, Registrati
 use crate::plugin_host::storage::PluginStorage;
 use gamenode_core::library::{ArtworkWrite, DisplayWrite};
 use gamenode_platform::plugin_artwork::Prepared;
+use gamenode_platform::plugin_files::Reserved;
 use gamenode_plugin_sdk::{HostClient, Launch, Session, SessionOptions};
 use resource_host_client::ResourceHostClient;
 use resource_host_server::ResourceHost;
@@ -17,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::Code;
 use tonic::transport::Channel;
 
+mod files;
 mod sdk;
 mod storage;
 
@@ -45,6 +48,7 @@ struct Fixture {
     api: ProviderApi,
     feed: Arc<LibraryFeed>,
     storage: Arc<PluginStorage>,
+    files: Arc<FileAccess>,
     /// The seconds the storage clock reads; tests move it to expire values.
     clock: Arc<std::sync::atomic::AtomicI64>,
     plugin_data: std::path::PathBuf,
@@ -87,8 +91,14 @@ impl Fixture {
             let clock = clock.clone();
             move || clock.load(Ordering::SeqCst)
         }));
+        // The host's data folder is reserved: no file handle reaches it.
+        std::fs::create_dir_all(&plugin_data).unwrap();
+        let files = Arc::new(FileAccess::new(Reserved::new(std::slice::from_ref(
+            &plugin_data,
+        ))));
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
+            files: files.clone(),
             ..Default::default()
         };
         let api = root.providers.clone();
@@ -153,6 +163,7 @@ impl Fixture {
             api,
             feed,
             storage,
+            files,
             clock,
             plugin_data,
             endpoint,
@@ -185,6 +196,7 @@ impl Fixture {
                     display_name: None,
                     metadata_revision: 0,
                     artwork_revision: 0,
+                    install_dir: String::new(),
                 })
                 .collect(),
         );
@@ -532,6 +544,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.api.clone(),
         fixture.feed.clone(),
         fixture.storage.clone(),
+        fixture.files.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {
@@ -566,7 +579,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .files_list(FilesListRequest::default())
+        .network_fetch(NetworkFetchRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -593,6 +606,11 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("StorageGet", 0),
             ("StoragePut", 0),
             ("StorageDelete", 0),
+            ("FilesRequestAccess", 0),
+            ("FilesList", MAX_PAGE_SIZE as u32),
+            ("FilesRead", 0),
+            ("FilesWrite", 0),
+            ("FilesDelete", 0),
         ]
     );
 }

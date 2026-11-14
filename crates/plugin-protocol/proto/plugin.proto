@@ -335,7 +335,13 @@ message FilesListReply { repeated FileEntry entries = 1; string next_cursor = 2;
 message FileEntry { string handle = 1; string name = 2; bool directory = 3; uint64 size_bytes = 4; int64 modified_at = 5; }
 message FilesReadRequest { ServiceContext context = 1; string file_handle = 2; uint64 offset = 3; uint64 max_bytes = 4; }
 message FileReadReply { bytes contents = 1; uint64 next_offset = 2; bool eof = 3; }
-message FilesWriteRequest { MutationContext mutation = 1; string file_handle = 2; uint64 offset = 3; bytes contents = 4; bool truncate = 5; }
+// File access is limited to a folder the user approved for this plugin and one installation of a
+// game (FilesRequestAccess). Handles are opaque and bound to the session that received them.
+// With `name` empty, `file_handle` is an existing file and `contents` go at `offset` (which may not
+// pass the end of the file); with `truncate` the file ends where the write does. With `name` set,
+// `file_handle` is a directory handle and the file `name` (one plain component) is created, or
+// overwritten, inside it. The reply's `resource_id` is the handle of the written file.
+message FilesWriteRequest { MutationContext mutation = 1; string file_handle = 2; uint64 offset = 3; bytes contents = 4; bool truncate = 5; string name = 6; }
 message FilesDeleteRequest { MutationContext mutation = 1; string file_handle = 2; }
 message NetworkFetchRequest { ServiceContext context = 1; string url = 2; string method = 3; map<string,string> headers = 4; bytes body = 5; uint64 max_response_bytes = 6; uint32 timeout_ms = 7; }
 message NetworkFetchReply { uint32 status_code = 1; map<string,string> headers = 2; bytes body = 3; string final_origin = 4; }

@@ -38,7 +38,7 @@ fn proto_durability(durability: Durability) -> StorageDurability {
 
 impl ResourceApi {
     /// Runs `work` on the caller's namespace on a blocking worker.
-    async fn in_namespace<T: Send + 'static>(
+    pub(super) async fn in_namespace<T: Send + 'static>(
         &self,
         caller: &ResourceCaller,
         work: impl FnOnce(&mut Namespace<'_>) -> Result<T, Status> + Send + 'static,

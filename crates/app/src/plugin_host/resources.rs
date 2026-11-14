@@ -18,10 +18,12 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 mod artwork;
+mod files;
 mod matching;
 mod mutations;
 mod storage;
 
+use super::files::FileAccess;
 use super::library::{
     Change, CursorBinding, CursorError, DEFAULT_PAGE_SIZE, LibraryFeed, MAX_PAGE_SIZE,
     MAX_SEARCH_BYTES, ResumeError, Scope,
@@ -61,12 +63,23 @@ pub const SERVED: &[Served] = &[
         false,
         PRIVATE_NAMESPACE,
     ),
+    Served::new(
+        "FilesRequestAccess",
+        cap::FILES_READ,
+        false,
+        APPROVED_FOLDERS,
+    ),
+    Served::new("FilesList", cap::FILES_READ, true, APPROVED_FOLDERS),
+    Served::new("FilesRead", cap::FILES_READ, false, APPROVED_FOLDERS),
+    Served::new("FilesWrite", cap::FILES_WRITE, false, APPROVED_FOLDERS),
+    Served::new("FilesDelete", cap::FILES_DELETE, false, APPROVED_FOLDERS),
 ];
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
 const CATALOG: &str = "GameNode catalog (title search)";
 const PRIVATE_NAMESPACE: &str = "own plugin/publisher/profile namespace";
+const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and installation";
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {
@@ -105,6 +118,8 @@ pub struct ResourceApi {
     decoders: Arc<tokio::sync::Semaphore>,
     /// The plugins' private key/value storage.
     storage: Arc<PluginStorage>,
+    /// File approvals and handles.
+    files: Arc<FileAccess>,
 }
 
 impl ResourceApi {
@@ -112,11 +127,13 @@ impl ResourceApi {
         providers: ProviderApi,
         library: Arc<LibraryFeed>,
         storage: Arc<PluginStorage>,
+        files: Arc<FileAccess>,
     ) -> Self {
         Self {
             providers,
             library,
             storage,
+            files,
             watches: Arc::default(),
             mutations: Arc::default(),
             searches: Arc::default(),
@@ -509,17 +526,47 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.delete_stored(request).await
     }
 
+    async fn files_request_access(
+        &self,
+        request: Request<FilesRequestAccessRequest>,
+    ) -> Result<Response<FileAccessReply>, Status> {
+        self.request_files_access(request).await
+    }
+
+    async fn files_list(
+        &self,
+        request: Request<FilesListRequest>,
+    ) -> Result<Response<FilesListReply>, Status> {
+        self.list_files(request).await
+    }
+
+    async fn files_read(
+        &self,
+        request: Request<FilesReadRequest>,
+    ) -> Result<Response<FileReadReply>, Status> {
+        self.read_file(request).await
+    }
+
+    async fn files_write(
+        &self,
+        request: Request<FilesWriteRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.write_file(request).await
+    }
+
+    async fn files_delete(
+        &self,
+        request: Request<FilesDeleteRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.delete_file(request).await
+    }
+
     not_served! {
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
         games_request_install(GameInstallRequest) -> JobReply;
-        files_request_access(FilesRequestAccessRequest) -> FileAccessReply;
-        files_list(FilesListRequest) -> FilesListReply;
-        files_read(FilesReadRequest) -> FileReadReply;
-        files_write(FilesWriteRequest) -> MutationReply;
-        files_delete(FilesDeleteRequest) -> MutationReply;
         network_fetch(NetworkFetchRequest) -> NetworkFetchReply;
         notifications_publish(NotificationPublishRequest) -> MutationReply;
         backups_list(BackupsListRequest) -> BackupsListReply;

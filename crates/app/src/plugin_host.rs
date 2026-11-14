@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, transport::Server};
 
 pub mod compatibility;
+pub mod files;
 pub mod grants;
 pub mod library;
 pub mod login;
@@ -478,6 +479,8 @@ pub struct PluginApi {
     pub library: Arc<library::LibraryFeed>,
     /// The plugins' private key/value storage.
     pub storage: Arc<storage::PluginStorage>,
+    /// File approvals, handles and the host folders no plugin may reach.
+    pub files: Arc<files::FileAccess>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -699,6 +702,7 @@ impl PluginApiServer {
                     api.providers.clone(),
                     api.library.clone(),
                     api.storage.clone(),
+                    api.files.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -779,6 +783,7 @@ impl PluginApiServer {
                     api.providers.clone(),
                     api.library.clone(),
                     api.storage.clone(),
+                    api.files.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

@@ -91,6 +91,12 @@ would be too long), so no name can leave the folder. The `entries` table holds e
 revision and optional expiry, and `meta` the highest revision ever used so revisions keep growing
 across deletions and restarts. Session-only values are never written to disk.
 
+The same file holds the folders the user approved for the plugin's file access, in a `file_roots`
+table (store schema version 2): per installation and kind, the folder (a canonical path, kept only
+by the host), the volume and node it had when approved, the operations allowed, the library entries
+that shared it, and when it was approved or revoked. These rows are not charged to the plugin's
+quota, and the plugin never sees them: it receives only opaque handles.
+
 The location is for the user and the host only: the plugin API never accepts or returns it. Nothing
 cleans these folders up yet (unused-data cleanup and the uninstall keep/delete choice are separate
 tasks), so removing a plugin leaves its data in place. A store written by a newer version is refused

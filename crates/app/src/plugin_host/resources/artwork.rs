@@ -57,7 +57,7 @@ fn refused(error: ArtworkError) -> Status {
 impl ResourceApi {
     /// The caller's own entry named by `installation_id`, optionally also required to be
     /// matched to `expected_game`. Foreign and unknown entries are the same `NOT_FOUND`.
-    fn own_entry(
+    pub(super) fn own_entry(
         &self,
         caller: &ResourceCaller,
         installation_id: &str,

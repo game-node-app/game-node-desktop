@@ -69,6 +69,18 @@ pub struct LibrarySource {
     /// Revision of the provider plugin's cover override for this entry; 0 until it is first
     /// written.
     pub artwork_revision: u64,
+    /// Where the entry is installed, or empty when unknown. Host-only: it is never part of the
+    /// projection a plugin reads; it lets file approvals find the games that share a folder.
+    pub install_dir: String,
+}
+
+/// One entry's install folder, for file approvals. Host-only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryFolder {
+    pub entry_key: String,
+    pub game_id: Option<u64>,
+    pub name: String,
+    pub folder: String,
 }
 
 /// One entry as plugins see it.
@@ -387,6 +399,30 @@ impl LibraryFeed {
             .filter(|entry| scope.admits(entry))
             .cloned();
         (state.revision, entry)
+    }
+
+    /// The install folder of every entry that has one, in entry-key order. Host-only.
+    pub fn folders(&self) -> Vec<EntryFolder> {
+        self.lock()
+            .sources
+            .values()
+            .filter(|source| !source.install_dir.trim().is_empty())
+            .map(|source| EntryFolder {
+                entry_key: source.entry_key.clone(),
+                game_id: source.game_id,
+                name: source.name.clone(),
+                folder: source.install_dir.clone(),
+            })
+            .collect()
+    }
+
+    /// The install folder of the entry with this key, if it has one. Host-only.
+    pub fn folder_of(&self, entry_key: &str) -> Option<String> {
+        self.lock()
+            .sources
+            .get(entry_key)
+            .map(|source| source.install_dir.clone())
+            .filter(|folder| !folder.trim().is_empty())
     }
 
     /// The current revision of the entry with this entry key, once it has an installation id.

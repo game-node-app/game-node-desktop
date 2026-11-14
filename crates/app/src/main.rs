@@ -173,6 +173,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
             paths.plugin_data_dir(),
         )),
+        // Nothing under the application data folder is reachable through file handles. The
+        // folder-approval dialog is connected with the settings UI (`FileAccess::set_approver`).
+        files: Arc::new(gamenode_app::plugin_host::files::FileAccess::new(
+            gamenode_platform::plugin_files::Reserved::new(&[paths.data_dir().to_path_buf()]),
+        )),
         ..Default::default()
     };
     #[cfg(target_os = "linux")]

@@ -35,7 +35,7 @@ impl Fixture {
     }
 
     /// Writes with a fresh idempotency key each time.
-    async fn store(
+    pub(super) async fn store(
         &self,
         key: &str,
         value: &[u8],
@@ -48,7 +48,7 @@ impl Fixture {
             .await
     }
 
-    async fn load(&self, key: &str) -> Result<StorageGetReply, Status> {
+    pub(super) async fn load(&self, key: &str) -> Result<StorageGetReply, Status> {
         self.client()
             .storage_get(StorageGetRequest {
                 context: Some(self.context()),
@@ -74,7 +74,7 @@ impl Fixture {
     }
 
     /// Ends the plugin's session and opens a new one, as when its process restarts.
-    async fn reconnect(&mut self) {
+    pub(super) async fn reconnect(&mut self) {
         self.api.disconnect("fixture").await;
         let launch = self.api.begin_launch("fixture").unwrap();
         let credential = launch
@@ -110,7 +110,7 @@ impl Fixture {
         self._commands = session.commands;
     }
 
-    fn stored_files(&self) -> usize {
+    pub(super) fn stored_files(&self) -> usize {
         fn count(dir: &std::path::Path) -> usize {
             std::fs::read_dir(dir).map_or(0, |entries| {
                 entries
@@ -550,6 +550,7 @@ async fn values_expire_after_their_lifetime() {
 async fn failures_never_reveal_where_the_data_lives() {
     let fixture = Fixture::new(STORAGE).await;
     // Something that is not a folder where the plugin-data folder should be.
+    std::fs::remove_dir_all(&fixture.plugin_data).unwrap();
     std::fs::write(&fixture.plugin_data, b"in the way").unwrap();
     let status = fixture.store("k", b"v", DURABLE, 0).await.unwrap_err();
     assert_eq!(status.code(), Code::Unavailable);

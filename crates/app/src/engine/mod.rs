@@ -467,6 +467,7 @@ impl Engine {
                         artwork_revision: library
                             .artwork_override(&entry.key)
                             .map_or(0, |over| over.revision),
+                        install_dir: entry.install_dir.clone(),
                         install_state: if entry.installed {
                             InstallState::Installed
                         } else if entry.owned {

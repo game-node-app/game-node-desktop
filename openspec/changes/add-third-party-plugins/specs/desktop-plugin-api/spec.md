@@ -317,15 +317,19 @@ Provider discovery SHALL be able to submit typed URI or local executable targets
 - **THEN** GameNode can validate and register that executable for Play after target approval without requiring a store URI
 
 ### Requirement: Standard game launch permission
-The game.launch permission SHALL authorize launch through the game's current detected URI or executable with its stored parameters unchanged, regardless of detection source, within approved game scope. Calls SHALL bind to the expected target revision and reject custom executable, URI, argument, working-directory or environment overrides.
+The game.launch permission SHALL authorize launch through the game's current detected URI or executable with its stored parameters unchanged, regardless of detection source, within approved game scope. Calls SHALL bind to the expected target revision. The standard launch request SHALL carry no executable, URI, argument, working-directory or environment fields: parameter changes are possible only through game.custom_launch and an approved recipe.
 
 #### Scenario: Detected default target
 - **WHEN** a plugin with game.launch requests an approved game at its current target revision
 - **THEN** the host launches the detected URI or executable unchanged through its user-intent workflow
 
-#### Scenario: Attempted custom parameter under standard grant
-- **WHEN** a game.launch request includes custom arguments or environment values
-- **THEN** the host refuses it explicitly without silently accepting or discarding those overrides
+#### Scenario: Attempted custom launch under standard grant
+- **WHEN** a plugin with game.launch but without game.custom_launch requests a custom launch with arguments or environment values
+- **THEN** the host denies it explicitly, names the missing game.custom_launch permission and launches nothing
+
+#### Scenario: Fallback to the standard launch
+- **WHEN** a plugin whose custom launch was denied wants the game started anyway
+- **THEN** it must make its own standard launch request without parameters, and the host never turns the denied custom request into a standard launch by itself
 
 ### Requirement: Custom game launch permission
 The independent game.custom_launch grant SHALL authorize plugin-owned per-game recipes and their approved execution, including alternate URI/executable, arguments, working directory, runtime wrappers and environment overrides. Recipes SHALL use typed target/resource handles and argument vectors rather than shell command strings. This grant SHALL NOT imply installation or normal-launch permission.

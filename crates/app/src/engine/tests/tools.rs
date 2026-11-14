@@ -156,6 +156,8 @@ fn tools_harness() -> ToolsHarness {
         uri,
         covers,
         achievements: super::test_achievement_store(),
+        // Tools tests never read achievements; this probe is not wired to the engine.
+        achievement_probe: Arc::default(),
     };
 
     ToolsHarness {

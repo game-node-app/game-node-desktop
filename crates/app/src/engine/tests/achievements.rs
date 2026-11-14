@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Achievement tests share the test provider runtime's concurrency counter.
+/// Achievement scheduler tests drive tight timeouts; running them one at a time keeps them stable.
 static ACHIEVEMENT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use gamenode_core::achievements::{
@@ -652,7 +652,7 @@ async fn achievement_batches_are_dispatched_one_at_a_time() {
         panic!("every achievement batch completes; saved={saved} queue={queue:?}");
     }
     assert_eq!(
-        super::provider_runtime::ACHIEVEMENT_MAX_ACTIVE.load(Ordering::SeqCst),
+        h.achievement_probe.max_active.load(Ordering::SeqCst),
         1,
         "a single provider never has two achievement batches in flight"
     );
@@ -833,7 +833,7 @@ async fn a_failed_execute_is_requeued_and_reads_the_same_game_after_recovery() {
         .lock()
         .achievement_summaries
         .remove(&("steam".to_owned(), "620".to_owned()));
-    super::provider_runtime::ACHIEVEMENT_FAIL_NEXT.store(true, Ordering::SeqCst);
+    h.achievement_probe.fail_next.store(true, Ordering::SeqCst);
     h.engine
         .refresh_selected_achievements("steam:620".to_owned());
 
@@ -849,7 +849,7 @@ async fn a_failed_execute_is_requeued_and_reads_the_same_game_after_recovery() {
     .await;
     wait.expect("the requeued batch succeeds after the transient failure");
     assert!(
-        !super::provider_runtime::ACHIEVEMENT_FAIL_NEXT.load(Ordering::SeqCst),
+        !h.achievement_probe.fail_next.load(Ordering::SeqCst),
         "the injected failure was consumed"
     );
 }
@@ -868,6 +868,15 @@ async fn a_rate_limit_pause_still_runs_selected_work_but_holds_import_work() {
             .is_some_and(|library| library.rows.len() == 2)
     })
     .await;
+    // Let the startup import finish first: a batch still in flight would save "70" after the
+    // pause below is installed and look like import work that ignored it.
+    let imported = tokio::time::timeout(Duration::from_secs(5), async {
+        while h.achievements.load_summaries("steam", "A").unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    imported.expect("the startup import saves both games");
     wait_worker_idle(&h).await;
     h.achievements.delete_account("steam", "A").unwrap();
     {

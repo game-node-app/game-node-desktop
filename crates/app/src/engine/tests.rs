@@ -394,6 +394,8 @@ struct Harness {
     uri: Arc<FakeUri>,
     covers: tempfile::TempDir,
     achievements: Arc<dyn gamenode_core::achievements::AchievementStore>,
+    /// Achievement calls seen by this harness's fixture provider runtime.
+    achievement_probe: Arc<provider_runtime::AchievementProbe>,
 }
 
 fn harness(api: Arc<FakeApi>, creds: Arc<FakeCreds>) -> Harness {
@@ -495,6 +497,8 @@ fn harness_with_providers(
     });
     let publishes = Arc::new(AtomicUsize::new(0));
     let publish_count = publishes.clone();
+    let runtime = Arc::new(provider_runtime::Runtime::new(&ports));
+    let achievement_probe = runtime.achievement_probe();
     let engine = Engine::new(
         ports,
         tokio::runtime::Handle::current(),
@@ -506,6 +510,7 @@ fn harness_with_providers(
             let _ = tx.send(s);
         },
     );
+    engine.set_provider_runtime(runtime);
     Harness {
         processes,
         engine,
@@ -520,6 +525,7 @@ fn harness_with_providers(
         uri,
         covers,
         achievements,
+        achievement_probe,
     }
 }
 

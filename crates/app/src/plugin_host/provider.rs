@@ -1479,15 +1479,15 @@ impl ProviderApi {
         {
             provider_event::Event::AccountStatus(status) => {
                 if status.state == AccountConnection::NotConnected as i32 {
-                    let state = lock(&self.state);
-                    if state
+                    // The temporary lock ends with this statement; the denial locks state again.
+                    let undeleted_sign_out = lock(&self.state)
                         .operations
                         .get(&(context.session_id.clone(), context.operation_id.clone()))
                         .is_some_and(|operation| {
                             operation.kind == ProviderOperation::SignOut
                                 && !operation.secret_deleted
-                        })
-                    {
+                        });
+                    if undeleted_sign_out {
                         return Err(self.scope_denial(&context, cap::ACCOUNT_PUBLISH).unwrap());
                     }
                 }
@@ -1817,15 +1817,19 @@ impl provider_host_server::ProviderHost for ProviderApi {
         };
         let (lease, services) = self.lease(request.context, permission)?;
         if matches!(action, account_request::Action::Clear(true)) {
-            let state = lock(&self.state);
-            let operation = state
-                .operations
-                .get(&(
-                    lease.context.session_id.clone(),
-                    lease.context.operation_id.clone(),
-                ))
-                .ok_or_else(|| Status::failed_precondition("stale account operation"))?;
-            if operation.kind != ProviderOperation::SignOut || !operation.secret_deleted {
+            // Release the state lock before denying: recording the denial locks it again.
+            let deleted_on_sign_out = {
+                let state = lock(&self.state);
+                let operation = state
+                    .operations
+                    .get(&(
+                        lease.context.session_id.clone(),
+                        lease.context.operation_id.clone(),
+                    ))
+                    .ok_or_else(|| Status::failed_precondition("stale account operation"))?;
+                operation.kind == ProviderOperation::SignOut && operation.secret_deleted
+            };
+            if !deleted_on_sign_out {
                 return Err(lease.deny_scope_for(cap::SECRET_DELETE));
             }
         }

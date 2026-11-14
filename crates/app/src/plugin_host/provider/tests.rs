@@ -198,14 +198,18 @@ async fn repeated_sign_in_does_not_invalidate_the_pending_attempt() {
 }
 
 #[tokio::test]
-async fn unsupported_operation_is_rejected_before_dispatch() {
+async fn ungranted_operation_is_denied_before_dispatch() {
     let h = Harness::new().await;
     let error = h
         .api
         .execute("fixture", ProviderOperation::ReadCounter)
         .await
         .unwrap_err();
-    assert_eq!(error.code(), tonic::Code::Unimplemented);
+    // Grant enforcement runs first: an operation outside the grant is denied, with details.
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    let detail = DenialDetail::decode(error.details()).unwrap();
+    assert_eq!(detail.reason, DenialReason::NotGranted as i32);
+    assert_eq!(detail.permission_id, cap::COUNTER);
     assert_eq!(h.services.reads.load(Ordering::Relaxed), 0);
 }
 

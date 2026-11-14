@@ -223,6 +223,31 @@ active account profile. The request names only a key; see "Private storage" in
 The Rust SDK has no typed storage helpers yet (they arrive with the utility-service examples of task
 6.5); use the generated `ResourceHost` client as the Go example does.
 
+## File access
+
+A plugin never names a path. It asks `FilesRequestAccess` for an installation of one of its own
+library entries, says what it needs (`read`, `write`, `delete`) and which folder kind (`installation`,
+`save`, `prefix`), and the user chooses and confirms the folder. The reply holds opaque handles; see
+"Files" in `docs/plugin-api-permissions.md` for the rules, limits and errors. The practical points:
+
+- Declare `files.read`, `files.write` and `files.delete` only for what you use. They are separate,
+  off at installation, and the user approves a folder per game; an approval for `read` does not allow
+  `write`, and neither allows `delete`.
+- Handles last for the session. After a restart call `FilesRequestAccess` again: the user is not
+  asked again unless you want more operations or the games sharing the folder changed. Treat
+  `FAILED_PRECONDITION` ("request access again") and `NOT_FOUND` on a handle as the cue to do that.
+- List a directory to get child handles, page with the returned cursor, and read big files in
+  chunks (`next_offset`/`eof`, at most 4 MiB per call). Create a file by writing with a directory
+  handle and a `name`; the reply's `resource_id` is its handle.
+- Use one idempotency key per intended write or delete and reuse it only to retry that same one.
+- Do not expect links to be followed, directories to be deleted, or anything inside GameNode's own
+  data folder to exist: those are never reachable, and a refused path says so without naming one.
+- Your API access is what the user approved; it is not a promise that your own process cannot use
+  the operating system directly.
+
+Until the settings UI connects the approval dialog, a new approval is not available; handles for
+folders already approved work.
+
 ## Bounded work, cancellation and failures
 
 The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most

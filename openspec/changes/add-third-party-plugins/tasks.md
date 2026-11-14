@@ -58,7 +58,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 ## 6. Scoped storage, files, network and notifications
 
 - [x] 6.1 Implement namespaced storage get/put/delete, explicit SESSION_ONLY/PERSIST durability, quotas and revisions using the 4.4 namespace resolver; verify storage.persist denial, atomic quota failures and isolation across plugins/profiles, and document non-secret versus Secret storage without exposing physical paths.
-- [ ] 6.2 Implement user-initiated per-plugin/per-game root approval and opaque file handles with list/read/write/delete, disabled at installation; verify sibling-game denial, reserved persistence-root exclusion, shared-resource scope, traversal, symlink/junction replacement and independent mutation permissions.
+- [x] 6.2 Implement user-initiated per-plugin/per-game root approval and opaque file handles with list/read/write/delete, disabled at installation; verify sibling-game denial, reserved persistence-root exclusion, shared-resource scope, traversal, symlink/junction replacement and independent mutation permissions.
 - [ ] 6.3 Implement constrained HTTPS fetch with origin grants, redirect/DNS revalidation, size/deadline bounds and no Core credentials; verify private/local destinations and widened origins fail before data disclosure.
 - [ ] 6.4 Implement bounded plugin-attributed notifications without executable markup or arbitrary links; verify rate limiting, localization fallback and untrusted text rendering.
 - [ ] 6.5 Document utility scopes, limits, errors and direct-native-access limitations with SDK examples; verify the published examples against the corresponding fixture services.

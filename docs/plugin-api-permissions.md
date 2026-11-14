@@ -407,6 +407,123 @@ indexes). There is no per-plugin rate limit on writes; they are serialized per n
 bounds contention but not frequency. The user-facing cleanup, usage screens, uninstall choices and
 the `Persistence*` methods are separate tasks (16.x, 17.2).
 
+## Files
+
+`FilesRequestAccess`, `FilesList` and `FilesRead` (`files.read`), `FilesWrite` (`files.write`) and
+`FilesDelete` (`files.delete`) let a plugin work on files of a game installation. They are the
+only way a plugin touches the user's files through the API, and they are closed by default: the
+three grants are separate, off at installation, and even with them a plugin reaches only a folder
+**the user approved for that plugin and that one installation**.
+
+- **Approval is the user's, per plugin and installation.** `FilesRequestAccess` names an
+  `installation_id` (one of the caller's own library entries; a `game_id`, if given, must be its
+  match), the operations wanted (`read`, `write`, `delete`) and the kinds of folder
+  (`installation`, `save`, `prefix`; empty means `installation`). It carries no path. The host asks
+  the user to choose the folder (starting at the installation's folder for `installation`) and then
+  to confirm the final scope: folder, operations and every game that shares it. A refusal is
+  `PERMISSION_DENIED`; a build with no approval dialog connected is `FAILED_PRECONDITION`; the
+  user has five minutes to answer; only one approval per plugin waits at a time (`ABORTED`).
+  Each requested operation needs its grant first, so the user is never asked for something the
+  plugin may not even request.
+- **What is remembered.** The approval is stored per plugin and account profile (beside its private
+  storage, not charged to its quota) and replaced when the same installation and kind are approved
+  again. Asking for the same or fewer operations later returns handles without asking; asking for
+  more asks again. It holds only while the set of games sharing the folder is still the one the user
+  confirmed: a game added to or removed from the folder, or a changed or replaced folder, stops it
+  (`FAILED_PRECONDITION`, "request access again") until it is approved again.
+- **Shared folders.** The games that "share" a folder are the library entries, of any provider,
+  whose install folder is the root, inside it or contains it (links resolved). Approving a parent
+  such as a library folder names every game under it, and grants nothing across them beyond what
+  was confirmed and the operations approved: an approved read-only parent does not allow
+  writes, and a plugin approved for one game's folder has no way to name a sibling's.
+- **Handles are opaque and belong to a session.** `FileHandle.handle` (and each `FileEntry.handle`,
+  and the `resource_id` of a write or delete) is a sealed token: it carries the approval and a
+  relative path but cannot be read, edited, forged, kept past the session or used by another
+  session, and two for the same file differ. A malformed, foreign, edited or revoked handle is
+  `NOT_FOUND`, all the same. The reply never contains an absolute path.
+- **Every call re-checks.** From the handle the host re-derives: the approval exists and is not
+  revoked, it allows that operation, the games sharing the folder are the confirmed set, the folder
+  is still the approved one (same volume and node), and the plugin's grant for the operation is held
+  now. All of that, and the file work, run under the plugin's namespace lock, and a write or delete
+  rechecks the grants right before it changes anything, so a revocation cannot slip in between.
+- **Confinement.** Below the root only plain path components exist. `..`, empty or absolute names,
+  separators, control characters and names over 255 bytes are refused before the disk is touched.
+  Symbolic links, junctions and other reparse points are never followed at any depth (a link is not
+  listed and naming one is `PERMISSION_DENIED`), so a folder swapped for a link after a listing is
+  refused when used; a directory on another volume is refused; devices, pipes and sockets do not
+  exist for the plugin. On Linux every step is an `openat` with `O_NOFOLLOW` from a directory
+  handle. On Windows each component is checked as a reparse point and the opened handle's final
+  path must be exactly the root plus the requested components.
+- **The host's own folders are excluded.** The application data folder (database, private
+  plugin storage, packages, credentials) is reserved: it cannot be approved, a root inside it is
+  refused, and when an approved parent contains it the folder is not listed and nothing beneath it
+  can be reached. This holds even if the user picks a parent that contains it.
+- **List.** `FilesList` takes a directory handle and returns entries sorted by name with opaque
+  child handles, size and modification time (Unix seconds); directories have size 0. `page_size` 0
+  is 100, at most 200. The cursor is bound to the session and the directory; an edited or foreign
+  cursor is `INVALID_ARGUMENT`. A directory with more than 20,000 entries is `RESOURCE_EXHAUSTED`
+  instead of a partial list.
+- **Read.** `FilesRead` returns up to `max_bytes` from `offset` (0 means 1 MiB; at most 4 MiB),
+  `next_offset` and `eof`. A directory handle is `FAILED_PRECONDITION`.
+- **Write.** With `name` empty, `file_handle` is an existing file: `contents` go at `offset`, which
+  may not pass the end of the file (`OUT_OF_RANGE`), and with `truncate` the file ends where the
+  write does. With `name` set, `file_handle` is a directory handle and the file `name` is created,
+  or overwritten, inside it; a new file can only be written from offset 0, and a refused write
+  creates nothing. New names are one plain component that is valid on every platform: no
+  separators, `.`/`..`, `< > : " | ? *`, trailing space or dot, or reserved device names
+  (`CON`, `NUL`, `COM1`...), else `INVALID_ARGUMENT`. One call carries at most 4 MiB
+  (`INVALID_ARGUMENT`, write in several calls) and a file may not grow past 512 MiB
+  (`RESOURCE_EXHAUSTED`). The reply's `resource_id` is the handle of the written file.
+- **Delete.** `FilesDelete` removes one regular file. Directories are never deleted, and nothing a
+  link points to is.
+- **No revisions.** Files carry no revision: `expected_revision` must be 0.
+- **Idempotency.** Writes and deletes need an idempotency key like the other mutations. A retry of
+  the same request returns the original outcome without acting again (so a retried append applies
+  once, and a retried delete is not `NOT_FOUND`); the same key for another request is
+  `FAILED_PRECONDITION`. `FilesRequestAccess` needs a key for its shape but is naturally
+  idempotent: an existing approval is reused.
+- **Errors** never contain a path. `PERMISSION_DENIED` is outside the approved access, a missing
+  approval for the operation or an operating-system refusal; `NOT_FOUND` a missing file or unusable
+  handle; `FAILED_PRECONDITION` the approved folder or its sharing changed, or the wrong kind of
+  entry; `UNAVAILABLE` an I/O failure.
+- **Not a sandbox.** These rules govern what the *API* does for a plugin. A plugin that runs as the
+  user can still use the operating system directly; nothing here confines native code.
+
+### File limits
+
+The constants are in `crates/platform/src/plugin_files.rs` and `crates/app/src/plugin_host/files.rs`.
+None of the numbers comes from the design or a measurement: they were chosen by reasoning and are
+open to change after a capacity review.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Bytes per read or write call | at most 4 MiB (read default 1 MiB) | Plugin messages are capped at 8 MiB; 4 MiB leaves room for the request and bounds memory per call. Bigger files are moved in pieces. |
+| Size of a file a plugin may grow | 512 MiB | Saves and memory cards are small; this keeps a runaway plugin from filling a disk in one chain of calls. It does not bound the total a plugin may write. |
+| Entries read from one directory | 20,000 | A listing sorts and pages the whole directory each call, so the work per page is bounded. A larger directory is refused rather than cut short. |
+| List page | default 100, at most 200 | Same as the other paged services. |
+| Path depth, name length | 64 components, 255 bytes | Common filesystem limits; keeps handles small. |
+| Path carried in a handle | at most 2,048 bytes | Entries deeper than that are not listed. |
+| Time to answer an approval | 5 minutes | Long enough to find a folder, short enough not to leave a plugin waiting forever. |
+| Remembered canonical library folders | 60 seconds | The sharing check runs on every call; this avoids resolving every library folder each time. |
+
+No per-plugin rate limit exists for file calls. Mutations of one plugin are serialized, and its
+private-storage calls wait while one of its file calls runs, because both use the plugin's
+namespace lock.
+
+### What is not covered yet
+
+- The approval dialog belongs to the settings UI (section 10). Until a build connects one
+  (`FileAccess::set_approver`), `FilesRequestAccess` answers `FAILED_PRECONDITION` for a new
+  approval; existing approvals keep working.
+- The sharing check knows only the library's install folders. A save or prefix folder outside every
+  install folder may be shared with games the host cannot see; the confirmation names the games it
+  knows and the user judges the rest.
+- Revoking an approval is a store operation the settings UI will call; no plugin API revokes one.
+- Approval is limited to the caller's own library entries. Saves and runtime handles that exist
+  without a library entry arrive with the save-profile and location services.
+- The Windows implementation was type-checked for the Windows target but has not been run; see
+  "Limitations" in `docs/development.md` for native acceptance.
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

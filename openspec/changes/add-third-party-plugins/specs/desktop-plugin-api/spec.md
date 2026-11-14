@@ -158,6 +158,26 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a request redirects to an unapproved origin or a private/local destination
 - **THEN** the host refuses the redirected request without forwarding credentials
 
+#### Scenario: File access without a user-approved folder
+- **WHEN** a plugin holds a files grant but the user has not approved a folder for that plugin and installation, or the approval does not allow the operation
+- **THEN** no handle is issued or the operation is denied, and nothing is read, written or deleted
+
+#### Scenario: Sibling game and shared folder
+- **WHEN** a plugin approved for one game's folder tries to reach another game, or the folder is shared with other games
+- **THEN** only the approved folder is reachable, the user confirms the complete set of games sharing it, and the approval stops covering a changed set until it is approved again
+
+#### Scenario: Host persistence folders are never reachable
+- **WHEN** an approved parent folder contains GameNode's own data or plugin persistence folders
+- **THEN** they are not listed and nothing beneath them can be read, written or deleted, and such a folder cannot itself be approved
+
+#### Scenario: Link or junction replaced after approval
+- **WHEN** a folder inside the approved root is replaced by a symbolic link or junction after the plugin listed it
+- **THEN** the next operation is refused before reading or changing the target, and no path is revealed
+
+#### Scenario: Independent file mutation permissions
+- **WHEN** a plugin is approved to read and write but not to delete, or holds the write grant without the delete grant
+- **THEN** write succeeds and delete is denied
+
 #### Scenario: Storage quota exceeded
 - **WHEN** a plugin writes beyond its documented namespace quota
 - **THEN** the host reports resource exhaustion and preserves previously stored values

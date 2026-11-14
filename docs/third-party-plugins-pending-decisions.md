@@ -263,3 +263,39 @@ Valor máximo e quota vêm do design (1 MiB, 16 MiB). Os demais foram escolhidos
 A quota conta bytes lógicos, não o tamanho do arquivo (páginas e índices do SQLite pesam mais). Não há limite de taxa por plugin para escritas. Faltam, em tarefas próprias, a interface de uso e limpeza, a escolha de manter ou apagar na desinstalação (16.4, 17.2) e os métodos `Persistence*` (16.2). A 16.1 (stores duráveis por dono com respostas explícitas de durabilidade e expiração) ficou parcialmente coberta por esta tarefa: restam o consentimento de retenção do receptor e o armazenamento de dados compartilhados.
 
 Efeito no protocolo: campos aditivos `durability` e `expires_at` nas respostas do Storage; contrato `endpoint_field_policy.json` atualizado. Sem migração do banco principal.
+
+## J. Decisões adotadas na implementação da tarefa 6.2 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 6.2 (como a aprovação acontece, quanto ela dura, como criar arquivos e como tratar pastas compartilhadas) e implementadas para `Files.RequestAccess`, `List`, `Read`, `Write` e `Delete`. Os limites numéricos não vêm do design, para revisão.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| Aprovação do usuário | `FilesRequestAccess` chama uma porta do host, `RootApprover` (`choose_root` e `confirm`, assíncrona, com 5 minutos para responder), que recebe plugin, instalação, tipo, operações e a pasta sugerida e devolve a pasta escolhida; depois o usuário confirma o escopo final (pasta, operações e todos os jogos afetados). O seletor nativo só existe no Windows (no Linux devolve `Unsupported`) e a UI de configurações é a seção 10, então **a porta está pronta, mas nenhum aprovador está ligado no app**: uma nova aprovação responde `FAILED_PRECONDITION` até a seção 10 chamar `FileAccess::set_approver`. Aprovações já gravadas funcionam. | 6.2, 10.x. |
+| Persistência | A aprovação (plugin + instalação + tipo + pasta + volume/nó + operações + jogos afetados) é gravada por perfil de conta, no mesmo arquivo SQLite do storage do plugin (tabela `file_roots`, esquema 2), sem contar na quota. Vale até ser revogada, até o grant `files.*` sair ou até o conjunto de jogos da pasta mudar. Cada sessão recebe handles novos para a mesma aprovação, sem novo pedido; pedir mais operações pergunta de novo. | 6.2. |
+| Handles | Tokens opacos, selados (ChaCha20-Poly1305 com chave aleatória do processo), ligados à sessão e ao propósito: carregam aprovação e caminho relativo, e não podem ser lidos, forjados, editados, reaproveitados por outra sessão ou usados como cursor. Malformado, alheio, editado ou revogado é sempre `NOT_FOUND`. | 6.2. |
+| Criar arquivo | Campo aditivo `FilesWriteRequest.name = 6`: com `name`, `file_handle` é um handle de diretório e o arquivo é criado ou sobrescrito dentro dele; nomes novos têm de ser portáveis (sem separadores, `.`/`..`, `< > : " \| ? *`, ponto/espaço no fim ou nome de dispositivo). `resource_id` da resposta é o handle do arquivo. Delete remove só arquivos regulares, nunca diretórios. Arquivos não têm revisão (`expected_revision` deve ser 0). | 6.2. |
+| Pasta compartilhada | Jogos afetados = entradas da biblioteca, de qualquer provider, cuja pasta de instalação é a raiz, está dentro dela ou a contém (links resolvidos). O aprovador recebe a lista completa; a aprovação grava o conjunto e deixa de valer se um jogo entrar ou sair da pasta, até nova aprovação. Um pai aprovado só para leitura não permite escrita. | 6.2; design §17. |
+| Pastas reservadas | A pasta de dados do aplicativo é reservada: não pode ser aprovada nem estar dentro de uma raiz aprovada que a exclua do alcance; quando um pai aprovado a contém, ela não é listada e nada abaixo dela é alcançável. | 6.2. |
+| Confinamento | Linux: `openat` com `O_NOFOLLOW` a partir de um descritor de diretório, sem janela entre checar e usar. Windows: cada componente é checado como ponto de reanálise e o caminho final do handle aberto deve ser exatamente a raiz mais os componentes. Links, junções, outros volumes e arquivos especiais não existem para o plugin. | 6.2. |
+| Aprovação só para entradas próprias | Só entradas da biblioteca do próprio provider podem ser alvo (igual a 5.2 a 5.4). Saves e prefixos sem entrada de biblioteca ficam para os serviços de perfis de save e locais. | 6.2, 13.x. |
+| Serialização | Toda a chamada de arquivo roda sob o lock do namespace do plugin (o mesmo do Storage), então revogação não passa entre a checagem e a mudança; em troca, o Storage do mesmo plugin espera uma chamada de arquivo em andamento. Mutações do plugin são serializadas. | 6.2. |
+
+### Limites de arquivos e como foram decididos
+
+Escolhidos pelo assistente por raciocínio, **sem medição e sem pergunta ao usuário** (o design não fixa números). Detalhes em `docs/plugin-api-permissions.md#file-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Bytes por leitura ou escrita | até 4 MiB (padrão de leitura 1 MiB) | Mensagens de plugin têm teto de 8 MiB; arquivos maiores vão em partes. |
+| Tamanho de arquivo que o plugin pode fazer crescer | 512 MiB | Saves e memory cards são pequenos; impede encher um disco numa cadeia de chamadas. Não limita o total escrito. |
+| Entradas lidas de um diretório | 20.000 | Cada página ordena o diretório inteiro, então o trabalho por página tem teto; diretório maior é recusado, não cortado. |
+| Página de listagem | padrão 100, máximo 200 | Igual aos outros serviços paginados. |
+| Profundidade e nome | 64 componentes, 255 bytes | Limites comuns de sistemas de arquivos. |
+| Caminho num handle | até 2.048 bytes | Entradas mais profundas não são listadas. |
+| Tempo para responder a aprovação | 5 minutos | Longo o bastante para achar uma pasta. |
+| Cache de pastas canônicas da biblioteca | 60 segundos | A checagem de compartilhamento roda a cada chamada. |
+
+Sem limite de taxa por plugin. **Não verificado em execução:** o backend Windows foi só verificado quanto a tipos para o alvo Windows (as dependências em C não compilam neste ambiente); precisa de aceitação nativa. A checagem de compartilhamento só conhece as pastas de instalação da biblioteca: uma pasta de save fora delas pode ser usada por jogos que o host não vê.
+
+Efeito no banco: esquema 2 do arquivo SQLite por plugin (`file_roots`), sem mudança no banco principal. Efeito no protocolo: campo aditivo `FilesWriteRequest.name = 6`; contrato `endpoint_field_policy.json` atualizado.
+

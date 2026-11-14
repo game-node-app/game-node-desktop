@@ -90,6 +90,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 - [ ] 8.5 Handle window closure/fencing on profile change (including sign-out, session rejection and a different verified account), revocation, disable, update and removal; verify stale window contexts cannot access new profile data or grant permissions.
 - [ ] 8.6 Connect optional declarative ui.settings rendering with its existing closed schema and explicit authorization, preferring external configuration when both are available; verify external-only, form-only, both, denied and absent modes.
 - [ ] 8.7 Document lifecycle, process-supervision limits and plugin-owned UI/storage responsibilities; verify lifecycle fixtures distinguish management from functional configuration and do not embed plugin code into the GameNode frontend.
+- [ ] 8.8 Connect the approved-origin source of 6.3 (`NetworkAccess::set_scopes`) to the persisted per-account permission store for third-party sessions, so a plugin's exact HTTPS origins are the user's approved `network.fetch` scopes for the authenticated plugin, publisher and profile; verify only approved exact origins are reachable, widening needs a new approval, a revoked or narrowed approval stops a fetch already running, a profile change fences it, and without the connection every fetch stays denied. Depends on 6.3 and 4.1.
 
 ## 9. Updates and recovery
 

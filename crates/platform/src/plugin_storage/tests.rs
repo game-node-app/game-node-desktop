@@ -435,3 +435,105 @@ fn a_version_3_store_gains_the_remembered_confirmations_table() {
         .unwrap();
     assert_eq!(upgraded.intent_approvals().unwrap().len(), 1);
 }
+
+fn profile(id: &str, installation: &str, name: &str, revision: u64) -> SaveProfileRow {
+    SaveProfileRow {
+        id: id.into(),
+        installation_id: installation.into(),
+        game_id: "42".into(),
+        name: name.into(),
+        runtime_id: "dolphin".into(),
+        format_id: String::new(),
+        format_version: 0,
+        metadata: "{}".into(),
+        directories: "[]".into(),
+        revision,
+        created_at: 100,
+    }
+}
+
+#[test]
+fn save_profiles_round_trip_replace_and_keep_the_revision_high_water() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    let mut first = store(&dir);
+    assert_eq!(
+        first
+            .save_profile(&profile("a", "inst", "Card A", 3))
+            .unwrap(),
+        ProfileSaved::Saved
+    );
+    let mut renamed = profile("a", "inst", "Card A2", 9);
+    renamed.created_at = 999; // the creation time is never rewritten
+    first.save_profile(&renamed).unwrap();
+    assert_eq!(first.high_water().unwrap(), 9);
+    drop(first);
+
+    let mut second = store(&dir);
+    let kept = second.save_profile_row("a").unwrap().unwrap();
+    assert_eq!(
+        (kept.name.as_str(), kept.revision, kept.created_at),
+        ("Card A2", 9, 100)
+    );
+    // Removing keeps the high-water mark, so a recreated profile never repeats a revision.
+    assert!(second.delete_save_profile("a", 12).unwrap());
+    assert!(!second.delete_save_profile("a", 13).unwrap());
+    assert_eq!(second.high_water().unwrap(), 13);
+    assert!(second.save_profile_row("a").unwrap().is_none());
+}
+
+#[test]
+fn a_profile_name_is_unique_per_installation_without_regard_to_case() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp.path().join("ns"));
+    store
+        .save_profile(&profile("a", "inst", "Card A", 1))
+        .unwrap();
+    assert_eq!(
+        store
+            .save_profile(&profile("b", "inst", "card a", 2))
+            .unwrap(),
+        ProfileSaved::NameTaken
+    );
+    // Nothing of the refused write was kept, high-water mark included.
+    assert!(store.save_profile_row("b").unwrap().is_none());
+    assert_eq!(store.high_water().unwrap(), 1);
+    // Another installation may use the name; a profile may keep its own name.
+    assert_eq!(
+        store
+            .save_profile(&profile("c", "other", "Card A", 3))
+            .unwrap(),
+        ProfileSaved::Saved
+    );
+    assert_eq!(
+        store
+            .save_profile(&profile("a", "inst", "Card A", 4))
+            .unwrap(),
+        ProfileSaved::Saved
+    );
+    let ids: Vec<_> = store
+        .save_profile_rows()
+        .unwrap()
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(ids, ["a", "c"]);
+}
+
+#[test]
+fn a_version_4_store_gains_the_save_profiles_table() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    {
+        let first = store(&dir);
+        drop(first);
+        let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+        conn.execute_batch("DROP TABLE save_profiles; PRAGMA user_version = 4;")
+            .unwrap();
+    }
+    let mut upgraded = store(&dir);
+    upgraded
+        .save_profile(&profile("a", "inst", "Card", 1))
+        .unwrap();
+    assert_eq!(upgraded.save_profile_rows().unwrap().len(), 1);
+}

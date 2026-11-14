@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -193,6 +193,30 @@ impl DurableStore {
                      PRIMARY KEY (installation_id, operation)
                  ) STRICT;
                  PRAGMA user_version = 4;
+                 COMMIT;",
+            )?;
+        }
+        if version < 5 {
+            // Save profiles this plugin contributed: where a game's saves live for one runtime.
+            // They reference folder approvals of the same namespace by id, never a path.
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS save_profiles (
+                     id TEXT PRIMARY KEY,
+                     installation_id TEXT NOT NULL,
+                     game_id TEXT NOT NULL,
+                     name TEXT NOT NULL,
+                     name_key TEXT NOT NULL,
+                     runtime_id TEXT NOT NULL,
+                     format_id TEXT NOT NULL,
+                     format_version INTEGER NOT NULL CHECK (format_version >= 0),
+                     metadata TEXT NOT NULL,
+                     directories TEXT NOT NULL,
+                     revision INTEGER NOT NULL CHECK (revision >= 1),
+                     created_at INTEGER NOT NULL,
+                     UNIQUE (installation_id, name_key)
+                 ) STRICT;
+                 PRAGMA user_version = 5;
                  COMMIT;",
             )?;
         }
@@ -532,6 +556,141 @@ impl DurableStore {
             .conn
             .execute("DELETE FROM intent_approvals WHERE id = ?1", [id])?;
         Ok(changed > 0)
+    }
+}
+
+/// A save profile a plugin contributed, as stored. `directories` and `metadata` are JSON the host
+/// wrote and validated; the store only keeps them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveProfileRow {
+    pub id: String,
+    pub installation_id: String,
+    /// The GameNode game the installation was matched to when created (empty if none). A later
+    /// rematch does not change it.
+    pub game_id: String,
+    pub name: String,
+    pub runtime_id: String,
+    pub format_id: String,
+    pub format_version: u32,
+    pub metadata: String,
+    pub directories: String,
+    pub revision: u64,
+    pub created_at: i64,
+}
+
+/// How writing a profile ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileSaved {
+    Saved,
+    /// The installation already has a profile with this name (compared without case).
+    NameTaken,
+}
+
+const PROFILE_COLUMNS: &str = "id, installation_id, game_id, name, runtime_id, format_id, \
+     format_version, metadata, directories, revision, created_at";
+
+fn profile_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SaveProfileRow> {
+    Ok(SaveProfileRow {
+        id: row.get(0)?,
+        installation_id: row.get(1)?,
+        game_id: row.get(2)?,
+        name: row.get(3)?,
+        runtime_id: row.get(4)?,
+        format_id: row.get(5)?,
+        format_version: row.get::<_, i64>(6)? as u32,
+        metadata: row.get(7)?,
+        directories: row.get(8)?,
+        revision: row.get::<_, i64>(9)? as u64,
+        created_at: row.get(10)?,
+    })
+}
+
+impl DurableStore {
+    /// Inserts or replaces the profile with `row.id`, and raises the store's revision high-water
+    /// mark to `row.revision` so no revision is ever handed out twice.
+    pub fn save_profile(
+        &mut self,
+        row: &SaveProfileRow,
+    ) -> Result<ProfileSaved, PluginStorageError> {
+        let tx = self.conn.transaction()?;
+        let name_key = row.name.to_lowercase();
+        let written = tx.execute(
+            "INSERT INTO save_profiles (id, installation_id, game_id, name, name_key, runtime_id,
+                 format_id, format_version, metadata, directories, revision, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = excluded.name, name_key = excluded.name_key,
+                 runtime_id = excluded.runtime_id, format_id = excluded.format_id,
+                 format_version = excluded.format_version, metadata = excluded.metadata,
+                 directories = excluded.directories, revision = excluded.revision",
+            params![
+                row.id,
+                row.installation_id,
+                row.game_id,
+                row.name,
+                name_key,
+                row.runtime_id,
+                row.format_id,
+                i64::from(row.format_version),
+                row.metadata,
+                row.directories,
+                row.revision as i64,
+                row.created_at,
+            ],
+        );
+        match written {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                return Ok(ProfileSaved::NameTaken);
+            }
+            Err(other) => return Err(other.into()),
+        }
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [row.revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(ProfileSaved::Saved)
+    }
+
+    /// The profile with this id.
+    pub fn save_profile_row(&self, id: &str) -> Result<Option<SaveProfileRow>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {PROFILE_COLUMNS} FROM save_profiles WHERE id = ?1"),
+                [id],
+                profile_from,
+            )
+            .optional()?)
+    }
+
+    /// Every profile, ordered by installation and id.
+    pub fn save_profile_rows(&self) -> Result<Vec<SaveProfileRow>, PluginStorageError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {PROFILE_COLUMNS} FROM save_profiles ORDER BY installation_id, id"
+        ))?;
+        let rows = statement.query_map([], profile_from)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Removes the profile, raising the revision high-water mark to `revision` (the removal's own
+    /// revision). Returns whether it existed.
+    pub fn delete_save_profile(
+        &mut self,
+        id: &str,
+        revision: u64,
+    ) -> Result<bool, PluginStorageError> {
+        let tx = self.conn.transaction()?;
+        let removed = tx.execute("DELETE FROM save_profiles WHERE id = ?1", [id])?;
+        tx.execute(
+            "UPDATE meta SET revision = MAX(revision, ?1) WHERE id = 1",
+            [revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(removed > 0)
     }
 }
 

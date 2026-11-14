@@ -22,7 +22,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gamenode_platform::plugin_storage::{
-    self as durable, DurableStore, FileApproval, IntentApproval, PluginStorageError, PutResult,
+    self as durable, DurableStore, FileApproval, IntentApproval, PluginStorageError, ProfileSaved,
+    PutResult, SaveProfileRow,
 };
 use tonic::Status;
 
@@ -448,6 +449,112 @@ impl Namespace<'_> {
         Ok(DeleteOutcome::Deleted {
             revision: current.revision,
         })
+    }
+}
+
+/// How writing or removing a save profile ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileWrite {
+    /// Written or removed; `revision` is the revision it now has (or the removal's).
+    Applied { revision: u64 },
+    /// The profile is not at the revision the caller expected.
+    Conflict { current: u64 },
+    /// Another profile of the installation already has this name.
+    NameTaken,
+    /// There is no profile with this id.
+    NotFound,
+}
+
+/// Save profiles live in the same per-namespace store, with revisions from the same counter.
+impl Namespace<'_> {
+    /// Every profile of this plugin, ordered by installation and id.
+    pub fn save_profiles(&mut self) -> Result<Vec<SaveProfileRow>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.save_profile_rows().map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The profile with this id.
+    pub fn save_profile(&mut self, id: &str) -> Result<Option<SaveProfileRow>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.save_profile_row(id).map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// The highest revision this namespace ever handed out.
+    pub fn revision(&mut self) -> Result<u64, Status> {
+        self.durable(false)?;
+        Ok(self.inner.counter)
+    }
+
+    /// Creates (`expected_revision` 0, `row.id` new) or replaces (`expected_revision` is the
+    /// profile's current revision) a profile, giving it the namespace's next revision. `guard` is
+    /// checked right before the change.
+    pub fn put_save_profile(
+        &mut self,
+        mut row: SaveProfileRow,
+        expected_revision: u64,
+        guard: &CommitGuard,
+    ) -> Result<ProfileWrite, Status> {
+        guard()?;
+        // Opening the store first seeds the counter from the highest revision it ever recorded.
+        self.durable(true)?;
+        let revision = self.inner.counter + 1;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        match (
+            store.save_profile_row(&row.id).map_err(unavailable)?,
+            expected_revision,
+        ) {
+            (None, 0) => {}
+            (None, _) => return Ok(ProfileWrite::NotFound),
+            (Some(existing), expected) if existing.revision != expected => {
+                return Ok(ProfileWrite::Conflict {
+                    current: existing.revision,
+                });
+            }
+            (Some(existing), _) => row.created_at = existing.created_at,
+        }
+        row.revision = revision;
+        match store.save_profile(&row).map_err(unavailable)? {
+            ProfileSaved::NameTaken => Ok(ProfileWrite::NameTaken),
+            ProfileSaved::Saved => {
+                self.inner.counter = revision;
+                Ok(ProfileWrite::Applied { revision })
+            }
+        }
+    }
+
+    /// Removes a profile if it is at `expected_revision`. The removal takes a revision of its
+    /// own, so a profile created afterwards never repeats one.
+    pub fn remove_save_profile(
+        &mut self,
+        id: &str,
+        expected_revision: u64,
+        guard: &CommitGuard,
+    ) -> Result<ProfileWrite, Status> {
+        guard()?;
+        self.durable(false)?;
+        let revision = self.inner.counter + 1;
+        let Some(store) = self.durable(false)? else {
+            return Ok(ProfileWrite::NotFound);
+        };
+        let Some(existing) = store.save_profile_row(id).map_err(unavailable)? else {
+            return Ok(ProfileWrite::NotFound);
+        };
+        if existing.revision != expected_revision {
+            return Ok(ProfileWrite::Conflict {
+                current: existing.revision,
+            });
+        }
+        store
+            .delete_save_profile(id, revision)
+            .map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok(ProfileWrite::Applied { revision })
     }
 }
 

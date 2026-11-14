@@ -25,6 +25,7 @@ mod matching;
 mod mutations;
 mod network;
 mod notifications;
+mod saves;
 mod storage;
 
 use super::files::FileAccess;
@@ -37,6 +38,7 @@ use super::library::{
 use super::network::NetworkAccess;
 use super::notifications::Notifications;
 use super::provider::{ProviderApi, ResourceCaller};
+use super::saves::SaveAccess;
 use super::storage::PluginStorage;
 
 /// Open `LibraryWatch` streams allowed per plugin session.
@@ -115,6 +117,9 @@ const OWN_NOTICES: &str = "plain text attributed to the calling plugin";
 const APPROVED_ORIGINS: &str = "exact HTTPS origins the user approved for this plugin";
 const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and installation";
 
+/// The `Saves` service methods this build serves, for `DescribeApi`.
+pub const SAVES_SERVED: &[Served] = saves::SERVED;
+
 /// A served method's `DescribeApi` facts.
 pub struct Served {
     pub method: &'static str,
@@ -162,6 +167,8 @@ pub struct ResourceApi {
     jobs: Jobs,
     /// What the user wanted to start.
     intents: Arc<Intents>,
+    /// The grants for other plugins' save profiles.
+    saves: Arc<SaveAccess>,
 }
 
 impl ResourceApi {
@@ -175,11 +182,13 @@ impl ResourceApi {
         notifications: Arc<Notifications>,
         jobs: Jobs,
         intents: Arc<Intents>,
+        saves: Arc<SaveAccess>,
     ) -> Self {
         Self {
             providers,
             jobs,
             intents,
+            saves,
             library,
             storage,
             files,

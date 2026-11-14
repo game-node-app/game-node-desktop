@@ -26,6 +26,7 @@ impl Fixture {
             self.notifications.clone(),
             self.jobs.clone(),
             self.intents.clone(),
+            self.saves.clone(),
         )
     }
 

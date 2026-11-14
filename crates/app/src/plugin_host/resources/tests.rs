@@ -28,6 +28,7 @@ mod games;
 mod jobs;
 mod network;
 mod notifications;
+mod saves;
 mod sdk;
 mod sdk_utilities;
 mod storage;
@@ -65,6 +66,8 @@ struct Fixture {
     jobs: Jobs,
     /// The intents and the dialog behind game launches and installs.
     intents: Arc<Intents>,
+    /// The grants for other plugins' save profiles.
+    saves: Arc<crate::plugin_host::saves::SaveAccess>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -138,6 +141,7 @@ impl Fixture {
         };
         let jobs = root.jobs.clone();
         let intents = root.intents.clone();
+        let saves = root.saves.clone();
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -206,6 +210,7 @@ impl Fixture {
             notifications,
             jobs,
             intents,
+            saves,
             notice_clock,
             notices,
             clock,
@@ -593,6 +598,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.notifications.clone(),
         fixture.jobs.clone(),
         fixture.intents.clone(),
+        fixture.saves.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {

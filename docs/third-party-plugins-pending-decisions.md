@@ -188,3 +188,34 @@ Escolhidos pelo assistente por raciocínio sobre limites que o host já tem; **n
 O limite de buscas por minuto é o mais sensível e o primeiro a revisar quando houver plugins reais.
 
 Efeito no banco de dados: migração 12 (`chosen_matches.source`). Efeito no protocolo: campos aditivos `installation_id = 5` em `MatchingAssignRequest` e `release_year = 5` em `MatchCandidate`; contrato `endpoint_field_policy.json` atualizado.
+
+## G. Decisões adotadas na implementação da tarefa 5.4 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 5.4 (efeito do Set, biblioteca de imagem e leitura) e implementadas para `Artwork.Read` e `Artwork.Set`. Os limites numéricos abaixo são detalhe de engenharia adotado dentro do escopo aprovado, para revisão.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| D31 (conclusão) | `ArtworkSet` grava um **override da entrada** do próprio provider, nunca a capa do jogo GameNode (compartilhada por todas as entradas do jogo e substituída pelo próximo download). O override fica separado dos fatos detectados, vira a capa daquela entrada na biblioteca e é removido com `encoded_image` vazio (reset explícito, restaura a capa do jogo). Revisão por entrada que só cresce (`LibraryEntry.artwork_revision`, campo aditivo 10), no mesmo molde de `metadata_revision`. | 5.4. |
+| Decodificação | Dependência nova: crate `image` (somente decodificadores PNG/JPEG/WebP e codificadores JPEG/PNG; Rust puro) em `gamenode-platform`. O host nunca guarda os bytes do plugin: decodifica, aplica a orientação EXIF, reduz e codifica de novo, então metadados e dados extras não chegam ao disco. Tudo em worker bloqueante. | 5.4. |
+| Leitura | `ArtworkRead` devolve a capa que a entrada mostra: o override, senão a capa do jogo associado já baixada. `artwork_kind` só aceita `cover` (vazio vale `cover`). Nada é baixado pela leitura: sem capa disponível é `NOT_FOUND`. `max_bytes` é o orçamento do chamador; imagem maior que ele é `RESOURCE_EXHAUSTED`, sem truncar. | 5.4. |
+| Alvo | `installation_id` do chamador, como em 5.2 e 5.3; entrada alheia ou desconhecida é `NOT_FOUND`, mesmo com `library.read.all`, e nenhuma imagem é decodificada para ela. `game_id`, se informado, deve ser o jogo atual da entrada. | 5.4. |
+| Referências de recurso aprovadas | **Não implementado nesta tarefa.** O texto da 5.4 e o design falam em "bytes limitados ou handles de recurso aprovados", mas os handles de arquivo só passam a existir na 6.2 e `ArtworkSetRequest` não tem campo para eles. Hoje só bytes embutidos são aceitos, sem caminho, URL ou esquema. Aceitar handles de artwork é a tarefa 6.6, depois da 6.2 (campo aditivo); a 5.4 continua aberta até lá, por decisão do usuário. | 6.2, 6.6. |
+| D21 | Reaproveitada: chave de idempotência obrigatória; uma chamada repetida é respondida antes de decodificar a imagem. | 5.4. |
+
+### Limites de artwork e como foram decididos
+
+Escolhidos pelo assistente por raciocínio sobre limites que o host já tem; **não houve medição nem pergunta ao usuário** (D31 já fixava os formatos e que bytes e pixels têm limite). Detalhes em `docs/plugin-api-permissions.md#artwork-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Imagem codificada | até 4 MiB | As mensagens de plugin têm teto de 8 MiB; deixa folga para o pedido. Os downloads de capa do host têm teto de 5 MiB. |
+| Pixels da origem | até 4096 x 4096 (16.777.216), nenhum lado acima de 8192 | Capa aparece com algumas centenas de pixels. As dimensões vêm do cabeçalho e são checadas antes de decodificar, então arquivo pequeno que expande num bitmap enorme é recusado sem alocar. |
+| Memória de decodificação | limite de alocação de 128 MiB; duas decodificações por vez | RGBA16 de 16 megapixels ocupa 128 MiB; duas bastam e limitam a memória por imagens de plugin a ~256 MiB. |
+| Tamanho gravado | cabe em 600 x 900, proporção mantida, sem ampliar | Cerca do dobro da largura da grade, para telas de alta densidade; proporção 2:3 como as capas dos jogos. Cada entrada guarda no máximo um arquivo. |
+| Formato de saída | JPEG (qualidade 88); PNG se algum pixel for transparente | Capas são JPEG no resto do host; JPEG perderia a transparência. |
+| Formatos aceitos | PNG, JPEG e WebP estáticos | De D31. A assinatura decide e o `media_type` declarado deve concordar; APNG e WebP animado são recusados. |
+| Orçamento de leitura | `max_bytes` 0 vale 5 MiB, com teto de 5 MiB | Maior capa que o host guarda (teto do download). |
+
+Sem limite de taxa por plugin em `ArtworkSet`: as escritas são serializadas, no máximo duas imagens são decodificadas ao mesmo tempo e uma repetição não decodifica nada, o que limita CPU e memória mas não a frequência de troca. Revisar junto dos demais limites de taxa quando houver plugins reais.
+
+Efeito no banco de dados: migração 13 (`library_artwork_overrides`, arquivo por entrada em `covers/` como `plugin-<entrada>-<conteúdo>.jpg|png`). Efeito no protocolo: campo aditivo `artwork_revision = 10` em `LibraryEntry`; contrato `endpoint_field_policy.json` atualizado.

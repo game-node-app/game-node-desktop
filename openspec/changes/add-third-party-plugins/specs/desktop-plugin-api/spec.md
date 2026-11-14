@@ -116,6 +116,22 @@ The API SHALL provide paginated library list/get/watch, display-metadata updates
 - **WHEN** a plugin assigns an entry whose match the user chose in the match dialog to a different game
 - **THEN** the host refuses the assignment and the user's choice stays, while a plugin's own earlier choice can still be replaced
 
+#### Scenario: Cover set for an own entry
+- **WHEN** a plugin sets a valid image as the cover of one of its own entries
+- **THEN** the host decodes, shrinks and re-encodes it on a worker, shows it as that entry's cover, leaves the matched game's cover and every other entry unchanged, and an empty image restores the game's cover
+
+#### Scenario: Unsafe image refused
+- **WHEN** a plugin sets an image that is not a static PNG, JPEG or WebP, whose declared type does not match its bytes, that is damaged, that exceeds the byte or pixel limits, or whose entry it does not own
+- **THEN** the host refuses it, decodes nothing for a foreign entry, stores nothing and leaves the library artwork unchanged
+
+#### Scenario: Cover revision conflict
+- **WHEN** a plugin sets a cover using an obsolete artwork revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Cover read stays on the device
+- **WHEN** a plugin reads the cover of one of its own entries
+- **THEN** the host returns the cover the entry shows within the plugin's byte budget, reports an over-budget image as exhausted instead of truncating it, and downloads nothing
+
 ### Requirement: Game and installation identity
 Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
 

@@ -227,7 +227,7 @@ disturbs the match dialog the user may have open.
   records) or one of the last 256 games plugin searches returned; any other game is `NOT_FOUND`,
   so a plugin finds a game with `MatchingSearch` before assigning it.
 - **Revision.** `expected_revision` is the entry's `LibraryEntry.revision`, which changes whenever
-  the entry's matched game, name, install state or display metadata changes. A stale revision
+  the entry's matched game, name, install state, display metadata or cover changes. A stale revision
   returns `MUTATION_OUTCOME_REVISION_CONFLICT` with the current revision and writes nothing; the
   plugin rereads the entry and retries. A change returns `MUTATION_OUTCOME_APPLIED` with the entry's
   revision afterwards, and `resource_id` is the installation id.
@@ -265,6 +265,74 @@ already has, not from measurements, and are open to change after a capacity revi
 
 Search spends the user's session, so the rate limit is the one most worth revisiting once there are
 real plugins; the others only bound size.
+
+## Artwork
+
+`ArtworkRead` (`artwork.read`) and `ArtworkSet` (`artwork.write`) use the same resource context as
+the Library reads and only ever reach the caller's own provider's entries, whatever other grants
+it holds. The one artwork kind is the library **cover**: `artwork_kind` is `"cover"` or empty, and
+anything else is `INVALID_ARGUMENT`.
+
+- **Target.** The entry is named by `installation_id` (required, at most 128 bytes). A `game_id`,
+  if given, must be that installation's current match. A foreign or unknown installation is
+  `NOT_FOUND`, even with `library.read.all`, and `ArtworkSet` does not decode a single byte for it.
+- **Set is an override of the entry, not of the game.** The image becomes the cover of that one
+  entry. The matched game's own cover, which every entry of the game shares, is never touched, and
+  neither are other entries or other providers. The override is stored apart from the detected
+  facts and exposed as `LibraryEntry.artwork_revision`; it is the entry's cover in the library
+  until it is cleared. An empty `encoded_image` (with an empty `media_type`) clears it and
+  restores the game's cover. A `media_type` with no image is `INVALID_ARGUMENT`.
+- **The host stores its own picture.** The bytes are untrusted. They are bounded first, then
+  decoded, shrunk and encoded again on a blocking worker; what is stored is the host's output, so
+  metadata (EXIF, ICC), trailing data and anything else the decoder skipped never reach the disk
+  or another reader. See the limits below. Refused images are `INVALID_ARGUMENT` with a message
+  naming the reason: not a PNG, JPEG or WebP picture, a `media_type` that does not match the
+  bytes, an animation, too many pixels, a damaged file or too many bytes. Nothing is written for
+  a refused image.
+- **Revision.** `expected_revision` must be the entry's `artwork_revision`: 0 until a cover is
+  first set, then the revision of the last change, which only grows (clearing counts). An obsolete
+  revision returns `MUTATION_OUTCOME_REVISION_CONFLICT` with the current revision and writes
+  nothing. Setting the picture the entry already has (the same bytes after processing) is
+  `MUTATION_OUTCOME_ALREADY_APPLIED` with an unchanged revision; a change is
+  `MUTATION_OUTCOME_APPLIED` with the new revision, and `resource_id` is the installation id.
+  A cover change also changes `LibraryEntry.revision`.
+- **Read.** `ArtworkRead` returns the cover the entry shows: the plugin's override if it set one,
+  else the matched game's own cover when it is already on this device. Nothing is downloaded for a
+  read, so an entry with no cover yet, a missing file or no matched game is `NOT_FOUND`. The reply
+  has the encoded image, its `media_type`, its `byte_length` and the entry's `artwork_revision`
+  (0 while the cover is the game's own). `max_bytes` is the caller's budget: 0 means the 5 MiB
+  maximum, a larger value is capped to it, and an image bigger than the budget is
+  `RESOURCE_EXHAUSTED` (nothing is truncated).
+- **Resource references.** Only inline bytes are accepted. Approved resource handles for artwork
+  arrive with the file-handle service; until then there is no field that names a file, a path or
+  a URL, and the host never fetches or opens anything on a plugin's behalf for artwork.
+- **Idempotency and commit.** The idempotency, serialization and commit-time authorization rules of
+  the other mutations apply. A retried key is answered before its image is decoded. The file is
+  written before the database row and the replaced file is deleted after it, so a crash leaves at
+  worst an unreferenced file, never a row that points at nothing.
+
+### Artwork limits
+
+The limits are constants in `crates/platform/src/plugin_artwork.rs` and
+`crates/app/src/plugin_host/resources/artwork.rs`. Like the matching limits they were chosen by
+reasoning from limits the host already has, not from measurements, and are open to change after a
+capacity review. D31 had already fixed the formats (static PNG, JPEG, WebP) and that bytes and
+pixels are bounded; the numbers are engineering detail.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Encoded image | at most 4 MiB | Plugin messages are capped at 8 MiB; this leaves room for the request around the bytes. The host's own cover downloads are capped at 5 MiB, and a 4 MiB source is far more than a cover needs. |
+| Source pixels | at most 4096 x 4096 (16,777,216), no side over 8192 | A cover is shown at a few hundred pixels, so 16 megapixels is generous. The pixel count is read from the file header and checked *before* decoding, so a small file that expands into a huge bitmap is refused without allocating it. The side limit keeps thin strips from bypassing the count. |
+| Decode memory | 128 MiB allocation limit; two decodes at once | A 16-megapixel RGBA16 image is 128 MiB. Two concurrent decodes bound what plugin pictures can occupy at any moment to a quarter gigabyte; more wait. |
+| Stored size | fits in 600 x 900, aspect kept, never enlarged | The library grid draws covers at roughly 200 to 300 pixels wide; 600 x 900 (2:3, like the game covers) is about twice that for high-density screens. Stored covers are at most a few hundred KiB, so a plugin cannot grow the covers folder much, and each entry keeps at most one override file. |
+| Output format | JPEG (quality 88), or PNG when a pixel is transparent | Covers are JPEG everywhere else. Transparency would be lost in JPEG, and a fully opaque alpha channel is not worth a larger PNG. |
+| Formats | static PNG, JPEG, WebP | From D31. GIF, BMP, SVG and anything else are refused by signature; animated PNG (APNG) and animated WebP are refused. The signature decides, not the declared `media_type`, which must agree. |
+| Read budget | `max_bytes` 0 means 5 MiB, capped at 5 MiB | The largest cover the host stores is a downloaded one at the 5 MiB download cap. |
+| Installation id | at most 128 bytes | Same as the other mutations. |
+
+There is no per-plugin rate limit for `ArtworkSet`. Writes are serialized, at most two pictures are
+decoded at once and a retried key does no decoding, which bounds CPU and memory but not how often a
+plugin may replace its cover. Revisit this with the rate limits once there are real plugins.
 
 ## Account-bound plugin profiles
 

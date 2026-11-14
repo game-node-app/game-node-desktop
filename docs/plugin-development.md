@@ -235,6 +235,16 @@ library entries, says what it needs (`read`, `write`, `delete`) and which folder
 - Declare `files.read`, `files.write` and `files.delete` only for what you use. They are separate,
   off at installation, and the user approves a folder per game; an approval for `read` does not allow
   `write`, and neither allows `delete`.
+- Tell the user where the folder usually is. For `save` and `prefix` you can declare up to 8
+  suggestions per kind, most likely first (`declared_locations`; `declared_location` and
+  `Resources::files_request_access_with` in the Rust SDK; recipe `open_save_folder`). Use the
+  placeholders `{home}`, `{documents}`, `{appdata}`, `{localappdata}` (Windows) and `{xdg_data}`,
+  `{xdg_config}` (Linux) or an absolute path, with `/` between names. List every platform in one
+  list: what cannot apply on this system is ignored without an error. A suggestion is only shown
+  to the user as yours and unverified; it grants nothing, you are not told which exist or which was
+  taken, and a malformed one (relative path, `..`, unknown placeholder, a long or multi-line
+  description) is `INVALID_ARGUMENT`. Check what is really in the folder through the handle,
+  asking for `read` first.
 - Handles last for the session. After a restart call `FilesRequestAccess` again: the user is not
   asked again unless you want more operations or the games sharing the folder changed. Treat
   `FAILED_PRECONDITION` ("request access again") and `NOT_FOUND` on a handle as the cue to do that.
@@ -329,6 +339,7 @@ host in the desktop's service tests:
 | `send` | Sends one change, resending it with the same key only after a lost connection or timeout. |
 | `recall`, `update`, `forget` | Reads a stored value (`None` when absent or expired), changes it from what it was with the revision it read (reading again after a conflict), and deletes it. |
 | `open_installation` | Asks for a folder of one of your own entries and returns its root handle; tells a declined approval from one that must be asked again. |
+| `open_save_folder` | Asks for read access to the save folder of one of your entries, suggesting where it usually is on each platform; the user takes one or chooses another. |
 | `find`, `read_named`, `save_named` | Finds a file by name, reads it whole under a limit you choose, and creates or replaces a file by name. |
 | `fetch_bytes` | Fetches an https URL under a size budget and a deadline, and says whether to ask the user to approve an origin or to retry. |
 | `tell_user`, `retry_after` | Sends a plain-text notice with a translation, and stops, instead of queueing, when the rate limit says to wait. |

@@ -440,6 +440,36 @@ three grants are separate, off at installation, and even with them a plugin reac
   user has five minutes to answer; only one approval per plugin waits at a time (`ABORTED`).
   Each requested operation needs its grant first, so the user is never asked for something the
   plugin may not even request.
+- **A plugin may suggest where the folder is.** `declared_locations` (additive) holds, per kind
+  `save` or `prefix`, where that folder usually is: an ordered list (earlier is preferred, at most 8
+  per kind), each with a `location` and a one-line `description`. A suggestion is **only shown to the
+  user**, who takes one or chooses another folder; it grants nothing, and approval still needs the
+  user's confirmation of the full scope.
+  - `location` is an absolute path (`/opt/games/x`, `C:\Games\x`) or starts with a placeholder the
+    host expands: `{home}`, `{documents}`, `{appdata}` and `{localappdata}` (Windows), `{xdg_data}`
+    and `{xdg_config}` (Linux), optionally followed by plain names separated by `/` or `\`.
+    The text is at most 1024 bytes without control characters.
+  - A well-formed suggestion that cannot apply on this system is **dropped without an error**: a
+    placeholder or a drive or share path of the other system, a system folder that does not exist
+    (such as `{documents}` with no XDG user directory), a folder inside GameNode's private data, or
+    a duplicate. One list can therefore serve every platform.
+  - What is wrong with the request itself is `INVALID_ARGUMENT`, before the user is asked: an
+    unknown placeholder, a relative path (`saves/x`, `~/x`), `..`, an empty, overlong or
+    control-character text, a kind that is not `save` or `prefix` (the host already knows where an
+    installation is), more than 8 for one kind, or a description over 120 bytes, over one line or
+    with control or disguising characters (the notification text rules). The message never echoes
+    the location.
+  - Each suggestion reaches the approver labelled as declared by the plugin and not verified, with
+    whether the folder exists (only existence is checked: nothing is listed, opened or read). The
+    folder to start on is the host's own suggestion (an installation's known folder), else the first
+    suggestion that exists. The approver shows the description as plain text.
+  - The plugin is told nothing about which suggestions exist, which were shown or which was taken:
+    the reply is the same handles as without any suggestion. The suggestions of an approval that
+    already stands and covers the request are not looked at, and a read-only approval is not widened
+    by a suggestion: asking for `write` asks the user again.
+  - The approval records how the folder was chosen: `declared` if it is the same folder (by
+    canonical path) as a suggestion of the plugin, `user` otherwise. It is shown to the user, not
+    to the plugin.
 - **What is remembered.** The approval is stored per plugin and account profile (beside its private
   storage, not charged to its quota) and replaced when the same installation and kind are approved
   again. Asking for the same or fewer operations later returns handles without asking; asking for
@@ -527,6 +557,12 @@ namespace lock.
 
 ### What is not covered yet
 
+- The suggestions of `declared_locations` reach the approver (`RootRequest.declared` and
+  `.preselected`), but no real dialog shows them yet: the approval dialog is task 10.9, which also
+  shows the "declared by the plugin, not verified" label, the existence marker and a folder chooser.
+  The Windows expansion of `{appdata}`, `{localappdata}`, `{documents}` and drive or share paths is
+  unit-tested through a stand-in for the system folders and type-checked for Windows, but has not
+  run on Windows.
 - The approval dialog belongs to the settings UI (section 10). Until a build connects one
   (`FileAccess::set_approver`), `FilesRequestAccess` answers `FAILED_PRECONDITION` for a new
   approval; existing approvals keep working.

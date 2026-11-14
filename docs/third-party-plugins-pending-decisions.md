@@ -435,3 +435,16 @@ Tomadas com o usuário; **nada foi implementado**. Estão no design (seção 20)
 | **A confirmação pode ser lembrada por plugin e jogo** (escolha do usuário; eu recomendava perguntar sempre). Por padrão a caixa vem desmarcada. A aprovação lembrada vale para plugin+publisher, perfil, jogo/instalação, operação e revisão do alvo detectado; alvo mudou, pergunta de novo. Lista por plugin e revogação nas configurações, removida com o plugin. | 10.10. |
 | Valores escolhidos por mim, sem medir: id pré-emitido vale 60 s e é de uso único; o diálogo espera até 5 minutos (o mesmo limite da aprovação de pastas); uma confirmação pendente por plugin e jogo. A aprovação lembrada não depende da revisão dos grants (a permissão é verificada em cada chamada) nem da versão do plugin, porque o lançamento padrão não executa nada do plugin. | 10.10. |
 
+## R. Decisões adotadas na implementação da 7.2 e da 10.10 (2026-11-14)
+
+As decisões de modelo estão na seção Q (confirmadas pelo usuário). O que segue é detalhe de engenharia, escolhido por mim.
+
+| Decisão | Alcance |
+| --- | --- |
+| **`expected_revision` do lançamento é a revisão da entrada da biblioteca** (o que o plugin consegue ler em `LibraryEntry.revision`), e o "alvo detectado" a que a intenção e a aprovação lembrada se prendem é uma **impressão digital** que o host calcula do que um lançamento iniciaria (a URI de lançamento do provedor, ou o executável aprovado com argumentos, diretório e revisão do registro). A impressão é conferida de novo antes de iniciar. Quando a 7.7 der revisão própria aos alvos, ela substitui isso. | 7.2, 10.10, 7.7. |
+| Toda requisição devolve um job; sem intenção o job fica `QUEUED` com a mensagem `awaiting confirmation` (o registro de jobs ganhou `awaiting` e `JobContext::start`). Retry com a mesma chave não abre segundo diálogo nem gasta segunda intenção (`Jobs::replay` antes de qualquer coisa). | 7.1, 7.2, 10.10. |
+| **A instalação reabre o fluxo existente** (`open_entry` com `Install`): para jogo de loja, a página de instalação da loja, onde a própria loja pede confirmação; o job termina `opened` (não acompanha a conclusão). Entrada manual responde `unsupported`. O lançamento e a instalação usam o mesmo caminho do botão do usuário (mesmo status de lançamento, mesma guarda de "já em execução", mesma detecção de tempo de jogo); o engine ganhou `open_entry_then`. | 7.2. |
+| A aprovação lembrada fica no SQLite do próprio plugin (schema v4, tabela `intent_approvals`), por instalação e operação; a lista e a revogação nas configurações leem pelo host (`run_for_host`), sem sessão do plugin. A aprovação é apagada ao revogar; remover o pacote ainda não a apaga (o fluxo de remoção é a 8.3). | 10.10, 8.3. |
+| A pré-emitida é só de memória, 256 no máximo, 60 s. A entrega ao plugin precisa da sessão de extensão (8.1); hoje existe `Intents::issue` e o resgate. A lista de aprovações lembradas aparece nos detalhes de um plugin que tenha `publisherFingerprint` (campo novo e opcional de `PluginInfo`); os plugins embarcados não têm, e os de terceiros entram no inventário na 10.2. | 10.10, 8.1, 10.2. |
+| Caixa de diálogo: Cancelar com o foco, "não perguntar de novo" desmarcada, fila quando há várias, Esc recusa, texto do plugin e do jogo sempre como texto puro (de novo limpo na UI). **Não foi visto em um navegador nem no app nativo.** | 10.10. |
+

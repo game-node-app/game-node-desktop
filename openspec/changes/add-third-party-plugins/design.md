@@ -544,6 +544,8 @@ Scope per game: a provider session can name only its own library entries; an ext
 
 The confirmation can be remembered for one plugin and one game: the dialog offers "allow this plugin to launch (or install) this game" as an explicit choice, off by default. A remembered approval is bound to plugin identity with publisher, profile, game and installation, operation kind and, for launch, the detected-target revision; a changed target asks again. It never covers another game, another operation or another plugin, is listed per plugin in settings with revoke, and is removed with the plugin or its package. The call still needs the current permission and a valid request; the approval only replaces the dialog. A launch the user started with Play in Core, with no plugin involved, is unaffected.
 
+Until detected targets have their own revisions (task 7.7), a launch request's `expected_revision` is the library entry's revision, which the plugin can read, and the "detected target" an intent or a remembered approval is bound to is a fingerprint the host computes of what a launch would start now: the provider's launch URI, or the approved executable with its arguments, working directory and registration revision. The fingerprint is checked again right before dispatch, so a target that changes while the dialog is open starts nothing.
+
 ## Risks / Trade-offs
 
 - Native plugin can bypass API restrictions or alter same-user files → explicit consent/disclosure; API checks still protect cooperative calls and prevent confused host authority, without claiming OS confinement.

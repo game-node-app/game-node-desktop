@@ -454,6 +454,18 @@ Installation, save and runtime locations SHALL expose size, access, modification
 - **WHEN** the OS cannot establish effective write permission without modifying a resource
 - **THEN** the API returns unknown with its observation method rather than declaring write access from the attribute alone
 
+#### Scenario: Inspection without file permission
+- **WHEN** a plugin without files.read but with the inspection permission and a standing approval asks for a place's size or times
+- **THEN** it receives metadata only and still cannot list or read the files
+
+#### Scenario: Place that cannot be inspected
+- **WHEN** an approved folder is missing, moved or unreadable
+- **THEN** the result reports its availability with no totals and incomplete, never an empty folder, and nothing is created in its place
+
+#### Scenario: Overlapping folders of a profile
+- **WHEN** a save profile has a folder and another folder inside it
+- **THEN** a file reachable through both is counted once, and only files its naming rules select count
+
 ### Requirement: Fresh bounded content fingerprints
 Fingerprint inspection SHALL support SHA-256 per file and a versioned deterministic tree digest. Fresh comparisons SHALL read content and distinguish changed/unchanged/indeterminate/incomparable, including file additions/deletions. Partial, unstable or unavailable reads SHALL NOT report a complete unchanged result. Large scans SHALL be cancellable background jobs.
 

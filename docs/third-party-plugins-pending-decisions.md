@@ -464,3 +464,17 @@ As três primeiras linhas foram decididas com o usuário; o resto é detalhe de 
 | Remover um perfil só apaga a configuração: nenhum arquivo das pastas e nenhum arquivo de backup é tocado. Backup e restauração a partir de perfil continuam sendo a 7.3. | 13.1, 7.3. |
 | Exportar e importar dados do GameNode (perfis mais dados dos plugins num pacote) foi **adiado** a pedido do usuário, para depois de os plugins estarem implementados. | futuro. |
 
+## T. Decisões adotadas na implementação da tarefa 13.3 (2026-11-14)
+
+As duas primeiras linhas foram decididas com o usuário; o resto é detalhe de engenharia.
+
+| Decisão | Alcance |
+| --- | --- |
+| **O recurso inspecionado é um handle de pasta (ou arquivo) da 6.2 ou o id de um perfil de save do próprio plugin.** O perfil mede a união das suas pastas, só com os arquivos que as regras de nome selecionam, contando uma vez o que se alcança por duas pastas. Perfil de outro plugin não é inspecionável (NOT_FOUND). | 13.3. |
+| **Acesso efetivo no Windows por sonda de abertura** (abre a entrada com o direito pedido e fecha, sem escrever; erro de compartilhamento ou outro vira `unknown`). Só foi verificado por tipos (`cargo xwin check`), nunca executado. No Linux é o `faccessat` do kernel. A resposta nomeia o método (`kernel_access_check`, `open_probe`, `none`), como a spec pede para o desconhecido. | 13.3. |
+| As permissões `game.storage.inspect` e `game.saves.inspect` já estavam no design e nos contratos mas não no catálogo: foram acrescentadas (`KNOWN` e `THIRD_PARTY_CAPABILITIES`). `storage.inspect` serve a pasta de instalação; `saves.inspect` serve save, prefixo e perfil. Nenhuma precisa de `files.read` nem a concede. `DescribeApi` lista as duas para os três métodos. | 13.3. |
+| O catálogo `THIRD_PARTY_CAPABILITIES` não lista `game.saves.*`, `library.roots.create/update` nem `game.runtime.create/update`, que o `KNOWN` lista; isso já existia e **não foi mexido**. Efeito prático nulo hoje (os serviços exigem a sessão 1.6), mas vale revisar quando as portas de minor forem revistas. | 13.1, 14.x. |
+| A varredura é síncrona, limitada (10.000 entradas por padrão, 100.000 no máximo; 5 s; 100 e 1.000 entradas listadas para datas) e para quando o RPC é abandonado. Corte, pasta ilegível ou profundidade acima de 64 dão `complete=false`. `UNMOUNTED` e `DISCONNECTED` ficam para a 13.5: até lá um disco ausente aparece como `MISSING`. | 13.3, 13.5. |
+| `Entry` da camada de arquivos ganhou a fração de segundo e o atributo somente leitura; `precision` é `subsecond` ou `whole_second` e descreve só o que foi observado. Uma data que o sistema não deu é omitida, nunca 1970. | 13.3. |
+| Abrir uma pasta sem permissão de entrada passou a ser `Access` (antes `RootChanged`), para o sistema dizer `INACCESSIBLE` e não `MISSING`. | 13.3. |
+

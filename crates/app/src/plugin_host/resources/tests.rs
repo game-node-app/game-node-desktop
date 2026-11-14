@@ -22,6 +22,7 @@ use tonic::Code;
 use tonic::transport::Channel;
 
 mod artwork_handles;
+mod declared_locations;
 mod files;
 mod network;
 mod notifications;

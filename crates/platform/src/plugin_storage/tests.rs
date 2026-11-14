@@ -208,6 +208,7 @@ fn approval(id: &str, installation: &str, kind: &str) -> FileApproval {
         affected: vec!["steam:620".into(), "steam:621".into()],
         approved_at: 100,
         revoked_at: None,
+        origin: ORIGIN_USER.into(),
     }
 }
 
@@ -309,4 +310,39 @@ fn a_version_1_store_gains_the_approvals_table_and_keeps_its_values() {
         .save_approval(&approval("a1", "inst-1", "installation"))
         .unwrap();
     assert!(upgraded.approval("a1").unwrap().is_some());
+}
+
+#[test]
+fn a_version_2_store_gains_the_origin_column_and_old_approvals_count_as_the_users() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL) STRICT;
+             INSERT INTO meta (id, revision) VALUES (1, 0);
+             CREATE TABLE entries (key TEXT PRIMARY KEY, value BLOB NOT NULL,
+                 revision INTEGER NOT NULL, expires_at INTEGER) STRICT;
+             CREATE TABLE file_roots (
+                 id TEXT NOT NULL UNIQUE, installation_id TEXT NOT NULL, game_id TEXT NOT NULL,
+                 kind TEXT NOT NULL, root TEXT NOT NULL, root_volume INTEGER NOT NULL,
+                 root_node INTEGER NOT NULL, operations INTEGER NOT NULL, affected TEXT NOT NULL,
+                 approved_at INTEGER NOT NULL, revoked_at INTEGER,
+                 PRIMARY KEY (installation_id, kind)) STRICT;
+             INSERT INTO file_roots VALUES ('old', 'inst', '', 'save', '/g', 1, 2, 1, '[]', 5, NULL);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+    }
+    let mut upgraded = store(&dir);
+    let old = upgraded.approval("old").unwrap().unwrap();
+    assert_eq!(old.origin, ORIGIN_USER);
+    let mut declared = approval("new", "inst-2", "save");
+    declared.origin = ORIGIN_DECLARED.into();
+    upgraded.save_approval(&declared).unwrap();
+    assert_eq!(
+        upgraded.approval("new").unwrap().unwrap().origin,
+        ORIGIN_DECLARED
+    );
 }

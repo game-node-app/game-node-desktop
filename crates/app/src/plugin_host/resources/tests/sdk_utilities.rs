@@ -683,3 +683,39 @@ async fn the_documented_examples_count_launches_and_read_a_save_slot() {
         Some(b"save".to_vec())
     );
 }
+
+#[tokio::test]
+async fn the_save_folder_recipe_suggests_per_platform_and_takes_what_the_user_chose() {
+    let fixture = Fixture::new(FILES).await;
+    let saves = fixture.base().join("saves");
+    std::fs::create_dir_all(&saves).unwrap();
+    std::fs::write(saves.join("slot1.sav"), b"s1").unwrap();
+    let game = fixture.game_dir("portal", &[("a.txt", b"a")]);
+    fixture.library_in(&[("fixture:1", Some(7), "Portal", &game)]);
+    let sdk = sdk(&fixture);
+    let user = fixture.user_approving(&saves);
+
+    let root = recipes::open_save_folder(&sdk, "id-fixture:1")
+        .await
+        .unwrap();
+    // The user chose their own folder; the plugin can read it through the handle.
+    assert_eq!(
+        recipes::read_named(&sdk, &root, "slot1.sav", 1024)
+            .await
+            .unwrap(),
+        Some(b"s1".to_vec())
+    );
+    // Only the suggestions that apply here reached the user (none of the Windows ones), and the
+    // folder the user chose was not one of them.
+    let asked = user.asked.lock().unwrap()[0].clone();
+    assert_eq!(asked.kind, "save");
+    assert!(
+        asked
+            .declared
+            .iter()
+            .all(|folder| !folder.path.to_string_lossy().contains("AppData"))
+    );
+    assert!(asked.declared.iter().all(|folder| folder.path != saves));
+    let [scope] = user.confirmed.lock().unwrap().clone().try_into().unwrap();
+    assert!(!scope.declared_by_plugin);
+}

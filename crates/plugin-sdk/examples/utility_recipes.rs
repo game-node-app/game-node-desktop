@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use gamenode_plugin_sdk::{
     Code, Durability, Fetch, Fetched, Notice, Outcome, Resources, Severity, Status, StoredWrite,
-    Written, idempotency_key, proto::FileEntry,
+    Written, declared_location, idempotency_key, proto::FileEntry,
 };
 
 /// How often a change is read again and retried after another writer got in first.
@@ -132,6 +132,45 @@ pub async fn open_installation(
 ) -> Result<String, Access> {
     let key = idempotency_key();
     match send(|| resources.files_request_access(installation_id, operations, &[], &key)).await {
+        Ok(handles) => handles
+            .into_iter()
+            .next()
+            .map(|handle| handle.handle)
+            .ok_or(Access::Declined),
+        Err(status) => Err(match status.code() {
+            Code::PermissionDenied => Access::Declined,
+            Code::FailedPrecondition => Access::AskAgain,
+            _ => Access::Other(status),
+        }),
+    }
+}
+
+/// Asks for read access to the folder where one of your own entries keeps its saves, telling
+/// GameNode where that usually is on each platform. The user sees these as folders **you**
+/// suggested (not verified), takes one or chooses another, and you never learn which. Put the
+/// most likely folder first; a suggestion for another system is ignored without an error, so one
+/// list serves every platform. Ask for `read` first, check the files with the handle, and ask
+/// for `write` only when you must write.
+pub async fn open_save_folder(
+    resources: &Resources,
+    installation_id: &str,
+) -> Result<String, Access> {
+    let declared = [
+        declared_location("save", "{documents}/My Games/Portal/Saves", "Documents"),
+        declared_location(
+            "save",
+            "{localappdata}/Portal/Saves",
+            "Local application data",
+        ),
+        declared_location("save", "{xdg_data}/portal/saves", "XDG data folder"),
+        declared_location("save", "{home}/.portal/saves", "Home folder"),
+    ];
+    let key = idempotency_key();
+    match send(|| {
+        resources.files_request_access_with(installation_id, &["read"], &["save"], &declared, &key)
+    })
+    .await
+    {
         Ok(handles) => handles
             .into_iter()
             .next()

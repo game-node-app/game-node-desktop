@@ -812,7 +812,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Files/RequestAccess",
-      "request_policy": "Typed own installation, requested operations and resource kinds; no path: the user chooses the folder",
+      "request_policy": "Typed own installation, requested operations and resource kinds, plus optional declared folder suggestions (closed placeholders or absolute paths, at most 8 per kind, shown to the user as unverified); no authoritative path: the user chooses the folder",
       "response_policy": "Opaque session-bound handles for the folders the user approved; no path",
       "extension_or_opaque_policy": "No Struct; bytes never interpreted as Core commands",
       "access_model": "Per-plugin/per-game; persistence excluded",

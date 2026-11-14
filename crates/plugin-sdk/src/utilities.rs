@@ -210,6 +210,19 @@ impl Notice {
     }
 }
 
+/// A suggestion of where the folder for `kind` (`"save"` or `"prefix"`) usually is. `location` is
+/// an absolute path, or starts with a placeholder the host expands: `{home}`, `{documents}`,
+/// `{appdata}`, `{localappdata}` (Windows) or `{xdg_data}`, `{xdg_config}` (Linux), followed by
+/// plain names separated by `/` (no `..`). `description` is one line of plain text, at most 120
+/// bytes. Within one kind, declare the most likely folder first, at most 8 per kind.
+pub fn declared_location(kind: &str, location: &str, description: &str) -> DeclaredLocation {
+    DeclaredLocation {
+        kind: kind.to_owned(),
+        location: location.to_owned(),
+        description: description.to_owned(),
+    }
+}
+
 /// The most bytes one `FilesRead` returns.
 pub const MAX_READ_CHUNK: u64 = 4 * 1024 * 1024;
 
@@ -311,6 +324,24 @@ impl Resources {
         kinds: &[&str],
         idempotency_key: &str,
     ) -> Result<Vec<FileHandle>, Status> {
+        self.files_request_access_with(installation_id, operations, kinds, &[], idempotency_key)
+            .await
+    }
+
+    /// Like [`files_request_access`](Self::files_request_access), also telling GameNode where the
+    /// folder usually is (see [`declared_location`]). The suggestions are shown to the user as
+    /// declared by the plugin and not verified; the user takes one or chooses another folder, and
+    /// a suggestion alone grants nothing. The reply says nothing about which suggestions exist or
+    /// were taken. A malformed suggestion is `INVALID_ARGUMENT`; one that cannot apply on this
+    /// system is dropped without an error, so one list can serve every platform.
+    pub async fn files_request_access_with(
+        &self,
+        installation_id: &str,
+        operations: &[&str],
+        kinds: &[&str],
+        declared: &[DeclaredLocation],
+        idempotency_key: &str,
+    ) -> Result<Vec<FileHandle>, Status> {
         Ok(self
             .client
             .clone()
@@ -320,6 +351,7 @@ impl Resources {
                 installation_id: installation_id.to_owned(),
                 requested_operations: operations.iter().map(|op| (*op).to_owned()).collect(),
                 resource_kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+                declared_locations: declared.to_vec(),
             }))
             .await?
             .into_inner()

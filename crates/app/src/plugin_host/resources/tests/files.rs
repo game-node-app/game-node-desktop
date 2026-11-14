@@ -25,8 +25,8 @@ const FILES_AND_STORAGE: &[&str] = &[
 pub(super) struct FakeApprover {
     pub(super) root: StdMutex<Option<PathBuf>>,
     pub(super) consent: AtomicBool,
-    asked: StdMutex<Vec<RootRequest>>,
-    confirmed: StdMutex<Vec<RootScope>>,
+    pub(super) asked: StdMutex<Vec<RootRequest>>,
+    pub(super) confirmed: StdMutex<Vec<RootScope>>,
     gate: StdMutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
@@ -131,6 +131,7 @@ impl Fixture {
                 installation_id: installation.into(),
                 requested_operations: operations.iter().map(|op| (*op).into()).collect(),
                 resource_kinds: kinds.iter().map(|kind| (*kind).into()).collect(),
+                declared_locations: vec![],
             })
             .await
             .map(Response::into_inner)
@@ -602,6 +603,7 @@ async fn another_providers_or_unknown_installations_cannot_be_approved() {
             installation_id: "id-fixture:1".into(),
             requested_operations: vec!["read".into()],
             resource_kinds: vec![],
+            declared_locations: vec![],
         })
         .await
         .unwrap_err();
@@ -1078,6 +1080,7 @@ async fn one_approval_waits_for_the_user_at_a_time() {
             installation_id: "id-fixture:1".into(),
             requested_operations: vec!["read".into()],
             resource_kinds: vec![],
+            declared_locations: vec![],
         };
         tokio::spawn(async move {
             let mut client = fixture_client;

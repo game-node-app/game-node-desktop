@@ -94,6 +94,11 @@ fn disguises(c: char) -> bool {
         | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
 }
 
+/// Whether `text` is plain text on one line: no control characters and none that disguise text.
+pub fn is_plain_line(text: &str) -> bool {
+    clean(text, false)
+}
+
 fn clean(text: &str, multiline: bool) -> bool {
     text.chars()
         .all(|c| !disguises(c) && (!c.is_control() || (multiline && c == '\n')))

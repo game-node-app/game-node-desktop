@@ -47,8 +47,26 @@ pub struct RootRequest {
     pub kind: String,
     /// `read`, `write` and `delete`, the ones the plugin asked for.
     pub operations: Vec<&'static str>,
-    /// Where the installation lives, to start the choice there; `None` when unknown.
+    /// Where the installation lives, to start the choice there; `None` when unknown. The host
+    /// knows it from the library, so it is trustworthy (installation kind only).
     pub suggested: Option<PathBuf>,
+    /// Folders the plugin suggested for this kind, in the plugin's priority order. They are
+    /// **declared by the plugin and not verified**: the dialog must label them so, and a plugin
+    /// can neither learn which exist nor which the user took.
+    pub declared: Vec<DeclaredFolder>,
+    /// The folder to start on: the host's own suggestion, else the first declared one that
+    /// exists. `None` when there is nothing to propose.
+    pub preselected: Option<PathBuf>,
+}
+
+/// A folder a plugin suggested, expanded for this system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredFolder {
+    pub path: PathBuf,
+    /// One line of plain text from the plugin; show it as text, never as markup.
+    pub description: String,
+    /// Whether the folder exists now (checked only for its existence; nothing was listed or read).
+    pub exists: bool,
 }
 
 /// A game that shares the chosen folder.
@@ -67,6 +85,9 @@ pub struct RootScope {
     pub kind: String,
     pub operations: Vec<&'static str>,
     pub root: PathBuf,
+    /// Whether the chosen folder is one the plugin suggested (compared by canonical path), as
+    /// opposed to one the user picked or the host suggested.
+    pub declared_by_plugin: bool,
     /// Every library entry whose folder is the root, inside it or contains it: the complete
     /// set the approval covers.
     pub affected: Vec<AffectedGame>,

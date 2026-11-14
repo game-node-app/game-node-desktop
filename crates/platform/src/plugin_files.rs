@@ -112,6 +112,13 @@ impl Reserved {
         reserved
     }
 
+    /// Whether `path` is a reserved folder or lies inside one. A path that does not exist is
+    /// judged by its text.
+    pub fn is_reserved(&self, path: &Path) -> bool {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.covers(&canonical) || sys::identity_of(&canonical).is_ok_and(|id| self.holds_id(id))
+    }
+
     fn holds_id(&self, id: Identity) -> bool {
         self.ids.contains(&id)
     }

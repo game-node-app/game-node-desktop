@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -167,6 +167,16 @@ impl DurableStore {
                  COMMIT;",
             )?;
         }
+        if version < 3 {
+            // How the approved folder was chosen: `user` for a folder the user picked or the
+            // host suggested, `declared` for one the plugin suggested and the user took.
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE file_roots ADD COLUMN origin TEXT NOT NULL DEFAULT 'user';
+                 PRAGMA user_version = 3;
+                 COMMIT;",
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -298,7 +308,14 @@ pub struct FileApproval {
     pub approved_at: i64,
     /// Unix seconds; a revoked approval opens nothing.
     pub revoked_at: Option<i64>,
+    /// How the folder was chosen: [`ORIGIN_USER`] or [`ORIGIN_DECLARED`].
+    pub origin: String,
 }
+
+/// The user picked the folder, or took the one the host suggested.
+pub const ORIGIN_USER: &str = "user";
+/// The user took a folder the plugin had suggested (declared, not verified by the host).
+pub const ORIGIN_DECLARED: &str = "declared";
 
 fn approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileApproval> {
     let affected: String = row.get(8)?;
@@ -314,11 +331,12 @@ fn approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileApproval> {
         affected: serde_json::from_str(&affected).unwrap_or_default(),
         approved_at: row.get(9)?,
         revoked_at: row.get(10)?,
+        origin: row.get(11)?,
     })
 }
 
 const APPROVAL_COLUMNS: &str = "id, installation_id, game_id, kind, root, root_volume, root_node, \
-     operations, affected, approved_at, revoked_at";
+     operations, affected, approved_at, revoked_at, origin";
 
 impl DurableStore {
     /// Records `approval`, replacing the earlier approval of the same installation and kind.
@@ -326,13 +344,14 @@ impl DurableStore {
         let affected = serde_json::to_string(&approval.affected).unwrap_or_else(|_| "[]".into());
         self.conn.execute(
             "INSERT INTO file_roots (id, installation_id, game_id, kind, root, root_volume,
-                 root_node, operations, affected, approved_at, revoked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 root_node, operations, affected, approved_at, revoked_at, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(installation_id, kind) DO UPDATE SET
                  id = excluded.id, game_id = excluded.game_id, root = excluded.root,
                  root_volume = excluded.root_volume, root_node = excluded.root_node,
                  operations = excluded.operations, affected = excluded.affected,
-                 approved_at = excluded.approved_at, revoked_at = excluded.revoked_at",
+                 approved_at = excluded.approved_at, revoked_at = excluded.revoked_at,
+                 origin = excluded.origin",
             params![
                 approval.id,
                 approval.installation_id,
@@ -345,6 +364,7 @@ impl DurableStore {
                 affected,
                 approval.approved_at,
                 approval.revoked_at,
+                approval.origin,
             ],
         )?;
         Ok(())

@@ -327,7 +327,21 @@ enum StorageDurability { STORAGE_DURABILITY_UNSPECIFIED = 0; STORAGE_DURABILITY_
 // the next put or delete.
 message StorageGetReply { bytes value = 1; uint64 revision = 2; bool found = 3; StorageDurability durability = 4; int64 expires_at = 5; }
 message StorageMutationReply { uint64 revision = 1; uint64 usage_bytes = 2; uint64 quota_bytes = 3; MutationOutcome outcome = 4; StorageDurability durability = 5; int64 expires_at = 6; }
-message FilesRequestAccessRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; repeated string requested_operations = 4; repeated string resource_kinds = 5; }
+// Where a plugin thinks the folder for `kind` ("save" or "prefix") usually is. The plugin names no
+// path of its own authority: `location` is a suggestion the user may take or ignore, shown as
+// declared by the plugin and not verified, and a declaration alone grants nothing. `location` is
+// either an absolute path or starts with one of the placeholders `{home}`, `{documents}`,
+// `{appdata}` and `{localappdata}` (Windows) or `{xdg_data}` and `{xdg_config}` (Linux), which
+// the host expands, optionally followed by `/`-separated plain names (no `..`). Order is priority:
+// within one `kind`, earlier is preferred. A suggestion that cannot apply on this system (a
+// placeholder or a drive path of another system, or a system folder that does not exist) is
+// dropped without an error, so one list can serve every platform; an unknown placeholder, a
+// relative path, `..`, an overlong or malformed text, an unknown or `installation` kind, or
+// more than 8 suggestions for one kind is INVALID_ARGUMENT. `description` is one line of plain
+// text (at most 120 bytes) shown with the suggestion. Nothing is ever said back about which
+// suggestions exist, were shown or were chosen.
+message DeclaredLocation { string kind = 1; string location = 2; string description = 3; }
+message FilesRequestAccessRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; repeated string requested_operations = 4; repeated string resource_kinds = 5; repeated DeclaredLocation declared_locations = 6; }
 message FileHandle { string handle = 1; string display_name = 2; string resource_kind = 3; bool writable = 4; }
 message FileAccessReply { repeated FileHandle handles = 1; }
 message FilesListRequest { ServiceContext context = 1; string directory_handle = 2; string cursor = 3; uint32 page_size = 4; }

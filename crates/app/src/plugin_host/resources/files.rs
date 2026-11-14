@@ -17,9 +17,12 @@
 use std::path::{Path, PathBuf};
 
 use gamenode_platform::plugin_files::{
-    self as confined, ApprovedRoot, Confined, FileError, Identity, Target,
+    self as confined, ApprovedRoot, Confined, FileError, Identity, Reserved, Target,
 };
-use gamenode_platform::plugin_storage::{FileApproval, operation};
+use gamenode_platform::plugin_locations::{
+    self as locations, Location, MAX_PER_KIND, Os, SystemFolders,
+};
+use gamenode_platform::plugin_storage::{FileApproval, ORIGIN_DECLARED, ORIGIN_USER, operation};
 use gamenode_plugin_protocol::{capability as cap, proto::*};
 use sha2::{Digest, Sha256};
 use tonic::{Request, Response, Status};
@@ -27,10 +30,11 @@ use tonic::{Request, Response, Status};
 use super::mutations::{game_id, mutation_key, reply, request_hash};
 use super::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi};
 use crate::plugin_host::files::{
-    APPROVAL_TIMEOUT, AffectedGame, DEFAULT_READ_BYTES, FileAccess, KINDS, MAX_CHUNK_BYTES,
-    RootRequest, RootScope, affected_keys,
+    APPROVAL_TIMEOUT, AffectedGame, DEFAULT_READ_BYTES, DeclaredFolder, FileAccess, KINDS,
+    MAX_CHUNK_BYTES, RootRequest, RootScope, affected_keys,
 };
 use crate::plugin_host::library::{CommitGuard, LibraryFeed};
+use crate::plugin_host::notifications::is_plain_line;
 use crate::plugin_host::provider::ResourceCaller;
 use crate::plugin_host::storage::Namespace;
 
@@ -130,10 +134,84 @@ fn parse_kinds(requested: &[String]) -> Result<Vec<String>, Status> {
     Ok(kinds)
 }
 
+/// The longest description of a declared folder, in bytes.
+const MAX_DESCRIPTION_BYTES: usize = 120;
+
+/// What a plugin declared for one kind: well-formed locations with their descriptions, in the
+/// plugin's priority order.
+type Declared = Vec<(Location, String)>;
+
+/// Checks the declared suggestions of the request and groups them by kind. Only well-formedness
+/// is checked here (a refusal is the plugin's mistake and it is told); whether a suggestion
+/// applies to this system is decided later, silently.
+fn parse_declared(
+    declared: &[DeclaredLocation],
+) -> Result<std::collections::HashMap<String, Declared>, Status> {
+    let mut by_kind: std::collections::HashMap<String, Declared> = std::collections::HashMap::new();
+    for entry in declared {
+        match entry.kind.as_str() {
+            "save" | "prefix" => {}
+            "installation" => {
+                return Err(Status::invalid_argument(
+                    "declared_locations are for \"save\" and \"prefix\"; the host knows where an installation is",
+                ));
+            }
+            _ => {
+                return Err(Status::invalid_argument(
+                    "declared_locations hold only the kinds \"save\" and \"prefix\"",
+                ));
+            }
+        }
+        let location = locations::parse(&entry.location)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let description = entry.description.trim();
+        if description.len() > MAX_DESCRIPTION_BYTES {
+            return Err(Status::invalid_argument(format!(
+                "a description is longer than {MAX_DESCRIPTION_BYTES} bytes"
+            )));
+        }
+        if !is_plain_line(description) {
+            return Err(Status::invalid_argument(
+                "a description must be plain text on one line: no control characters, bidirectional overrides or invisible separators",
+            ));
+        }
+        let list = by_kind.entry(entry.kind.clone()).or_default();
+        if list.len() >= MAX_PER_KIND {
+            return Err(Status::invalid_argument(format!(
+                "at most {MAX_PER_KIND} declared locations per kind"
+            )));
+        }
+        list.push((location, description.to_owned()));
+    }
+    Ok(by_kind)
+}
+
 fn random_id() -> Result<String, Status> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| Status::internal("could not create an approval id"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The folders of `declared` that apply to this system: expanded, without duplicates and
+/// without any that lie in a folder GameNode keeps private (those are dropped quietly, like a
+/// suggestion for another system). Blocking: it checks which of them exist.
+fn declared_folders(declared: &Declared, reserved: &Reserved) -> Vec<DeclaredFolder> {
+    let mut folders: Vec<DeclaredFolder> = Vec::new();
+    for (location, description) in declared {
+        let Some(path) = location.expand(Os::current(), &SystemFolders) else {
+            continue;
+        };
+        if reserved.is_reserved(&path) || folders.iter().any(|folder| folder.path == path) {
+            continue;
+        }
+        let exists = std::fs::metadata(&path).is_ok_and(|meta| meta.is_dir());
+        folders.push(DeclaredFolder {
+            path,
+            description: description.clone(),
+            exists,
+        });
+    }
+    folders
 }
 
 /// What a handle opens, once every check passed.
@@ -229,6 +307,7 @@ impl ResourceApi {
         let caller = self.authorize_files(&context, &ops)?;
         mutation_key(mutation)?;
         let kinds = parse_kinds(&request.resource_kinds)?;
+        let mut declared = parse_declared(&request.declared_locations)?;
         if request.installation_id.is_empty() {
             return Err(Status::invalid_argument("installation_id is required"));
         }
@@ -256,6 +335,7 @@ impl ResourceApi {
                     &name,
                     &kind,
                     entry.game_id,
+                    declared.remove(&kind).unwrap_or_default(),
                 )
                 .await?;
             handles.push(FileHandle {
@@ -285,6 +365,7 @@ impl ResourceApi {
         installation_name: &str,
         kind: &str,
         game: Option<u64>,
+        declared: Declared,
     ) -> Result<FileApproval, Status> {
         let wanted = ops.iter().fold(0, |bits, op| bits | op);
         let files = self.files.clone();
@@ -324,6 +405,24 @@ impl ResourceApi {
             .ok_or_else(|| Status::aborted("a file approval is already waiting for the user"))?;
         let names: Vec<&'static str> = ops.iter().map(|op| op_name(*op)).collect();
 
+        // The plugin's suggestions are expanded and checked for existence off the async thread.
+        // Nothing is listed or read, and none of it goes back to the plugin.
+        let host_suggestion = (kind == "installation")
+            .then(|| feed.folder_of(entry_key).map(PathBuf::from))
+            .flatten();
+        let reserved_files = files.clone();
+        let declared_folders = tokio::task::spawn_blocking(move || {
+            declared_folders(&declared, &reserved_files.reserved)
+        })
+        .await
+        .map_err(|_| Status::internal("the suggestions could not be checked"))?;
+        let preselected = host_suggestion.clone().or_else(|| {
+            declared_folders
+                .iter()
+                .find(|folder| folder.exists)
+                .map(|folder| folder.path.clone())
+        });
+
         let chosen = tokio::time::timeout(
             APPROVAL_TIMEOUT,
             approver.choose_root(RootRequest {
@@ -332,9 +431,9 @@ impl ResourceApi {
                 installation_name: installation_name.to_owned(),
                 kind: kind.to_owned(),
                 operations: names.clone(),
-                suggested: (kind == "installation")
-                    .then(|| feed.folder_of(entry_key).map(PathBuf::from))
-                    .flatten(),
+                suggested: host_suggestion,
+                declared: declared_folders.clone(),
+                preselected,
             }),
         )
         .await
@@ -342,7 +441,7 @@ impl ResourceApi {
         .ok_or_else(|| Status::permission_denied("the user declined to approve a folder"))?;
 
         // The chosen folder is validated, and the games sharing it found, off the async thread.
-        let (root, overlapping) = {
+        let (root, overlapping, declared_by_plugin) = {
             let (files, feed) = (files.clone(), feed.clone());
             tokio::task::spawn_blocking(move || {
                 let root = confined::approve_root(&chosen, &files.reserved).map_err(|error| {
@@ -357,7 +456,13 @@ impl ResourceApi {
                     }
                 })?;
                 let overlapping = files.overlapping(&feed, &root.path);
-                Ok::<_, Status>((root, overlapping))
+                // The folder counts as the plugin's suggestion only if it is the same folder as
+                // one it declared, by canonical path, and not the one the host suggested.
+                let declared_by_plugin = declared_folders.iter().any(|folder| {
+                    folder.exists
+                        && std::fs::canonicalize(&folder.path).is_ok_and(|path| path == root.path)
+                });
+                Ok::<_, Status>((root, overlapping, declared_by_plugin))
             })
             .await
             .map_err(|_| Status::internal("the folder could not be checked"))??
@@ -372,6 +477,7 @@ impl ResourceApi {
                 kind: kind.to_owned(),
                 operations: names,
                 root: root.path.clone(),
+                declared_by_plugin,
                 affected: overlapping
                     .iter()
                     .map(|entry| AffectedGame {
@@ -406,6 +512,12 @@ impl ResourceApi {
             affected: affected_keys(&overlapping),
             approved_at: 0,
             revoked_at: None,
+            origin: if declared_by_plugin {
+                ORIGIN_DECLARED
+            } else {
+                ORIGIN_USER
+            }
+            .to_owned(),
         };
         self.in_namespace(&fresh, move |namespace| {
             let approval = FileApproval {

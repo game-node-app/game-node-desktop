@@ -219,3 +219,16 @@ Escolhidos pelo assistente por raciocínio sobre limites que o host já tem; **n
 Sem limite de taxa por plugin em `ArtworkSet`: as escritas são serializadas, no máximo duas imagens são decodificadas ao mesmo tempo e uma repetição não decodifica nada, o que limita CPU e memória mas não a frequência de troca. Revisar junto dos demais limites de taxa quando houver plugins reais.
 
 Efeito no banco de dados: migração 13 (`library_artwork_overrides`, arquivo por entrada em `covers/` como `plugin-<entrada>-<conteúdo>.jpg|png`). Efeito no protocolo: campo aditivo `artwork_revision = 10` em `LibraryEntry`; contrato `endpoint_field_policy.json` atualizado.
+
+## H. Decisões adotadas na implementação da tarefa 5.5 (2026-11-14)
+
+Detalhes de engenharia dentro do escopo da 5.5, para revisão; nenhuma mudança de protocolo ou de banco.
+
+| Decisão | Alcance |
+| --- | --- |
+| Os auxiliares do SDK Rust (`HostClient::resources()` → `Resources`) enviam exatamente o pedido que a chamada bruta enviaria e devolvem a resposta do host sem alteração. Erros são o `Status` do próprio host, não o `Error` legado do SDK, porque este esconde códigos que o plugin precisa distinguir (`NOT_FOUND`, `FAILED_PRECONDITION` da escolha do usuário, `RESOURCE_EXHAUSTED`). | 5.5. |
+| A chave de idempotência é do plugin: `idempotency_key()` gera uma por mudança pretendida, a mesma chave vale para reenviar a mesma mudança, e conflito de revisão é resposta (`Outcome::RevisionConflict`), não erro. | 5.5. |
+| Equivalência SDK × gRPC bruto é verificada nos testes de serviço do host de teste: leituras comparadas diretamente, escritas reenviadas cruas sob a chave do SDK (o host só devolve o resultado original para um pedido idêntico) e recusas comparadas por código e mensagem. | 5.5. |
+| As receitas são código compilado (`crates/plugin-sdk/examples/library_recipes.rs`) e executado nesses mesmos testes, não trechos soltos na documentação. | 5.5. |
+| O SDK é só Rust; clientes Go usam o cliente gerado com as mesmas regras (o exemplo Go não tem SDK). | 5.5. |
+

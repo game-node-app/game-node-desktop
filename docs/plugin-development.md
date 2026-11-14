@@ -144,6 +144,62 @@ catalog. `GamesRequestLaunch` takes `GameLaunchRequest` and has no target/argume
 `GamesProposeCustomLaunch` and `GamesRequestCustomLaunch` take `CustomLaunchRequest` and require
 the independent `game.custom_launch` grant. Their approvals and effects are not interchangeable.
 
+## Library resource helpers and recipes (Rust SDK)
+
+`HostClient::resources()` returns `Resources`, typed calls for the library resources served today,
+or `None` for a session that negotiated a minor before API 1.6 (like `resource_context()`). Each
+call sends exactly what the raw `resource_client()` would send with the session's resource context
+and returns the host's reply, so the two are interchangeable; the desktop's service tests make
+every call both ways and compare the answers (a write is compared by replaying it raw under the
+SDK's idempotency key, which the host only honors for an identical request). The helpers add no
+authority: grants, scope and revisions are still checked by the host. Errors are the host's own
+`Status` (`gamenode_plugin_sdk::Status`, `Code`); the codes are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md). Go and other clients use the generated
+client directly with the same rules.
+
+| `Resources` method | Raw call | Needs |
+| --- | --- | --- |
+| `library_page`, `library_entries`, `library_snapshot` | `LibraryList` | `library.read` |
+| `library_get` | `LibraryGet` | `library.read` |
+| `library_watch` | `LibraryWatch` | `library.read` |
+| `set_display_name` | `MetadataUpdate` | `library.metadata.write` |
+| `favorite_games`, `set_favorite` | `FavoritesList`, `FavoritesSet` | `favorites.read`, `favorites.write` |
+| `search_catalog`, `assign_match` | `MatchingSearch`, `MatchingAssign` | `matching.read`, `matching.write` |
+| `read_cover`, `set_cover`, `clear_cover` | `ArtworkRead`, `ArtworkSet` | `artwork.read`, `artwork.write` |
+
+`library_entries` and `favorite_games` walk every page; if the library changes during the walk
+the list restarts (up to three times), so the result is one consistent snapshot. `library_snapshot`
+also returns the revision to resume `library_watch` from.
+
+Writing safely comes down to three rules:
+
+1. **One key per intended change, reused for its retries.** Make it with `idempotency_key()`. After a
+   timeout or lost connection, send the same change again with the same key: the host returns
+   the original outcome instead of applying it twice. A different change gets a different key.
+2. **Write with the revision you read.** Entries carry `metadata_revision` (display name),
+   `artwork_revision` (cover) and `revision` (everything, used for matching). A conflict is an
+   answer (`Outcome::RevisionConflict`, with the current revision), not an error: read the entry
+   again and decide whether the change still applies. Conflicts are not remembered, so the key
+   may be reused with the new revision.
+3. **Treat refusals as answers about the host's rules.** `NOT_FOUND` is a foreign or unknown
+   entry, `FAILED_PRECONDITION` a match the user chose, `INVALID_ARGUMENT` a refused value or
+   image (the message says why), `RESOURCE_EXHAUSTED` a rate or byte budget, `UNAVAILABLE` a
+   missing session or catalog. Only `UNAVAILABLE` and `DEADLINE_EXCEEDED` are worth resending.
+
+The recipes in
+[`crates/plugin-sdk/examples/library_recipes.rs`](../crates/plugin-sdk/examples/library_recipes.rs)
+put the rules into code you can copy. They are compiled with the SDK and run against the fixture
+host in the desktop's service tests:
+
+| Recipe | What it does |
+| --- | --- |
+| `send` | Sends one change, resending it with the same key only after a lost connection or timeout. |
+| `rename` | Gives an own entry a display name (or restores the detected one), rereading after a conflict. |
+| `match_by_title` | Searches the catalog, assigns the entry to the exact title, and leaves a choice the user made alone. |
+| `use_cover`, `current_cover` | Sets, clears or reads an entry's cover; a refused image is not retried. |
+| `star_matched_games` | Stars every game one of the plugin's entries is matched to, once each. |
+| `follow_library` | Lists the library, then follows the changes after it, listing again when the host no longer retains the position. |
+
 ## Bounded work, cancellation and failures
 
 The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most

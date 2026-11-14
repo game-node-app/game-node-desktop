@@ -53,7 +53,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 - [x] 5.3 Implement bounded matching search/assignment through existing Core policies; verify ownership, unavailable catalog and match-conflict outcomes with fixtures and document result semantics.
 - [ ] 5.4 Implement artwork read/set with bounded input, approved resource references and worker-side decoding/resizing; target the caller-owned installation identity; verify unmatched installations, malformed images, oversized data and unauthorized targets cannot change library artwork.
   - Status: inline bytes, per-entry override, bounds and worker-side decoding/resizing are implemented. Approved resource references are not: they need the file handles of 6.2 and are tracked by 6.6, so this task stays open until 6.6 is done.
-- [ ] 5.5 Add SDK convenience methods and practical read/write recipes for these adapters; verify equivalent raw gRPC and SDK outcomes against fixture-host service tests.
+- [x] 5.5 Add SDK convenience methods and practical read/write recipes for these adapters; verify equivalent raw gRPC and SDK outcomes against fixture-host service tests.
 
 ## 6. Scoped storage, files, network and notifications
 

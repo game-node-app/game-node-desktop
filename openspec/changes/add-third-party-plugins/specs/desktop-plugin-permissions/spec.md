@@ -155,6 +155,14 @@ Every third-party permission SHALL start disabled at installation. File read/wri
 - **WHEN** writing one selected resource would affect several games
 - **THEN** the full shared scope must be reviewed and authorized before the host permits the write
 
+#### Scenario: Plugin-declared save location
+- **WHEN** a plugin declares the default folder where a game's saves live
+- **THEN** Core shows it as declared by the plugin and not verified, the declaration alone grants nothing, and the user confirms that folder or chooses another before any approval
+
+#### Scenario: Approval requires the Core dialog
+- **WHEN** a plugin asks for access to a folder
+- **THEN** Core asks the user in its own dialog naming the plugin, game, folder, operations and every known affected game, and nothing is granted until the user confirms
+
 ### Requirement: Default-deny common-data category sharing
 Common-data read permissions SHALL start denied and be selectable during activation. Granting one SHALL permit explicit per-operation access to all plugins' published records in that category within its declared scope, without pairwise source/recipient approval. Sensitive/custom datasets SHALL retain explicit sharing review; secrets and authentication material SHALL never be included.
 

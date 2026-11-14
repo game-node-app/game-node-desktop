@@ -157,3 +157,34 @@ Confirmadas pelo usuário durante a tarefa 5.2 e implementadas para `Metadata.Up
 | D12 | Inalterada: o token de intenção do usuário continua em aberto para ações de lançamento e instalação. | 7.2, 7.9, 10.7. |
 
 Efeito no banco de dados: migração 11 (`library_display_overrides`, revisão por entrada que só cresce; limpar mantém a linha). Efeito no protocolo: campos aditivos `display_name = 8` e `metadata_revision = 9` em `LibraryEntry`.
+
+## F. Decisões adotadas na implementação da tarefa 5.3 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 5.3 (alvo, proteção da escolha do usuário e revisão de conflito) e implementadas para `Matching.Search` e `Matching.Assign`. Os demais itens abaixo são detalhes de engenharia adotados dentro do escopo aprovado, para revisão.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| D07 (conclusão) | O rematching por plugin nunca move o favorito: ele fica no jogo em que foi marcado. Corrigir um match por plugin não transfere favoritos. | 5.3. |
+| Alvo da atribuição | `MatchingAssign` nomeia a entrada por `installation_id` (campo aditivo `installation_id = 5`); `provider_id` e `provider_game_id` ficam reservados e devem vir vazios. Uma única identidade de entrada em toda a API 1.6; entrada alheia ou desconhecida é `NOT_FOUND`, mesmo com `library.read.all`. | 5.3; 5.4 reaproveita. |
+| Escolha do usuário protegida | A escolha gravada passa a registrar a origem (`user` ou `plugin`; migração 12, padrão `user`). Um plugin define ou troca só as próprias escolhas; trocar a escolha do usuário (inclusive "sem jogo") é `FAILED_PRECONDITION`. O usuário escolher de novo, mesmo o jogo que o plugin escolheu, torna a escolha dele. "Esquecer minha escolha" remove qualquer uma; o plugin não consegue limpar um match. **Desvio** do texto de design "escrita explícita do usuário": a concessão `matching.write` é o consentimento para o provider ajustar as próprias entradas, mas nunca sobrepõe o usuário. | 5.3. |
+| Revisão de conflito | `expected_revision` é a revisão da entrada (`LibraryEntry.revision`), que o plugin já lê em List/Get. Divergência devolve `REVISION_CONFLICT` com a revisão atual e não grava; a revisão pode divergir por outro campo da entrada (o plugin relê e repete). Mesmo jogo já escolhido é `ALREADY_APPLIED` com a revisão atual, antes da checagem de revisão. A revisão da entrada é em memória (reinicia com o processo), como a projeção. | 5.3. |
+| Busca limitada (detalhe de engenharia) | Consulta de 1 a 128 bytes; uma página de até 50 (padrão 20), sem cursor; `platform` e `confidence` reservados e vazios (o catálogo não tem plataforma nem pontuação); `release_year` aditivo (campo 5 em `MatchCandidate`); 20 buscas por minuto por plugin e perfil (`RESOURCE_EXHAUSTED`); sem sessão verificada ou online, ou falha do catálogo, `UNAVAILABLE`, nunca lista vazia. Os valores numéricos e a justificativa de cada um estão em "Limites de matching" abaixo e precisam de validação de capacidade. | 5.3. |
+| Jogo atribuível (detalhe de engenharia) | Só um jogo que o host já conhece (registros de jogos da biblioteca) ou um dos últimos 256 devolvidos por buscas de plugin pode ser atribuído; outro é `NOT_FOUND`. O resultado de uma busca de plugin não entra na biblioteca nem no diálogo do usuário. | 5.3. |
+| D12 | Inalterada. | 7.2, 7.9, 10.7. |
+
+### Limites de matching e como foram decididos
+
+Escolhidos pelo assistente por raciocínio sobre limites que o host já tem; **não houve medição nem pergunta ao usuário**. Detalhes em `docs/plugin-api-permissions.md#matching-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Consulta de busca | 1 a 128 bytes | Metade dos 256 caracteres do diálogo do usuário (`MAX_QUERY_LEN`) e igual ao limite de chaves de idempotência e de `provider_id`. |
+| Resultados | padrão 20, máximo 50, uma página | A API do GameNode é consultada com `SEARCH_LIMIT = 20`, então 20 é o máximo prático hoje; 50 é folga. Abaixo do teto de 200 das listas de Library. Sem paginação no catálogo. |
+| Buscas | 20 por 60 s, por plugin e perfil | Uma a cada 3 s em média: suficiente para casar uma tela de entradas e baixo o bastante para não virar rastreador em massa com a sessão do usuário. Valor sem medição. |
+| Jogos atribuíveis oferecidos | 256, o mais antigo sai primeiro | Limita a memória por resultados de busca; mesmo número dos eventos retidos pelo watch de Library. |
+| `installation_id` em Assign | até 128 bytes | Só rejeita abuso antes da consulta. |
+| `release_year` | campo aditivo, 0 se desconhecido | Título sozinho não separa remakes; o catálogo já traz o ano. |
+
+O limite de buscas por minuto é o mais sensível e o primeiro a revisar quando houver plugins reais.
+
+Efeito no banco de dados: migração 12 (`chosen_matches.source`). Efeito no protocolo: campos aditivos `installation_id = 5` em `MatchingAssignRequest` e `release_year = 5` em `MatchCandidate`; contrato `endpoint_field_policy.json` atualizado.

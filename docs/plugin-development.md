@@ -99,10 +99,13 @@ contract tests compare every route to the generated protobuf descriptor. The per
 is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes are `UNIMPLEMENTED`.
 
 The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, `LibraryWatch`,
-`MetadataUpdate`, `FavoritesList` and `FavoritesSet` (grants, scope, cursors and watch rules are in
+`MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch` and `MatchingAssign` (grants,
+scope, cursors and watch rules are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
 revisions, favorites and idempotency keys are in
-[`plugin-api-permissions.md`](plugin-api-permissions.md#display-metadata-and-favorites)).
+[`plugin-api-permissions.md`](plugin-api-permissions.md#display-metadata-and-favorites); catalog
+search bounds and assignment results are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md#matching)).
 Every other `ResourceHost` method and all domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
 instead of inferring availability from the protobuf contract.

@@ -96,6 +96,26 @@ The API SHALL provide paginated library list/get/watch, display-metadata updates
 - **WHEN** a plugin sets the favorite of a GameNode game that none of its own entries is currently matched to
 - **THEN** the host rejects it as not found and changes no favorite
 
+#### Scenario: Catalog unavailable during search
+- **WHEN** a plugin searches the GameNode catalog without a verified online session, or GameNode cannot answer
+- **THEN** the host reports the catalog as unavailable rather than returning an empty result, and the library and the user's match dialog are unchanged
+
+#### Scenario: Assigning a game nobody offered
+- **WHEN** a plugin assigns an own entry to a GameNode game the host does not know and no plugin search returned
+- **THEN** the host reports the game as not found and changes no match
+
+#### Scenario: Match revision conflict
+- **WHEN** a plugin assigns a match using an obsolete entry revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Foreign-provider match assignment
+- **WHEN** a plugin assigns the installation of another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes no match
+
+#### Scenario: The user's match choice is protected
+- **WHEN** a plugin assigns an entry whose match the user chose in the match dialog to a different game
+- **THEN** the host refuses the assignment and the user's choice stays, while a plugin's own earlier choice can still be replaced
+
 ### Requirement: Game and installation identity
 Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
 

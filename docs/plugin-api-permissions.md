@@ -204,6 +204,68 @@ ever reach the caller's own provider's entries, whatever other grants it holds.
   the storage worker for metadata), so a revocation that wins the race stops the write. A failed
   database write is `UNAVAILABLE`.
 
+## Matching
+
+`MatchingSearch` (`matching.read`) and `MatchingAssign` (`matching.write`) use the same resource
+context as the Library reads. They reuse the library's own match policy, so a plugin never opens or
+disturbs the match dialog the user may have open.
+
+- **Search.** One bounded page of GameNode catalog games for a title. `query` is trimmed, 1 to 128
+  bytes and free of control characters. `page_size` defaults to 20 and is capped at 50; a
+  catalog search has no further pages, so `next_cursor` is always empty and a non-empty `cursor`
+  is `INVALID_ARGUMENT`. `platform` is reserved and must be empty, because the catalog has no
+  platform filter. Each `MatchCandidate` carries `game_id`, `title` and `release_year` (0 when
+  unknown); `platform` and `confidence` are empty because the catalog has neither, and the host
+  never invents a score. A plugin may start 20 searches per minute (across its sessions in a
+  profile); more is `RESOURCE_EXHAUSTED`. Search spends the user's verified GameNode session, so
+  without a verified, online session, or when GameNode cannot answer, it is `UNAVAILABLE`: an
+  unavailable catalog is never reported as an empty result.
+- **Assign.** Matches one of the caller's own entries to a GameNode game. The entry is named by
+  `installation_id` (required); `provider_id` and `provider_game_id` are reserved and must be
+  empty, and `gamenode_game_id` is required. A foreign or unknown installation is `NOT_FOUND`,
+  even with `library.read.all`. The game must be one the host already knows (in the library's game
+  records) or one of the last 256 games plugin searches returned; any other game is `NOT_FOUND`,
+  so a plugin finds a game with `MatchingSearch` before assigning it.
+- **Revision.** `expected_revision` is the entry's `LibraryEntry.revision`, which changes whenever
+  the entry's matched game, name, install state or display metadata changes. A stale revision
+  returns `MUTATION_OUTCOME_REVISION_CONFLICT` with the current revision and writes nothing; the
+  plugin rereads the entry and retries. A change returns `MUTATION_OUTCOME_APPLIED` with the entry's
+  revision afterwards, and `resource_id` is the installation id.
+- **Already applied.** An entry that already has an explicit choice of that game, made by the user
+  or by a plugin, is `MUTATION_OUTCOME_ALREADY_APPLIED` with its current revision, whatever
+  `expected_revision` says, and nothing is written. An entry that is only matched automatically is
+  not the same: assigning the same game stores an explicit choice, so later automatic rematching
+  keeps the game.
+- **The user's choice wins.** The stored choice records who made it. A plugin can set or replace
+  its own choices, but when the user chose a game, or chose "no GameNode game", for the entry in the
+  match dialog, `MatchingAssign` is `FAILED_PRECONDITION` and changes nothing. The user choosing
+  again, including the game a plugin picked, makes the choice theirs; "forget my choice" in the
+  library removes it whoever made it. A plugin cannot clear a match.
+- **Effects.** The choice is stored through the same path as the user's pick: it is per account,
+  survives a restart, and playtime totals are submitted for the new match as they are for the
+  user's own. A favorite stays on the game it was set on and is never moved by a rematch.
+- **Idempotency and commit.** The idempotency, serialization and commit-time authorization rules of
+  the other mutations apply. Conflicts and refusals are not remembered, so a retry with the same
+  key and a fresh request is evaluated again.
+
+### Matching limits
+
+The matching limits are constants in `crates/app/src/plugin_host/resources/matching.rs` and
+`crates/core/src/library/plugin_match.rs`. They were chosen by reasoning from limits the host
+already has, not from measurements, and are open to change after a capacity review.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Search query | 1 to 128 bytes | Titles are short. Half of the 256 characters the user's own match dialog accepts, and the same 128 bytes as idempotency keys and provider ids, so a plugin cannot use the user's session to send large payloads. |
+| Results per search | default 20, at most 50, one page | The GameNode search endpoint is asked for 20 results (`SEARCH_LIMIT` in `crates/api/src/game.rs`), so 20 is what the user's own dialog shows and is the practical maximum today. 50 leaves headroom if that changes and stays well under the 200-item page cap of the Library lists. The catalog has no paging, so there is no cursor. |
+| Searches per plugin | 20 per 60 seconds, per plugin and profile | One search every 3 seconds on average. That is enough for interactive matching of a screenful of entries and low enough that a plugin cannot turn the user's verified GameNode session into a bulk crawler. The window is a plain sliding minute and only counts accepted attempts. |
+| Assignable offered games | 256, oldest dropped first | Bounds the memory a plugin can occupy with search results. Matches the 256 events the library watch retains, and is large enough for several searches of 20 results. Games already in the library's records are always assignable. |
+| Installation id in Assign | at most 128 bytes | Host-issued ids are 128 random bits as hex; the bound only rejects abuse before lookup. |
+| `release_year` in `MatchCandidate` | additive field, 0 when unknown | Titles alone do not separate remakes and reboots. The catalog already returns the year, and the user's dialog shows it. |
+
+Search spends the user's session, so the rate limit is the one most worth revisiting once there are
+real plugins; the others only bound size.
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

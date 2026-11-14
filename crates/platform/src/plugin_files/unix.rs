@@ -12,10 +12,14 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
-use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, fstat, openat, statat, unlinkat};
+use rustix::fs::{
+    Access, AtFlags, Dir, FileType, Mode, OFlags, accessat, fstat, openat, statat, unlinkat,
+};
 use rustix::io::Errno;
 
-use super::{Confined, Entry, FileError, Identity, MAX_DIR_ENTRIES, Target, valid_component};
+use super::{
+    AccessInfo, Confined, Entry, FileError, Identity, MAX_DIR_ENTRIES, Target, Tri, valid_component,
+};
 
 pub(super) fn identity_of(path: &Path) -> io::Result<Identity> {
     let metadata = std::fs::metadata(path)?;
@@ -51,8 +55,12 @@ const DIRECTORY: OFlags = OFlags::RDONLY
 
 /// The directory `components` below the root, opened one component at a time.
 fn walk(c: &Confined, components: &[String]) -> Result<OwnedFd, FileError> {
-    let mut dir = rustix::fs::open(&c.root.path, DIRECTORY, Mode::empty())
-        .map_err(|_| FileError::RootChanged)?;
+    let mut dir =
+        rustix::fs::open(&c.root.path, DIRECTORY, Mode::empty()).map_err(|error| match error {
+            // The folder is there but the user may not open it: not the same as gone or replaced.
+            Errno::ACCESS | Errno::PERM => FileError::Access,
+            _ => FileError::RootChanged,
+        })?;
     if id_of(&dir)? != c.root.identity {
         return Err(FileError::RootChanged);
     }
@@ -151,14 +159,114 @@ pub(super) fn list(c: &Confined, directory: &[String]) -> Result<Vec<Entry>, Fil
         if id.volume != c.root.identity.volume || (directory && c.reserved.holds_id(id)) {
             continue;
         }
-        entries.push(Entry {
-            name: name.to_owned(),
-            directory,
-            size: if directory { 0 } else { stat.st_size as u64 },
-            modified: stat.st_mtime as i64,
-        });
+        entries.push(entry_of(name, directory, &stat));
     }
     Ok(entries)
+}
+
+fn entry_of(name: &str, directory: bool, stat: &rustix::fs::Stat) -> Entry {
+    Entry {
+        name: name.to_owned(),
+        directory,
+        size: if directory { 0 } else { stat.st_size as u64 },
+        modified: stat.st_mtime as i64,
+        modified_nanos: stat.st_mtime_nsec as u32,
+        read_only: stat.st_mode & 0o222 == 0,
+    }
+}
+
+/// The entry at `path`, or the root itself (named "") for an empty path.
+pub(super) fn stat(c: &Confined, path: &[String]) -> Result<Entry, FileError> {
+    if path.is_empty() {
+        let root = walk(c, &[])?;
+        let stat = fstat(&root).map_err(errno)?;
+        return Ok(entry_of("", true, &stat));
+    }
+    let (parent, name) = split(path);
+    let dir = walk(c, parent)?;
+    let stat = statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW).map_err(errno)?;
+    let directory = match FileType::from_raw_mode(stat.st_mode) {
+        FileType::Directory => true,
+        FileType::RegularFile => false,
+        FileType::Symlink => return Err(FileError::Denied),
+        _ => return Err(FileError::NotAFile),
+    };
+    let id = Identity {
+        volume: stat.st_dev as u64,
+        node: stat.st_ino as u64,
+    };
+    if id.volume != c.root.identity.volume || (directory && c.reserved.holds_id(id)) {
+        return Err(FileError::Denied);
+    }
+    Ok(entry_of(name, directory, &stat))
+}
+
+/// Asks the kernel what the effective user may do (`faccessat` with `AT_EACCESS`), which weighs
+/// the mode bits, the owner and group, ACLs and a read-only mount without opening or changing
+/// anything.
+fn can(dir: &OwnedFd, name: &str, wanted: Access) -> Tri {
+    match accessat(dir, name, wanted, AtFlags::EACCESS) {
+        Ok(()) => Tri::Allowed,
+        Err(Errno::ACCESS | Errno::PERM | Errno::ROFS) => Tri::Denied,
+        Err(_) => Tri::Unknown,
+    }
+}
+
+pub(super) fn access(c: &Confined, path: &[String]) -> Result<AccessInfo, FileError> {
+    let entry = stat(c, path)?;
+    let directory = entry.directory;
+    // The entry's own directory entry is checked from its parent, the root from itself.
+    let (holder, name, parent_path): (OwnedFd, String, Option<&[String]>) = if path.is_empty() {
+        (walk(c, &[])?, ".".to_owned(), None)
+    } else {
+        let (parent, name) = split(path);
+        (walk(c, parent)?, name.to_owned(), Some(parent))
+    };
+    let (read, write, create) = if directory {
+        let entered = can(&holder, &name, Access::EXEC_OK);
+        let all = |wanted: Access| match (entered, can(&holder, &name, wanted)) {
+            (Tri::Allowed, Tri::Allowed) => Tri::Allowed,
+            (Tri::Denied, _) | (_, Tri::Denied) => Tri::Denied,
+            _ => Tri::Unknown,
+        };
+        let write = all(Access::WRITE_OK);
+        (all(Access::READ_OK), write, write)
+    } else {
+        (
+            can(&holder, &name, Access::READ_OK),
+            can(&holder, &name, Access::WRITE_OK),
+            Tri::Unknown,
+        )
+    };
+    // Removing an entry needs write and search permission on its folder. The root's folder is
+    // outside the approval, and a sticky folder also looks at who owns what: neither is guessed.
+    let delete = match parent_path {
+        None => Tri::Unknown,
+        Some(parent) => {
+            let folder = walk(c, parent)?;
+            let sticky = fstat(&folder).map_err(errno)?.st_mode & 0o1000 != 0;
+            if sticky {
+                Tri::Unknown
+            } else {
+                match (
+                    can(&folder, ".", Access::EXEC_OK),
+                    can(&folder, ".", Access::WRITE_OK),
+                ) {
+                    (Tri::Allowed, Tri::Allowed) => Tri::Allowed,
+                    (Tri::Denied, _) | (_, Tri::Denied) => Tri::Denied,
+                    _ => Tri::Unknown,
+                }
+            }
+        }
+    };
+    Ok(AccessInfo {
+        directory,
+        read_only: entry.read_only,
+        read,
+        write,
+        create,
+        delete,
+    })
 }
 
 pub(super) fn read(

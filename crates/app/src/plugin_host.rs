@@ -615,16 +615,23 @@ impl plugin_host_server::PluginHost for PluginApi {
                             .iter()
                             .map(|served| ("Saves", served)),
                     )
+                    .chain(
+                        resources::LOCATIONS_SERVED
+                            .iter()
+                            .map(|served| ("Locations", served)),
+                    )
                     .map(|(service, served)| ApiMethod {
                         service: service.into(),
                         method: served.method.into(),
                         introduced_minor: capability::THIRD_PARTY_API_MINOR,
                         // The jobs methods need the permission of the operation that made the job.
-                        permissions: if served.permission.is_empty() {
-                            vec![]
-                        } else {
-                            vec![served.permission.into()]
-                        },
+                        // Comma-separated when any one of several permissions will do.
+                        permissions: served
+                            .permission
+                            .split(',')
+                            .filter(|permission| !permission.is_empty())
+                            .map(Into::into)
+                            .collect(),
                         ownership: served.ownership.into(),
                         max_page_size: if served.paged {
                             library::MAX_PAGE_SIZE as u32
@@ -747,6 +754,9 @@ impl PluginApiServer {
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let locations = locations_server::LocationsServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -760,6 +770,7 @@ impl PluginApiServer {
                 .add_service(provider)
                 .add_service(resources)
                 .add_service(saves)
+                .add_service(locations)
                 .serve_with_incoming_shutdown(incoming, async move {
                     let _ = shutdown_rx.await;
                 })
@@ -837,6 +848,9 @@ impl PluginApiServer {
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
+            let locations = locations_server::LocationsServer::new(resource_api.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
             let resources = resource_host_server::ResourceHostServer::new(resource_api)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -850,6 +864,7 @@ impl PluginApiServer {
                 .add_service(provider)
                 .add_service(resources)
                 .add_service(saves)
+                .add_service(locations)
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = stopped.await;
                 })

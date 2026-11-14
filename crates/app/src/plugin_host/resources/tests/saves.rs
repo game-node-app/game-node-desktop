@@ -16,16 +16,18 @@ const GRANTS: &[&str] = &[
     cap::GAME_SAVES_DELETE,
     cap::FILES_READ,
 ];
-const INSTALLATION: &str = "id-fixture:1";
+pub(super) const INSTALLATION: &str = "id-fixture:1";
 
 impl Fixture {
-    fn saves(&self) -> gamenode_plugin_protocol::proto::saves_client::SavesClient<Channel> {
+    pub(super) fn saves(
+        &self,
+    ) -> gamenode_plugin_protocol::proto::saves_client::SavesClient<Channel> {
         self.host.saves_client()
     }
 
     /// A plugin with an emulator folder (`GC/USA/card.gci`, `states/s1.sav`) for one game entry
     /// and another entry, and a user who approves whatever folder is set next.
-    async fn emulator(grants: &[&'static str]) -> (Self, PathBuf) {
+    pub(super) async fn emulator(grants: &[&'static str]) -> (Self, PathBuf) {
         let fixture = Self::new(grants).await;
         let saves = fixture.game_dir(
             "dolphin-saves",
@@ -42,7 +44,7 @@ impl Fixture {
     }
 
     /// The root handle of a folder the user approves for `installation` as `kind`.
-    async fn approve(&self, installation: &str, kind: &str, folder: &Path) -> String {
+    pub(super) async fn approve(&self, installation: &str, kind: &str, folder: &Path) -> String {
         self.user_approving(folder);
         self.request_access(installation, &["read"], &[kind])
             .await
@@ -52,7 +54,7 @@ impl Fixture {
             .handle
     }
 
-    async fn make(
+    pub(super) async fn make(
         &self,
         key: &str,
         profile: SaveProfile,
@@ -78,7 +80,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn profiles(
+    pub(super) async fn profiles(
         &self,
         installation: &str,
         page_size: u32,
@@ -136,7 +138,7 @@ impl Fixture {
     }
 }
 
-fn directory(handle: &str, name: &str, patterns: &[&str]) -> SaveDirectory {
+pub(super) fn directory(handle: &str, name: &str, patterns: &[&str]) -> SaveDirectory {
     SaveDirectory {
         approved_resource_handle: handle.into(),
         display_name: name.into(),
@@ -144,7 +146,7 @@ fn directory(handle: &str, name: &str, patterns: &[&str]) -> SaveDirectory {
     }
 }
 
-fn profile(name: &str, runtime: &str, directories: Vec<SaveDirectory>) -> SaveProfile {
+pub(super) fn profile(name: &str, runtime: &str, directories: Vec<SaveDirectory>) -> SaveProfile {
     SaveProfile {
         installation_id: INSTALLATION.into(),
         name: name.into(),

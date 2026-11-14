@@ -22,6 +22,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 #[cfg(unix)]
 mod unix;
@@ -170,6 +172,67 @@ pub struct Entry {
     pub size: u64,
     /// Unix seconds.
     pub modified: i64,
+    /// The sub-second part of the modification time, in nanoseconds, as the system reported it.
+    /// Zero when the system reported whole seconds (or nothing finer).
+    pub modified_nanos: u32,
+    /// Whether the entry carries the read-only attribute (Windows) or has no write bit in its
+    /// mode (Linux). This is metadata, not what the current user may do: see [`AccessInfo`].
+    pub read_only: bool,
+}
+
+/// An answer that may be unknown: the system did not say, or the question does not apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tri {
+    Allowed,
+    Denied,
+    Unknown,
+}
+
+/// How [`Confined::access`] finds out, named in the answers so a plugin knows what an `unknown`
+/// or an `allowed` rests on.
+#[cfg(unix)]
+pub const ACCESS_METHOD: &str = "kernel_access_check";
+/// How [`Confined::access`] finds out, named in the answers so a plugin knows what an `unknown`
+/// or an `allowed` rests on.
+#[cfg(windows)]
+pub const ACCESS_METHOD: &str = "open_probe";
+
+/// What the current operating-system user may do with an entry, found without changing the
+/// entry, its permissions or anything else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccessInfo {
+    pub directory: bool,
+    /// The read-only attribute or mode, as metadata.
+    pub read_only: bool,
+    /// Read the file, or list the directory.
+    pub read: Tri,
+    /// Write the file, or add entries to the directory.
+    pub write: Tri,
+    /// Create entries in the directory; unknown for a file, where it does not apply.
+    pub create: Tri,
+    /// Delete the entry, which depends on its parent folder.
+    pub delete: Tri,
+}
+
+/// How much a walk may do before it stops.
+pub struct Budget<'a> {
+    pub max_entries: usize,
+    pub deadline: Instant,
+    /// Set by the caller to stop the walk at the next entry.
+    pub cancel: &'a AtomicBool,
+}
+
+/// How a walk ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Walk {
+    /// Whether every entry below the start was visited. False after a cut, a cancellation, a
+    /// folder that could not be read, or a tree deeper than [`MAX_DEPTH`].
+    pub complete: bool,
+    /// Folders below the start that the operating system would not let us read.
+    pub unreadable: u64,
+    pub visited: u64,
+    /// The budget or a cancellation stopped it, as opposed to an unreadable folder.
+    pub stopped: bool,
 }
 
 /// What a write targets.
@@ -310,6 +373,78 @@ impl Confined {
             return Err(FileError::TooLarge);
         }
         sys::write(self, target, offset, contents, truncate)
+    }
+
+    /// The entry at `path` (empty for the root itself, whose name is empty), as the system
+    /// describes it, without following links.
+    pub fn stat(&self, path: &[String]) -> Result<Entry, FileError> {
+        check_path(path)?;
+        sys::stat(self, path)
+    }
+
+    /// What the current user may do with the entry at `path` (empty for the root). Nothing is
+    /// changed to find out.
+    pub fn access(&self, path: &[String]) -> Result<AccessInfo, FileError> {
+        check_path(path)?;
+        sys::access(self, path)
+    }
+
+    /// Visits every file and directory below `start` (depth first, in name order) until the tree
+    /// is done or `budget` runs out. An error reading `start` itself is returned; a folder deeper
+    /// down that cannot be read is counted and skipped, and the walk is then not complete.
+    pub fn walk_tree(
+        &self,
+        start: &[String],
+        budget: &Budget<'_>,
+        visit: &mut dyn FnMut(&[String], &Entry),
+    ) -> Result<Walk, FileError> {
+        check_path(start)?;
+        let mut walk = Walk {
+            complete: true,
+            ..Walk::default()
+        };
+        self.descend(start, budget, visit, &mut walk)?;
+        Ok(walk)
+    }
+
+    fn descend(
+        &self,
+        directory: &[String],
+        budget: &Budget<'_>,
+        visit: &mut dyn FnMut(&[String], &Entry),
+        walk: &mut Walk,
+    ) -> Result<(), FileError> {
+        let mut entries = sys::list(self, directory)?;
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        for entry in entries {
+            if budget.cancel.load(Ordering::Relaxed)
+                || Instant::now() >= budget.deadline
+                || walk.visited >= budget.max_entries as u64
+            {
+                walk.complete = false;
+                walk.stopped = true;
+                return Ok(());
+            }
+            walk.visited += 1;
+            let mut path = directory.to_vec();
+            path.push(entry.name.clone());
+            visit(&path, &entry);
+            if !entry.directory {
+                continue;
+            }
+            if path.len() >= MAX_DEPTH {
+                walk.complete = false;
+                continue;
+            }
+            if self.descend(&path, budget, visit, walk).is_err() {
+                walk.complete = false;
+                walk.unreadable += 1;
+            }
+            if walk.stopped {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     /// Deletes one regular file. Directories are never deleted.

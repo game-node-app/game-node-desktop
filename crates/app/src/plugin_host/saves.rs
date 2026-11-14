@@ -137,6 +137,47 @@ pub fn check_pattern(text: &str) -> Result<String, Status> {
     Ok(text.to_owned())
 }
 
+fn segment_matches(pattern: &[char], name: &[char]) -> bool {
+    match pattern.split_first() {
+        None => name.is_empty(),
+        Some(('*', rest)) => (0..=name.len()).any(|skip| segment_matches(rest, &name[skip..])),
+        Some(('?', rest)) => !name.is_empty() && segment_matches(rest, &name[1..]),
+        Some((c, rest)) => name.first() == Some(c) && segment_matches(rest, &name[1..]),
+    }
+}
+
+fn path_matches(pattern: &[&str], path: &[String]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => (0..=path.len()).any(|skip| path_matches(rest, &path[skip..])),
+        Some((segment, rest)) => path.split_first().is_some_and(|(name, below)| {
+            let (segment, name): (Vec<char>, Vec<char>) =
+                (segment.chars().collect(), name.chars().collect());
+            segment_matches(&segment, &name) && path_matches(rest, below)
+        }),
+    }
+}
+
+/// Whether the file at `relative` (below the profile's folder) is one the folder's rules select.
+/// A rule matches the whole relative path, from the folder, so `*.sav` means the files of the
+/// folder itself and `**/*.sav` those at any depth. With no inclusion rule everything is
+/// selected; an exclusion (`!rule`) always wins.
+pub fn selected(patterns: &[String], relative: &[String]) -> bool {
+    let matches = |pattern: &str| {
+        let segments: Vec<&str> = pattern.split('/').collect();
+        path_matches(&segments, relative)
+    };
+    let mut included = patterns.iter().all(|p| p.starts_with('!'));
+    for pattern in patterns {
+        match pattern.strip_prefix('!') {
+            Some(exclusion) if matches(exclusion) => return false,
+            Some(_) => {}
+            None => included |= matches(pattern),
+        }
+    }
+    included
+}
+
 /// Checks the rules of one folder.
 pub fn check_patterns(patterns: &[String]) -> Result<Vec<String>, Status> {
     if patterns.len() > MAX_PATTERNS {

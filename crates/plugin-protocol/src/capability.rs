@@ -58,6 +58,8 @@ pub const GAME_SAVES_READ: &str = "game.saves.read";
 pub const GAME_SAVES_CREATE: &str = "game.saves.create";
 pub const GAME_SAVES_UPDATE: &str = "game.saves.update";
 pub const GAME_SAVES_DELETE: &str = "game.saves.delete";
+pub const GAME_STORAGE_INSPECT: &str = "game.storage.inspect";
+pub const GAME_SAVES_INSPECT: &str = "game.saves.inspect";
 pub const STORAGE_DIAGNOSTICS_PUBLISH: &str = "storage.diagnostics.publish";
 pub const COMPUTER_HARDWARE_PUBLISH: &str = "computer.hardware.publish";
 pub const GAME_PRESENCE_PUBLISH: &str = "game.presence.publish";
@@ -255,6 +257,8 @@ pub const KNOWN: &[&str] = &[
     GAME_SAVES_CREATE,
     GAME_SAVES_UPDATE,
     GAME_SAVES_DELETE,
+    GAME_STORAGE_INSPECT,
+    GAME_SAVES_INSPECT,
     STORAGE_DIAGNOSTICS_PUBLISH,
     COMPUTER_HARDWARE_PUBLISH,
     GAME_PRESENCE_PUBLISH,
@@ -297,6 +301,8 @@ pub const THIRD_PARTY_CAPABILITIES: &[&str] = &[
     LIBRARY_ROOTS_DELETE,
     GAME_RUNTIME_READ,
     GAME_RUNTIME_DELETE,
+    GAME_STORAGE_INSPECT,
+    GAME_SAVES_INSPECT,
     STORAGE_DIAGNOSTICS_PUBLISH,
     COMPUTER_HARDWARE_PUBLISH,
     GAME_PRESENCE_PUBLISH,

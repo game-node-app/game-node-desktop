@@ -531,3 +531,344 @@ fn errors_never_contain_a_path() {
         assert!(!text.contains(&root) && !text.contains('/'), "{text}");
     }
 }
+
+// ---- Inspection (task 13.3): nothing is read, nothing is changed ----
+
+use std::os::unix::fs::PermissionsExt;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+
+fn running_as_root() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+fn budget<'a>(cancel: &'a AtomicBool, max_entries: usize) -> Budget<'a> {
+    Budget {
+        max_entries,
+        deadline: Instant::now() + Duration::from_secs(30),
+        cancel,
+    }
+}
+
+fn tree(files: &Confined, start: &[String], max_entries: usize) -> (Vec<String>, Walk) {
+    let cancel = AtomicBool::new(false);
+    let mut seen = Vec::new();
+    let walk = files
+        .walk_tree(start, &budget(&cancel, max_entries), &mut |path, entry| {
+            seen.push(format!(
+                "{}{}",
+                path.join("/"),
+                if entry.directory { "/" } else { "" }
+            ));
+        })
+        .unwrap();
+    (seen, walk)
+}
+
+#[test]
+fn a_walk_visits_every_entry_in_name_order_and_says_it_is_complete() {
+    let area = Area::new();
+    fs::create_dir_all(area.root.join("saves/states/deep")).unwrap();
+    fs::write(area.root.join("saves/states/deep/s9.sav"), b"x").unwrap();
+    fs::write(area.root.join("saves/states/s1.sav"), b"y").unwrap();
+    let files = area.confined();
+
+    let (seen, walk) = tree(&files, &[], 1000);
+    assert_eq!(
+        seen,
+        [
+            "a.txt",
+            "saves/",
+            "saves/slot1.sav",
+            "saves/states/",
+            "saves/states/deep/",
+            "saves/states/deep/s9.sav",
+            "saves/states/s1.sav",
+        ]
+    );
+    assert_eq!(
+        walk,
+        Walk {
+            complete: true,
+            unreadable: 0,
+            visited: 7,
+            stopped: false
+        }
+    );
+    // A walk may start below the root.
+    let (below, walk) = tree(&files, &path(&["saves", "states"]), 1000);
+    assert_eq!(
+        below,
+        [
+            "saves/states/deep/",
+            "saves/states/deep/s9.sav",
+            "saves/states/s1.sav"
+        ]
+    );
+    assert!(walk.complete);
+}
+
+#[test]
+fn a_walk_stops_at_its_budget_and_is_then_not_complete() {
+    let area = Area::new();
+    let files = area.confined();
+    let (seen, walk) = tree(&files, &[], 2);
+    assert_eq!(seen.len(), 2);
+    assert!(!walk.complete && walk.stopped);
+
+    // Cancelled before it starts: nothing is visited.
+    let cancel = AtomicBool::new(true);
+    let mut count = 0;
+    let walk = files
+        .walk_tree(&[], &budget(&cancel, 1000), &mut |_, _| count += 1)
+        .unwrap();
+    assert_eq!(count, 0);
+    assert!(!walk.complete && walk.stopped);
+
+    // A deadline that already passed does the same.
+    let cancel = AtomicBool::new(false);
+    let expired = Budget {
+        max_entries: 1000,
+        deadline: Instant::now(),
+        cancel: &cancel,
+    };
+    let walk = files.walk_tree(&[], &expired, &mut |_, _| {}).unwrap();
+    assert!(!walk.complete && walk.stopped);
+}
+
+#[test]
+fn a_walk_never_follows_links_or_leaves_the_root_and_skips_what_is_not_a_file() {
+    let area = Area::new();
+    symlink(area.outside(), area.root.join("escape")).unwrap();
+    symlink(
+        area.outside().join("secret.txt"),
+        area.root.join("saves/link.sav"),
+    )
+    .unwrap();
+    let files = area.confined();
+    let (seen, walk) = tree(&files, &[], 1000);
+    assert_eq!(seen, ["a.txt", "saves/", "saves/slot1.sav"]);
+    assert!(
+        walk.complete,
+        "a link does not exist for the plugin, so nothing is missing"
+    );
+    // The start must be inside the root.
+    assert_eq!(
+        files
+            .walk_tree(
+                &path(&["escape"]),
+                &budget(&AtomicBool::new(false), 10),
+                &mut |_, _| {}
+            )
+            .unwrap_err(),
+        FileError::Denied
+    );
+    assert_eq!(
+        files
+            .walk_tree(
+                &path(&["missing"]),
+                &budget(&AtomicBool::new(false), 10),
+                &mut |_, _| {}
+            )
+            .unwrap_err(),
+        FileError::NotFound
+    );
+}
+
+#[test]
+fn a_folder_that_cannot_be_read_is_counted_and_the_walk_goes_on() {
+    if running_as_root() {
+        return; // root reads everything
+    }
+    let area = Area::new();
+    fs::create_dir_all(area.root.join("locked")).unwrap();
+    fs::write(area.root.join("locked/hidden.sav"), b"h").unwrap();
+    fs::set_permissions(area.root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    let files = area.confined();
+    let (seen, walk) = tree(&files, &[], 1000);
+    fs::set_permissions(area.root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(seen, ["a.txt", "locked/", "saves/", "saves/slot1.sav"]);
+    assert_eq!(
+        (walk.complete, walk.unreadable, walk.stopped),
+        (false, 1, false)
+    );
+}
+
+#[test]
+fn a_tree_deeper_than_the_limit_is_cut_and_not_complete() {
+    let area = Area::new();
+    let mut deep = area.root.clone();
+    for n in 0..MAX_DEPTH + 2 {
+        deep = deep.join(format!("d{n}"));
+    }
+    fs::create_dir_all(&deep).unwrap();
+    let files = area.confined();
+    let (seen, walk) = tree(&files, &[], 10_000);
+    assert!(seen.len() < MAX_DEPTH + 10);
+    assert!(!walk.complete && !walk.stopped);
+}
+
+#[test]
+fn stat_describes_the_root_a_file_and_a_folder_without_following_links() {
+    let area = Area::new();
+    symlink(area.outside(), area.root.join("escape")).unwrap();
+    let files = area.confined();
+
+    let root = files.stat(&[]).unwrap();
+    assert_eq!(
+        (root.name.as_str(), root.directory, root.size),
+        ("", true, 0)
+    );
+    let file = files.stat(&path(&["a.txt"])).unwrap();
+    assert_eq!(
+        (file.name.as_str(), file.directory, file.size),
+        ("a.txt", false, 11)
+    );
+    assert!(!file.read_only);
+    assert!(file.modified > 1_000_000_000);
+    let folder = files.stat(&path(&["saves"])).unwrap();
+    assert!(folder.directory);
+    assert_eq!(
+        files.stat(&path(&["escape"])).unwrap_err(),
+        FileError::Denied
+    );
+    assert_eq!(
+        files.stat(&path(&["nothing"])).unwrap_err(),
+        FileError::NotFound
+    );
+    assert_eq!(
+        files.stat(&path(&["..", "outside"])).unwrap_err(),
+        FileError::Denied
+    );
+}
+
+#[test]
+fn stat_reports_the_sub_second_part_of_a_modification_time_as_the_system_gave_it() {
+    let area = Area::new();
+    let file = fs::File::options()
+        .write(true)
+        .open(area.root.join("a.txt"))
+        .unwrap();
+    let stamp = std::time::UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789);
+    file.set_modified(stamp).unwrap();
+    let entry = area.confined().stat(&path(&["a.txt"])).unwrap();
+    assert_eq!(
+        (entry.modified, entry.modified_nanos),
+        (1_700_000_000, 123_456_789)
+    );
+    // A whole-second time is reported as zero nanoseconds, not as unknown.
+    file.set_modified(std::time::UNIX_EPOCH + Duration::new(1_700_000_001, 0))
+        .unwrap();
+    let entry = area.confined().stat(&path(&["a.txt"])).unwrap();
+    assert_eq!((entry.modified, entry.modified_nanos), (1_700_000_001, 0));
+}
+
+#[test]
+fn access_tells_the_read_only_metadata_apart_from_what_the_user_may_do() {
+    let area = Area::new();
+    let files = area.confined();
+    let file = area.root.join("a.txt");
+
+    let open = files.access(&path(&["a.txt"])).unwrap();
+    assert_eq!(
+        (
+            open.directory,
+            open.read_only,
+            open.read,
+            open.write,
+            open.create,
+            open.delete
+        ),
+        (
+            false,
+            false,
+            Tri::Allowed,
+            Tri::Allowed,
+            Tri::Unknown,
+            Tri::Allowed
+        )
+    );
+
+    // The mode says read-only, and the user really cannot write (a different thing from the mode,
+    // which root ignores).
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+    let locked = files.access(&path(&["a.txt"])).unwrap();
+    assert!(locked.read_only);
+    assert_eq!(locked.read, Tri::Allowed);
+    if !running_as_root() {
+        assert_eq!(locked.write, Tri::Denied);
+        // Deleting a file depends on its folder, not on the file's own mode.
+        assert_eq!(locked.delete, Tri::Allowed);
+    }
+
+    // The mode allows writing, yet the folder does not let the user delete or create.
+    fs::set_permissions(area.root.join("saves"), fs::Permissions::from_mode(0o555)).unwrap();
+    let folder = files.access(&path(&["saves"])).unwrap();
+    let inside = files.access(&path(&["saves", "slot1.sav"])).unwrap();
+    fs::set_permissions(area.root.join("saves"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(folder.directory);
+    assert_eq!(folder.read, Tri::Allowed);
+    if !running_as_root() {
+        assert_eq!((folder.write, folder.create), (Tri::Denied, Tri::Denied));
+        assert_eq!((inside.write, inside.delete), (Tri::Allowed, Tri::Denied));
+    }
+}
+
+#[test]
+fn access_to_the_root_cannot_say_whether_it_can_be_deleted_and_a_link_is_not_followed() {
+    let area = Area::new();
+    symlink(area.outside(), area.root.join("escape")).unwrap();
+    let files = area.confined();
+    let root = files.access(&[]).unwrap();
+    assert!(root.directory);
+    assert_eq!(
+        root.delete,
+        Tri::Unknown,
+        "the root's own folder is outside the approval"
+    );
+    assert_eq!(
+        files.access(&path(&["escape"])).unwrap_err(),
+        FileError::Denied
+    );
+}
+
+#[test]
+fn inspecting_changes_nothing_not_even_a_modification_time() {
+    let area = Area::new();
+    let files = area.confined();
+    let file = area.root.join("a.txt");
+    let stamp = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 5);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let before = fs::metadata(&file).unwrap();
+    let mode_before = fs::metadata(area.root.join("saves"))
+        .unwrap()
+        .permissions()
+        .mode();
+
+    let _ = tree(&files, &[], 1000);
+    files.stat(&path(&["a.txt"])).unwrap();
+    files.access(&path(&["a.txt"])).unwrap();
+    files.access(&path(&["saves"])).unwrap();
+
+    let after = fs::metadata(&file).unwrap();
+    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    assert_eq!(after.len(), before.len());
+    assert_eq!(fs::read(&file).unwrap(), b"hello world");
+    assert_eq!(
+        fs::metadata(area.root.join("saves"))
+            .unwrap()
+            .permissions()
+            .mode(),
+        mode_before
+    );
+    assert_eq!(
+        fs::read_dir(&area.root).unwrap().count(),
+        2,
+        "no file was created"
+    );
+}

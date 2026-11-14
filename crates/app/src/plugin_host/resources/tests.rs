@@ -26,6 +26,7 @@ mod declared_locations;
 mod files;
 mod games;
 mod jobs;
+mod locations;
 mod network;
 mod notifications;
 mod saves;

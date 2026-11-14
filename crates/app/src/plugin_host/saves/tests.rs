@@ -268,3 +268,55 @@ fn profile_ids_are_host_made_and_never_repeat() {
     assert!(first.starts_with("profile-") && first.len() == 40);
     assert_ne!(first, new_profile_id().unwrap());
 }
+
+fn rel(path: &str) -> Vec<String> {
+    path.split('/').map(str::to_owned).collect()
+}
+
+#[test]
+fn rules_match_the_whole_path_from_the_profile_folder() {
+    let only = |rules: &[&str], path: &str| {
+        selected(
+            &rules.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>(),
+            &rel(path),
+        )
+    };
+    // No rule selects everything.
+    assert!(only(&[], "anything/at/all.bin"));
+    // A rule is anchored: `*.sav` is the folder's own files, `**/*.sav` any depth.
+    assert!(only(&["*.sav"], "slot1.sav"));
+    assert!(!only(&["*.sav"], "states/slot1.sav"));
+    assert!(only(&["**/*.sav"], "slot1.sav"));
+    assert!(only(&["**/*.sav"], "a/b/c/slot1.sav"));
+    assert!(only(&["GC/**/*.gci"], "GC/USA/card.gci"));
+    assert!(only(&["GC/**/*.gci"], "GC/card.gci"));
+    assert!(!only(&["GC/**/*.gci"], "EU/card.gci"));
+    assert!(only(&["slot?.sav"], "slot1.sav"));
+    assert!(!only(&["slot?.sav"], "slot10.sav"));
+    assert!(only(&["Mario*"], "Mario Kart.srm"));
+    assert!(!only(&["Mario*"], "Luigi.srm"));
+    // Several inclusions are alternatives.
+    assert!(only(&["*.sav", "*.srm"], "x.srm"));
+    assert!(!only(&["*.sav", "*.srm"], "x.bin"));
+}
+
+#[test]
+fn an_exclusion_always_wins_and_alone_it_selects_everything_else() {
+    let only = |rules: &[&str], path: &str| {
+        selected(
+            &rules.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>(),
+            &rel(path),
+        )
+    };
+    assert!(!only(&["**", "!cache/**"], "cache/tmp.bin"));
+    assert!(only(&["**", "!cache/**"], "saves/a.sav"));
+    assert!(!only(&["!*.tmp"], "x.tmp"));
+    assert!(only(&["!*.tmp"], "x.sav"));
+    assert!(
+        only(&["!*.tmp"], "deep/x.tmp"),
+        "an exclusion is anchored too"
+    );
+    // An exclusion beats an inclusion that also matches.
+    assert!(!only(&["*.sav", "!slot1.sav"], "slot1.sav"));
+    assert!(only(&["*.sav", "!slot1.sav"], "slot2.sav"));
+}

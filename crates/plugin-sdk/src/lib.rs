@@ -301,6 +301,15 @@ impl HostClient {
             .max_encoding_message_size(MAX_MESSAGE_BYTES)
     }
 
+    /// The raw client of the `Locations` service (inspection of approved places). Like
+    /// [`resource_client`](Self::resource_client), callers put the session's resource context in
+    /// each request; the SDK adds no authority.
+    pub fn locations_client(&self) -> proto::locations_client::LocationsClient<Channel> {
+        proto::locations_client::LocationsClient::new(self.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES)
+    }
+
     /// Typed convenience calls for the library resources (library reads, display names,
     /// favorites, catalog matching and covers), bound to this session's resource context. `None`
     /// when the session negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).

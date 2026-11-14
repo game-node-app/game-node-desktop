@@ -12,14 +12,17 @@ use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    SetFileInformationByHandle, VOLUME_NAME_DOS,
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileDispositionInfo, GetFileInformationByHandle,
+    GetFinalPathNameByHandleW, SetFileInformationByHandle, VOLUME_NAME_DOS,
 };
 
-use super::{Confined, Entry, FileError, Identity, MAX_DIR_ENTRIES, Target, valid_component};
+use super::{
+    AccessInfo, Confined, Entry, FileError, Identity, MAX_DIR_ENTRIES, Target, Tri, valid_component,
+};
 
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 /// Seconds between 1601-01-01 (FILETIME) and the Unix epoch.
@@ -148,6 +151,22 @@ fn unix_seconds(metadata: &fs::Metadata) -> i64 {
     (metadata.last_write_time() / 10_000_000).saturating_sub(FILETIME_UNIX_OFFSET) as i64
 }
 
+/// The sub-second part of the write time: FILETIME counts 100-nanosecond ticks.
+fn unix_nanos(metadata: &fs::Metadata) -> u32 {
+    ((metadata.last_write_time() % 10_000_000) * 100) as u32
+}
+
+fn entry_of(name: String, directory: bool, metadata: &fs::Metadata) -> Entry {
+    Entry {
+        name,
+        directory,
+        size: if directory { 0 } else { metadata.file_size() },
+        modified: unix_seconds(metadata),
+        modified_nanos: unix_nanos(metadata),
+        read_only: metadata.file_attributes() & FILE_ATTRIBUTE_READONLY != 0,
+    }
+}
+
 pub(super) fn list(c: &Confined, directory: &[String]) -> Result<Vec<Entry>, FileError> {
     let path = open_directory(c, directory)?;
     let mut entries = Vec::new();
@@ -175,14 +194,87 @@ pub(super) fn list(c: &Confined, directory: &[String]) -> Result<Vec<Entry>, Fil
         if !directory && !metadata.is_file() {
             continue;
         }
-        entries.push(Entry {
-            name,
-            directory,
-            size: if directory { 0 } else { metadata.file_size() },
-            modified: unix_seconds(&metadata),
-        });
+        entries.push(entry_of(name, directory, &metadata));
     }
     Ok(entries)
+}
+
+/// The entry at `path`, or the root itself (named "") for an empty path.
+pub(super) fn stat(c: &Confined, path: &[String]) -> Result<Entry, FileError> {
+    let target = if path.is_empty() {
+        open_directory(c, &[])?
+    } else {
+        walk(c, path)?
+    };
+    let metadata = fs::symlink_metadata(&target).map_err(FileError::from)?;
+    if is_reparse(&metadata) {
+        return Err(FileError::Denied);
+    }
+    let directory = metadata.is_dir();
+    if !directory && !metadata.is_file() {
+        return Err(FileError::NotAFile);
+    }
+    let name = path.last().cloned().unwrap_or_default();
+    Ok(entry_of(name, directory, &metadata))
+}
+
+/// Whether the current user can open `path` itself with `mask`, which is how the system weighs
+/// the ACLs against the user's token. Nothing is written: the handle is closed at once and a
+/// share mode of everything keeps it from getting in anyone's way. A sharing violation or any
+/// other error is not an answer.
+fn probe(path: &Path, mask: u32) -> Tri {
+    const ACCESS_DENIED: i32 = 5;
+    match OpenOptions::new()
+        .access_mode(mask)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(_) => Tri::Allowed,
+        Err(error) if error.raw_os_error() == Some(ACCESS_DENIED) => Tri::Denied,
+        Err(_) => Tri::Unknown,
+    }
+}
+
+pub(super) fn access(c: &Confined, path: &[String]) -> Result<AccessInfo, FileError> {
+    let entry = stat(c, path)?;
+    let directory = entry.directory;
+    let target = if path.is_empty() {
+        c.root.path.clone()
+    } else {
+        walk(c, path)?
+    };
+    let (read, write, create) = if directory {
+        let write = probe(&target, FILE_ADD_FILE);
+        (probe(&target, FILE_LIST_DIRECTORY), write, write)
+    } else {
+        (
+            probe(&target, FILE_READ_DATA),
+            probe(&target, FILE_WRITE_DATA),
+            Tri::Unknown,
+        )
+    };
+    // The right to delete comes from the entry itself or from its folder.
+    let delete = match probe(&target, DELETE) {
+        Tri::Allowed => Tri::Allowed,
+        own => match target
+            .parent()
+            .filter(|_| !path.is_empty())
+            .map(|parent| probe(parent, FILE_DELETE_CHILD))
+        {
+            Some(Tri::Allowed) => Tri::Allowed,
+            Some(Tri::Denied) if own == Tri::Denied => Tri::Denied,
+            _ => Tri::Unknown,
+        },
+    };
+    Ok(AccessInfo {
+        directory,
+        read_only: entry.read_only,
+        read,
+        write,
+        create,
+        delete,
+    })
 }
 
 fn open_regular(c: &Confined, path: &Path, options: &mut OpenOptions) -> Result<File, FileError> {

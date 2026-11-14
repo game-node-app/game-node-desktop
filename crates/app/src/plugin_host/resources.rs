@@ -21,6 +21,7 @@ mod artwork;
 mod files;
 mod games;
 mod jobs;
+mod locations;
 mod matching;
 mod mutations;
 mod network;
@@ -119,6 +120,9 @@ const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and ins
 
 /// The `Saves` service methods this build serves, for `DescribeApi`.
 pub const SAVES_SERVED: &[Served] = saves::SERVED;
+
+/// The `Locations` service methods this build serves, for `DescribeApi`.
+pub const LOCATIONS_SERVED: &[Served] = locations::SERVED;
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {

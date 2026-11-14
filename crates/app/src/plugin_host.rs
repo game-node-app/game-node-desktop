@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 use tonic::{Request, Response, Status, transport::Server};
 
 pub mod compatibility;
+pub mod confirmations;
 pub mod files;
 pub mod grants;
 pub mod intents;
@@ -53,6 +54,10 @@ pub struct PluginInfo {
     pub capabilities: Vec<String>,
     pub session: String,
     pub native_access: Vec<String>,
+    /// The pinned publisher of a third-party plugin; `None` for the bundled ones. The settings
+    /// use it, with `plugin_id`, to find what the user allowed this plugin to start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher_fingerprint: Option<String>,
 }
 
 /// Resolving the current executable and checking sibling files touches disk;
@@ -92,6 +97,7 @@ fn inventory_at(
                 capabilities: plugin.capabilities.clone(),
                 session: if connected { "active" } else { "stopped" }.into(),
                 native_access: plugin.native_access.clone(),
+                publisher_fingerprint: None,
             }
         })
         .collect()

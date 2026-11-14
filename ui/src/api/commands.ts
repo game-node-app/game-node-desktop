@@ -22,6 +22,7 @@ import type {
   PortSuppliedPick,
   PortToolsCacheView,
 } from './ports';
+import type { RememberedConfirmation } from './pluginConfirmations';
 import { createDefaultSnapshot } from './types';
 
 export function isTauriRuntime(): boolean {
@@ -108,6 +109,26 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+
+  /** Answers a plugin's confirmation. Late, repeated or unknown answers are ignored by the host. */
+  pluginConfirmationAnswer: (id: string, approved: boolean, remember: boolean) =>
+    safeInvoke<void>('plugin_confirmation_answer', { id, approved, remember }, () => undefined),
+
+  /** What the user allowed one plugin to start without asking, in the active profile. */
+  pluginRememberedConfirmations: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<RememberedConfirmation[]>(
+      'plugin_remembered_confirmations',
+      { pluginId, publisherFingerprint },
+      () => [],
+    ),
+
+  /** Forgets one remembered confirmation, so the next request asks the user again. */
+  pluginRevokeConfirmation: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<boolean>(
+      'plugin_revoke_confirmation',
+      { pluginId, publisherFingerprint, id },
+      () => false,
+    ),
 
   providerSignIn: (providerId: string) =>
     safeInvoke<void>('provider_sign_in', { providerId }, () => undefined),

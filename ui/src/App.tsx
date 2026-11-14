@@ -10,6 +10,7 @@ import { useSettingsKeyboardShortcut } from './features/settings/useSettingsKeyb
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
 import { usePluginNotices } from './features/plugins/usePluginNotices';
+import { PluginConfirmationHost } from './features/plugins/PluginConfirmationHost';
 import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
@@ -156,6 +157,7 @@ export const App: React.FC = () => {
       <LazyOverlay>
         <GameToolsPanel />
       </LazyOverlay>
+      <PluginConfirmationHost />
       <ToastContainer />
     </div>
   );

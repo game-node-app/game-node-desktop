@@ -262,6 +262,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .notifications
         .set_sink(Arc::new(NoticeSink(app_handle_slot.clone())));
 
+    // A plugin's request to launch or install a game is confirmed in the window: the bridge shows
+    // it with an event and takes the answer from a command. With no window listening, a request
+    // that needs the user fails instead of waiting.
+    let confirmation_slot = app_handle_slot.clone();
+    let confirmations = Arc::new(
+        gamenode_app::plugin_host::confirmations::ConfirmationBridge::new(Arc::new(
+            move |signal| {
+                use gamenode_app::plugin_host::confirmations::{CLOSED_EVENT, EVENT, Signal};
+                use tauri::Emitter;
+                let guard = confirmation_slot.lock().unwrap();
+                let Some(app) = guard.as_ref() else {
+                    return false;
+                };
+                match signal {
+                    Signal::Open(confirmation) => app.emit(EVENT, &confirmation).is_ok(),
+                    Signal::Closed(id) => app.emit(CLOSED_EVENT, &id).is_ok(),
+                }
+            },
+        )),
+    );
+    plugin_api.intents.set_prompter(confirmations.clone());
+    let plugin_approvals = Arc::new(
+        gamenode_app::plugin_host::confirmations::PluginApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+        ),
+    );
+
     // PC ports progress leaves on its own event; the engine coalesces ticks before they get here.
     let progress_app_slot = app_handle_slot.clone();
     let port_progress = Arc::new(PortProgressPublisher::new(
@@ -366,6 +394,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     builder = builder.manage(engine.clone());
+    builder = builder.manage(confirmations);
+    builder = builder.manage(plugin_approvals);
     builder = builder.manage(logging.location().clone());
     // Serves `gamenode-asset://localhost/port-art/<catalogId>/<capsule|hero>`; without this state
     // every port artwork request is answered 404.
@@ -434,6 +464,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::open_tool_source,
         commands::clear_tool_cache,
         commands::plugin_inventory,
+        commands::plugin_confirmation_answer,
+        commands::plugin_remembered_confirmations,
+        commands::plugin_revoke_confirmation,
         commands::provider_sign_in,
         commands::provider_focus_sign_in,
         commands::provider_cancel_sign_in,

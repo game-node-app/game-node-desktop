@@ -2,4 +2,5 @@ export * from './types';
 export * from './commands';
 export * from './useSnapshot';
 export * from './ports';
+export * from './pluginConfirmations';
 export * from './pluginNotices';

@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { commands, type PluginInfo } from '../../api';
 import { useI18n } from '../../i18n';
+import { RememberedConfirmations } from './RememberedConfirmations';
 import {
   settingsCard,
   settingsPill,
@@ -94,6 +95,12 @@ export const PluginInventory: React.FC = () => {
                 </ul>
                 <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
               </div>
+              {selectedPlugin.publisherFingerprint && (
+                <RememberedConfirmations
+                  pluginId={selectedPlugin.pluginId}
+                  publisherFingerprint={selectedPlugin.publisherFingerprint}
+                />
+              )}
             </article>
           )}
         </div>

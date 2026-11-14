@@ -165,6 +165,7 @@ pub struct ResourceApi {
 }
 
 impl ResourceApi {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         providers: ProviderApi,
         library: Arc<LibraryFeed>,

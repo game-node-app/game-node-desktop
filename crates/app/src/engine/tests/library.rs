@@ -1907,3 +1907,59 @@ async fn a_stored_cover_and_its_revision_survive_a_restart() {
         ArtworkWrite::Conflict { current: 3 }
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_starts_and_installs_through_the_users_own_path() {
+    use tonic::Code;
+    let (mut h, _feed, host, _id) = plugin_library().await;
+
+    // What a launch would start is the same number until the target changes.
+    let first = host.launch_fingerprint("steam:620".into()).await.unwrap();
+    assert_eq!(
+        first,
+        host.launch_fingerprint("steam:620".into()).await.unwrap()
+    );
+    assert_eq!(
+        host.launch_fingerprint("steam:1".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+
+    // The same links the user's Play and Install open, and the launch status is cleared the same
+    // way once the operating system accepted them.
+    host.open_entry("steam:620".into(), false).await.unwrap();
+    host.open_entry("steam:620".into(), true).await.unwrap();
+    assert_eq!(
+        *h.uri.opened.lock().unwrap(),
+        ["steam://rungameid/620", "steam://nav/games/details/620"]
+    );
+    h.until("cleared once the OS accepted the link", |s| {
+        s.launch.is_none()
+    })
+    .await;
+
+    // An entry that is not in the library is not found.
+    assert_eq!(
+        host.open_entry("steam:1".into(), false)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+
+    // A refusal by the operating system is the user's own error too, and the plugin is told.
+    *h.uri.fail.lock().unwrap() = Some(UriError::NoHandler);
+    assert_eq!(
+        host.open_entry("steam:620".into(), false)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(
+        h.engine.snapshot().launch.unwrap().state,
+        LaunchState::Failed(LaunchError::NoHandler)
+    );
+}

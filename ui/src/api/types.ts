@@ -748,6 +748,8 @@ export interface PluginInfo {
   capabilities: string[];
   session: 'active' | 'stopped';
   nativeAccess: string[];
+  /** The pinned publisher of a third-party plugin; absent for the bundled ones. */
+  publisherFingerprint?: string;
 }
 
 export interface Snapshot {

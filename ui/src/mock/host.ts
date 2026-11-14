@@ -33,10 +33,13 @@ import type {
   PortsView,
 } from '../api/ports';
 import type { PluginNotice } from '../api/pluginNotices';
+import type { PluginConfirmation, RememberedConfirmation } from '../api/pluginConfirmations';
 
 type Listener = (snapshot: Snapshot) => void;
 type ProgressListener = (progress: PortProgress) => void;
 type PluginNoticeListener = (notice: PluginNotice) => void;
+type PluginConfirmationListener = (confirmation: unknown) => void;
+type PluginConfirmationClosedListener = (id: string) => void;
 
 export type MockSteamScenario =
   | 'notConnected'
@@ -768,6 +771,11 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
   const pluginNoticeListeners = new Set<PluginNoticeListener>();
+  const confirmationListeners = new Set<PluginConfirmationListener>();
+  const confirmationClosedListeners = new Set<PluginConfirmationClosedListener>();
+  /** Confirmations the fictional user left open, and what they chose to remember, by plugin. */
+  const openConfirmations = new Map<string, PluginConfirmation>();
+  const remembered = new Map<string, RememberedConfirmation[]>();
   const snapshot = createDefaultSnapshot();
   const ports = createMockPortsView(options.portsScenario ?? 'default');
   snapshot.ports = ports;
@@ -1274,8 +1282,53 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     publishPluginNotice(notice: PluginNotice) {
       pluginNoticeListeners.forEach((listener) => listener(notice));
     },
+    /** Confirmations a plugin asks of the user, as the host's `plugin:confirmation` event does. */
+    subscribePluginConfirmations(listener: PluginConfirmationListener) {
+      confirmationListeners.add(listener);
+      return () => { confirmationListeners.delete(listener); };
+    },
+    subscribePluginConfirmationsClosed(listener: PluginConfirmationClosedListener) {
+      confirmationClosedListeners.add(listener);
+      return () => { confirmationClosedListeners.delete(listener); };
+    },
+    /** Lets a test or the browser preview ask for a confirmation as a fictional plugin. */
+    publishPluginConfirmation(confirmation: PluginConfirmation) {
+      openConfirmations.set(confirmation.id, confirmation);
+      confirmationListeners.forEach((listener) => listener(confirmation));
+    },
+    /** The host stopping to wait for a confirmation (withdrawn or timed out). */
+    closePluginConfirmation(id: string) {
+      openConfirmations.delete(id);
+      confirmationClosedListeners.forEach((listener) => listener(id));
+    },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
+      if (cmd === 'plugin_confirmation_answer') {
+        const id = String(args.id ?? '');
+        const asked = openConfirmations.get(id);
+        openConfirmations.delete(id);
+        if (asked && args.approved === true && args.remember === true) {
+          const list = remembered.get(asked.pluginId) ?? [];
+          list.push({
+            id: `remembered-${list.length + 1}`,
+            gameName: asked.gameName,
+            operation: asked.operation,
+            approvedAt: Math.floor(Date.now() / 1000),
+          });
+          remembered.set(asked.pluginId, list);
+        }
+        return undefined;
+      }
+      if (cmd === 'plugin_remembered_confirmations') {
+        return [...(remembered.get(String(args.pluginId ?? '')) ?? [])];
+      }
+      if (cmd === 'plugin_revoke_confirmation') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = remembered.get(pluginId) ?? [];
+        const after = before.filter((item) => item.id !== args.id);
+        remembered.set(pluginId, after);
+        return after.length !== before.length;
+      }
       if (cmd === 'plugin_inventory') {
         const platform = options.platform ?? 'windows';
         const steamPlugin: PluginInfo = {

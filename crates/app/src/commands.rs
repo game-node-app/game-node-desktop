@@ -354,6 +354,42 @@ pub async fn plugin_inventory(
     .map_err(|_| "plugin inventory worker failed".to_owned())
 }
 
+/// Delivers the user's answer to a plugin's confirmation. A late, repeated or unknown answer is
+/// ignored: only a confirmation that is still waiting takes one.
+#[tauri::command]
+pub async fn plugin_confirmation_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::confirmations::ConfirmationBridge>>,
+    id: String,
+    approved: bool,
+    remember: bool,
+) -> Result<(), String> {
+    bridge.answer(&id, approved, remember);
+    Ok(())
+}
+
+/// What the user allowed one plugin to start without asking, in the active profile.
+#[tauri::command]
+pub async fn plugin_remembered_confirmations(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::confirmations::PluginApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::confirmations::RememberedConfirmation>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Forgets one remembered confirmation, so the next request asks the user again.
+#[tauri::command]
+pub async fn plugin_revoke_confirmation(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::confirmations::PluginApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &id)
+        .await
+}
+
 /// Whether `provider_id` names a provider the host loaded with an account and catalog.
 pub(crate) fn catalog_provider_loaded(
     runtime: Option<&Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>,

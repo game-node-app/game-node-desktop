@@ -7,7 +7,7 @@ Manage third-party native plugin packages, publisher identity, execution and upd
 ## ADDED Requirements
 
 ### Requirement: Managed package installation
-The application SHALL install third-party plugins only through explicit package import into its managed per-user registry. Packages SHALL be validated before execution and installed disabled until the user approves activation. Arbitrary files dropped outside this flow SHALL NOT be executed as plugins.
+The application SHALL install third-party plugins only through explicit package import into its managed per-user registry. Packages and publisher-key trust SHALL belong to the OS-user registry; activation and enabled state SHALL belong to the signed-in GameNode account. Packages SHALL be validated before execution and installed disabled until the user approves activation for that account. Arbitrary files dropped outside this flow SHALL NOT be executed as plugins.
 
 #### Scenario: Import a valid package
 - **WHEN** a user imports a valid package for this platform
@@ -113,7 +113,7 @@ The host SHALL require explicit initial trust of the publisher key fingerprint a
 - **THEN** automatic replacement is refused and the current verified version remains active
 
 ### Requirement: Independent lifecycle and failure isolation
-The user SHALL be able to enable, disable and remove each third-party plugin persistently. Disable SHALL revoke its sessions and stop supervised processes with a bounded grace period. A failed or disabled plugin SHALL NOT erase library history, start new work, or disable official providers.
+The user SHALL be able to enable and disable each third-party plugin persistently for the signed-in account and remove its package for the OS user. Third-party plugins SHALL run only while a GameNode account profile is active. Disable SHALL revoke its sessions and stop supervised processes with a bounded grace period. A failed or disabled plugin SHALL NOT erase library history, start new work, or disable official providers.
 
 #### Scenario: Disable a running plugin
 - **WHEN** the user disables a plugin during a scan
@@ -122,6 +122,10 @@ The user SHALL be able to enable, disable and remove each third-party plugin per
 #### Scenario: Plugin crashes
 - **WHEN** a third-party executable exits unexpectedly
 - **THEN** its status reports failure without an unbounded restart loop and official providers continue operating
+
+#### Scenario: Sign-out stops third-party plugins
+- **WHEN** the user signs out or the session is rejected
+- **THEN** third-party sessions are revoked, supervised processes stop with the bounded grace period and each account's enabled state is retained for its next sign-in
 
 #### Scenario: Remove installed plugin
 - **WHEN** the user removes a plugin

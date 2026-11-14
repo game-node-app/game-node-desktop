@@ -40,20 +40,21 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 - [x] 4.1 Implement third-party default-deny grants with independent read/create/update/delete, required/optional flags, scopes and revisions; map runtime/library-root/save-profile methods to their exact operation grants, and verify own-creator scope, category-wide or selected foreign public resource/operation consent, immutable provenance, acting-plugin audit, revocation, save/restart and persistence-failure rollback. Preserve the explicit storage.persist own-private-namespace cleanup exception while allowing separately authorized published-record deletion.
 - [x] 4.2 Enforce grants and identity/profile/session/operation scope for unary services and Exchange messages; verify explicit denial details and rejected submissions preserve previous successful facts.
 - [x] 4.3 Implement revocation notifications, affected-job cancellation and authorization checks at effect commit after queued work/confirmations; verify races cannot commit newly unauthorized changes.
-- [ ] 4.4 Isolate account identity, secret slots, storage and jobs by external identity/profile; verify Core/Steam aliases and foreign plugin resources are inaccessible through the API.
-- [ ] 4.5 Add bounded redacted authorization audit events and permission-reference docs describing API/native differences; verify captured logs contain no credentials, cookie values or raw request payloads.
+- [x] 4.4 Establish the host-owned namespace resolver for authenticated external identity (plugin ID, pinned publisher fingerprint and active profile ID), with provider-specific account/secret subscopes, owner assignment and profile-epoch fencing; verify callers cannot choose owners, physical paths or official credential aliases. Storage, job and secret adapters MUST consume this resolver rather than reimplement ownership.
+- [x] 4.5 Add bounded redacted authorization audit events and permission-reference docs describing API/native differences; verify captured logs contain no credentials, cookie values or raw request payloads.
+- [ ] 4.6 Bind the 4.4 resolver's profile to the signed-in GameNode account with no local/signed-out profile; issue no profile context, refuse profile-scoped services as unavailable and start no third-party process without a usable session; use the cached account during unverified offline starts; treat sign-out, session rejection and a different verified account as fenced profile changes; layer package/trust per OS user and activation/grants/config/data per account; verify each case and that another account on the same OS user sees packages but not the previous account's grants or data.
 
 ## 5. Library and presentation adapters
 
-- [ ] 5.1 Implement Library list/get/watch with own-provider filtering, separately granted whole-library reads and bounded events/cursors; verify cross-provider disclosure and stale cursor cases with domain fixtures.
-- [ ] 5.2 Implement validated display-metadata and favorite read/write adapters with resource revisions; verify idempotent writes, conflicts and rejection of foreign-provider mutations and document writable fields.
+- [ ] 5.1 Implement Library list/get/watch with own-provider filtering, separately granted whole-library reads and bounded events/cursors; expose matched GameNode `game_id` separately from stable opaque host-issued `installation_id`; verify unmatched entries, multiple installations per game, ID stability across rescans/match changes, cross-provider disclosure and stale cursor cases with domain fixtures.
+- [ ] 5.2 Implement validated display-metadata and favorite read/write adapters with resource revisions; target provider-owned display metadata by `installation_id` while keeping favorites keyed to a known GameNode `game_id`; verify idempotent writes, conflicts and rejection of foreign-provider mutations and document writable fields.
 - [ ] 5.3 Implement bounded matching search/assignment through existing Core policies; verify ownership, unavailable catalog and match-conflict outcomes with fixtures and document result semantics.
-- [ ] 5.4 Implement artwork read/set with bounded input, approved resource references and worker-side decoding/resizing; verify malformed images, oversized data and unauthorized targets cannot change library artwork.
+- [ ] 5.4 Implement artwork read/set with bounded input, approved resource references and worker-side decoding/resizing; target the caller-owned installation identity; verify unmatched installations, malformed images, oversized data and unauthorized targets cannot change library artwork.
 - [ ] 5.5 Add SDK convenience methods and practical read/write recipes for these adapters; verify equivalent raw gRPC and SDK outcomes against fixture-host service tests.
 
 ## 6. Scoped storage, files, network and notifications
 
-- [ ] 6.1 Implement namespaced storage get/put/delete, explicit SESSION_ONLY/PERSIST durability, quotas and revisions; verify storage.persist denial, atomic quota failures and isolation, and document non-secret versus Secret storage without exposing physical paths.
+- [ ] 6.1 Implement namespaced storage get/put/delete, explicit SESSION_ONLY/PERSIST durability, quotas and revisions using the 4.4 namespace resolver; verify storage.persist denial, atomic quota failures and isolation across plugins/profiles, and document non-secret versus Secret storage without exposing physical paths.
 - [ ] 6.2 Implement user-initiated per-plugin/per-game root approval and opaque file handles with list/read/write/delete, disabled at installation; verify sibling-game denial, reserved persistence-root exclusion, shared-resource scope, traversal, symlink/junction replacement and independent mutation permissions.
 - [ ] 6.3 Implement constrained HTTPS fetch with origin grants, redirect/DNS revalidation, size/deadline bounds and no Core credentials; verify private/local destinations and widened origins fail before data disclosure.
 - [ ] 6.4 Implement bounded plugin-attributed notifications without executable markup or arbitrary links; verify rate limiting, localization fallback and untrusted text rendering.
@@ -61,7 +62,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 7. Host-owned action and job adapters
 
-- [ ] 7.1 Implement caller-owned jobs with get/watch/cancel, idempotency and terminal outcomes for long operations; verify retries, foreign ids, cancellation and permission changes cannot duplicate effects.
+- [ ] 7.1 Implement caller-owned jobs with get/watch/cancel, idempotency and terminal outcomes for long operations using the 4.4 owner/profile context; verify retries, foreign ids, profile switches, cancellation and permission changes cannot duplicate or expose effects.
 - [ ] 7.2 Implement game.launch using detected URI/executable targets from any source within per-game scope, plus the existing independent install flow; verify overrides are rejected, explicit user intent is required and official playtime/launch behavior is preserved.
 - [ ] 7.3 Implement scoped backup list/create/restore through approved game/save-context profiles across providers without faking manual-provider ownership, with restore confirmation; verify target validation, cancellation and unsupported-platform results and document filesystem effects.
 - [ ] 7.4 Implement tools list/apply/remove through the existing host catalog and rollback/confirmation flow; verify plugins cannot supply arbitrary installer targets or bypass prerequisites.
@@ -78,10 +79,10 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 ## 8. External provider and configuration lifecycle
 
 - [ ] 8.1 Compose external provider backends and provider-free launch extensions beside the official registry, reserving official ids/namespaces; verify valid registered scanner/catalog/counter backends are accepted, operations exceeding their approved descriptor are rejected and collisions, missing provider contexts and invalid policies cannot impersonate or change official registration.
-- [ ] 8.2 Add external secret/account/login service composition with approved origins/cookies and host-defined page probes; verify no third-party credential alias or arbitrary privileged-page script is accepted.
-- [ ] 8.3 Implement start/enable/disable/remove and bounded process-tree shutdown with durable state and session fencing; verify crashes, timeouts, restart and removal preserve library facts and official operation.
+- [ ] 8.2 Add external secret/account/login service composition using the 4.4 namespace resolver, with dedicated logical secret slots, approved origins/cookies and host-defined page probes; verify Core/Steam aliases and foreign plugin/profile secrets cannot be selected and no arbitrary privileged-page script is accepted.
+- [ ] 8.3 Implement start/enable/disable/remove and bounded process-tree shutdown with durable per-account enabled state and session fencing; start third-party plugins only with an active account profile and stop them on sign-out/session rejection/account change; verify crashes, timeouts, restart, sign-out and removal preserve library facts and official operation.
 - [ ] 8.4 Add ui.configure and correlated Open/Focus/Close lifecycle results with one window handle per plugin/profile; verify repeated Configure focuses, five-second acknowledgements time out and provider commands remain serviceable.
-- [ ] 8.5 Handle window closure/fencing on profile change, revocation, disable, update and removal; verify stale window contexts cannot access new profile data or grant permissions.
+- [ ] 8.5 Handle window closure/fencing on profile change (including sign-out, session rejection and a different verified account), revocation, disable, update and removal; verify stale window contexts cannot access new profile data or grant permissions.
 - [ ] 8.6 Connect optional declarative ui.settings rendering with its existing closed schema and explicit authorization, preferring external configuration when both are available; verify external-only, form-only, both, denied and absent modes.
 - [ ] 8.7 Document lifecycle, process-supervision limits and plugin-owned UI/storage responsibilities; verify lifecycle fixtures distinguish management from functional configuration and do not embed plugin code into the GameNode frontend.
 
@@ -95,7 +96,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 ## 10. Settings integration
 
 - [ ] 10.1 Add asynchronous Tauri commands and React Query inventory/permission/update/configuration cache updates; verify grant revisions and saved host state remain authoritative after errors and concurrent events.
-- [ ] 10.2 Extend Stores PluginInventory with import, activation, disable, permission scopes and removal using shared controls/modals; verify keyboard behavior, denied states and unchanged official plugin details in component tests.
+- [ ] 10.2 Extend Stores PluginInventory with import, activation, disable, permission scopes and removal using shared controls/modals; verify keyboard behavior, denied states, read-only signed-out inventory with sign-in prompt and unchanged official plugin details in component tests.
 - [ ] 10.3 Add Configure routing and lifecycle status, with external-window preference and optional form fallback; verify unavailable/disabled modes, focus requests, timeout feedback and independent settings navigation.
 - [ ] 10.4 Add publisher fingerprint, requested/granted/effective access, native-code consent and offline license viewers; verify notice availability without network and accurate distinction between declared and enforced access.
 - [ ] 10.5 Add update diff, failure and rollback status plus complete en/pt-BR labels and mocks; verify slow operations leave unrelated UI usable and restore controls to actual saved state on persistence errors.
@@ -161,7 +162,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 16. Managed persistence and cleanup
 
-- [ ] 16.1 Add independent default-deny storage.persist, owner-attributed durable stores and explicit durability/expiry responses; verify receiver persistence additionally needs retention consent and missing grants never silently downgrade a durable write.
+- [ ] 16.1 Add independent default-deny storage.persist, owner-attributed durable stores keyed by the 4.4 namespace resolver and explicit durability/expiry responses; verify receiver persistence additionally needs retention consent, cross-plugin/profile isolation and missing grants never silently downgrade a durable write.
 - [ ] 16.2 Implement logical-only Persistence usage/list/delete/clear/retention-policy operations with authenticated owner resolution; verify foreign ids/cursors, traversal-like selectors, forged plugin ids and generic Files access cannot address another namespace or reveal physical persistence paths.
 - [ ] 16.3 Implement per-plugin/category logical/physical accounting, quotas and bounded performance-history retention with user-protected records; verify quota exhaustion preserves history, cleanup reclaims only owner data and physical/index overhead estimates are labelled accurately.
 - [ ] 16.4 Implement uninstall keep/delete choice and inert archived-data reclaim/reuse with preserved source/version provenance; verify no implicit access on reinstall/new consumer and deletion never affects game files, live saves or backup archives.
@@ -191,6 +192,8 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 - [ ] 18.8 Exercise common launch-plan consent end to end for runtime, mod and parameter-only overlays on official/third-party game fixtures; record accurate provenance/differences, changed-plan refusal, unchanged remembered Play, no unauthorized operation bypass and explicit limits on native-program behavior certification.
 
 - [ ] 18.9 Record native Windows/Linux environment-detection acceptance separately from pure evaluator fixtures, including execution userspace versus host, pre-launch revalidation and compatibility failure UI; do not treat a successful declaration check as native code safety certification.
+
+- [ ] 18.10 Verify identity/profile isolation end to end across account identity, secret slots, session and durable storage, caller-owned jobs and provider results; cover foreign plugin/profile selectors, Core/Steam alias attempts, profile-switch races, signed-out/no-session refusal, unverified offline start with the cached account, a different verified account and published-record grants that do not expose private namespaces.
 
 ## 19. Review decisions: accounting, public pool and discovery contexts
 

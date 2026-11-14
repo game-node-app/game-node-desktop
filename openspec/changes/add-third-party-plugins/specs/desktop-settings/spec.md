@@ -9,6 +9,10 @@ The Stores panel SHALL extend its plugin inventory with separate official and th
 - **WHEN** the user selects Install plugin and chooses a reference package
 - **THEN** the panel shows package validation progress and opens a review containing identity, publisher, license and requested permissions before activation
 
+#### Scenario: Plugin inventory while signed out
+- **WHEN** the user opens Stores from Settings/About without a signed-in account
+- **THEN** installed third-party packages and compatibility are shown read-only, and import, activation, grants, Configure, update and removal controls are unavailable with a localized sign-in prompt
+
 #### Scenario: Official plugin selected
 - **WHEN** the user selects Steam in the inventory
 - **THEN** its existing official attribution/details remain and third-party permission or update controls cannot alter its grants or bundled binary

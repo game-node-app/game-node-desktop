@@ -63,6 +63,10 @@ The API SHALL provide paginated library list/get/watch, display-metadata updates
 - **WHEN** a plugin has library.read but lacks library.read.all and requests another provider's entries
 - **THEN** those records are not disclosed
 
+#### Scenario: Stale page cursor
+- **WHEN** a list cursor is stale or no longer matches its original query scope
+- **THEN** the host rejects the page request without returning entries and the caller must restart the list
+
 #### Scenario: Metadata revision conflict
 - **WHEN** a plugin updates metadata using an obsolete revision
 - **THEN** the host reports a conflict without overwriting the newer value
@@ -440,3 +444,18 @@ Domain APIs and Data projections SHALL enforce identical publication, operation 
 #### Scenario: Public deletion does not expand private cleanup
 - **WHEN** a plugin has delete permission for one published record and storage.persist for its own namespace
 - **THEN** it can delete that authorized record and clean its own persisted entries, but cannot delete another plugin's private data
+
+### Requirement: Game and installation identity
+Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
+
+#### Scenario: Unmatched provider installation
+- **WHEN** a caller lists or gets an installation that has no GameNode match
+- **THEN** the host returns an empty `game_id` and a stable `installation_id` usable for permitted installation-scoped operations
+
+#### Scenario: Multiple installations of one game
+- **WHEN** two provider installations map to the same GameNode game
+- **THEN** each has a distinct `installation_id` and both report the same `game_id`
+
+#### Scenario: Match changes do not change installation identity
+- **WHEN** a provider installation is rescanned or its GameNode match changes
+- **THEN** its `installation_id` remains stable while `game_id` reflects the current match

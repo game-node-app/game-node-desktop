@@ -7,7 +7,7 @@ Give users enforceable control over third-party access to host APIs and accurate
 ## ADDED Requirements
 
 ### Requirement: Explicit persistent scoped grants
-The host SHALL deny third-party data permissions by default and persist each user's permission and scope decisions independently. Effective grants SHALL be limited by manifest requests, host support, user decisions and current resource/session/profile scope. A plugin SHALL NOT grant itself permissions.
+The host SHALL deny third-party data permissions by default and persist each GameNode account's permission and scope decisions independently. Effective grants SHALL be limited by manifest requests, host support, user decisions and current resource/session/profile scope. A plugin SHALL NOT grant itself permissions.
 
 #### Scenario: First activation
 - **WHEN** a plugin requests required and optional permissions
@@ -51,11 +51,61 @@ Permission changes SHALL increment the effective grant revision and notify activ
 - **THEN** its success remains accurate, subsequent writes are refused and no automatic undo is claimed
 
 ### Requirement: Plugin and profile isolation
-The host SHALL isolate credentials, private storage, jobs and provider results by identity and profile. Core credentials and foreign secrets SHALL remain inaccessible. Foreign provider account/discovery facts SHALL NOT be mutated through domain-resource grants. Mutating another plugin's shared domain records SHALL require explicit resource-and-operation consent and immutable creator provenance. Broader library reads SHALL require a separate grant.
+The host SHALL scope third-party resources to authenticated plugin, pinned publisher and active profile identity. Ownership SHALL come from the host context, and stale profile contexts SHALL NOT access a new profile.
 
-#### Scenario: Foreign secret slot
-- **WHEN** a plugin requests another plugin's secret or a GameNode/Steam credential alias
-- **THEN** the host rejects the request without disclosing whether the value exists
+#### Scenario: Private storage and job ownership
+- **WHEN** a plugin supplies a foreign plugin/profile owner or uses another plugin's job ID
+- **THEN** the host denies the request without revealing whether the namespace or job exists, and no data or job effect is exposed
+
+#### Scenario: Profile switch fences queued work
+- **WHEN** the active GameNode profile changes while a plugin operation is queued
+- **THEN** the old profile context is invalidated and the operation cannot read, mutate or commit data in the new profile
+
+### Requirement: Account-bound plugin profile
+The active plugin profile SHALL be the signed-in GameNode account. The host SHALL NOT create a local, anonymous or signed-out plugin profile. During an unverified restored session, the cached last signed-in account SHALL be the active profile.
+
+#### Scenario: Restored session awaiting verification
+- **WHEN** the application starts offline with a stored credential of the last signed-in account
+- **THEN** enabled plugins run with that cached account's profile and grants, consistent with the cached library
+
+#### Scenario: Verified account differs from the cached one
+- **WHEN** verification identifies a different account than the cached profile
+- **THEN** the cached profile's plugin contexts are fenced and sessions stop, and the new account starts only with its own grants, activation state and data
+
+### Requirement: No plugin profile without an account session
+Without a usable account session the host SHALL issue no profile context, SHALL NOT start third-party plugin processes and SHALL report profile-scoped services as unavailable, distinct from permission denial.
+
+#### Scenario: No signed-in account
+- **WHEN** GameNode has never been signed in, or the user signed out, or the restored session was rejected
+- **THEN** no third-party plugin process is started and profile-scoped requests receive an unavailable status without exposing any account's data
+
+### Requirement: Account-scoped plugin state
+Grants, activation state, configuration, secrets and private data SHALL be scoped to the account and retained for its next sign-in without automatic migration to another account. Installed packages and publisher trust SHALL remain per OS user.
+
+#### Scenario: Data does not follow account changes
+- **WHEN** another account signs in on the same OS user
+- **THEN** it sees installed packages but not the previous account's grants, configuration, secrets or private data
+
+### Requirement: Third-party credential isolation
+Secret slots SHALL be dedicated to the authenticated plugin, pinned publisher, provider sub-identity and profile. Requests SHALL use logical keys; they SHALL NOT select physical aliases. Core and foreign credentials SHALL remain inaccessible.
+
+#### Scenario: Credential alias isolation
+- **WHEN** a third-party plugin requests another plugin's secret or names a Core, GameNode or official-provider credential alias
+- **THEN** the host denies the request without disclosing whether the value exists
+
+### Requirement: Private storage and job ownership
+The host SHALL assign storage and job ownership from the authenticated plugin/profile context. Domain-resource grants SHALL NOT expose private namespaces or foreign jobs.
+
+#### Scenario: Foreign storage or job selector
+- **WHEN** a plugin supplies a foreign plugin/profile owner or uses another plugin's job ID
+- **THEN** the host denies the request without revealing whether the namespace or job exists, and no data or job effect is exposed
+
+### Requirement: Shared domain grants preserve private isolation
+Mutating another plugin's shared domain records SHALL require explicit resource-and-operation consent and immutable creator provenance. Broader library reads SHALL require a separate grant. A domain grant SHALL NOT transfer account, credential, storage or job ownership. Foreign provider account/discovery facts SHALL NOT be mutated through domain-resource grants.
+
+#### Scenario: Shared record grant does not transfer private ownership
+- **WHEN** a plugin receives a category-wide or selected-record grant for another plugin's published domain record
+- **THEN** it can access only the authorized record and operation, and cannot read the publisher's account identity, secrets, private storage or jobs
 
 #### Scenario: Profile changes
 - **WHEN** a profile changes while a plugin holds a scoped operation context

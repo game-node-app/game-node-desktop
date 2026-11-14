@@ -61,7 +61,7 @@ by the host.
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
 | `JobsGet`, `JobsWatch`, `JobsCancel` | the permission of the operation that created the job, plus ownership of the job (see [Jobs](#jobs)) |
 
-The domain services use these grants (of them, only the `Saves` profile methods are served by this build; see [Save profiles](#save-profiles)):
+The domain services use these grants (of them, only the `Saves` profile methods and `Locations.GetSize`, `GetAccess` and `GetLastModified` are served by this build; see [Save profiles](#save-profiles) and [Inspecting approved places](#inspecting-approved-places)):
 
 | Service methods | Permission |
 | --- | --- |
@@ -835,6 +835,60 @@ reads nothing.
   `BackupsRequestRestore` stay `UNIMPLEMENTED`), and nothing parses, converts or loads a save. A
   profile says where saves are; it does not make them readable: reading needs `files.read` and the
   approval.
+
+## Inspecting approved places
+
+`Locations.GetSize`, `GetAccess` and `GetLastModified` describe an approved place from its **metadata
+alone**. They open no file for its content and change nothing to find out: no permission, no
+timestamp, no file. `Inspect`, `GetFingerprint`, `Compare` and `WatchAvailability` are not served yet
+(`UNIMPLEMENTED`).
+
+- **What a place is.** A handle the plugin already holds for a folder the user approved ([Files](#files)),
+  or for a file or directory below it; or the id of one of the plugin's own [save profiles](#save-profiles),
+  which stands for the union of its folders narrowed by their naming rules. A forged, edited, revoked
+  or another session's handle, and another plugin's profile id, are `NOT_FOUND`.
+- **Permissions.** `game.storage.inspect` for a folder approved as `installation`, `game.saves.inspect`
+  for one approved as `save` or `prefix` and for a profile. Neither needs `files.read`, and neither
+  gives it: a plugin that lost `files.read` can still ask how big a folder is and still cannot list
+  or read it. The permission is checked again after the walk, which may take seconds.
+- **`GetSize`** reports logical bytes (the sum of the files' sizes, not allocated disk space), the
+  number of selected files and the number of folders visited. For a profile, only the files its
+  rules select count, and a file reachable through two of its folders (a folder and one inside it)
+  counts once. A rule matches the whole path from the profile's folder, so `*.sav` is the folder's own
+  files and `**/*.sav` those at any depth. Links, devices and mount points do not exist for a plugin
+  and are not counted.
+- **Bounded and honest.** A walk visits at most `max_entries` entries (default 10,000, at most
+  100,000) and runs for at most 5 seconds, and it stops when the call is abandoned. If it was cut,
+  or a folder inside could not be read, or a folder of a profile has lost its approval, the answer says
+  `complete = false`. A place that cannot be inspected at all is reported through `availability`
+  (`MISSING` for a folder that is gone, moved or replaced, `INACCESSIBLE` when the system will not let
+  GameNode in) with zeros and `complete = false`, never as an empty folder. `UNMOUNTED` and
+  `DISCONNECTED` come with the volume metadata of task 13.5; until then a drive that is away looks
+  `MISSING`. Nothing is created in place of a missing folder.
+- **`GetLastModified`** lists, first, the place's own folder time under the handle that was asked
+  about, then up to `max_entries` entries below it (default 100, at most 1,000), each with a handle
+  for the next call and its modification time. `aggregate_latest_at` is the newest time among the
+  selected entries *below* the folder, apart from the folder's own, which changes when files are
+  added or removed. `precision` is `subsecond` when the system reported a fractional part and
+  `whole_second` when it did not; it describes what was observed, not a guarantee about the
+  filesystem. An entry the system gave no time for is left out, never reported as 1970.
+- **`GetAccess`** answers, per entry (the place itself when no `entry_handles` are named; up to 100
+  entries of the same approval; a profile lists its folders), two separate things.
+  `read_only_state` is metadata (`read_only` or `writable`: the read-only attribute on Windows, no write
+  bit on Linux). `effective_access` is what the current operating-system user may do now:
+  `read=… write=… create=… delete=… method=…`, each right `allowed`, `denied` or `unknown`, and the
+  method naming how it was found out (`kernel_access_check` on Linux, `open_probe` on Windows, `none`
+  when the place could not be reached). On Linux it comes from the
+  kernel's own access check, which weighs the mode, owner, group, ACLs and a read-only mount; delete
+  depends on the entry's folder, and `create` and `delete` are `unknown` where they do not apply or
+  cannot be told (a file's `create`, the approved root's `delete`, a sticky folder). On Windows each
+  right is probed by opening the entry with that access and closing it at once, nothing written;
+  a sharing violation or any other error is `unknown`. **The Windows probe has only been
+  type-checked, never run on Windows.**
+- **A profile's lost folder** (its approval revoked or changed) is reported as `MISSING` in
+  `GetAccess`, as a partial total in `GetSize`, and is left out of `GetLastModified`.
+- **Not covered.** Hashes and comparisons (13.4), volume identity, local-versus-network and media
+  hints, and availability events (13.5), and runtime resources (there are none yet).
 
 ## Launching and installing
 

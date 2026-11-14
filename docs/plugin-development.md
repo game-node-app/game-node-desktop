@@ -114,8 +114,10 @@ and read budget are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#jobs)).
 The `Saves` domain service is also served (`ListProfiles`, `GetProfile`, `CreateProfile`,
 `UpdateProfile`, `RemoveProfile`; see
-[`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles); the Rust SDK exposes the raw
-`HostClient::saves_client()`). Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
+[`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles)) and `Locations.GetSize`,
+`GetAccess` and `GetLastModified` (see
+[`plugin-api-permissions.md`](plugin-api-permissions.md#inspecting-approved-places)); the Rust SDK
+exposes the raw `HostClient::saves_client()` and `HostClient::locations_client()`. Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
 instead of inferring availability from the protobuf contract.
 
@@ -364,6 +366,23 @@ under "Save profiles" in `docs/plugin-api-permissions.md`; what to do about them
 - A profile is not permission to read, back up or restore anything, and removing it deletes nothing
   of the user's. Describe the format (`format_id`, `format_version`, metadata) only as a hint for
   other tools: GameNode does not parse or convert saves.
+
+## Inspecting approved places
+
+Use `Locations.GetSize`, `GetAccess` and `GetLastModified` to learn about a folder or a save profile
+you already have, without reading it. Rules are under "Inspecting approved places" in
+`docs/plugin-api-permissions.md`; what to do about them:
+
+- Declare `game.saves.inspect` for save and prefix folders and profiles, `game.storage.inspect` for
+  installation folders. You do not need `files.read` for this, and it does not give you any.
+- Read `complete` before trusting a total: `false` means the walk was cut or part of the place was
+  not reachable. Ask again with a larger `max_entries`, or treat it as "at least".
+- Read `availability` before you read a number: `MISSING` or `INACCESSIBLE` mean you learned nothing
+  about the contents; do not show "0 bytes", and do not create the folder again to make it go away.
+- Do not treat `modified_at` as a hash. A changed time or size is a hint that something changed; a
+  same time and size is not proof that nothing did.
+- `effective_access` is a snapshot of what the user could do a moment ago, not a promise: the
+  file may change, or the system may refuse for another reason. `unknown` is a real answer.
 
 ## Utility helpers and recipes (Rust SDK)
 

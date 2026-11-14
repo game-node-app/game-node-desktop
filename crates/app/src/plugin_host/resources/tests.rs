@@ -7,6 +7,7 @@ use crate::plugin_host::library::{
     StoredArtwork,
 };
 use crate::plugin_host::network::NetworkAccess;
+use crate::plugin_host::notifications::Notifications;
 use crate::plugin_host::provider::{HostServices, Lease, Registration, RegistrationOrigin};
 use crate::plugin_host::storage::PluginStorage;
 use gamenode_core::library::{ArtworkWrite, DisplayWrite};
@@ -22,6 +23,7 @@ use tonic::transport::Channel;
 
 mod files;
 mod network;
+mod notifications;
 mod sdk;
 mod storage;
 
@@ -53,6 +55,10 @@ struct Fixture {
     files: Arc<FileAccess>,
     network: Arc<NetworkAccess>,
     fetcher: Arc<network::FakeFetcher>,
+    notifications: Arc<Notifications>,
+    /// The time the notification rate limit sees; tests move it.
+    notice_clock: Arc<std::sync::atomic::AtomicU64>,
+    notices: Arc<notifications::Collected>,
     /// The seconds the storage clock reads; tests move it to expire values.
     clock: Arc<std::sync::atomic::AtomicI64>,
     plugin_data: std::path::PathBuf,
@@ -103,10 +109,22 @@ impl Fixture {
         // Fetches go to a scripted stand-in; the origins plugins may reach start empty.
         let fetcher = Arc::new(network::FakeFetcher::default());
         let network = Arc::new(NetworkAccess::new(fetcher.clone()));
+        // Notifications go to a collector; the rate limit follows a clock the tests move.
+        let notice_base = std::time::Instant::now();
+        let notice_clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let notifications = Arc::new({
+            let clock = notice_clock.clone();
+            Notifications::default().with_clock(move || {
+                notice_base + Duration::from_millis(clock.load(Ordering::SeqCst))
+            })
+        });
+        let notices = Arc::new(notifications::Collected::default());
+        notifications.set_sink(notices.clone());
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
             network: network.clone(),
+            notifications: notifications.clone(),
             ..Default::default()
         };
         let api = root.providers.clone();
@@ -174,6 +192,9 @@ impl Fixture {
             files,
             network,
             fetcher,
+            notifications,
+            notice_clock,
+            notices,
             clock,
             plugin_data,
             endpoint,
@@ -556,6 +577,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.storage.clone(),
         fixture.files.clone(),
         fixture.network.clone(),
+        fixture.notifications.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {
@@ -590,7 +612,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .notifications_publish(NotificationPublishRequest::default())
+        .backups_list(BackupsListRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -623,6 +645,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("FilesWrite", 0),
             ("FilesDelete", 0),
             ("NetworkFetch", 0),
+            ("NotificationsPublish", 0),
         ]
     );
 }

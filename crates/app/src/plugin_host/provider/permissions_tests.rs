@@ -120,6 +120,7 @@ async fn control_plane_requires_the_session_credential_and_streams_grant_revisio
         storage: Default::default(),
         files: Default::default(),
         network: Default::default(),
+        notifications: Default::default(),
     };
 
     // The control plane is authenticated independently of data permissions,

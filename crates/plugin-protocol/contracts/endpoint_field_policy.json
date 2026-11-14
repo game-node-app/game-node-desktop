@@ -890,8 +890,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Notifications/Publish",
-      "request_policy": "Typed bounded/localizable text, severity and allowed host action identifiers",
-      "response_policy": "Typed accepted/rate-limit result",
+      "request_policy": "Typed bounded plain text (title, body, optional translations by locale) and severity; no markup, links or actions",
+      "response_policy": "Typed accepted outcome; a rate limit is RESOURCE_EXHAUSTED with the wait in retry-after-ms",
       "extension_or_opaque_policy": "None; no arbitrary UI/actions",
       "access_model": "Attributed notification grant",
       "status": "protobuf_contract",

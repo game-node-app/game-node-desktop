@@ -247,6 +247,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // A plugin's notification leaves on its own event and is shown by the window as plain text.
+    // It is an event, not state: with no window listening it is dropped.
+    struct NoticeSink(Arc<std::sync::Mutex<Option<AppHandle>>>);
+    impl gamenode_app::plugin_host::notifications::NotificationSink for NoticeSink {
+        fn deliver(&self, notice: gamenode_app::plugin_host::notifications::PluginNotice) {
+            if let Some(app) = self.0.lock().unwrap().as_ref() {
+                use tauri::Emitter;
+                let _ = app.emit(gamenode_app::plugin_host::notifications::EVENT, &notice);
+            }
+        }
+    }
+    plugin_api
+        .notifications
+        .set_sink(Arc::new(NoticeSink(app_handle_slot.clone())));
+
     // PC ports progress leaves on its own event; the engine coalesces ticks before they get here.
     let progress_app_slot = app_handle_slot.clone();
     let port_progress = Arc::new(PortProgressPublisher::new(

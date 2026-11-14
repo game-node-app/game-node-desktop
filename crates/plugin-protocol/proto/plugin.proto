@@ -345,7 +345,14 @@ message FilesWriteRequest { MutationContext mutation = 1; string file_handle = 2
 message FilesDeleteRequest { MutationContext mutation = 1; string file_handle = 2; }
 message NetworkFetchRequest { ServiceContext context = 1; string url = 2; string method = 3; map<string,string> headers = 4; bytes body = 5; uint64 max_response_bytes = 6; uint32 timeout_ms = 7; }
 message NetworkFetchReply { uint32 status_code = 1; map<string,string> headers = 2; bytes body = 3; string final_origin = 4; }
-message NotificationPublishRequest { MutationContext mutation = 1; string title = 2; string body = 3; string locale = 4; string severity = 5; }
+// Plain text only, shown by Core as coming from the plugin. `title` and `body` are in `locale` (a
+// language tag such as "en" or "pt-BR", or empty when unspecified); `translations` are optional
+// versions in other locales, each with a distinct non-empty `locale`. Core shows the one that
+// matches the user's language, then the same language without a region, then `title`/`body`.
+// `severity` is empty or one of "info", "success", "warning", "error". Core renders every text as
+// plain text: nothing in it is markup, a link or an action. `expected_revision` must be 0.
+message NotificationTranslation { string locale = 1; string title = 2; string body = 3; }
+message NotificationPublishRequest { MutationContext mutation = 1; string title = 2; string body = 3; string locale = 4; string severity = 5; repeated NotificationTranslation translations = 6; }
 message BackupsListRequest { PageRequest page = 1; string game_id = 2; string profile_id = 3; }
 message BackupCreateRequest { MutationContext mutation = 1; string game_id = 2; string profile_id = 3; string reason = 4; }
 message BackupRestoreRequest { MutationContext mutation = 1; string backup_id = 2; string game_id = 3; string profile_id = 4; string user_intent_id = 5; }

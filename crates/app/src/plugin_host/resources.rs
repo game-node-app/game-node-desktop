@@ -22,6 +22,7 @@ mod files;
 mod matching;
 mod mutations;
 mod network;
+mod notifications;
 mod storage;
 
 use super::files::FileAccess;
@@ -30,6 +31,7 @@ use super::library::{
     MAX_SEARCH_BYTES, ResumeError, Scope,
 };
 use super::network::NetworkAccess;
+use super::notifications::Notifications;
 use super::provider::{ProviderApi, ResourceCaller};
 use super::storage::PluginStorage;
 
@@ -76,12 +78,19 @@ pub const SERVED: &[Served] = &[
     Served::new("FilesWrite", cap::FILES_WRITE, false, APPROVED_FOLDERS),
     Served::new("FilesDelete", cap::FILES_DELETE, false, APPROVED_FOLDERS),
     Served::new("NetworkFetch", cap::NETWORK_FETCH, false, APPROVED_ORIGINS),
+    Served::new(
+        "NotificationsPublish",
+        cap::NOTIFICATIONS_PUBLISH,
+        false,
+        OWN_NOTICES,
+    ),
 ];
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
 const CATALOG: &str = "GameNode catalog (title search)";
 const PRIVATE_NAMESPACE: &str = "own plugin/publisher/profile namespace";
+const OWN_NOTICES: &str = "plain text attributed to the calling plugin";
 const APPROVED_ORIGINS: &str = "exact HTTPS origins the user approved for this plugin";
 const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and installation";
 
@@ -126,6 +135,8 @@ pub struct ResourceApi {
     files: Arc<FileAccess>,
     /// Approved origins and limits for network fetches.
     network: Arc<NetworkAccess>,
+    /// The notifications plugins ask Core to show.
+    notifications: Arc<Notifications>,
 }
 
 impl ResourceApi {
@@ -135,6 +146,7 @@ impl ResourceApi {
         storage: Arc<PluginStorage>,
         files: Arc<FileAccess>,
         network: Arc<NetworkAccess>,
+        notifications: Arc<Notifications>,
     ) -> Self {
         Self {
             providers,
@@ -142,6 +154,7 @@ impl ResourceApi {
             storage,
             files,
             network,
+            notifications,
             watches: Arc::default(),
             mutations: Arc::default(),
             searches: Arc::default(),
@@ -576,13 +589,19 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.fetch_url(request).await
     }
 
+    async fn notifications_publish(
+        &self,
+        request: Request<NotificationPublishRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.publish_notification(request).await
+    }
+
     not_served! {
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
         games_request_install(GameInstallRequest) -> JobReply;
-        notifications_publish(NotificationPublishRequest) -> MutationReply;
         backups_list(BackupsListRequest) -> BackupsListReply;
         backups_request_create(BackupCreateRequest) -> JobReply;
         backups_request_restore(BackupRestoreRequest) -> JobReply;

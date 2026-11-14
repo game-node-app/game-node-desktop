@@ -24,6 +24,7 @@ pub mod login;
 pub mod managed_packages;
 pub mod namespace;
 pub mod network;
+pub mod notifications;
 pub mod package;
 pub mod process;
 pub mod profile;
@@ -484,6 +485,8 @@ pub struct PluginApi {
     pub files: Arc<files::FileAccess>,
     /// Approved origins and limits for plugin network fetches.
     pub network: Arc<network::NetworkAccess>,
+    /// The notifications plugins ask Core to show.
+    pub notifications: Arc<notifications::Notifications>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -707,6 +710,7 @@ impl PluginApiServer {
                     api.storage.clone(),
                     api.files.clone(),
                     api.network.clone(),
+                    api.notifications.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -789,6 +793,7 @@ impl PluginApiServer {
                     api.storage.clone(),
                     api.files.clone(),
                     api.network.clone(),
+                    api.notifications.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

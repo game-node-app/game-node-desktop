@@ -3,6 +3,7 @@ use crate::library::machine::Input;
 use crate::library::machine::tests::{finish_scan, loaded, record, stored, stored_with};
 use crate::library::matching::MatchSource;
 use crate::library::store::{AutoMatch, ChosenMatch, GameRecord, LibraryCache};
+use std::collections::BTreeMap;
 
 fn row(provider: &str, id: &str, title: &str, status: MatchStatus) -> Row {
     Row {
@@ -861,4 +862,127 @@ fn provider_counts_follow_every_facet_except_the_sidebar_and_stay_raw_for_facts(
         .find(|count| count.id == "steam")
         .unwrap();
     assert_eq!(steam.count, 1);
+}
+
+fn override_cache(display_overrides: Vec<crate::library::DisplayOverride>) -> LibraryCache {
+    LibraryCache {
+        entries: vec![
+            stored("steam", "620", "portal 2", true),
+            stored("steam", "70", "Half-Life", true),
+        ],
+        auto_matches: vec![AutoMatch {
+            category: 1,
+            uid: "620".to_owned(),
+            game_ids: vec![7],
+            checked_at: 1,
+        }],
+        games: vec![GameRecord {
+            game_id: 7,
+            name: "Portal 2".to_owned(),
+            release_year: None,
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+        }],
+        display_overrides,
+        ..LibraryCache::default()
+    }
+}
+
+fn titles(machine: &mut LibraryMachine) -> BTreeMap<String, String> {
+    machine
+        .all_rows()
+        .into_iter()
+        .map(|row| (row.key, row.title))
+        .collect()
+}
+
+fn scan_both(machine: &mut LibraryMachine) {
+    finish_scan(
+        machine,
+        vec![
+            record("620", "portal 2", "/p"),
+            record("70", "Half-Life", "/h"),
+        ],
+        9,
+    );
+}
+
+fn stored_override(machine: &mut LibraryMachine, key: &str, name: Option<&str>, revision: u64) {
+    machine.handle(Input::DisplayNameStored {
+        key: key.to_owned(),
+        display_name: name.map(str::to_owned),
+        revision,
+    });
+}
+
+#[test]
+fn a_plugin_display_name_wins_over_the_matched_and_detected_titles_until_cleared() {
+    let (mut machine, _) = loaded(false, override_cache(vec![]));
+    scan_both(&mut machine);
+    assert_eq!(
+        titles(&mut machine)["steam:620"],
+        "Portal 2",
+        "matched name"
+    );
+    assert_eq!(
+        titles(&mut machine)["steam:70"],
+        "Half-Life",
+        "detected name"
+    );
+
+    stored_override(&mut machine, "steam:620", Some("Portal Two"), 1);
+    stored_override(&mut machine, "steam:70", Some("HL"), 1);
+    let rows = machine.all_rows();
+    let portal = rows.iter().find(|row| row.key == "steam:620").unwrap();
+    // The facts stay separate from the override.
+    assert_eq!(portal.title, "Portal Two");
+    assert_eq!(portal.matched_name.as_deref(), Some("Portal 2"));
+    assert_eq!(portal.detected_name, "portal 2");
+    assert_eq!(titles(&mut machine)["steam:70"], "HL");
+
+    // Clearing restores each entry's previous title and the revision keeps counting.
+    stored_override(&mut machine, "steam:620", None, 2);
+    stored_override(&mut machine, "steam:70", None, 2);
+    assert_eq!(titles(&mut machine)["steam:620"], "Portal 2");
+    assert_eq!(titles(&mut machine)["steam:70"], "Half-Life");
+    let cleared = machine.display_override("steam:620").unwrap();
+    assert_eq!(
+        (cleared.display_name.as_deref(), cleared.revision),
+        (None, 2)
+    );
+}
+
+#[test]
+fn a_display_name_for_an_unknown_entry_is_ignored() {
+    let (mut machine, _) = loaded(false, override_cache(vec![]));
+    scan_both(&mut machine);
+    stored_override(&mut machine, "steam:nope", Some("Ghost"), 1);
+    assert!(machine.display_override("steam:nope").is_none());
+    assert_eq!(titles(&mut machine).len(), 2);
+}
+
+#[test]
+fn stored_display_names_load_with_their_revision() {
+    let (mut machine, _) = loaded(
+        false,
+        override_cache(vec![
+            crate::library::DisplayOverride {
+                entry_key: "steam:620".to_owned(),
+                display_name: Some("Portal Two".to_owned()),
+                revision: 4,
+            },
+            // Cleared earlier: no name, but its revision is kept.
+            crate::library::DisplayOverride {
+                entry_key: "steam:70".to_owned(),
+                display_name: None,
+                revision: 2,
+            },
+        ]),
+    );
+    scan_both(&mut machine);
+    assert_eq!(titles(&mut machine)["steam:620"], "Portal Two");
+    assert_eq!(titles(&mut machine)["steam:70"], "Half-Life");
+    assert_eq!(machine.display_override("steam:620").unwrap().revision, 4);
+    assert_eq!(machine.display_override("steam:70").unwrap().revision, 2);
 }

@@ -101,8 +101,12 @@ impl LibraryMachine {
             playtime: self.playtime.get(&entry.key).copied().unwrap_or_default(),
             running: self.running.contains(&entry.key),
             key: entry.key.clone(),
-            title: matched_name
-                .clone()
+            // A plugin's display override wins, then the matched game's name, then the detected one.
+            title: self
+                .display_overrides
+                .get(&entry.key)
+                .and_then(|over| over.display_name.clone())
+                .or_else(|| matched_name.clone())
                 .unwrap_or_else(|| detected_name.clone()),
             detected_name,
             matched_name,

@@ -579,24 +579,20 @@ impl plugin_host_server::PluginHost for PluginApi {
                 },
             ]
             .into_iter()
-            .chain(
-                resources::SERVED
-                    .iter()
-                    .map(|(method, permission, paged)| ApiMethod {
-                        service: "ResourceHost".into(),
-                        method: (*method).into(),
-                        introduced_minor: capability::THIRD_PARTY_API_MINOR,
-                        permissions: vec![(*permission).into()],
-                        ownership: "own provider; library.read.all for every provider".into(),
-                        max_page_size: if *paged {
-                            library::MAX_PAGE_SIZE as u32
-                        } else {
-                            0
-                        },
-                        quota_bytes: 0,
-                        idempotent: true,
-                    }),
-            )
+            .chain(resources::SERVED.iter().map(|served| ApiMethod {
+                service: "ResourceHost".into(),
+                method: served.method.into(),
+                introduced_minor: capability::THIRD_PARTY_API_MINOR,
+                permissions: vec![served.permission.into()],
+                ownership: served.ownership.into(),
+                max_page_size: if served.paged {
+                    library::MAX_PAGE_SIZE as u32
+                } else {
+                    0
+                },
+                quota_bytes: 0,
+                idempotent: true,
+            }))
             .collect(),
         }))
     }

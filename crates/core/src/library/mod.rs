@@ -45,8 +45,8 @@ pub use membership::{EntryStatus, GameStatus, Membership, StandingView};
 pub use query::{ProviderCount, Row};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
-    LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount, StoredEntry,
-    entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
+    DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryStore,
+    ProviderScanState, StoreAccount, StoredEntry, entry_key,
 };
 pub use view::{DetailView, EmptyState, LibraryView};

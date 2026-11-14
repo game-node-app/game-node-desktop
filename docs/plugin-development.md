@@ -98,8 +98,11 @@ method, message, stream, permission, owner, revision, pagination, quota and idem
 contract tests compare every route to the generated protobuf descriptor. The permission grouping
 is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes are `UNIMPLEMENTED`.
 
-The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet` and `LibraryWatch`
-(grants, scope, cursors and watch rules are in [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads)).
+The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, `LibraryWatch`,
+`MetadataUpdate`, `FavoritesList` and `FavoritesSet` (grants, scope, cursors and watch rules are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
+revisions, favorites and idempotency keys are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md#display-metadata-and-favorites)).
 Every other `ResourceHost` method and all domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
 instead of inferring availability from the protobuf contract.

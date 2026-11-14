@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::library::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
-    LastAccount, LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, StoreAccount,
-    StoredEntry, entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
+    DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout,
+    LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -444,6 +444,32 @@ impl LibraryStore for SqliteLibraryStore {
             })
             .unwrap_or_default();
 
+        let display_overrides = conn
+            .prepare(
+                "SELECT entry_key, display_name, revision
+                 FROM library_display_overrides ORDER BY entry_key",
+            )
+            .map_err(failed)?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|(entry_key, display_name, revision)| {
+                Some(DisplayOverride {
+                    entry_key,
+                    display_name,
+                    revision: u64::try_from(revision).ok()?,
+                })
+            })
+            .collect();
+
         Ok(LibraryCache {
             entries,
             scans,
@@ -452,6 +478,7 @@ impl LibraryStore for SqliteLibraryStore {
             favorites,
             games,
             excluded,
+            display_overrides,
         })
     }
 
@@ -746,6 +773,53 @@ impl LibraryStore for SqliteLibraryStore {
     fn save_excluded(&self, excluded: &[String]) -> Result<(), StorageError> {
         let json = serde_json::to_string(excluded).map_err(failed)?;
         write_setting(&self.conn(), KEY_EXCLUDED, &json).map_err(failed)
+    }
+
+    fn save_display_name(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        display_name: Option<&str>,
+    ) -> Result<DisplayWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<(Option<String>, i64)> = tx
+            .query_row(
+                "SELECT display_name, revision FROM library_display_overrides WHERE entry_key = ?1",
+                [entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let (current_name, current_revision) = match current {
+            Some((name, revision)) => (name, u64::try_from(revision).map_err(failed)?),
+            None => (None, 0),
+        };
+        if current_revision != expected_revision {
+            return Ok(DisplayWrite::Conflict {
+                current: current_revision,
+            });
+        }
+        if current_name.as_deref() == display_name {
+            return Ok(DisplayWrite::Unchanged {
+                revision: current_revision,
+            });
+        }
+        let revision = current_revision + 1;
+        tx.execute(
+            "INSERT INTO library_display_overrides (entry_key, display_name, revision)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(entry_key) DO UPDATE SET
+                display_name = excluded.display_name, revision = excluded.revision",
+            params![
+                entry_key,
+                display_name,
+                i64::try_from(revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(DisplayWrite::Applied { revision })
     }
 
     fn installation_ids(

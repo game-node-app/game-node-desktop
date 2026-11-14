@@ -259,6 +259,43 @@ impl LibraryStore for FakeLibrary {
             })
             .collect())
     }
+    fn save_display_name(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        display_name: Option<&str>,
+    ) -> Result<gamenode_core::library::DisplayWrite, StorageError> {
+        use gamenode_core::library::{DisplayOverride, DisplayWrite};
+        self.pause();
+        let mut cache = self.cache.lock().unwrap();
+        let current = cache
+            .display_overrides
+            .iter()
+            .find(|over| over.entry_key == entry_key)
+            .cloned();
+        let revision = current.as_ref().map_or(0, |over| over.revision);
+        if revision != expected_revision {
+            return Ok(DisplayWrite::Conflict { current: revision });
+        }
+        if current
+            .as_ref()
+            .and_then(|over| over.display_name.as_deref())
+            == display_name
+        {
+            return Ok(DisplayWrite::Unchanged { revision });
+        }
+        cache
+            .display_overrides
+            .retain(|over| over.entry_key != entry_key);
+        cache.display_overrides.push(DisplayOverride {
+            entry_key: entry_key.to_owned(),
+            display_name: display_name.map(str::to_owned),
+            revision: revision + 1,
+        });
+        Ok(DisplayWrite::Applied {
+            revision: revision + 1,
+        })
+    }
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {
         Ok(self.account.lock().unwrap().clone())
     }
@@ -1147,4 +1184,257 @@ async fn an_entry_stays_hidden_from_plugins_while_its_installation_id_cannot_be_
     .await;
     assert!(feed_entries(&feed).is_empty(), "no id, no projection");
     assert!(h.store.installations.lock().unwrap().is_empty());
+}
+
+fn open_guard() -> crate::plugin_host::library::CommitGuard {
+    Box::new(|| Ok(()))
+}
+
+fn denying_guard() -> crate::plugin_host::library::CommitGuard {
+    Box::new(|| Err(tonic::Status::permission_denied("revoked")))
+}
+
+/// A signed-in harness whose Portal 2 entry is matched to game 7 and projected to plugins, with
+/// the plugin write side connected.
+async fn plugin_library() -> (
+    Harness,
+    std::sync::Arc<crate::plugin_host::library::LibraryFeed>,
+    std::sync::Arc<dyn crate::plugin_host::library::LibraryHost>,
+    String,
+) {
+    use crate::plugin_host::library::LibraryFeed;
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let feed = LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.signed_out().await;
+    h.sign_in("token").await;
+    eventually("the entry is matched in the plugin projection", || {
+        feed_entries(&feed)
+            .first()
+            .is_some_and(|(_, game, _)| *game == Some(7))
+    })
+    .await;
+    let id = feed_entries(&feed)[0].0.clone();
+    let host = feed.host().expect("the engine connected its host");
+    (h, feed, host, id)
+}
+
+fn projected(
+    feed: &crate::plugin_host::library::LibraryFeed,
+    id: &str,
+) -> crate::plugin_host::library::Projected {
+    use crate::plugin_host::library::Scope;
+    let scope = Scope {
+        own_provider: "steam".to_owned(),
+        read_all: false,
+        provider_filter: None,
+    };
+    feed.get(&scope, id).1.expect("the entry is projected")
+}
+
+fn row_title(snapshot: &Snapshot) -> Option<&str> {
+    view(snapshot)
+        .and_then(|v| v.rows.first())
+        .map(|row| row.title.as_str())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_display_name_is_stored_shown_and_guarded_by_its_revision() {
+    use gamenode_core::library::DisplayWrite;
+    let (mut h, feed, host, id) = plugin_library().await;
+    h.until("the matched title", |s| row_title(s) == Some("Portal 2"))
+        .await;
+    assert_eq!(projected(&feed, &id).metadata_revision, 0);
+
+    let written = host
+        .set_display_name(
+            "steam:620".into(),
+            0,
+            Some("Portal Two".into()),
+            open_guard(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(written, DisplayWrite::Applied { revision: 1 });
+    // The write reached the database double, the library shows it, plugins read it back, and the
+    // detected facts are unchanged.
+    let stored = h.store.cache.lock().unwrap().display_overrides.clone();
+    assert_eq!(
+        (
+            stored[0].entry_key.as_str(),
+            stored[0].display_name.as_deref(),
+            stored[0].revision
+        ),
+        ("steam:620", Some("Portal Two"), 1)
+    );
+    h.until("the override is the title", |s| {
+        row_title(s) == Some("Portal Two")
+    })
+    .await;
+    let entry = projected(&feed, &id);
+    assert_eq!(entry.display_name.as_deref(), Some("Portal Two"));
+    assert_eq!(entry.metadata_revision, 1);
+    assert_eq!(entry.name, "Portal 2");
+    assert_eq!(entry.installation_id, id);
+
+    // An obsolete revision overwrites nothing.
+    let written = host
+        .set_display_name("steam:620".into(), 0, Some("Stale".into()), open_guard())
+        .await
+        .unwrap();
+    assert_eq!(written, DisplayWrite::Conflict { current: 1 });
+    assert_eq!(
+        projected(&feed, &id).display_name.as_deref(),
+        Some("Portal Two")
+    );
+    assert_eq!(h.store.cache.lock().unwrap().display_overrides.len(), 1);
+
+    // The same value again changes nothing.
+    let written = host
+        .set_display_name(
+            "steam:620".into(),
+            1,
+            Some("Portal Two".into()),
+            open_guard(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(written, DisplayWrite::Unchanged { revision: 1 });
+    assert_eq!(projected(&feed, &id).metadata_revision, 1);
+
+    // Clearing restores the matched title; the revision keeps counting.
+    let written = host
+        .set_display_name("steam:620".into(), 1, None, open_guard())
+        .await
+        .unwrap();
+    assert_eq!(written, DisplayWrite::Applied { revision: 2 });
+    h.until("the title is restored", |s| {
+        row_title(s) == Some("Portal 2")
+    })
+    .await;
+    let entry = projected(&feed, &id);
+    assert_eq!((entry.display_name, entry.metadata_revision), (None, 2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_guard_stops_a_display_name_before_it_is_stored() {
+    let (mut h, feed, host, id) = plugin_library().await;
+    h.until("the matched title", |s| row_title(s) == Some("Portal 2"))
+        .await;
+    let before = projected(&feed, &id);
+
+    let error = host
+        .set_display_name("steam:620".into(), 0, Some("Nope".into()), denying_guard())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    assert!(h.store.cache.lock().unwrap().display_overrides.is_empty());
+    assert_eq!(projected(&feed, &id), before);
+    assert_eq!(row_title(&h.engine.snapshot()), Some("Portal 2"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_display_name_and_its_revision_survive_a_restart() {
+    use crate::plugin_host::library::LibraryFeed;
+    use gamenode_core::library::{DisplayOverride, DisplayWrite};
+    let api = FakeApi::new();
+    *api.delay.lock().unwrap() = Duration::from_millis(100);
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    seed_cache(&h, Some(account("u1", "Ana")));
+    h.store
+        .cache
+        .lock()
+        .unwrap()
+        .display_overrides
+        .push(DisplayOverride {
+            entry_key: "steam:620".to_owned(),
+            display_name: Some("Portal Two".to_owned()),
+            revision: 3,
+        });
+    let feed = LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.engine.start();
+
+    h.until("the cached override is the title", |s| {
+        row_title(s) == Some("Portal Two")
+    })
+    .await;
+    eventually("the projection carries the stored revision", || {
+        feed_entries(&feed).len() == 1
+    })
+    .await;
+    let id = feed_entries(&feed)[0].0.clone();
+    let entry = projected(&feed, &id);
+    assert_eq!(entry.display_name.as_deref(), Some("Portal Two"));
+    assert_eq!(entry.metadata_revision, 3);
+
+    // The next write continues from the stored revision.
+    let host = feed.host().unwrap();
+    assert_eq!(
+        host.set_display_name("steam:620".into(), 2, Some("Old".into()), open_guard())
+            .await
+            .unwrap(),
+        DisplayWrite::Conflict { current: 3 }
+    );
+    assert_eq!(
+        host.set_display_name("steam:620".into(), 3, Some("Again".into()), open_guard())
+            .await
+            .unwrap(),
+        DisplayWrite::Applied { revision: 4 }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_favorites_only_games_its_own_entries_are_matched_to() {
+    use crate::plugin_host::library::FavoriteWrite;
+    let (mut h, _feed, host, _id) = plugin_library().await;
+    let ok = || Ok(());
+    let is_favorite =
+        |s: &Snapshot| view(s).is_some_and(|v| v.rows.first().is_some_and(|r| r.is_favorite));
+    assert_eq!(host.favorites("steam"), [(7, false)]);
+    assert!(
+        host.favorites("gog").is_empty(),
+        "another provider's view is empty"
+    );
+
+    assert_eq!(
+        host.set_favorite("steam", 7, true, &ok).unwrap(),
+        FavoriteWrite::Applied
+    );
+    h.until("the star appears", is_favorite).await;
+    assert_eq!(host.favorites("steam"), [(7, true)]);
+    // Setting the same state again is idempotent.
+    assert_eq!(
+        host.set_favorite("steam", 7, true, &ok).unwrap(),
+        FavoriteWrite::AlreadyApplied
+    );
+    // A provider with no entry matched to the game, and a game nobody matches, are the same
+    // answer; neither changes anything.
+    assert_eq!(
+        host.set_favorite("gog", 7, false, &ok).unwrap(),
+        FavoriteWrite::NoMatchedEntry
+    );
+    assert_eq!(
+        host.set_favorite("steam", 8, true, &ok).unwrap(),
+        FavoriteWrite::NoMatchedEntry
+    );
+    assert_eq!(host.favorites("steam"), [(7, true)]);
+
+    // A revoked guard changes nothing.
+    let denied = |_: ()| tonic::Status::permission_denied("revoked");
+    let error = host
+        .set_favorite("steam", 7, false, &|| Err(denied(())))
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    assert_eq!(host.favorites("steam"), [(7, true)]);
+    assert!(is_favorite(&h.engine.snapshot()));
+
+    assert_eq!(
+        host.set_favorite("steam", 7, false, &ok).unwrap(),
+        FavoriteWrite::Applied
+    );
+    h.until("the star is gone", |s| !is_favorite(s)).await;
+    assert_eq!(host.favorites("steam"), [(7, false)]);
 }

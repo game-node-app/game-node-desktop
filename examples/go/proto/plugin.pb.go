@@ -9823,17 +9823,23 @@ func (x *MutationReply) GetOutcome() MutationOutcome {
 	return MutationOutcome_MUTATION_OUTCOME_UNSPECIFIED
 }
 
+// `name` is the detected name (or the matched game's name when the provider reported none);
+// `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
+// empty when none is set. `metadata_revision` is the revision of that override for this
+// installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
 type LibraryEntry struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	GameId         string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	InstallationId string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ProviderId     string                 `protobuf:"bytes,3,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	Name           string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Version        string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
-	InstallState   string                 `protobuf:"bytes,6,opt,name=install_state,json=installState,proto3" json:"install_state,omitempty"`
-	Revision       uint64                 `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	GameId           string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	InstallationId   string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	ProviderId       string                 `protobuf:"bytes,3,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
+	Name             string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Version          string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
+	InstallState     string                 `protobuf:"bytes,6,opt,name=install_state,json=installState,proto3" json:"install_state,omitempty"`
+	Revision         uint64                 `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
+	DisplayName      string                 `protobuf:"bytes,8,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	MetadataRevision uint64                 `protobuf:"varint,9,opt,name=metadata_revision,json=metadataRevision,proto3" json:"metadata_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *LibraryEntry) Reset() {
@@ -9911,6 +9917,20 @@ func (x *LibraryEntry) GetInstallState() string {
 func (x *LibraryEntry) GetRevision() uint64 {
 	if x != nil {
 		return x.Revision
+	}
+	return 0
+}
+
+func (x *LibraryEntry) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *LibraryEntry) GetMetadataRevision() uint64 {
+	if x != nil {
+		return x.MetadataRevision
 	}
 	return 0
 }
@@ -19793,7 +19813,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12=\n" +
-	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\xe0\x01\n" +
+	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\xb0\x02\n" +
 	"\fLibraryEntry\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12'\n" +
 	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12\x1f\n" +
@@ -19802,7 +19822,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x12#\n" +
 	"\rinstall_state\x18\x06 \x01(\tR\finstallState\x12\x1a\n" +
-	"\brevision\x18\a \x01(\x04R\brevision\"`\n" +
+	"\brevision\x18\a \x01(\x04R\brevision\x12!\n" +
+	"\fdisplay_name\x18\b \x01(\tR\vdisplayName\x12+\n" +
+	"\x11metadata_revision\x18\t \x01(\x04R\x10metadataRevision\"`\n" +
 	"\rFavoriteEntry\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12\x1a\n" +
 	"\bfavorite\x18\x02 \x01(\bR\bfavorite\x12\x1a\n" +

@@ -437,7 +437,11 @@ message MatchingSearchReply { repeated MatchCandidate candidates = 1; string nex
 message ArtworkReadReply { bytes encoded_image = 1; string media_type = 2; uint64 byte_length = 3; uint64 revision = 4; }
 message MutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; }
-message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; }
+// `name` is the detected name (or the matched game's name when the provider reported none);
+// `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
+// empty when none is set. `metadata_revision` is the revision of that override for this
+// installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
+message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; }
 message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
 message MatchCandidate { string game_id = 1; string title = 2; string platform = 3; string confidence = 4; }
 message LibraryEvent { uint64 revision = 1; string event_type = 2; LibraryEntry entry = 3; }

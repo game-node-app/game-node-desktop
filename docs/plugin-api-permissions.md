@@ -12,17 +12,19 @@ the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 
 The route tables below describe the API contract, not a claim that every route
 is currently served. `PluginApiServer` registers `PluginHost`, `ProviderHost`
-and `ResourceHost`. In `ResourceHost` only `LibraryList`, `LibraryGet` and
-`LibraryWatch` have handlers; every other `ResourceHost` method and every
+and `ResourceHost`. In `ResourceHost` only `LibraryList`, `LibraryGet`,
+`LibraryWatch`, `MetadataUpdate`, `FavoritesList` and `FavoritesSet` have
+handlers; every other `ResourceHost` method and every
 domain service (Saves, Locations, StorageDiagnostics, Computer, GamePresence,
 GamePerformance) is not served yet, so those RPCs have no live handler that can
 enforce the listed grants. `DescribeApi` lists exactly the served methods. The
 persisted `PermissionGrantStore` also has not been wired into RPC sessions: the
-Library handlers check the grants negotiated for the session. Treat the
+Library, metadata and favorites handlers check the grants negotiated for the session. Treat the
 per-route checks and common-data selectors below as requirements for the
 unserved handlers, not as evidence that an unavailable route is protected by
 runtime enforcement. Provider operation permissions, the permission-control
-methods and the Library reads that are mounted are enforced by the host.
+methods and the Library, metadata and favorites services that are mounted are enforced
+by the host.
 
 | Methods | Permission |
 | --- | --- |
@@ -157,6 +159,50 @@ with a recorded audit event.
 - **Common data.** Selecting a common-data category or record (for example the
   runtime-availability projection) is refused with `UNIMPLEMENTED` rather than
   silently narrowed; that projection is planned with task 14.4.
+
+## Display metadata and favorites
+
+`MetadataUpdate` (`library.metadata.write`), `FavoritesList` (`favorites.read`) and
+`FavoritesSet` (`favorites.write`) use the same resource context as the Library reads and only
+ever reach the caller's own provider's entries, whatever other grants it holds.
+
+- **Display name.** `display_name` is the only writable field. A request with another key in
+  `display_fields`, or with none, is `INVALID_ARGUMENT`. The value is trimmed, at most 256 bytes
+  and free of control characters; an empty value clears the override. The override is stored apart
+  from the detected facts, so clearing restores the detected name. While set it is the library
+  title, ahead of the matched game's name and the detected name, and it is exposed as
+  `LibraryEntry.display_name` (empty when unset) next to the unchanged `name`.
+- **Target.** The installation is named by `installation_id` (required). A `game_id`, if given,
+  must be that installation's current match. A foreign or unknown installation is `NOT_FOUND`,
+  even for a plugin that holds `library.read.all`.
+- **Revision.** `expected_revision` must be the entry's `metadata_revision`: 0 until the name is
+  first written, then the revision of the last change, which only grows (clearing counts). An
+  obsolete revision returns `MUTATION_OUTCOME_REVISION_CONFLICT` with the current revision and
+  writes nothing. Writing the value the entry already has is `MUTATION_OUTCOME_ALREADY_APPLIED`
+  with an unchanged revision; a change is `MUTATION_OUTCOME_APPLIED` with the new revision.
+- **Favorites.** A favorite belongs to the GameNode game, never to the entry, and a rematch does
+  not move it. `FavoritesList` returns the favorite state of each GameNode game matched by an
+  entry of the caller's provider, ordered by game id, with the Library paging and cursor rules
+  (its own cursors; a changed library or another query makes one stale). `FavoritesSet` needs an
+  own entry currently matched to that game, otherwise `NOT_FOUND`, which is also the answer for a
+  game only another provider has. It goes through the same local-first path as the user's own
+  star, so syncing to GameNode still follows the user's sync setting. Setting the state the game
+  already has is `ALREADY_APPLIED`. `profile_id` must be empty or the active profile's id, or the
+  call is `FAILED_PRECONDITION`.
+- **No favorite revision.** Favorites carry no revision: `expected_revision` must be 0, replies
+  and list entries carry revision 0, and a write is a desired-state, last-write-wins setting. This
+  deviates from per-resource revisions on purpose, because the local state has no revision to
+  guard and an idempotent boolean has nothing to conflict with.
+- **Idempotency.** Every mutation needs an `idempotency_key` of 1 to 128 bytes without control
+  characters. The host remembers committed outcomes per plugin and profile for 24 hours, at most
+  1024 keys per plugin; a retry of the same key and request returns the original outcome, while
+  the same key with another request is `FAILED_PRECONDITION`. Conflicts are not remembered. The
+  table is in memory, so a replay after a restart is not recognized; it still fails safely,
+  because metadata is guarded by its revision and favorites are idempotent by nature.
+- **Commit and ordering.** Mutations run one at a time. Authorization, including the grant
+  revision, is checked again where the change commits (under the engine lock for favorites, on
+  the storage worker for metadata), so a revocation that wins the race stops the write. A failed
+  database write is `UNAVAILABLE`.
 
 ## Account-bound plugin profiles
 

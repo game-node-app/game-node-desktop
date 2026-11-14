@@ -458,6 +458,12 @@ impl Engine {
                                     .map(|g| g.name.clone())
                             })
                             .unwrap_or_default(),
+                        display_name: library
+                            .display_override(&entry.key)
+                            .and_then(|over| over.display_name.clone()),
+                        metadata_revision: library
+                            .display_override(&entry.key)
+                            .map_or(0, |over| over.revision),
                         install_state: if entry.installed {
                             InstallState::Installed
                         } else if entry.owned {
@@ -487,8 +493,12 @@ impl Engine {
             });
     }
 
-    /// Connects the plugin library projection and fills it from the current library.
+    /// Connects the plugin library projection and its write side, and fills the projection from
+    /// the current library.
     pub fn set_library_feed(&self, feed: Arc<crate::plugin_host::library::LibraryFeed>) {
+        feed.set_host(Arc::new(PluginLibraryHost {
+            shared: Arc::downgrade(&self.shared),
+        }));
         *self
             .shared
             .library_feed
@@ -1517,3 +1527,138 @@ impl Engine {
 
 #[cfg(test)]
 mod tests;
+
+/// The engine's side of plugin library services. It holds the engine weakly, so the projection
+/// the engine feeds does not keep the engine alive.
+struct PluginLibraryHost {
+    shared: std::sync::Weak<Shared>,
+}
+
+impl PluginLibraryHost {
+    fn engine(&self) -> Result<Engine, tonic::Status> {
+        self.shared
+            .upgrade()
+            .map(|shared| Engine { shared })
+            .ok_or_else(|| tonic::Status::unavailable("the library is not available"))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {
+        let Ok(engine) = self.engine() else {
+            return Vec::new();
+        };
+        let state = engine.lock();
+        let library = &state.library;
+        if !library.is_active() {
+            return Vec::new();
+        }
+        let mut games = std::collections::BTreeMap::new();
+        for entry in library
+            .visible_entries()
+            .filter(|entry| entry.provider == provider_id)
+        {
+            if let Some(game) = library.match_status(entry).game_id() {
+                games.insert(
+                    game,
+                    library
+                        .favorite_state(game)
+                        .is_some_and(|favorite| favorite.is_favorite),
+                );
+            }
+        }
+        games.into_iter().collect()
+    }
+
+    fn set_favorite(
+        &self,
+        provider_id: &str,
+        game_id: u64,
+        favorite: bool,
+        guard: &dyn Fn() -> Result<(), tonic::Status>,
+    ) -> Result<crate::plugin_host::library::FavoriteWrite, tonic::Status> {
+        use crate::plugin_host::library::FavoriteWrite;
+        let engine = self.engine()?;
+        let mut state = engine.lock();
+        // Checked under the engine lock, in the same section that commits.
+        guard()?;
+        let library = &state.library;
+        let key = library
+            .is_active()
+            .then(|| {
+                library
+                    .visible_entries()
+                    .filter(|entry| entry.provider == provider_id)
+                    .find(|entry| library.match_status(entry).game_id() == Some(game_id))
+                    .map(|entry| entry.key.clone())
+            })
+            .flatten();
+        let Some(key) = key else {
+            return Ok(FavoriteWrite::NoMatchedEntry);
+        };
+        let is_favorite = |state: &State| {
+            state
+                .library
+                .favorite_state(game_id)
+                .is_some_and(|favorite| favorite.is_favorite)
+        };
+        if is_favorite(&state) == favorite {
+            return Ok(FavoriteWrite::AlreadyApplied);
+        }
+        engine.run_library(
+            &mut state,
+            LibInput::SetFavorite {
+                key,
+                favorite,
+                now: unix_now(),
+            },
+        );
+        engine.publish(&mut state);
+        if is_favorite(&state) != favorite {
+            // The library had no account to keep the favorite for.
+            return Err(tonic::Status::unavailable("the library is not available"));
+        }
+        Ok(FavoriteWrite::Applied)
+    }
+
+    async fn set_display_name(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        display_name: Option<String>,
+        guard: crate::plugin_host::library::CommitGuard,
+    ) -> Result<gamenode_core::library::DisplayWrite, tonic::Status> {
+        use gamenode_core::library::DisplayWrite;
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        let (done, written) = tokio::sync::oneshot::channel();
+        {
+            let (key, name) = (entry_key.clone(), display_name.clone());
+            // The storage worker runs jobs in order, so this write cannot overtake or be
+            // overtaken by other library writes; authorization is rechecked where it commits.
+            engine.shared.storage.submit(move || {
+                let result = guard().and_then(|()| {
+                    store
+                        .save_display_name(&key, expected_revision, name.as_deref())
+                        .map_err(|error| {
+                            tracing::warn!(%error, "could not store a display name");
+                            tonic::Status::unavailable("could not store the display name")
+                        })
+                });
+                let _ = done.send(result);
+            });
+        }
+        let written = written
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))??;
+        if let DisplayWrite::Applied { revision } = written {
+            engine.library_input(LibInput::DisplayNameStored {
+                key: entry_key,
+                display_name,
+                revision,
+            });
+        }
+        Ok(written)
+    }
+}

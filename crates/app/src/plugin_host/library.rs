@@ -12,10 +12,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use gamenode_core::library::DisplayWrite;
 use gamenode_plugin_protocol::proto::LibraryEntry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
+use tonic::Status;
 
 /// The most entries one page may return.
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -59,6 +61,10 @@ pub struct LibrarySource {
     pub game_id: Option<u64>,
     pub name: String,
     pub install_state: InstallState,
+    /// The provider plugin's presentation override, if one is set.
+    pub display_name: Option<String>,
+    /// Revision of that override for this entry; 0 until it is first written.
+    pub metadata_revision: u64,
 }
 
 /// One entry as plugins see it.
@@ -69,6 +75,8 @@ pub struct Projected {
     pub game_id: Option<u64>,
     pub name: String,
     pub install_state: InstallState,
+    pub display_name: Option<String>,
+    pub metadata_revision: u64,
     /// The revision of the entry's last change.
     pub revision: u64,
 }
@@ -83,6 +91,8 @@ impl Projected {
             version: String::new(),
             install_state: self.install_state.as_str().to_owned(),
             revision: self.revision,
+            display_name: self.display_name.clone().unwrap_or_default(),
+            metadata_revision: self.metadata_revision,
         }
     }
 
@@ -91,6 +101,8 @@ impl Projected {
             && self.game_id == other.game_id
             && self.name == other.name
             && self.install_state == other.install_state
+            && self.display_name == other.display_name
+            && self.metadata_revision == other.metadata_revision
     }
 }
 
@@ -152,6 +164,8 @@ struct FeedState {
     sources: BTreeMap<String, LibrarySource>,
     /// Durable installation ids by entry key.
     ids: HashMap<String, String>,
+    /// The entry key of each installation id.
+    keys: HashMap<String, String>,
     /// Keys whose ids are being requested.
     requested: BTreeSet<String>,
     /// No new id request before this instant, after a failure.
@@ -166,6 +180,7 @@ struct FeedState {
 /// The shared projection. Cheap to read; writes come from the engine.
 pub struct LibraryFeed {
     state: Mutex<FeedState>,
+    host: Mutex<Option<Arc<dyn LibraryHost>>>,
     live: broadcast::Sender<Change>,
     cursor_key: [u8; 32],
 }
@@ -179,6 +194,7 @@ impl Default for LibraryFeed {
         }
         Self {
             state: Mutex::default(),
+            host: Mutex::default(),
             live: broadcast::channel(HISTORY_EVENTS).0,
             cursor_key,
         }
@@ -188,6 +204,15 @@ impl Default for LibraryFeed {
 impl LibraryFeed {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Connects the engine's write side. Without it, mutating services are unavailable.
+    pub fn set_host(&self, host: Arc<dyn LibraryHost>) {
+        *self.host.lock().unwrap_or_else(|p| p.into_inner()) = Some(host);
+    }
+
+    pub fn host(&self) -> Option<Arc<dyn LibraryHost>> {
+        self.host.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, FeedState> {
@@ -230,7 +255,10 @@ impl LibraryFeed {
             state.requested.remove(key);
         }
         for (key, id) in ids {
-            state.ids.entry(key).or_insert(id);
+            if !state.ids.contains_key(&key) {
+                state.keys.insert(id.clone(), key.clone());
+                state.ids.insert(key, id);
+            }
         }
         self.rebuild(&mut state);
     }
@@ -259,6 +287,8 @@ impl LibraryFeed {
                     game_id: source.game_id,
                     name: source.name.clone(),
                     install_state: source.install_state,
+                    display_name: source.display_name.clone(),
+                    metadata_revision: source.metadata_revision,
                     revision: next,
                 },
             );
@@ -351,6 +381,18 @@ impl LibraryFeed {
         (state.revision, entry)
     }
 
+    /// The entry key and projection of `installation_id`, if the scope admits it. Host-side only:
+    /// the entry key never reaches a plugin.
+    pub fn target(&self, scope: &Scope, installation_id: &str) -> Option<(String, Projected)> {
+        let state = self.lock();
+        let entry = state
+            .entries
+            .get(installation_id)
+            .filter(|entry| scope.admits(entry))?;
+        let key = state.keys.get(installation_id)?;
+        Some((key.clone(), entry.clone()))
+    }
+
     /// The admitted entries matched to `game_id`.
     pub fn by_game(&self, scope: &Scope, game_id: u64) -> (u64, Vec<Projected>) {
         let state = self.lock();
@@ -435,9 +477,55 @@ impl LibraryFeed {
     }
 }
 
+/// Rechecks the caller's authorization immediately before a side effect. Run it inside the
+/// critical section that commits, so a revocation cannot slip in between check and commit.
+pub type CommitGuard = Box<dyn Fn() -> Result<(), Status> + Send + 'static>;
+
+/// How a plugin favorite change ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteWrite {
+    Applied,
+    /// The game already had this favorite state.
+    AlreadyApplied,
+    /// None of the caller's own entries is currently matched to the game.
+    NoMatchedEntry,
+}
+
+/// The engine's side of plugin library services: everything that reads or changes state the
+/// library machine owns. Implementations take the engine's own locks; callers never hold one.
+#[async_trait::async_trait]
+pub trait LibraryHost: Send + Sync {
+    /// The favorite state of every GameNode game matched by an entry of `provider_id`, by game
+    /// id. Games with no entry of that provider are not disclosed.
+    fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)>;
+
+    /// Marks or unmarks `game_id` through the same local-first path as the user's own star.
+    /// Requires an entry of `provider_id` currently matched to the game; the favorite stays on
+    /// the game, never on the entry.
+    fn set_favorite(
+        &self,
+        provider_id: &str,
+        game_id: u64,
+        favorite: bool,
+        guard: &dyn Fn() -> Result<(), Status>,
+    ) -> Result<FavoriteWrite, Status>;
+
+    /// Stores the display-name override of `entry_key` if `expected_revision` is current,
+    /// returning only after the write reached the database and the library applied it.
+    async fn set_display_name(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        display_name: Option<String>,
+        guard: CommitGuard,
+    ) -> Result<DisplayWrite, Status>;
+}
+
 /// Everything a cursor is bound to besides the library revision.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CursorBinding {
+    /// Which list the cursor belongs to, so one list's cursor cannot page another.
+    pub route: &'static str,
     pub session_id: String,
     pub profile_epoch: u64,
     pub grant_revision: u64,
@@ -449,6 +537,7 @@ impl CursorBinding {
     fn digest(&self) -> String {
         let mut hash = Sha256::new();
         for part in [
+            self.route,
             self.session_id.as_str(),
             &self.profile_epoch.to_string(),
             &self.grant_revision.to_string(),

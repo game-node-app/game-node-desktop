@@ -1494,3 +1494,69 @@ fn installation_ids_are_random_durable_and_never_change_for_their_key() {
         first
     );
 }
+
+#[test]
+fn display_names_are_guarded_by_a_revision_and_reset_keeps_counting() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let key = "steam:620";
+    // Never written: revision 0, and a stale expectation conflicts without writing.
+    assert_eq!(
+        library.save_display_name(key, 3, Some("X")).unwrap(),
+        DisplayWrite::Conflict { current: 0 }
+    );
+    assert!(
+        library
+            .load_cache(None)
+            .unwrap()
+            .display_overrides
+            .is_empty()
+    );
+    assert_eq!(
+        library
+            .save_display_name(key, 0, Some("Portal Two"))
+            .unwrap(),
+        DisplayWrite::Applied { revision: 1 }
+    );
+    // The same value again changes nothing and keeps the revision.
+    assert_eq!(
+        library
+            .save_display_name(key, 1, Some("Portal Two"))
+            .unwrap(),
+        DisplayWrite::Unchanged { revision: 1 }
+    );
+    // An obsolete revision does not overwrite the newer value.
+    assert_eq!(
+        library.save_display_name(key, 0, Some("Other")).unwrap(),
+        DisplayWrite::Conflict { current: 1 }
+    );
+    // Clearing restores the detected name, keeps the row and the revision keeps growing.
+    assert_eq!(
+        library.save_display_name(key, 1, None).unwrap(),
+        DisplayWrite::Applied { revision: 2 }
+    );
+    assert_eq!(
+        library.save_display_name(key, 2, None).unwrap(),
+        DisplayWrite::Unchanged { revision: 2 }
+    );
+    assert_eq!(
+        library.save_display_name(key, 2, Some("Back")).unwrap(),
+        DisplayWrite::Applied { revision: 3 }
+    );
+    drop(library);
+    drop(store);
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened
+            .library_store()
+            .load_cache(None)
+            .unwrap()
+            .display_overrides,
+        [DisplayOverride {
+            entry_key: key.to_owned(),
+            display_name: Some("Back".to_owned()),
+            revision: 3,
+        }]
+    );
+}

@@ -223,6 +223,28 @@ pub struct FavoriteRecord {
     pub updated_at: i64,
 }
 
+/// A presentation override a provider's plugin wrote for one of its own entries. It is kept apart
+/// from the detected facts: clearing it (`display_name = None`) restores the detected name. The
+/// revision counts writes per entry, starts at 1 and only ever grows, so a reset keeps its row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayOverride {
+    pub entry_key: String,
+    pub display_name: Option<String>,
+    pub revision: u64,
+}
+
+/// How a guarded display-name write ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayWrite {
+    /// The value changed; this is the entry's new revision.
+    Applied { revision: u64 },
+    /// The entry already had this value; its revision is unchanged.
+    Unchanged { revision: u64 },
+    /// The expected revision was obsolete; nothing was written.
+    Conflict { current: u64 },
+}
+
 /// Everything the library needs at startup, read in one go.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -237,6 +259,9 @@ pub struct LibraryCache {
     pub favorites: Vec<FavoriteRecord>,
     pub games: Vec<GameRecord>,
     pub excluded: Vec<String>,
+    /// Presentation overrides written by providers' plugins.
+    #[serde(default)]
+    pub display_overrides: Vec<DisplayOverride>,
 }
 
 /// The last signed-in account, kept so the cached library can open before verification.
@@ -317,6 +342,15 @@ pub trait LibraryStore: Send + Sync {
         &self,
         entry_keys: &[String],
     ) -> Result<Vec<(String, String)>, StorageError>;
+
+    /// Sets (`Some`) or clears (`None`) the display-name override of `entry_key` if its current
+    /// revision is `expected_revision` (0 when it was never written), in one transaction.
+    fn save_display_name(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        display_name: Option<&str>,
+    ) -> Result<DisplayWrite, StorageError>;
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError>;
     fn save_last_account(&self, account: &LastAccount) -> Result<(), StorageError>;

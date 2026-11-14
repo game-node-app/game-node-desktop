@@ -1,5 +1,6 @@
 //! The API 1.6 `ResourceHost` service. Library list/get/watch are served from the host-owned
-//! [`LibraryFeed`]; every other method answers `UNIMPLEMENTED` until its adapter exists, and
+//! [`LibraryFeed`], display metadata and favorites through the engine's [`LibraryHost`]; every
+//! other method answers `UNIMPLEMENTED` until its adapter exists, and
 //! `DescribeApi` advertises only what is served.
 //!
 //! Calls are plugin-initiated: they carry the session's resource context from `OpenSession`,
@@ -16,6 +17,8 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+mod mutations;
+
 use super::library::{
     Change, CursorBinding, CursorError, DEFAULT_PAGE_SIZE, LibraryFeed, MAX_PAGE_SIZE,
     MAX_SEARCH_BYTES, ResumeError, Scope,
@@ -30,11 +33,46 @@ const WATCH_QUEUE: usize = 16;
 const MAX_PROVIDER_ID_BYTES: usize = 128;
 
 /// The ResourceHost methods this build serves, for `DescribeApi`.
-pub const SERVED: &[(&str, &str, bool)] = &[
-    ("LibraryList", cap::LIBRARY_READ, true),
-    ("LibraryGet", cap::LIBRARY_READ, false),
-    ("LibraryWatch", cap::LIBRARY_READ, false),
+pub const SERVED: &[Served] = &[
+    Served::new("LibraryList", cap::LIBRARY_READ, true, READ_SCOPE),
+    Served::new("LibraryGet", cap::LIBRARY_READ, false, READ_SCOPE),
+    Served::new("LibraryWatch", cap::LIBRARY_READ, false, READ_SCOPE),
+    Served::new(
+        "MetadataUpdate",
+        cap::LIBRARY_METADATA_WRITE,
+        false,
+        OWN_ENTRIES,
+    ),
+    Served::new("FavoritesList", cap::FAVORITES_READ, true, OWN_ENTRIES),
+    Served::new("FavoritesSet", cap::FAVORITES_WRITE, false, OWN_ENTRIES),
 ];
+
+const READ_SCOPE: &str = "own provider; library.read.all for every provider";
+const OWN_ENTRIES: &str = "own provider entries";
+
+/// A served method's `DescribeApi` facts.
+pub struct Served {
+    pub method: &'static str,
+    pub permission: &'static str,
+    pub paged: bool,
+    pub ownership: &'static str,
+}
+
+impl Served {
+    const fn new(
+        method: &'static str,
+        permission: &'static str,
+        paged: bool,
+        ownership: &'static str,
+    ) -> Self {
+        Self {
+            method,
+            permission,
+            paged,
+            ownership,
+        }
+    }
+}
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
@@ -43,6 +81,7 @@ pub struct ResourceApi {
     providers: ProviderApi,
     library: Arc<LibraryFeed>,
     watches: Arc<Mutex<HashMap<String, usize>>>,
+    mutations: Arc<mutations::Mutations>,
 }
 
 impl ResourceApi {
@@ -51,6 +90,7 @@ impl ResourceApi {
             providers,
             library,
             watches: Arc::default(),
+            mutations: Arc::default(),
         }
     }
 
@@ -188,6 +228,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
             size => size.min(MAX_PAGE_SIZE),
         };
         let binding = CursorBinding {
+            route: "library",
             session_id: caller.session_id.clone(),
             profile_epoch: caller.profile_epoch,
             grant_revision: caller.grant_revision,
@@ -368,10 +409,28 @@ impl resource_host_server::ResourceHost for ResourceApi {
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
+    async fn metadata_update(
+        &self,
+        request: Request<MetadataUpdateRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.update_metadata(request).await
+    }
+
+    async fn favorites_list(
+        &self,
+        request: Request<FavoritesListRequest>,
+    ) -> Result<Response<FavoritesListReply>, Status> {
+        self.list_favorites(request).await
+    }
+
+    async fn favorites_set(
+        &self,
+        request: Request<FavoritesSetRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.set_favorite(request).await
+    }
+
     not_served! {
-        metadata_update(MetadataUpdateRequest) -> MutationReply;
-        favorites_list(FavoritesListRequest) -> FavoritesListReply;
-        favorites_set(FavoritesSetRequest) -> MutationReply;
         matching_search(MatchingSearchRequest) -> MatchingSearchReply;
         matching_assign(MatchingAssignRequest) -> MutationReply;
         artwork_read(ArtworkReadRequest) -> ArtworkReadReply;

@@ -7,6 +7,8 @@ fn source(key: &str, game_id: Option<u64>, name: &str) -> LibrarySource {
         game_id,
         name: name.to_owned(),
         install_state: InstallState::Installed,
+        display_name: None,
+        metadata_revision: 0,
     }
 }
 
@@ -44,6 +46,7 @@ fn resync(feed: &LibraryFeed, sources: Vec<LibrarySource>) {
 
 fn binding(scope: Scope) -> CursorBinding {
     CursorBinding {
+        route: "library",
         session_id: "s1".into(),
         profile_epoch: 1,
         grant_revision: 1,

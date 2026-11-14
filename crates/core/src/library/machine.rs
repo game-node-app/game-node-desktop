@@ -24,8 +24,9 @@ use super::match_dialog::MatchDialog;
 use super::membership::{EntryStatus, Membership};
 use super::selection::{Direction, SelectMode, Selection};
 use super::store::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
-    LastAccount, LibraryCache, ProviderScanState, StoredEntry, entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
+    FavoriteRecord, GameRecord, LastAccount, LibraryCache, ProviderScanState, StoredEntry,
+    entry_key,
 };
 use super::view::LibraryView;
 
@@ -211,6 +212,13 @@ pub enum Input {
     RequestCatalog,
     /// Replace the toolbar filters.
     SetFilters(LibraryFilters),
+    /// A plugin's display-name override of an entry was stored (or cleared with `None`) at this
+    /// revision. Applies only to entries the library knows.
+    DisplayNameStored {
+        key: String,
+        display_name: Option<String>,
+        revision: u64,
+    },
     /// Mark or unmark the entry's matched game as a favorite. `now` is unix seconds.
     SetFavorite {
         key: String,
@@ -381,6 +389,8 @@ pub struct LibraryMachine {
     pub(super) auto_matches: BTreeMap<(u32, String), AutoMatch>,
     pub(super) chosen: BTreeMap<String, ChosenMatch>,
     pub(super) games: BTreeMap<u64, GameRecord>,
+    /// Presentation overrides by entry key, written by the entry's own provider plugin.
+    pub(super) display_overrides: BTreeMap<String, DisplayOverride>,
     pub(super) scan: Option<ScanRun>,
     pub(super) rescan_pending: bool,
     pub(super) layout: LibraryLayout,
@@ -445,6 +455,7 @@ impl LibraryMachine {
             auto_matches: BTreeMap::new(),
             chosen: BTreeMap::new(),
             games: BTreeMap::new(),
+            display_overrides: BTreeMap::new(),
             scan: None,
             rescan_pending: false,
             layout: layout.normalized(),
@@ -553,6 +564,12 @@ impl LibraryMachine {
 
     pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
         self.entries.values()
+    }
+
+    /// The plugin-written display override of an entry, if one was ever written. A cleared
+    /// override stays here with no name, so its revision keeps counting.
+    pub fn display_override(&self, key: &str) -> Option<&DisplayOverride> {
+        self.display_overrides.get(key)
     }
 
     pub fn chosen_match(&self, key: &str) -> Option<&ChosenMatch> {
@@ -683,6 +700,23 @@ impl LibraryMachine {
             }
             Input::RequestCatalog => self.request_catalog(),
             Input::SetFilters(filters) => self.update_layout(|layout| layout.filters = filters),
+            Input::DisplayNameStored {
+                key,
+                display_name,
+                revision,
+            } => {
+                if self.entries.contains_key(&key) {
+                    self.display_overrides.insert(
+                        key.clone(),
+                        DisplayOverride {
+                            entry_key: key,
+                            display_name,
+                            revision,
+                        },
+                    );
+                }
+                vec![]
+            }
             Input::SetFavorite { key, favorite, now } => self.on_set_favorite(key, favorite, now),
             Input::FavoritesSynced { op, result, now } => self.on_favorites_synced(op, result, now),
             Input::FavoritePushed {
@@ -956,6 +990,11 @@ impl LibraryMachine {
             .map(|game| (game.game_id, game))
             .collect();
         self.excluded = cache.excluded.into_iter().collect();
+        self.display_overrides = cache
+            .display_overrides
+            .into_iter()
+            .map(|over| (over.entry_key.clone(), over))
+            .collect();
         self.favorites = cache
             .favorites
             .into_iter()

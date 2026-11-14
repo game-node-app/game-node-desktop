@@ -59,7 +59,7 @@ by the host.
 | `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy` | `storage.persist`, restricted to the caller's namespace |
 | `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove` | `tools.read`, `tools.apply`, `tools.remove` |
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
-| `JobsGet`, `JobsWatch`, `JobsCancel` | permission for the underlying operation and caller-owned job |
+| `JobsGet`, `JobsWatch`, `JobsCancel` | the permission of the operation that created the job, plus ownership of the job (see [Jobs](#jobs)) |
 
 The domain services use these grants:
 
@@ -713,6 +713,70 @@ measured, and are open to change.
 | Rate | 5 per plugin and 20 in all per 60 s | A plugin can report progress and results without being able to bury the window; the shared cap bounds a crowd of plugins. |
 
 There is no per-user mute yet and no notification history.
+
+## Jobs
+
+A long operation (an install, a backup, a restore) answers with a job instead of blocking the call.
+`JobsGet`, `JobsWatch` and `JobsCancel` read, follow and stop it. No operation returns a job in this
+build yet (the first ones are `GamesRequestLaunch`, backups, tools and ports); the three calls and
+the registry behind them are ready for them.
+
+- **Ownership.** A job belongs to the authenticated plugin, its pinned publisher and the active
+  account profile. The request names the job by its opaque id and nothing else: it has no field for
+  an owner, a plugin or a profile. An id that is unknown, another plugin's, from an earlier
+  profile, or already forgotten is the same `NOT_FOUND` with the same message, so an id says
+  nothing about jobs the caller does not own. A plugin that restarts finds its own jobs again.
+- **The permission.** The three calls have no permission of their own. Each one needs the
+  permission of the operation that created the job, and a plugin that has lost it gets
+  `PERMISSION_DENIED` (details name the permission) on `JobsGet`, `JobsWatch` and `JobsCancel`. A
+  watch that was already open ends with that denial the next time it would deliver (or within five
+  seconds when the job is quiet).
+- **The commit.** The work behind a job checks again right before it commits an effect. If the
+  permission was lost, the plugin's grants changed, the profile changed, the session that asked for
+  the operation ended (the plugin stopped or restarted) or the job was cancelled in the meantime,
+  nothing is committed and the job ends as `FAILED` (codes `permission_denied`,
+  `failed_precondition`, `session_ended`) or `CANCELLED`. The authority to commit is the one the
+  requesting session had; the job's record outlives that session, so the restarted plugin can read
+  the outcome and retry under the same key.
+- **Retries.** An operation that returns a job takes an idempotency key. A retry of the same
+  request answers with the same job and starts nothing; the same key for a different request is
+  `FAILED_PRECONDITION`. Keys are remembered for 24 hours but a finished job is kept for one hour
+  (and at most 32 per plugin), so a retry that finds its job forgotten is `FAILED_PRECONDITION`
+  ("no longer kept; use a new key"), never a second run.
+- **States.** `QUEUED`, `RUNNING`, then one terminal state: `SUCCEEDED`, `FAILED` or `CANCELLED`,
+  with a short `result_code` and a `message` (plain text, at most 64 and 512 bytes, no control
+  characters; never a path, a credential or a stack trace). `revision` is the sequence number of
+  the newest event.
+- **Watching.** `JobsWatch` replays the events after `after_sequence` (0: from the start) in
+  order and ends after the terminal one. Progress only moves forward (0 to 100), so a job has at
+  most 103 events and a position is never "no longer retained"; a position past the newest event
+  is `OUT_OF_RANGE`. A session has at most 8 open watches, library watches included.
+- **Cancelling.** `JobsCancel` asks the work to stop and waits up to two seconds for it to. A
+  finished job answers with how it finished, unchanged, so cancelling twice, or too late, is not an
+  error. Work that cannot stop halfway keeps running and the reply says `RUNNING`: the work decides,
+  because stopping it in the middle could leave an effect half done, and what it finally did is
+  what the job reports (a cancellation does not rewrite a `SUCCEEDED`). A job cancelled before it
+  started never runs. The call needs an idempotency key like every mutation; cancelling is
+  idempotent by itself, so the key only has to be well formed.
+- **A profile switch.** The jobs of the old profile are told to stop and are no longer visible to
+  anyone; the new profile starts with none, and a request still carrying the old profile's context
+  cannot start one.
+
+### Job limits
+
+Not in the design; chosen by reasoning, not measured, and open to change.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Running jobs | 8 per plugin, 32 in all (`RESOURCE_EXHAUSTED`; a retry of a running job is still answered) | A plugin can run a few operations at once without taking every worker; the shared cap bounds a crowd of plugins. |
+| Finished jobs kept | 32 per plugin, one hour | Long enough to read an outcome after a restart; short enough to stay small. |
+| Idempotency keys | 1,024 per plugin, 24 hours | The same bound as the other mutations. |
+| Result code / message | 64 / 512 bytes | They are for a person to read, not a document. |
+| Cancel wait | 2 seconds | The call stays short; a slow job is reported as still running. |
+
+Jobs live in the host's memory. A host restart forgets them and their keys, and the work does not
+resume; an operation that must not repeat across a restart has to be idempotent in its own domain
+(an install that is already installed is not installed twice).
 
 ## Utility services are not a sandbox
 

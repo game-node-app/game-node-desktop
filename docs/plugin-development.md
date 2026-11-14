@@ -100,7 +100,8 @@ is in [`plugin-api-permissions.md`](plugin-api-permissions.md). Unknown routes a
 
 The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, `LibraryWatch`,
 `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`,
-`ArtworkRead` and `ArtworkSet` (grants,
+`ArtworkRead`, `ArtworkSet`, `StorageGet`, `StoragePut`, `StorageDelete`, the five `Files*`
+methods, `NetworkFetch`, `NotificationsPublish`, `JobsGet`, `JobsWatch` and `JobsCancel` (grants,
 scope, cursors and watch rules are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
 revisions, favorites and idempotency keys are in
@@ -108,7 +109,8 @@ revisions, favorites and idempotency keys are in
 search bounds and assignment results are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#matching); the cover override, image limits
 and read budget are in
-[`plugin-api-permissions.md`](plugin-api-permissions.md#artwork)).
+[`plugin-api-permissions.md`](plugin-api-permissions.md#artwork); jobs are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md#jobs)).
 Every other `ResourceHost` method and all domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
 instead of inferring availability from the protobuf contract.
@@ -296,6 +298,27 @@ points:
 - Notifications are not delivered if no window is open and are not kept; do not use them as the only
   record of something important.
 
+## Jobs
+
+Operations that take a while (installs, backups, restores) answer with a job. Rules and limits are
+under "Jobs" in `docs/plugin-api-permissions.md`; what to do about them:
+
+- Keep the `job_id` the operation returned. It is opaque and yours alone: no other plugin can read
+  or cancel it, and you do not need to (and cannot) say whose it is.
+- Give the operation an idempotency key you can reuse. If your plugin crashes or the call times
+  out, retrying with the same key returns the same job instead of starting a second one. If the
+  job was forgotten (an hour after it finished) the retry is `FAILED_PRECONDITION`: look at what
+  the operation changed before starting it again with a new key.
+- Follow a job with `JobsWatch` (events in order; resume with the last `sequence` you saw) or poll
+  `JobsGet`. A watch ends after the terminal state. `NOT_FOUND` means it is not yours or it is gone;
+  treat both the same.
+- Branch on the terminal state and `result_code`, not on `message`, which is for people. A job
+  that ends `FAILED` with `permission_denied`, `failed_precondition` or `session_ended` committed
+  nothing: the permission or the profile changed, or your session ended before the effect.
+- `JobsCancel` is a request. Check the state in the reply: `CANCELLED` means it stopped; `RUNNING`
+  means the work cannot stop halfway and will report what it finally did.
+- Keep at most 8 jobs running at once; more is `RESOURCE_EXHAUSTED`.
+
 ## Utility helpers and recipes (Rust SDK)
 
 `Resources` also has typed calls for the utility services. They follow the same rules as the library
@@ -403,8 +426,8 @@ and response payloads are capped at 8 MiB; method-specific limits are listed in 
 Blocking IO and CPU work belongs on worker
 threads, and async code must remain cancellable. Resource job state, progress, terminal outcome,
 watch sequence and cancellation request fields are defined by `JobReply`, `JobEvent`,
-`JobGetRequest`, `JobWatchRequest` and `JobCancelRequest`; service implementation is not mounted
-yet. API 1.6 method-specific quota values are carried as catalog contract metadata and are not
+`JobGetRequest`, `JobWatchRequest` and `JobCancelRequest`; the three job calls are served (see
+[Jobs](#jobs)), though no operation returns a job yet. API 1.6 method-specific quota values are carried as catalog contract metadata and are not
 claims about current desktop enforcement.
 
 The SDK's legacy `Error` keeps its existing coarse variants for source compatibility. New code

@@ -220,8 +220,9 @@ active account profile. The request names only a key; see "Private storage" in
   your state back from storage instead of assuming it is empty or intact.
 - Secrets never belong here. Use the provider `Secret` service for tokens and credentials.
 
-The Rust SDK has no typed storage helpers yet (they arrive with the utility-service examples of task
-6.5); use the generated `ResourceHost` client as the Go example does.
+The Rust SDK has typed helpers for storage (`storage_get`, `storage_put`, `storage_delete`) and
+recipes for them; see "Utility helpers and recipes (Rust SDK)" below. Other clients use the generated
+`ResourceHost` client, as the Go example does.
 
 ## File access
 
@@ -283,6 +284,95 @@ points:
   `RESOURCE_EXHAUSTED` wait the `retry-after-ms` and drop or merge what you wanted to say.
 - Notifications are not delivered if no window is open and are not kept; do not use them as the only
   record of something important.
+
+## Utility helpers and recipes (Rust SDK)
+
+`Resources` also has typed calls for the utility services. They follow the same rules as the library
+helpers above: each sends exactly what the raw `resource_client()` call would, returns the host's
+answer unchanged, and adds no authority. The desktop's service tests make every call both ways (a
+write by replaying it raw under the SDK's idempotency key) and compare the answers.
+
+| `Resources` method | Raw call | Needs |
+| --- | --- | --- |
+| `storage_get`, `storage_put`, `storage_delete` | `StorageGet`, `StoragePut`, `StorageDelete` | `storage.read`, `storage.write` (+ `storage.persist` for `Durability::Persistent`), `storage.delete` |
+| `files_request_access` | `FilesRequestAccess` | `files.read`, `files.write`, `files.delete` for the operations asked |
+| `files_page`, `files_list` | `FilesList` | `files.read` |
+| `files_read`, `files_read_all` | `FilesRead` | `files.read` |
+| `files_write`, `files_create` | `FilesWrite` (`name` empty / set) | `files.write` |
+| `files_delete` | `FilesDelete` | `files.delete` |
+| `network_fetch` (`Fetch`, `Fetched`) | `NetworkFetch` | `network.fetch` and an approved origin |
+| `notify` (`Notice`, `Severity`) | `NotificationsPublish` | `notifications.publish` |
+
+What each refusal means, in the order a plugin usually handles it (the limits behind them are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md)):
+
+| Status | Storage | Files | Network | Notifications |
+| --- | --- | --- | --- | --- |
+| `PERMISSION_DENIED` | the grant (or `storage.persist`) is not approved | the user declined the folder, or the operation was not approved | the origin, or a redirect target, is not approved | the grant is not approved |
+| `FAILED_PRECONDITION` | the same key was used for another request | no approval dialog yet, or the handle must be requested again | | the same key was used for another notice |
+| `NOT_FOUND` | | a handle that is not yours, or is gone | | |
+| `INVALID_ARGUMENT` | key or value over its limit, durability unspecified | a name or offset the host refuses | a URL, method or header the host refuses | text with controls or disguising characters |
+| `RESOURCE_EXHAUSTED` | the layer's quota (nothing was changed) | a file larger than your limit | too many fetches at once, or a response over your budget | 5 a minute: wait `retry-after-ms` |
+| `UNAVAILABLE`, `DEADLINE_EXCEEDED` | resend with the same key | resend with the same key | try later | resend with the same key |
+
+Only the last row is worth resending unchanged. A revision conflict (`Outcome::RevisionConflict`) is
+an answer, not an error: read the key again, merge, and write with the new revision.
+
+The recipes in
+[`crates/plugin-sdk/examples/utility_recipes.rs`](../crates/plugin-sdk/examples/utility_recipes.rs)
+put these rules into code you can copy. They are compiled with the SDK and run against the fixture
+host in the desktop's service tests:
+
+| Recipe | What it does |
+| --- | --- |
+| `send` | Sends one change, resending it with the same key only after a lost connection or timeout. |
+| `recall`, `update`, `forget` | Reads a stored value (`None` when absent or expired), changes it from what it was with the revision it read (reading again after a conflict), and deletes it. |
+| `open_installation` | Asks for a folder of one of your own entries and returns its root handle; tells a declined approval from one that must be asked again. |
+| `find`, `read_named`, `save_named` | Finds a file by name, reads it whole under a limit you choose, and creates or replaces a file by name. |
+| `fetch_bytes` | Fetches an https URL under a size budget and a deadline, and says whether to ask the user to approve an origin or to retry. |
+| `tell_user`, `retry_after` | Sends a plain-text notice with a translation, and stops, instead of queueing, when the rate limit says to wait. |
+
+Two of them put the pieces together (they are tested like the rest): keep a counter that survives
+restarts, and read a save file of a game.
+
+```rust
+pub async fn count_launch(resources: &Resources) -> Result<(), Status> {
+    update(resources, "launches", Durability::Persistent, None, |old| {
+        let count = old
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| text.parse::<u64>().ok())
+            .unwrap_or(0);
+        (count + 1).to_string().into_bytes()
+    })
+    .await
+    .map(|_| ())
+}
+
+pub async fn read_slot(
+    resources: &Resources,
+    installation_id: &str,
+) -> Result<Option<Vec<u8>>, Status> {
+    let Ok(root) = open_installation(resources, installation_id, &["read"]).await else {
+        return Ok(None); // declined or not available yet: carry on without it
+    };
+    read_named(resources, &root, "slot1.sav", 1 << 20).await
+}
+```
+
+### What these services do not do
+
+They are an authorization boundary for GameNode's own services, not an operating-system sandbox:
+
+- A plugin is an ordinary process with the user's operating-system permissions. Nothing here
+  stops it from opening a file, a socket or a registry key itself, so a user's approval of a folder
+  or an origin is not a promise that the plugin cannot reach more. Do not describe the plugin as
+  confined, and do not use these grants to hide something the plugin does natively.
+- The converse also holds: approved access is not a free pass. The host checks every call against
+  the approved scope, and a plugin that names a path, a link or another folder gets a refusal that
+  does not say what exists there.
+- Store plugins that need native access (their own HTTPS, the store's install files, the Windows
+  registry, D-Bus) declare it as documentation under "Host capabilities and native access are
+  different" below; those declarations are not enforced by these services either.
 
 ## Bounded work, cancellation and failures
 

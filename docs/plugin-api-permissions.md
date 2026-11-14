@@ -663,6 +663,22 @@ measured, and are open to change.
 
 There is no per-user mute yet and no notification history.
 
+## Utility services are not a sandbox
+
+Storage, Files, Network and Notifications decide what a plugin may ask GameNode to do. They do not
+confine the plugin's own process: it runs with the user's operating-system permissions and can open
+files and connect to hosts directly, outside this API and without these limits. Consequences for
+authors and for what the interface tells the user:
+
+- An approval (a folder, an origin, durable storage) states what GameNode will do for the plugin. It
+  is not evidence that the plugin cannot do more by itself, and the interface must not suggest it.
+- The limits of this section (quotas, byte budgets, address checks, rate limits) apply to calls made
+  through the API. A plugin that bypasses it is not limited by them, and a user who does not trust
+  a plugin should not install it; OS-level isolation is outside what the host provides.
+- What the API guarantees regardless of the plugin's behavior is the other direction: it never gives
+  a plugin an absolute path, a Core credential, another plugin's data, a host data folder or an
+  address on the user's network.
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

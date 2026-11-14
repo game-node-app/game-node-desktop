@@ -19,12 +19,12 @@ const NETWORK: &[&str] = &[cap::NETWORK_FETCH];
 /// What the fake saw of one request.
 #[derive(Clone, Debug)]
 pub(super) struct Seen {
-    url: String,
-    method: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-    max_response_bytes: usize,
-    timeout: Duration,
+    pub(super) url: String,
+    pub(super) method: String,
+    pub(super) headers: Vec<(String, String)>,
+    pub(super) body: Vec<u8>,
+    pub(super) max_response_bytes: usize,
+    pub(super) timeout: Duration,
 }
 
 type Script = Arc<dyn Fn(&Seen, &AllowOrigin) -> Result<Fetched, FetchError> + Send + Sync>;
@@ -74,11 +74,11 @@ impl Fetcher for FakeFetcher {
 }
 
 impl FakeFetcher {
-    fn calls(&self) -> Vec<Seen> {
+    pub(super) fn calls(&self) -> Vec<Seen> {
         self.calls.lock().unwrap().clone()
     }
 
-    fn script(
+    pub(super) fn script(
         &self,
         script: impl Fn(&Seen, &AllowOrigin) -> Result<Fetched, FetchError> + Send + Sync + 'static,
     ) {
@@ -88,7 +88,7 @@ impl FakeFetcher {
 
 /// The origins the user approved, changeable between calls.
 #[derive(Default)]
-struct Origins {
+pub(super) struct Origins {
     approved: StdMutex<Vec<String>>,
     asked_for: StdMutex<Vec<PluginIdentity>>,
 }
@@ -107,14 +107,14 @@ impl Origins {
 }
 
 impl Fixture {
-    fn user_approving_origins(&self, origins: &[&str]) -> Arc<Origins> {
+    pub(super) fn user_approving_origins(&self, origins: &[&str]) -> Arc<Origins> {
         let scopes = Arc::new(Origins::default());
         scopes.set(origins);
         self.network.set_scopes(scopes.clone());
         scopes
     }
 
-    async fn fetch_with(
+    pub(super) async fn fetch_with(
         &self,
         url: &str,
         method: &str,
@@ -140,7 +140,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn fetch_url_text(&self, url: &str) -> Result<NetworkFetchReply, Status> {
+    pub(super) async fn fetch_url_text(&self, url: &str) -> Result<NetworkFetchReply, Status> {
         self.fetch_with(url, "", &[], b"", 0, 0).await
     }
 }

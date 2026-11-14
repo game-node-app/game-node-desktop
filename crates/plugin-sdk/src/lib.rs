@@ -12,9 +12,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 
 pub mod resources;
+pub mod utilities;
 
 pub use resources::{Cover, LibrarySnapshot, Outcome, Resources, Written, idempotency_key};
 pub use tonic::{Code, Status};
+pub use utilities::{Durability, Fetch, Fetched, Notice, Severity, StoredValue, StoredWrite};
 
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const EVENT_QUEUE: usize = 32;

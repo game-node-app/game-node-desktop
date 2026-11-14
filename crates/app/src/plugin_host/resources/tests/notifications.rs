@@ -23,7 +23,7 @@ impl NotificationSink for Collected {
 }
 
 impl Collected {
-    fn all(&self) -> Vec<PluginNotice> {
+    pub(super) fn all(&self) -> Vec<PluginNotice> {
         self.0.lock().unwrap().clone()
     }
 }
@@ -40,7 +40,7 @@ impl Fixture {
             .await
     }
 
-    async fn notify_full(
+    pub(super) async fn notify_full(
         &self,
         idempotency: &str,
         title: &str,
@@ -69,7 +69,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    fn advance_notice_clock(&self, millis: u64) {
+    pub(super) fn advance_notice_clock(&self, millis: u64) {
         self.notice_clock.fetch_add(millis, Ordering::SeqCst);
     }
 }

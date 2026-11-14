@@ -25,6 +25,7 @@ mod files;
 mod network;
 mod notifications;
 mod sdk;
+mod sdk_utilities;
 mod storage;
 
 struct NoServices;

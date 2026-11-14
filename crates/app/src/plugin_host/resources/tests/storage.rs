@@ -13,7 +13,7 @@ const SESSION: StorageDurability = StorageDurability::SessionOnly;
 const DURABLE: StorageDurability = StorageDurability::Persistent;
 
 impl Fixture {
-    async fn put_value(
+    pub(super) async fn put_value(
         &self,
         key: &str,
         value: &[u8],
@@ -58,7 +58,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn remove(
+    pub(super) async fn remove(
         &self,
         key: &str,
         expected: u64,

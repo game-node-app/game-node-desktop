@@ -22,9 +22,9 @@ const FILES_AND_STORAGE: &[&str] = &[
 
 /// The user: picks `root`, and consents or not.
 #[derive(Default)]
-struct FakeApprover {
-    root: StdMutex<Option<PathBuf>>,
-    consent: AtomicBool,
+pub(super) struct FakeApprover {
+    pub(super) root: StdMutex<Option<PathBuf>>,
+    pub(super) consent: AtomicBool,
     asked: StdMutex<Vec<RootRequest>>,
     confirmed: StdMutex<Vec<RootScope>>,
     gate: StdMutex<Option<Arc<tokio::sync::Notify>>>,
@@ -48,7 +48,7 @@ impl RootApprover for FakeApprover {
 }
 
 impl FakeApprover {
-    fn asked(&self) -> usize {
+    pub(super) fn asked(&self) -> usize {
         self.asked.lock().unwrap().len()
     }
 }
@@ -63,7 +63,7 @@ fn names(reply: &FilesListReply) -> Vec<&str> {
 
 impl Fixture {
     /// A user who approves `root`.
-    fn user_approving(&self, root: &Path) -> Arc<FakeApprover> {
+    pub(super) fn user_approving(&self, root: &Path) -> Arc<FakeApprover> {
         let approver = Arc::new(FakeApprover::default());
         *approver.root.lock().unwrap() = Some(root.to_path_buf());
         approver.consent.store(true, Ordering::SeqCst);
@@ -78,12 +78,12 @@ impl Fixture {
             .unwrap()
     }
 
-    fn base(&self) -> PathBuf {
+    pub(super) fn base(&self) -> PathBuf {
         self._temp.path().to_path_buf()
     }
 
     /// `<temp>/games/<name>` holding `files`.
-    fn game_dir(&self, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+    pub(super) fn game_dir(&self, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
         let dir = self.base().join("games").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         for (file, contents) in files {
@@ -95,7 +95,7 @@ impl Fixture {
     }
 
     /// Library rows `(entry key, game, name, install folder)`; each gets the id `id-<key>`.
-    fn library_in(&self, rows: &[(&str, Option<u64>, &str, &Path)]) {
+    pub(super) fn library_in(&self, rows: &[(&str, Option<u64>, &str, &Path)]) {
         let missing = self.feed.sync(
             rows.iter()
                 .map(|(key, game_id, name, dir)| LibrarySource {
@@ -118,7 +118,7 @@ impl Fixture {
         self.feed.assign_ids(&missing, ids);
     }
 
-    async fn request_access(
+    pub(super) async fn request_access(
         &self,
         installation: &str,
         operations: &[&str],
@@ -146,7 +146,7 @@ impl Fixture {
             .handle
     }
 
-    async fn ls(&self, handle: &str) -> Result<FilesListReply, Status> {
+    pub(super) async fn ls(&self, handle: &str) -> Result<FilesListReply, Status> {
         self.ls_page(handle, 0, "").await
     }
 
@@ -167,7 +167,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn cat(
+    pub(super) async fn cat(
         &self,
         handle: &str,
         offset: u64,
@@ -185,7 +185,7 @@ impl Fixture {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn write_to(
+    pub(super) async fn write_to(
         &self,
         handle: &str,
         name: &str,
@@ -207,7 +207,11 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn rm(&self, handle: &str, idempotency: &str) -> Result<MutationReply, Status> {
+    pub(super) async fn rm(
+        &self,
+        handle: &str,
+        idempotency: &str,
+    ) -> Result<MutationReply, Status> {
         self.client()
             .files_delete(FilesDeleteRequest {
                 mutation: Some(self.mutation(idempotency, 0)),

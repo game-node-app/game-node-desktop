@@ -119,7 +119,7 @@ pub fn idempotency_key() -> String {
     )
 }
 
-fn timed<T>(message: T) -> Request<T> {
+pub(crate) fn timed<T>(message: T) -> Request<T> {
     let mut request = Request::new(message);
     request.set_timeout(SERVICE_TIMEOUT);
     request
@@ -129,8 +129,8 @@ fn timed<T>(message: T) -> Request<T> {
 /// [`HostClient::resources`](crate::HostClient::resources). Cheap to clone.
 #[derive(Clone)]
 pub struct Resources {
-    client: ResourceHostClient<tonic::transport::Channel>,
-    context: ServiceContext,
+    pub(crate) client: ResourceHostClient<tonic::transport::Channel>,
+    pub(crate) context: ServiceContext,
 }
 
 impl Resources {
@@ -143,7 +143,7 @@ impl Resources {
         }
     }
 
-    fn mutation(&self, key: &str, expected_revision: u64) -> MutationContext {
+    pub(crate) fn mutation(&self, key: &str, expected_revision: u64) -> MutationContext {
         MutationContext {
             context: Some(self.context.clone()),
             operation_id: String::new(),

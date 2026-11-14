@@ -67,7 +67,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 7. Host-owned action and job adapters
 
-- [ ] 7.1 Implement caller-owned jobs with get/watch/cancel, idempotency and terminal outcomes for long operations using the 4.4 owner/profile context; verify retries, foreign ids, profile switches, cancellation and permission changes cannot duplicate or expose effects.
+- [x] 7.1 Implement caller-owned jobs with get/watch/cancel, idempotency and terminal outcomes for long operations using the 4.4 owner/profile context; verify retries, foreign ids, profile switches, cancellation and permission changes cannot duplicate or expose effects.
 - [ ] 7.2 Implement game.launch using detected URI/executable targets from any source within per-game scope, plus the existing independent install flow; verify overrides are rejected, explicit user intent is required and official playtime/launch behavior is preserved.
 - [ ] 7.3 Implement scoped backup list/create/restore through approved game/save-context profiles across providers without faking manual-provider ownership, with restore confirmation; verify target validation, cancellation and unsupported-platform results and document filesystem effects.
 - [ ] 7.4 Implement tools list/apply/remove through the existing host catalog and rollback/confirmation flow; verify plugins cannot supply arbitrary installer targets or bypass prerequisites.

@@ -260,6 +260,22 @@ Long-running requests SHALL return caller-owned job identifiers with get/watch/c
 - **WHEN** a plugin requests another identity's job
 - **THEN** access is denied without exposing its private progress
 
+#### Scenario: Unknown, foreign or forgotten job
+- **WHEN** a plugin names a job id that is unknown, another plugin's, from an earlier profile or already forgotten
+- **THEN** every call answers with the same not-found result, so the id reveals nothing about jobs the caller does not own
+
+#### Scenario: Permission lost while a job runs
+- **WHEN** the plugin loses the permission of the operation that created a job, or its grants change, before the work commits
+- **THEN** get, watch and cancel are denied (an open watch ends with the denial) and the work commits no effect
+
+#### Scenario: Retry after the job was forgotten
+- **WHEN** a plugin retries with an idempotency key whose finished job is no longer kept
+- **THEN** the host refuses the retry instead of running the work a second time
+
+#### Scenario: Cancellation that the work cannot honor
+- **WHEN** a plugin cancels a job whose work cannot stop halfway
+- **THEN** the reply reports the state it is in and the job ends with what the work actually did, never with a cancellation that did not happen
+
 ### Requirement: Explicit unavailable Core resources
 The public API SHALL NOT expose raw SQL, Core credentials, foreign plugin secrets, elevation, arbitrary shell commands, plugin administration or unrestricted frontend execution. Unknown RPCs SHALL fail as unimplemented; unsupported features SHALL NOT be represented as successful no-ops.
 

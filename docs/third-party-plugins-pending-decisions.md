@@ -386,3 +386,29 @@ Confirmadas pelo usuário durante a tarefa 6.7 (as sete primeiras linhas); o res
 | Pasta reservada do host (dados privados do GameNode) nunca é oferecida e é descartada sem erro. Duplicatas (mesma pasta escrita de outro jeito) colapsam, mantendo a primeira. Declarar para um tipo que o pedido não pede é ignorado. | 6.7. |
 | A pré-seleção é a sugestão própria do host (instalação), senão a primeira declarada que existe; a verificação é só de existência, nada é listado nem lido, e nada volta ao plugin. O diálogo real é a 10.9. | 6.7, 10.9. |
 
+## O. Decisões adotadas na implementação da tarefa 7.1 (2026-11-14)
+
+Sem perguntas ao usuário: o design fixa o essencial (jobs do próprio chamador, permissão da operação de origem, idempotência, desfecho terminal tipado). O resto é detalhe de engenharia. **Nenhuma operação devolve job ainda**: o registro e os três RPCs estão prontos e testados com jobs iniciados pelo lado do host; as operações da 7.2 em diante os usam por `ResourceApi::start_job`.
+
+| Decisão | Alcance |
+| --- | --- |
+| **Jobs ficam na memória do host**, não em disco. O design põe jobs entre as coisas "do perfil" (de quem são), mas o trabalho em si não retoma depois de um reinício, então um registro durável só mostraria "interrompido". Consequência: um reinício esquece jobs e chaves, e uma operação que não pode se repetir precisa ser idempotente no próprio domínio. **Aberto para revisão**: se quiser registro durável (por exemplo para mostrar "interrompido" depois de reiniciar), é uma tarefa nova. | 7.1. |
+| **Dono = `job_owner` do namespace autenticado + época do perfil.** Official providers (sem namespace) não têm jobs (`FAILED_PRECONDITION`). Id desconhecido, de outro plugin, de perfil anterior ou esquecido é o mesmo `NOT_FOUND`, com a mesma mensagem. | 7.1. |
+| **Os RPCs de jobs não têm permissão própria**: acham o job pelo dono do chamador e então exigem a permissão da operação que o criou (guardada no job), de novo antes de cada evento do watch. Por isso `DescribeApi` lista os três métodos sem permissões; `ProviderApi::authorize_resource_session` autentica sem nomear permissão. | 7.1. |
+| **A cerca do commit usa a autoridade da sessão que pediu**: permissão ainda concedida e revisão de grants igual à do pedido. Sessão encerrada (plugin parou ou reiniciou) falha fechado com `session_ended`: o registro do job sobrevive e o plugin reiniciado lê o desfecho, mas o efeito não é confirmado com uma autoridade que acabou. Uma operação longa interrompida por reinício do plugin termina `FAILED` e pode ser pedida de novo. | 7.1. |
+| **Idempotência**: mesma chave e mesmo pedido devolve o mesmo job sem iniciar nada; chave para outro pedido é `FAILED_PRECONDITION`; chave cujo job já foi esquecido também é `FAILED_PRECONDITION`, nunca uma segunda execução. Chaves duram 24 h; job terminado dura 1 h e no máximo 32 por plugin. | 7.1. |
+| **Cancelar é cooperativo**: pede a parada e espera até 2 s; job terminado responde como terminou, sem erro; trabalho que não para continua e a resposta diz `RUNNING`; um cancelamento não reescreve um `SUCCEEDED`; job cancelado antes de começar nunca roda. A chave do `JobsCancel` só precisa estar bem formada (cancelar já é idempotente). | 7.1. |
+| **Progresso só avança** (0 a 100), então um job tem no máximo 103 eventos e o watch nunca perde posição: `after_sequence` além do último evento é `OUT_OF_RANGE`. O watch reusa os 8 slots por sessão do watch de biblioteca. | 7.1. |
+| **Troca de perfil** manda parar os jobs do perfil antigo (monitor por job) e esconde os registros; pedido ainda com o contexto antigo não inicia job. Pânico do trabalho vira `FAILED` com código `internal`, sem detalhe. | 7.1. |
+| Mensagem e código do resultado são recortados (512 e 64 bytes) e sem caracteres de controle. Não há SDK para jobs ainda: os helpers e as receitas de confirmação/job são a 7.6. | 7.1, 7.6. |
+
+### Limites de jobs e como foram decididos
+
+Não estão no design; foram escolhidos por raciocínio, sem medir, e podem mudar.
+
+| Limite | Valor | Por quê |
+| --- | --- | --- |
+| Jobs em execução | 8 por plugin, 32 no total | Alguns de cada vez sem esgotar os workers; o teto global limita uma multidão de plugins. |
+| Jobs terminados guardados | 32 por plugin, 1 hora | Dá para ler o desfecho depois de um reinício do plugin, sem crescer. |
+| Chaves de idempotência | 1.024 por plugin, 24 h | O mesmo limite das outras mutações. |
+| Espera do cancelamento | 2 s | A chamada continua curta; trabalho lento é reportado como ainda rodando. |

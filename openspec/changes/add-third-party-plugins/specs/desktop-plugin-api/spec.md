@@ -158,6 +158,14 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a request redirects to an unapproved origin or a private/local destination
 - **THEN** the host refuses the redirected request without forwarding credentials
 
+#### Scenario: Cover from an approved file handle
+- **WHEN** a plugin sets the cover of its own entry from a file handle
+- **THEN** the host requires `files.read` and a current approval of that same entry, reads the bytes itself under the same size bound, and decodes and stores its own re-encoded picture as for inline bytes
+
+#### Scenario: Cover reference that is not an approved handle
+- **WHEN** the reference is a path, a URL, a forged, expired or other-session handle, a revoked approval, another entry's folder, a directory or a file over the byte limit
+- **THEN** the host refuses it without changing any artwork or fetching anything
+
 #### Scenario: Notification text is untrusted
 - **WHEN** a plugin publishes a notification whose text contains markup, script, a link or control or disguising characters
 - **THEN** the host refuses control and disguising characters, and Core shows everything else as plain text attributed to the authenticated plugin, with no link, markup or action

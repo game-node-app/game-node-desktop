@@ -357,3 +357,15 @@ Escolhidos pelo assistente por raciocínio, **sem medição**; o design só fixa
 
 **Não verificado visualmente:** o toast foi coberto por testes de componente (texto hostil vira texto, sem `a`, `script` ou `img`), mas não olhado num navegador nem no app nativo. Efeito no protocolo: campos aditivos `NotificationTranslation` e `translations = 6`; `endpoint_field_policy.json` atualizado. Sem mudança de banco.
 
+## M. Decisões adotadas na implementação da tarefa 6.6 (2026-11-14)
+
+Sem perguntas ao usuário: o design e a tarefa já fixam o essencial (campo aditivo ao lado dos bytes inline, handles da 6.2, mesmos limites). O resto é detalhe de engenharia.
+
+| Decisão | Alcance |
+| --- | --- |
+| Campo aditivo `ArtworkSetRequest.file_handle = 7`, exclusivo com `encoded_image` (os dois juntos são `INVALID_ARGUMENT`). `media_type` é obrigatório com o handle, como com bytes inline, e precisa combinar com os bytes. | 6.6. |
+| Precisa de `files.read` além de `artwork.write`; sem ele nada é lido. `DescribeApi` lista uma permissão por método e continua listando só `artwork.write`; a exigência de `files.read` para o handle está no protocolo e na documentação. | 6.6. |
+| O handle tem de ser de um arquivo regular de uma aprovação vigente **da mesma instalação** alvo. O handle da aprovação de outra entrada do próprio plugin é `PERMISSION_DENIED`: uma pasta que o usuário aprovou para outro jogo não serve de fonte de capa para este. Diretório: `FAILED_PRECONDITION`. Caminho, URL, handle forjado, editado, de outra sessão ou de aprovação revogada: `NOT_FOUND`. | 6.6. |
+| O host lê o arquivo (até 4 MiB + 1 byte, só para distinguir "maior que o limite") no worker do namespace do plugin e depois decodifica no worker de imagens, com os mesmos limites de pixels e formatos. A mensagem de arquivo grande é a mesma dos bytes inline. | 6.6. |
+| Idempotência: o hash do pedido usa o handle e o tipo declarado (os bytes só são conhecidos depois da leitura, e a repetição é respondida antes). Um arquivo que mudou depois não muda a resposta à mesma chave; outro arquivo precisa de outra chave. `files.read` é verificado de novo no commit, antes de `artwork.write`, para a recusa nomear a permissão perdida. | 6.6. |
+| Não há limite de taxa próprio, como nas capas inline. O SDK Rust ganha `Resources::set_cover_from_file`. | 6.6. |

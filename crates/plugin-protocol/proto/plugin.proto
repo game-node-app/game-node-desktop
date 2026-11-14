@@ -467,7 +467,13 @@ message ArtworkReadRequest { ServiceContext context = 1; string game_id = 2; str
 // matched game's cover and other entries are never changed. `mutation.expected_revision` is the
 // entry's `LibraryEntry.artwork_revision`. The reply's `resource_id` is the installation id and
 // `revision` the artwork revision after the call.
-message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; }
+// The image comes either inline (`encoded_image`) or from a file the plugin may read
+// (`file_handle`, a regular-file handle from the Files service, with `media_type` set as for
+// inline bytes); giving both is INVALID_ARGUMENT. A handle needs `files.read` besides
+// `artwork.write`, must come from an approval of this same installation, and its bytes are read by
+// the host under the same 4 MiB bound and then decoded like inline ones. A path or a URL is never
+// accepted: the handle is the only reference.
+message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; string file_handle = 7; }
 message LibraryListReply { repeated LibraryEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
 message LibraryGetReply { LibraryEntry entry = 1; uint64 revision = 2; }
 message FavoritesListReply { repeated FavoriteEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }

@@ -444,8 +444,40 @@ impl Resources {
         image: Vec<u8>,
         media_type: &str,
     ) -> Result<Written, Status> {
-        self.send_cover(installation_id, expected_revision, key, image, media_type)
-            .await
+        self.send_cover(
+            installation_id,
+            expected_revision,
+            key,
+            image,
+            media_type,
+            "",
+        )
+        .await
+    }
+
+    /// Like [`set_cover`](Self::set_cover), but the image is a file the plugin may read:
+    /// `file_handle` is a regular-file handle from the Files service (`files_list`,
+    /// `files_create`), from an approval of this same installation. It needs `files.read` besides
+    /// `artwork.write`; the host reads the file itself under the same 4 MiB bound, so the plugin
+    /// does not have to hold the bytes. A path or URL is never accepted. `media_type` must match
+    /// the file's bytes.
+    pub async fn set_cover_from_file(
+        &self,
+        installation_id: &str,
+        expected_revision: u64,
+        key: &str,
+        file_handle: &str,
+        media_type: &str,
+    ) -> Result<Written, Status> {
+        self.send_cover(
+            installation_id,
+            expected_revision,
+            key,
+            Vec::new(),
+            media_type,
+            file_handle,
+        )
+        .await
     }
 
     /// Restores the game's own cover for an own entry.
@@ -455,7 +487,7 @@ impl Resources {
         expected_revision: u64,
         key: &str,
     ) -> Result<Written, Status> {
-        self.send_cover(installation_id, expected_revision, key, Vec::new(), "")
+        self.send_cover(installation_id, expected_revision, key, Vec::new(), "", "")
             .await
     }
 
@@ -466,6 +498,7 @@ impl Resources {
         key: &str,
         image: Vec<u8>,
         media_type: &str,
+        file_handle: &str,
     ) -> Result<Written, Status> {
         self.client
             .clone()
@@ -476,6 +509,7 @@ impl Resources {
                 artwork_kind: String::new(),
                 encoded_image: image,
                 media_type: media_type.to_owned(),
+                file_handle: file_handle.to_owned(),
             }))
             .await?
             .into_inner()

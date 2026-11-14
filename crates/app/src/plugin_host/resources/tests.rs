@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::Code;
 use tonic::transport::Channel;
 
+mod artwork_handles;
 mod files;
 mod network;
 mod notifications;

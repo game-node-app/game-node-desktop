@@ -527,6 +527,40 @@ impl ResourceApi {
         Ok(Response::new(reply))
     }
 
+    /// The bytes of the file `handle` names, for a picture that is about to become the cover of
+    /// `installation_id`: at most `limit + 1` bytes, so the caller can tell that the file is over
+    /// its bound without reading all of it. The handle must be one of this session, from an
+    /// approval of this same installation that allows reading, and every check of a normal read
+    /// applies. Runs on a blocking worker under the plugin's namespace lock.
+    pub(super) async fn read_handle_image(
+        &self,
+        caller: &ResourceCaller,
+        handle: &str,
+        installation_id: &str,
+        limit: usize,
+    ) -> Result<Vec<u8>, Status> {
+        handle_text(handle)?;
+        let (files, feed) = (self.files.clone(), self.library.clone());
+        let session = caller.session_id.clone();
+        let handle = handle.to_owned();
+        let installation_id = installation_id.to_owned();
+        self.in_namespace(caller, move |namespace| {
+            let opened = open_handle(&files, &feed, namespace, &session, &handle, operation::READ)?;
+            // A file the user approved for another game's folder is not a picture for this one.
+            if opened.approval.installation_id != installation_id {
+                return Err(Status::permission_denied(
+                    "this file handle belongs to another library entry",
+                ));
+            }
+            let (bytes, _) = opened
+                .confined
+                .read(&opened.path, 0, limit.saturating_add(1))
+                .map_err(file_status)?;
+            Ok(bytes)
+        })
+        .await
+    }
+
     pub(super) async fn write_file(
         &self,
         request: Request<FilesWriteRequest>,

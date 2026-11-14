@@ -119,7 +119,24 @@ impl ResourceApi {
         kind(&request.artwork_kind)?;
         installation(&request.installation_id)?;
         let expected_game = game_id(&request.game_id)?;
-        let clearing = request.encoded_image.is_empty();
+        let by_handle = !request.file_handle.is_empty();
+        if by_handle && !request.encoded_image.is_empty() {
+            return Err(Status::invalid_argument(
+                "give either encoded_image or file_handle, not both",
+            ));
+        }
+        if by_handle && request.media_type.trim().is_empty() {
+            return Err(Status::invalid_argument(
+                "media_type is required with a file_handle",
+            ));
+        }
+        // A picture read from a file needs the right to read files besides the right to write
+        // covers; without it nothing is looked at.
+        if by_handle {
+            self.providers
+                .authorize_resource(mutation.context.as_ref(), cap::FILES_READ)?;
+        }
+        let clearing = request.encoded_image.is_empty() && !by_handle;
         if clearing && !request.media_type.is_empty() {
             return Err(Status::invalid_argument(
                 "media_type must be empty when encoded_image is empty (restoring the game's cover)",
@@ -130,6 +147,14 @@ impl ResourceApi {
         }
         let content = if clearing {
             "\u{0}".to_owned()
+        } else if by_handle {
+            // The bytes are not known until the file is read, and a retry must be answered before
+            // that: the request is the handle and the declared type.
+            format!(
+                "handle|{}|{}",
+                request.file_handle,
+                request.media_type.trim().to_ascii_lowercase()
+            )
         } else {
             format!(
                 "{:x}|{}",
@@ -154,10 +179,26 @@ impl ResourceApi {
         let prepared = if clearing {
             None
         } else {
-            Some(
-                self.prepare_image(request.encoded_image, request.media_type)
-                    .await?,
-            )
+            let bytes = if by_handle {
+                let bytes = self
+                    .read_handle_image(
+                        &caller,
+                        &request.file_handle,
+                        &request.installation_id,
+                        plugin_artwork::MAX_INPUT_BYTES,
+                    )
+                    .await?;
+                if bytes.len() > plugin_artwork::MAX_INPUT_BYTES {
+                    return Err(refused(ArtworkError::TooLarge));
+                }
+                // The file was read for a call that may since have lost its permission.
+                self.providers
+                    .authorize_resource(mutation.context.as_ref(), cap::FILES_READ)?;
+                bytes
+            } else {
+                request.encoded_image
+            };
+            Some(self.prepare_image(bytes, request.media_type).await?)
         };
 
         let _serial = self.mutations.lock.lock().await;
@@ -167,11 +208,18 @@ impl ResourceApi {
         let (entry_key, entry) =
             self.own_entry(&caller, &request.installation_id, expected_game)?;
         let host = self.library.host().ok_or_else(unavailable)?;
-        let guard = self.guard(
-            mutation.context.clone().unwrap_or_default(),
-            cap::ARTWORK_WRITE,
-            caller.grant_revision,
-        );
+        let context = mutation.context.clone().unwrap_or_default();
+        let write_guard = self.guard(context.clone(), cap::ARTWORK_WRITE, caller.grant_revision);
+        let guard: crate::plugin_host::library::CommitGuard = if by_handle {
+            // The permission that was lost is named first, rather than "permissions changed".
+            let read_guard = self.guard(context, cap::FILES_READ, caller.grant_revision);
+            Box::new(move || {
+                read_guard()?;
+                write_guard()
+            })
+        } else {
+            write_guard
+        };
         let (outcome, revision, commit) = match host
             .set_artwork(entry_key, mutation.expected_revision, prepared, guard)
             .await?

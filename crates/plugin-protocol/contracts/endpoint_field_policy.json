@@ -280,7 +280,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Artwork/Set",
-      "request_policy": "Own installation id, entry artwork revision and a bounded static PNG, JPEG or WebP; empty restores the game cover",
+      "request_policy": "Own installation id, entry artwork revision and a bounded static PNG, JPEG or WebP, inline or by a files.read handle of the same installation; empty restores the game cover",
       "response_policy": "Typed outcome with the entry artwork revision",
       "extension_or_opaque_policy": "Descriptive credit metadata only; cannot set arbitrary fetch/scheme authority",
       "access_model": "Own entries under artwork.write; never changes the matched game cover",

@@ -9540,6 +9540,12 @@ func (x *ArtworkReadRequest) GetMaxBytes() uint64 {
 // matched game's cover and other entries are never changed. `mutation.expected_revision` is the
 // entry's `LibraryEntry.artwork_revision`. The reply's `resource_id` is the installation id and
 // `revision` the artwork revision after the call.
+// The image comes either inline (`encoded_image`) or from a file the plugin may read
+// (`file_handle`, a regular-file handle from the Files service, with `media_type` set as for
+// inline bytes); giving both is INVALID_ARGUMENT. A handle needs `files.read` besides
+// `artwork.write`, must come from an approval of this same installation, and its bytes are read by
+// the host under the same 4 MiB bound and then decoded like inline ones. A path or a URL is never
+// accepted: the handle is the only reference.
 type ArtworkSetRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Mutation       *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
@@ -9548,6 +9554,7 @@ type ArtworkSetRequest struct {
 	ArtworkKind    string                 `protobuf:"bytes,4,opt,name=artwork_kind,json=artworkKind,proto3" json:"artwork_kind,omitempty"`
 	EncodedImage   []byte                 `protobuf:"bytes,5,opt,name=encoded_image,json=encodedImage,proto3" json:"encoded_image,omitempty"`
 	MediaType      string                 `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	FileHandle     string                 `protobuf:"bytes,7,opt,name=file_handle,json=fileHandle,proto3" json:"file_handle,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -9620,6 +9627,13 @@ func (x *ArtworkSetRequest) GetEncodedImage() []byte {
 func (x *ArtworkSetRequest) GetMediaType() string {
 	if x != nil {
 		return x.MediaType
+	}
+	return ""
+}
+
+func (x *ArtworkSetRequest) GetFileHandle() string {
+	if x != nil {
+		return x.FileHandle
 	}
 	return ""
 }
@@ -19965,7 +19979,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
 	"\x0finstallation_id\x18\x03 \x01(\tR\x0einstallationId\x12!\n" +
 	"\fartwork_kind\x18\x04 \x01(\tR\vartworkKind\x12\x1b\n" +
-	"\tmax_bytes\x18\x05 \x01(\x04R\bmaxBytes\"\xfd\x01\n" +
+	"\tmax_bytes\x18\x05 \x01(\x04R\bmaxBytes\"\x9e\x02\n" +
 	"\x11ArtworkSetRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
@@ -19973,7 +19987,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\fartwork_kind\x18\x04 \x01(\tR\vartworkKind\x12#\n" +
 	"\rencoded_image\x18\x05 \x01(\fR\fencodedImage\x12\x1d\n" +
 	"\n" +
-	"media_type\x18\x06 \x01(\tR\tmediaType\"\x8b\x01\n" +
+	"media_type\x18\x06 \x01(\tR\tmediaType\x12\x1f\n" +
+	"\vfile_handle\x18\a \x01(\tR\n" +
+	"fileHandle\"\x8b\x01\n" +
 	"\x10LibraryListReply\x12:\n" +
 	"\aentries\x18\x01 \x03(\v2 .gamenode.plugin.v1.LibraryEntryR\aentries\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +

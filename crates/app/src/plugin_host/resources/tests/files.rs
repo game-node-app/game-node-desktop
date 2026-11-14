@@ -72,7 +72,7 @@ impl Fixture {
     }
 
     /// The plugin as the resource services see it, for operations the UI performs.
-    fn caller(&self) -> ResourceCaller {
+    pub(super) fn caller(&self) -> ResourceCaller {
         self.api
             .authorize_resource(Some(&self.context()), cap::FILES_READ)
             .unwrap()
@@ -137,7 +137,7 @@ impl Fixture {
     }
 
     /// The root handle of an approved `installation` folder.
-    async fn root_handle(&self, installation: &str, operations: &[&str]) -> String {
+    pub(super) async fn root_handle(&self, installation: &str, operations: &[&str]) -> String {
         self.request_access(installation, operations, &[])
             .await
             .unwrap()
@@ -222,7 +222,7 @@ impl Fixture {
     }
 
     /// The handle of the entry called `name` in a listing.
-    async fn child(&self, directory: &str, name: &str) -> String {
+    pub(super) async fn child(&self, directory: &str, name: &str) -> String {
         self.ls(directory)
             .await
             .unwrap()

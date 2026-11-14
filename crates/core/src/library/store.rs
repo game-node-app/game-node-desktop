@@ -192,6 +192,37 @@ pub struct ChosenMatch {
     pub entry_key: String,
     pub game_id: Option<u64>,
     pub chosen_at: i64,
+    /// Who made the choice. Stored choices from before plugins existed read as the user's.
+    #[serde(default)]
+    pub source: ChoiceSource,
+}
+
+/// Who made a [`ChosenMatch`]. A plugin may replace its own choices but never the user's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChoiceSource {
+    /// Picked in the match dialog (including "no GameNode game").
+    #[default]
+    User,
+    /// Assigned by a plugin through the plugin API for its own entry.
+    Plugin,
+}
+
+impl ChoiceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Plugin => "plugin",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "user" => Some(Self::User),
+            "plugin" => Some(Self::Plugin),
+            _ => None,
+        }
+    }
 }
 
 /// GameNode game metadata kept for display.

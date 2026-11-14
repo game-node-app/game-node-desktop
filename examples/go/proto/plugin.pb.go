@@ -9167,6 +9167,9 @@ func (x *FavoritesSetRequest) GetFavorite() bool {
 	return false
 }
 
+// Catalog search by title. `platform` and `cursor` are reserved and must be empty: the catalog
+// has no platform filter and a search is one bounded page (`page_size` defaults to 20, at most
+// 50), so `MatchingSearchReply.next_cursor` is always empty.
 type MatchingSearchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *ServiceContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
@@ -9243,12 +9246,17 @@ func (x *MatchingSearchRequest) GetCursor() string {
 	return ""
 }
 
+// Assigns one of the caller's own entries to a GameNode game. The entry is named by its
+// `installation_id`; `provider_id` and `provider_game_id` are reserved and must be empty.
+// `mutation.expected_revision` is the entry's `LibraryEntry.revision`. The reply's `resource_id`
+// is the installation id and `revision` the entry's revision after the call.
 type MatchingAssignRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Mutation       *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
 	ProviderId     string                 `protobuf:"bytes,2,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
 	ProviderGameId string                 `protobuf:"bytes,3,opt,name=provider_game_id,json=providerGameId,proto3" json:"provider_game_id,omitempty"`
 	GamenodeGameId string                 `protobuf:"bytes,4,opt,name=gamenode_game_id,json=gamenodeGameId,proto3" json:"gamenode_game_id,omitempty"`
+	InstallationId string                 `protobuf:"bytes,5,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -9307,6 +9315,13 @@ func (x *MatchingAssignRequest) GetProviderGameId() string {
 func (x *MatchingAssignRequest) GetGamenodeGameId() string {
 	if x != nil {
 		return x.GamenodeGameId
+	}
+	return ""
+}
+
+func (x *MatchingAssignRequest) GetInstallationId() string {
+	if x != nil {
+		return x.InstallationId
 	}
 	return ""
 }
@@ -9995,12 +10010,15 @@ func (x *FavoriteEntry) GetRevision() uint64 {
 	return 0
 }
 
+// A catalog game a search found. `platform` and `confidence` are reserved: the catalog carries
+// neither, so both are empty. `release_year` is 0 when unknown.
 type MatchCandidate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	GameId        string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
 	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
 	Platform      string                 `protobuf:"bytes,3,opt,name=platform,proto3" json:"platform,omitempty"`
 	Confidence    string                 `protobuf:"bytes,4,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	ReleaseYear   int32                  `protobuf:"varint,5,opt,name=release_year,json=releaseYear,proto3" json:"release_year,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10061,6 +10079,13 @@ func (x *MatchCandidate) GetConfidence() string {
 		return x.Confidence
 	}
 	return ""
+}
+
+func (x *MatchCandidate) GetReleaseYear() int32 {
+	if x != nil {
+		return x.ReleaseYear
+	}
+	return 0
 }
 
 type LibraryEvent struct {
@@ -19762,13 +19787,14 @@ const file_plugin_proto_rawDesc = "" +
 	"\x05query\x18\x02 \x01(\tR\x05query\x12\x1a\n" +
 	"\bplatform\x18\x03 \x01(\tR\bplatform\x12\x1b\n" +
 	"\tpage_size\x18\x04 \x01(\rR\bpageSize\x12\x16\n" +
-	"\x06cursor\x18\x05 \x01(\tR\x06cursor\"\xcd\x01\n" +
+	"\x06cursor\x18\x05 \x01(\tR\x06cursor\"\xf6\x01\n" +
 	"\x15MatchingAssignRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
 	"providerId\x12(\n" +
 	"\x10provider_game_id\x18\x03 \x01(\tR\x0eproviderGameId\x12(\n" +
-	"\x10gamenode_game_id\x18\x04 \x01(\tR\x0egamenodeGameId\"\xd4\x01\n" +
+	"\x10gamenode_game_id\x18\x04 \x01(\tR\x0egamenodeGameId\x12'\n" +
+	"\x0finstallation_id\x18\x05 \x01(\tR\x0einstallationId\"\xd4\x01\n" +
 	"\x12ArtworkReadRequest\x12<\n" +
 	"\acontext\x18\x01 \x01(\v2\".gamenode.plugin.v1.ServiceContextR\acontext\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
@@ -19828,14 +19854,15 @@ const file_plugin_proto_rawDesc = "" +
 	"\rFavoriteEntry\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12\x1a\n" +
 	"\bfavorite\x18\x02 \x01(\bR\bfavorite\x12\x1a\n" +
-	"\brevision\x18\x03 \x01(\x04R\brevision\"{\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\"\x9e\x01\n" +
 	"\x0eMatchCandidate\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1a\n" +
 	"\bplatform\x18\x03 \x01(\tR\bplatform\x12\x1e\n" +
 	"\n" +
 	"confidence\x18\x04 \x01(\tR\n" +
-	"confidence\"\x81\x01\n" +
+	"confidence\x12!\n" +
+	"\frelease_year\x18\x05 \x01(\x05R\vreleaseYear\"\x81\x01\n" +
 	"\fLibraryEvent\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x04R\brevision\x12\x1d\n" +
 	"\n" +

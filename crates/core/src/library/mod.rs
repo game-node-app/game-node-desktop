@@ -16,6 +16,7 @@ pub mod machine;
 pub mod match_dialog;
 pub mod matching;
 pub mod membership;
+pub mod plugin_match;
 pub mod query;
 pub mod selection;
 pub mod store;
@@ -42,11 +43,12 @@ pub use match_dialog::{
 };
 pub use matching::{MatchSource, MatchStatus};
 pub use membership::{EntryStatus, GameStatus, Membership, StandingView};
+pub use plugin_match::{MAX_OFFERED_GAMES, PluginMatch};
 pub use query::{ProviderCount, Row};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
-    DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryStore,
-    ProviderScanState, StoreAccount, StoredEntry, entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChoiceSource, ChosenMatch,
+    DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
+    LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
 };
 pub use view::{DetailView, EmptyState, LibraryView};

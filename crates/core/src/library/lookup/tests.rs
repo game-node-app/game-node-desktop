@@ -321,6 +321,7 @@ fn a_manual_pick_survives_any_lookup_result() {
                 entry_key: entry_key("steam", "620"),
                 game_id: Some(42),
                 chosen_at: NOW,
+                source: Default::default(),
             },
         );
         done(&mut machine, &ask, Ok(result), NOW + 1);
@@ -343,6 +344,7 @@ fn no_game_stays_no_game_after_a_lookup_finds_one() {
             entry_key: entry_key("steam", "620"),
             game_id: None,
             chosen_at: NOW,
+            source: Default::default(),
         },
     );
     done(

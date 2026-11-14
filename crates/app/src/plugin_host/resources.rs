@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+mod matching;
 mod mutations;
 
 use super::library::{
@@ -45,10 +46,13 @@ pub const SERVED: &[Served] = &[
     ),
     Served::new("FavoritesList", cap::FAVORITES_READ, true, OWN_ENTRIES),
     Served::new("FavoritesSet", cap::FAVORITES_WRITE, false, OWN_ENTRIES),
+    Served::new("MatchingSearch", cap::MATCHING_READ, false, CATALOG),
+    Served::new("MatchingAssign", cap::MATCHING_WRITE, false, OWN_ENTRIES),
 ];
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
+const CATALOG: &str = "GameNode catalog (title search)";
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {
@@ -82,6 +86,7 @@ pub struct ResourceApi {
     library: Arc<LibraryFeed>,
     watches: Arc<Mutex<HashMap<String, usize>>>,
     mutations: Arc<mutations::Mutations>,
+    searches: Arc<matching::SearchLimiter>,
 }
 
 impl ResourceApi {
@@ -91,6 +96,7 @@ impl ResourceApi {
             library,
             watches: Arc::default(),
             mutations: Arc::default(),
+            searches: Arc::default(),
         }
     }
 
@@ -430,9 +436,21 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.set_favorite(request).await
     }
 
+    async fn matching_search(
+        &self,
+        request: Request<MatchingSearchRequest>,
+    ) -> Result<Response<MatchingSearchReply>, Status> {
+        self.search_catalog(request).await
+    }
+
+    async fn matching_assign(
+        &self,
+        request: Request<MatchingAssignRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.assign_match(request).await
+    }
+
     not_served! {
-        matching_search(MatchingSearchRequest) -> MatchingSearchReply;
-        matching_assign(MatchingAssignRequest) -> MutationReply;
         artwork_read(ArtworkReadRequest) -> ArtworkReadReply;
         artwork_set(ArtworkSetRequest) -> MutationReply;
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;

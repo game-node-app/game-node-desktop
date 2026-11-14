@@ -219,6 +219,16 @@ pub enum Input {
         display_name: Option<String>,
         revision: u64,
     },
+    /// A plugin's catalog search returned these games; they can now be assigned to its entries.
+    CatalogSearched {
+        games: Vec<GameSummary>,
+    },
+    /// Match a plugin's own entry to a game ([`LibraryMachine::plan_plugin_match`] decides).
+    AssignPluginMatch {
+        key: String,
+        game_id: u64,
+        now: i64,
+    },
     /// Mark or unmark the entry's matched game as a favorite. `now` is unix seconds.
     SetFavorite {
         key: String,
@@ -424,6 +434,8 @@ pub struct LibraryMachine {
     pub(super) lookups: BTreeMap<u32, LookupRun>,
     /// The match dialog, while it is open.
     pub(super) dialog: Option<MatchDialog>,
+    /// Games plugin searches offered, still open for assignment (bounded, oldest first).
+    pub(super) offered: super::plugin_match::Offered,
     pub(super) covers: CoverQueue,
     /// Artwork is loaded on demand; the engine checks its disk cache before downloading.
     pub(super) artwork_focus: Option<u64>,
@@ -475,6 +487,7 @@ impl LibraryMachine {
             add: None,
             lookups: BTreeMap::new(),
             dialog: None,
+            offered: Default::default(),
             covers: CoverQueue::default(),
             artwork_focus: None,
             artwork_requests: BTreeMap::new(),
@@ -761,6 +774,13 @@ impl LibraryMachine {
             Input::SetMatchQuery(text) => {
                 self.set_match_query(text);
                 vec![]
+            }
+            Input::CatalogSearched { games } => {
+                self.catalog_searched(games);
+                vec![]
+            }
+            Input::AssignPluginMatch { key, game_id, now } => {
+                self.assign_plugin_match(&key, game_id, now)
             }
             Input::SearchMatch => self.search_match(),
             Input::MatchSearched { op, result } => self.on_match_searched(op, result),

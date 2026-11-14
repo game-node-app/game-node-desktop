@@ -219,6 +219,7 @@ mod tests {
             entry_key: "manual:install-1".into(),
             game_id,
             chosen_at: 10,
+            source: Default::default(),
         }
     }
 

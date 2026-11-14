@@ -43,7 +43,7 @@ pub(super) struct Mutations {
 }
 
 impl Mutations {
-    fn replay(
+    pub(super) fn replay(
         &self,
         caller: &ResourceCaller,
         key: &str,
@@ -68,7 +68,13 @@ impl Mutations {
         }
     }
 
-    fn remember(&self, caller: &ResourceCaller, key: &str, hash: [u8; 32], reply: &MutationReply) {
+    pub(super) fn remember(
+        &self,
+        caller: &ResourceCaller,
+        key: &str,
+        hash: [u8; 32],
+        reply: &MutationReply,
+    ) {
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, entry| entry.at.elapsed() < IDEMPOTENCY_TTL);
         let own = |(provider, epoch, _): &(String, u64, String)| {
@@ -99,7 +105,7 @@ impl Mutations {
 }
 
 /// A digest of a request's meaningful fields, length-prefixed so parts cannot run together.
-fn request_hash(parts: &[&str]) -> [u8; 32] {
+pub(super) fn request_hash(parts: &[&str]) -> [u8; 32] {
     let mut hash = Sha256::new();
     for part in parts {
         hash.update((part.len() as u64).to_be_bytes());
@@ -109,7 +115,7 @@ fn request_hash(parts: &[&str]) -> [u8; 32] {
 }
 
 /// The idempotency key of a mutation, after the shape checks every mutation shares.
-fn mutation_key(mutation: &MutationContext) -> Result<&str, Status> {
+pub(super) fn mutation_key(mutation: &MutationContext) -> Result<&str, Status> {
     if mutation.operation_id.len() > MAX_KEY_BYTES {
         return Err(Status::invalid_argument("operation_id is too long"));
     }
@@ -148,7 +154,7 @@ fn display_name(fields: &HashMap<String, String>) -> Result<Option<String>, Stat
     Ok((!value.is_empty()).then(|| value.to_owned()))
 }
 
-fn game_id(text: &str) -> Result<Option<u64>, Status> {
+pub(super) fn game_id(text: &str) -> Result<Option<u64>, Status> {
     match text {
         "" => Ok(None),
         text => text
@@ -158,7 +164,7 @@ fn game_id(text: &str) -> Result<Option<u64>, Status> {
     }
 }
 
-fn reply(resource_id: &str, revision: u64, outcome: MutationOutcome) -> MutationReply {
+pub(super) fn reply(resource_id: &str, revision: u64, outcome: MutationOutcome) -> MutationReply {
     MutationReply {
         resource_id: resource_id.to_owned(),
         revision,
@@ -182,7 +188,7 @@ impl ResourceApi {
 
     /// A commit-time check for `permission` that also fails when the grants changed since the
     /// call was authorized.
-    fn guard(
+    pub(super) fn guard(
         &self,
         context: ServiceContext,
         permission: &'static str,
@@ -400,6 +406,6 @@ impl ResourceApi {
     }
 }
 
-fn unavailable() -> Status {
+pub(super) fn unavailable() -> Status {
     Status::unavailable("the library is not available")
 }

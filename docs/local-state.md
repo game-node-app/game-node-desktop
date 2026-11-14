@@ -48,7 +48,7 @@ token, callback URL, or pending sign-in secret belongs in this database.
 | `provider_scans` | Per provider, the time of the last successful scan and the last error, plus the last owned (`last_catalog_at`, `catalog_error`) and family (`last_family_at`, `family_error`) catalog sync. A failed scan or catalog phase records the error and keeps the previous facts. |
 | `store_accounts` | The last connected account of a store provider: `provider`, `account_id`, optional `account_name` and optional `last_verified_at`. It holds no cookie, token or password. |
 | `auto_matches` | The GameNode game ids the server reported for a store id, per `(category, uid)` and PC. An empty list means the server knows no game. |
-| `chosen_matches` | The user's own match per `(account_id, entry_key)`. A null `game_id` means "no GameNode game". Each account keeps its own choices. |
+| `chosen_matches` | The explicit match per `(account_id, entry_key)`, made by the user or, through the plugin API, by the entry's own provider plugin (`source` is `user` or `plugin`; a plugin never replaces a `user` choice). A null `game_id` means "no GameNode game". Each account keeps its own choices. |
 | `favorites` | Each account's favorite GameNode games per `(account_id, game_id)`, with `is_favorite`, `pending` (a local change GameNode has not confirmed) and `updated_at`. A false, confirmed row is deleted. Favorites survive sign-out and stay hidden from other accounts. |
 | `games` | GameNode game name, release year, cover URL and cover state (`cover_file`, `cover_failed_at`) for display without the network. |
 

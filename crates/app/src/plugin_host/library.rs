@@ -381,6 +381,13 @@ impl LibraryFeed {
         (state.revision, entry)
     }
 
+    /// The current revision of the entry with this entry key, once it has an installation id.
+    pub fn revision_of(&self, entry_key: &str) -> Option<u64> {
+        let state = self.lock();
+        let id = state.ids.get(entry_key)?;
+        state.entries.get(id).map(|entry| entry.revision)
+    }
+
     /// The entry key and projection of `installation_id`, if the scope admits it. Host-side only:
     /// the entry key never reaches a plugin.
     pub fn target(&self, scope: &Scope, installation_id: &str) -> Option<(String, Projected)> {
@@ -491,6 +498,34 @@ pub enum FavoriteWrite {
     NoMatchedEntry,
 }
 
+/// A catalog game a plugin search found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogGame {
+    pub id: u64,
+    pub name: String,
+    pub release_year: Option<i32>,
+}
+
+/// How an assignment ended. `revision` is the entry's revision after the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchWrite {
+    Applied {
+        revision: u64,
+    },
+    /// The entry already has an explicit choice of this game.
+    AlreadyApplied {
+        revision: u64,
+    },
+    /// The entry changed since the revision the caller expected; nothing was written.
+    Conflict {
+        current: u64,
+    },
+    /// The host does not know this game; it must be found with a search first.
+    UnknownGame,
+    /// The user chose this entry's match; a plugin cannot replace it.
+    UserChoice,
+}
+
 /// The engine's side of plugin library services: everything that reads or changes state the
 /// library machine owns. Implementations take the engine's own locks; callers never hold one.
 #[async_trait::async_trait]
@@ -509,6 +544,24 @@ pub trait LibraryHost: Send + Sync {
         favorite: bool,
         guard: &dyn Fn() -> Result<(), Status>,
     ) -> Result<FavoriteWrite, Status>;
+
+    /// Searches GameNode's catalog by title with the user's verified session and returns at most
+    /// `limit` games, in the server's order. The games become assignable by
+    /// [`assign_match`](Self::assign_match). `UNAVAILABLE` when there is no verified, online
+    /// session or the catalog could not answer.
+    async fn search_catalog(&self, query: String, limit: usize)
+    -> Result<Vec<CatalogGame>, Status>;
+
+    /// Assigns `entry_key` to `game_id` through the library's own match policy. Checked and
+    /// committed under the engine's lock: the entry's revision must be `expected_revision`, and a
+    /// choice the user made is never replaced.
+    fn assign_match(
+        &self,
+        entry_key: &str,
+        game_id: u64,
+        expected_revision: u64,
+        guard: &dyn Fn() -> Result<(), Status>,
+    ) -> Result<MatchWrite, Status>;
 
     /// Stores the display-name override of `entry_key` if `expected_revision` is current,
     /// returning only after the write reached the database and the library applied it.

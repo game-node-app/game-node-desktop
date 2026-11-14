@@ -1622,6 +1622,117 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         Ok(FavoriteWrite::Applied)
     }
 
+    async fn search_catalog(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<crate::plugin_host::library::CatalogGame>, tonic::Status> {
+        use crate::plugin_host::library::CatalogGame;
+        let engine = self.engine()?;
+        let (credential, api) = {
+            let state = engine.lock();
+            // The catalog is the user's GameNode account: never searched without a verified,
+            // online session.
+            let credential = state
+                .library
+                .is_active()
+                .then(|| state.library.network_block().is_none())
+                .filter(|online| *online)
+                .and_then(|_| state.machine.verified_credential().cloned());
+            let Some(credential) = credential else {
+                return Err(tonic::Status::unavailable(
+                    "the GameNode catalog needs a verified, online session",
+                ));
+            };
+            (credential, engine.shared.ports.games.clone())
+        };
+        match api.search_games(&credential, &query).await {
+            Ok(mut games) => {
+                games.truncate(limit);
+                engine.library_input(LibInput::CatalogSearched {
+                    games: games.clone(),
+                });
+                Ok(games
+                    .into_iter()
+                    .map(|game| CatalogGame {
+                        id: game.id,
+                        name: game.name,
+                        release_year: game.release_year,
+                    })
+                    .collect())
+            }
+            Err(error) => {
+                engine.check_rejected(matches!(error, ApiError::Rejected));
+                Err(tonic::Status::unavailable(
+                    "the GameNode catalog could not answer",
+                ))
+            }
+        }
+    }
+
+    fn assign_match(
+        &self,
+        entry_key: &str,
+        game_id: u64,
+        expected_revision: u64,
+        guard: &dyn Fn() -> Result<(), tonic::Status>,
+    ) -> Result<crate::plugin_host::library::MatchWrite, tonic::Status> {
+        use crate::plugin_host::library::MatchWrite;
+        use gamenode_core::library::PluginMatch;
+        let engine = self.engine()?;
+        let feed = engine
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("the library is not available"))?;
+        let mut state = engine.lock();
+        // Checked under the engine lock, in the same section that commits.
+        guard()?;
+        // Bring the projection up to date under the same lock, so the revision compared is the
+        // one the entry has now.
+        engine.sync_library_feed(&state);
+        let not_found = || tonic::Status::not_found("library entry not found");
+        let current = feed.revision_of(entry_key).ok_or_else(not_found)?;
+        let plan = state.library.plan_plugin_match(entry_key, game_id);
+        match plan {
+            PluginMatch::NoAccount => {
+                return Err(tonic::Status::unavailable("the library is not available"));
+            }
+            PluginMatch::UnknownEntry => return Err(not_found()),
+            PluginMatch::Already => {
+                return Ok(MatchWrite::AlreadyApplied { revision: current });
+            }
+            _ => {}
+        }
+        if expected_revision != current {
+            return Ok(MatchWrite::Conflict { current });
+        }
+        match plan {
+            PluginMatch::UnknownGame => return Ok(MatchWrite::UnknownGame),
+            PluginMatch::UserChoice => return Ok(MatchWrite::UserChoice),
+            _ => {}
+        }
+        engine.run_library(
+            &mut state,
+            LibInput::AssignPluginMatch {
+                key: entry_key.to_owned(),
+                game_id,
+                now: unix_now(),
+            },
+        );
+        // Playtime is submitted per game, so a new match is a moment to submit, as for the
+        // user's own pick.
+        engine.submit_totals(&mut state);
+        engine.publish(&mut state);
+        if state.library.plan_plugin_match(entry_key, game_id) != PluginMatch::Already {
+            return Err(tonic::Status::unavailable("the library is not available"));
+        }
+        let revision = feed.revision_of(entry_key).unwrap_or(current);
+        Ok(MatchWrite::Applied { revision })
+    }
+
     async fn set_display_name(
         &self,
         entry_key: String,

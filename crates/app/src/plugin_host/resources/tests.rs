@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::plugin_host::library::{
-    CommitGuard, FavoriteWrite, InstallState, LibraryHost, LibrarySource,
+    CatalogGame, CommitGuard, FavoriteWrite, InstallState, LibraryHost, LibrarySource, MatchWrite,
 };
 use crate::plugin_host::provider::{HostServices, Lease, Registration, RegistrationOrigin};
 use gamenode_core::library::DisplayWrite;
@@ -10,7 +10,7 @@ use gamenode_plugin_sdk::{HostClient, Launch, Session, SessionOptions};
 use resource_host_client::ResourceHostClient;
 use resource_host_server::ResourceHost;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tonic::Code;
 use tonic::transport::Channel;
 
@@ -521,7 +521,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .matching_search(MatchingSearchRequest::default())
+        .artwork_read(ArtworkReadRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -541,11 +541,16 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("MetadataUpdate", 0),
             ("FavoritesList", MAX_PAGE_SIZE as u32),
             ("FavoritesSet", 0),
+            ("MatchingSearch", 0),
+            ("MatchingAssign", 0),
         ]
     );
 }
 
 // ---- Display metadata and favorites (task 5.2) ----
+
+/// An entry's explicit match: the game, whether the user made it, and the entry revision.
+type FakeMatch = (Option<u64>, bool, u64);
 
 /// An in-memory engine side: display overrides by entry key and favorite state by
 /// `(provider, game)`. A game is "matched" for a provider when it has a row here.
@@ -557,6 +562,15 @@ struct FakeHost {
     writes: AtomicUsize,
     /// Revokes a permission right before the commit guard runs, as a race would.
     revoke_before_commit: Mutex<Option<(ProviderApi, &'static str)>>,
+    /// What the server's catalog knows, in answer order.
+    catalog: Mutex<Vec<CatalogGame>>,
+    catalog_down: AtomicBool,
+    searches: AtomicUsize,
+    /// Games the device knows without a search, and games a search offered.
+    known: Mutex<std::collections::HashSet<u64>>,
+    offered: Mutex<std::collections::HashSet<u64>>,
+    /// Explicit matches by entry key: game, whether the user made it, entry revision.
+    matches: Mutex<HashMap<String, FakeMatch>>,
 }
 
 impl FakeHost {
@@ -608,6 +622,68 @@ impl LibraryHost for FakeHost {
         *current = favorite;
         self.writes.fetch_add(1, Ordering::SeqCst);
         Ok(FavoriteWrite::Applied)
+    }
+
+    async fn search_catalog(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<CatalogGame>, Status> {
+        self.searches.fetch_add(1, Ordering::SeqCst);
+        if self.catalog_down.load(Ordering::SeqCst) {
+            return Err(Status::unavailable("the GameNode catalog could not answer"));
+        }
+        let found: Vec<_> = self
+            .catalog
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|game| game.name.to_lowercase().contains(&query.to_lowercase()))
+            .take(limit)
+            .cloned()
+            .collect();
+        self.offered
+            .lock()
+            .unwrap()
+            .extend(found.iter().map(|game| game.id));
+        Ok(found)
+    }
+
+    fn assign_match(
+        &self,
+        entry_key: &str,
+        game_id: u64,
+        expected_revision: u64,
+        guard: &dyn Fn() -> Result<(), Status>,
+    ) -> Result<MatchWrite, Status> {
+        if let Some((api, permission)) = self.hook() {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(api.revoke_session_permission("fixture", permission))
+            });
+        }
+        guard()?;
+        let mut matches = self.matches.lock().unwrap();
+        let (game, by_user, revision) = matches.get(entry_key).copied().unwrap_or((None, false, 1));
+        if game == Some(game_id) {
+            return Ok(MatchWrite::AlreadyApplied { revision });
+        }
+        if expected_revision != revision {
+            return Ok(MatchWrite::Conflict { current: revision });
+        }
+        if !self.known.lock().unwrap().contains(&game_id)
+            && !self.offered.lock().unwrap().contains(&game_id)
+        {
+            return Ok(MatchWrite::UnknownGame);
+        }
+        if by_user {
+            return Ok(MatchWrite::UserChoice);
+        }
+        matches.insert(entry_key.to_owned(), (Some(game_id), false, revision + 1));
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        Ok(MatchWrite::Applied {
+            revision: revision + 1,
+        })
     }
 
     async fn set_display_name(
@@ -1256,4 +1332,370 @@ async fn a_favorite_is_not_committed_when_authorization_is_lost_before_commit() 
     assert_eq!(status.code(), Code::PermissionDenied);
     assert_eq!(host.favorites("fixture"), [(7, false)]);
     assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+}
+
+// ---- Matching (task 5.3) ----
+
+fn catalog_game(id: u64, name: &str, year: Option<i32>) -> CatalogGame {
+    CatalogGame {
+        id,
+        name: name.into(),
+        release_year: year,
+    }
+}
+
+impl Fixture {
+    async fn search(&self, query: &str, page_size: u32) -> Result<MatchingSearchReply, Status> {
+        self.client()
+            .matching_search(MatchingSearchRequest {
+                context: Some(self.context()),
+                query: query.into(),
+                platform: String::new(),
+                page_size,
+                cursor: String::new(),
+            })
+            .await
+            .map(Response::into_inner)
+    }
+
+    async fn assign_request(
+        &self,
+        key: &str,
+        expected_revision: u64,
+        installation_id: &str,
+        game_id: &str,
+    ) -> Result<MutationReply, Status> {
+        self.assign_with(MatchingAssignRequest {
+            mutation: Some(self.mutation(key, expected_revision)),
+            installation_id: installation_id.into(),
+            gamenode_game_id: game_id.into(),
+            ..MatchingAssignRequest::default()
+        })
+        .await
+    }
+
+    async fn assign_with(&self, request: MatchingAssignRequest) -> Result<MutationReply, Status> {
+        self.client()
+            .matching_assign(request)
+            .await
+            .map(Response::into_inner)
+    }
+
+    /// Assigns game `game` to `id-fixture:2` with a key and expected revision.
+    async fn assign(&self, key: &str, expected: u64, game: &str) -> Result<MutationReply, Status> {
+        self.assign_request(key, expected, "id-fixture:2", game)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn a_catalog_search_returns_a_bounded_page_of_typed_candidates() {
+    let fixture = Fixture::new(&[cap::MATCHING_READ]).await;
+    let host = fixture.with_host();
+    *host.catalog.lock().unwrap() = (1..=60)
+        .map(|id| catalog_game(id, &format!("Portal {id}"), (id % 2 == 0).then_some(2007)))
+        .chain([catalog_game(900, "Dota 2", Some(2013))])
+        .collect();
+
+    let found = fixture.search("  dota ", 0).await.unwrap();
+    assert_eq!(
+        found.candidates,
+        [MatchCandidate {
+            game_id: "900".into(),
+            title: "Dota 2".into(),
+            platform: String::new(),
+            confidence: String::new(),
+            release_year: 2013,
+        }]
+    );
+    assert_eq!(found.next_cursor, "");
+
+    // The default page is 20, the largest 50, and a smaller request is honored.
+    assert_eq!(
+        fixture.search("portal", 0).await.unwrap().candidates.len(),
+        20
+    );
+    assert_eq!(
+        fixture.search("portal", 7).await.unwrap().candidates.len(),
+        7
+    );
+    assert_eq!(
+        fixture
+            .search("portal", 5_000)
+            .await
+            .unwrap()
+            .candidates
+            .len(),
+        50
+    );
+    // An unknown release year is 0, never made up.
+    let unknown = fixture.search("Portal 1", 1).await.unwrap();
+    assert_eq!(unknown.candidates[0].release_year, 0);
+    let none = fixture.search("zzz", 0).await.unwrap();
+    assert!(none.candidates.is_empty());
+}
+
+#[tokio::test]
+async fn catalog_search_requests_are_validated_before_the_catalog_is_asked() {
+    let fixture = Fixture::new(&[cap::MATCHING_READ]).await;
+    let host = fixture.with_host();
+    let invalid = |status: Status, what: &str| {
+        assert_eq!(status.code(), Code::InvalidArgument, "{what}: {status:?}");
+    };
+    invalid(fixture.search("", 0).await.unwrap_err(), "empty query");
+    invalid(fixture.search("   ", 0).await.unwrap_err(), "blank query");
+    invalid(
+        fixture.search(&"a".repeat(129), 0).await.unwrap_err(),
+        "long query",
+    );
+    invalid(
+        fixture.search("po\u{7}rtal", 0).await.unwrap_err(),
+        "control character",
+    );
+    assert!(fixture.search(&"a".repeat(128), 0).await.is_ok());
+    let before = host.searches.load(Ordering::SeqCst);
+    for (platform, cursor) in [("pc", ""), ("", "next")] {
+        let status = fixture
+            .client()
+            .matching_search(MatchingSearchRequest {
+                context: Some(fixture.context()),
+                query: "portal".into(),
+                platform: platform.into(),
+                page_size: 0,
+                cursor: cursor.into(),
+            })
+            .await
+            .unwrap_err();
+        invalid(status, "reserved field");
+    }
+    assert_eq!(host.searches.load(Ordering::SeqCst), before);
+}
+
+#[tokio::test]
+async fn an_unavailable_catalog_is_unavailable_not_empty() {
+    let fixture = Fixture::new(&[cap::MATCHING_READ]).await;
+    // No engine side at all.
+    let status = fixture.search("portal", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+    // The engine could not reach the catalog.
+    let host = fixture.with_host();
+    host.catalog_down.store(true, Ordering::SeqCst);
+    let status = fixture.search("portal", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+    host.catalog_down.store(false, Ordering::SeqCst);
+    assert!(
+        fixture
+            .search("portal", 0)
+            .await
+            .unwrap()
+            .candidates
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn catalog_searches_need_the_grant_and_are_rate_limited() {
+    let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
+    fixture.with_host();
+    let status = fixture.search("portal", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert!(
+        fixture
+            .api
+            .authorization_audit()
+            .iter()
+            .any(|event| event.permission_id == cap::MATCHING_READ)
+    );
+
+    let fixture = Fixture::new(&[cap::MATCHING_READ]).await;
+    let host = fixture.with_host();
+    for _ in 0..SEARCHES_PER_WINDOW_FOR_TEST {
+        fixture.search("portal", 0).await.unwrap();
+    }
+    let status = fixture.search("portal", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        host.searches.load(Ordering::SeqCst),
+        SEARCHES_PER_WINDOW_FOR_TEST,
+        "a limited search never reaches the catalog"
+    );
+}
+
+const SEARCHES_PER_WINDOW_FOR_TEST: usize = super::matching::SEARCHES_PER_WINDOW;
+
+#[tokio::test]
+async fn an_own_entry_is_assigned_once_idempotently_and_guarded_by_its_revision() {
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().extend([7, 8]);
+
+    let first = fixture.assign("k1", 1, "7").await.unwrap();
+    assert_eq!(outcome(&first), MutationOutcome::Applied);
+    assert_eq!(
+        (first.resource_id.as_str(), first.revision),
+        ("id-fixture:2", 2)
+    );
+    // The same key and request returns the original outcome without writing again.
+    assert_eq!(fixture.assign("k1", 1, "7").await.unwrap(), first);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+    // The same key for another request is refused.
+    for other in [fixture.assign("k1", 1, "8"), fixture.assign("k1", 2, "7")] {
+        assert_eq!(other.await.unwrap_err().code(), Code::FailedPrecondition);
+    }
+    // A new key for the state that already holds changes nothing, whatever revision it names.
+    let same = fixture.assign("k2", 2, "7").await.unwrap();
+    assert_eq!(outcome(&same), MutationOutcome::AlreadyApplied);
+    assert_eq!(same.revision, 2);
+
+    // A stale revision reports the current one and writes nothing; it is not remembered, so the
+    // same key can retry with the right revision.
+    let stale = fixture.assign("k3", 1, "8").await.unwrap();
+    assert_eq!(outcome(&stale), MutationOutcome::RevisionConflict);
+    assert_eq!(stale.revision, 2);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+    let retried = fixture.assign("k3", 2, "8").await.unwrap();
+    assert_eq!(outcome(&retried), MutationOutcome::Applied);
+    assert_eq!(retried.revision, 3);
+}
+
+#[tokio::test]
+async fn a_game_must_be_known_or_found_by_a_search_before_it_is_assigned() {
+    let fixture = Fixture::new(&[cap::MATCHING_READ, cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    *host.catalog.lock().unwrap() = vec![catalog_game(40, "Defense of the Ancients", None)];
+
+    let status = fixture.assign("k1", 1, "40").await.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    fixture.search("defense", 0).await.unwrap();
+    let applied = fixture.assign("k1", 1, "40").await.unwrap();
+    assert_eq!(outcome(&applied), MutationOutcome::Applied);
+}
+
+#[tokio::test]
+async fn a_match_the_user_chose_is_not_replaced_and_the_refusal_is_not_remembered() {
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().extend([7, 8]);
+    host.matches
+        .lock()
+        .unwrap()
+        .insert("fixture:2".to_owned(), (Some(7), true, 1));
+
+    let status = fixture.assign("k1", 1, "8").await.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    // Choosing the game the user already chose changes nothing.
+    let same = fixture.assign("k2", 1, "7").await.unwrap();
+    assert_eq!(outcome(&same), MutationOutcome::AlreadyApplied);
+    // When the user lets go (the choice is removed) the same key is not poisoned.
+    host.matches.lock().unwrap().remove("fixture:2");
+    let applied = fixture.assign("k1", 1, "8").await.unwrap();
+    assert_eq!(outcome(&applied), MutationOutcome::Applied);
+}
+
+#[tokio::test]
+async fn only_own_entries_are_assigned_even_with_whole_library_reads() {
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE, cap::LIBRARY_READ_ALL]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().insert(7);
+    for installation in ["id-steam:570", "id-steam:620", "id-fixture:nope", "nope"] {
+        let status = fixture
+            .assign_request("k", 1, installation, "7")
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::NotFound, "{installation}");
+    }
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    assert!(host.matches.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn assign_requests_are_validated_before_anything_is_written() {
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().insert(7);
+    let invalid = |status: Status, what: &str| {
+        assert_eq!(status.code(), Code::InvalidArgument, "{what}: {status:?}");
+    };
+    invalid(fixture.assign("", 1, "7").await.unwrap_err(), "key");
+    invalid(fixture.assign("k", 1, "").await.unwrap_err(), "game id");
+    invalid(
+        fixture.assign("k", 1, "seven").await.unwrap_err(),
+        "game id",
+    );
+    invalid(
+        fixture.assign_request("k", 1, "", "7").await.unwrap_err(),
+        "installation id",
+    );
+    invalid(
+        fixture
+            .assign_request("k", 1, &"i".repeat(129), "7")
+            .await
+            .unwrap_err(),
+        "installation id length",
+    );
+    for (provider, game) in [("fixture", ""), ("", "2")] {
+        let status = fixture
+            .assign_with(MatchingAssignRequest {
+                mutation: Some(fixture.mutation("k", 1)),
+                provider_id: provider.into(),
+                provider_game_id: game.into(),
+                gamenode_game_id: "7".into(),
+                installation_id: "id-fixture:2".into(),
+            })
+            .await
+            .unwrap_err();
+        invalid(status, "reserved fields");
+    }
+    invalid(
+        fixture
+            .client()
+            .matching_assign(MatchingAssignRequest::default())
+            .await
+            .unwrap_err(),
+        "missing mutation",
+    );
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn assign_needs_its_grant_and_the_engine_side() {
+    let fixture = Fixture::new(&[cap::MATCHING_READ]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().insert(7);
+    let status = fixture.assign("k", 1, "7").await.unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert!(
+        fixture
+            .api
+            .authorization_audit()
+            .iter()
+            .any(|event| event.permission_id == cap::MATCHING_WRITE)
+    );
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let status = fixture.assign("k", 1, "7").await.unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_match_is_not_committed_when_authorization_is_lost_before_commit() {
+    let fixture = Fixture::new(&[cap::MATCHING_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.known.lock().unwrap().insert(7);
+    *host.revoke_before_commit.lock().unwrap() = Some((fixture.api.clone(), cap::MATCHING_WRITE));
+    let status = fixture.assign("k", 1, "7").await.unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    assert!(host.matches.lock().unwrap().is_empty());
 }

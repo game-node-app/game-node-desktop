@@ -426,8 +426,15 @@ message LibraryWatchRequest { ServiceContext context = 1; uint64 after_revision 
 message MetadataUpdateRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; map<string, string> display_fields = 4; }
 message FavoritesListRequest { PageRequest page = 1; string profile_id = 2; }
 message FavoritesSetRequest { MutationContext mutation = 1; string profile_id = 2; string game_id = 3; bool favorite = 4; }
+// Catalog search by title. `platform` and `cursor` are reserved and must be empty: the catalog
+// has no platform filter and a search is one bounded page (`page_size` defaults to 20, at most
+// 50), so `MatchingSearchReply.next_cursor` is always empty.
 message MatchingSearchRequest { ServiceContext context = 1; string query = 2; string platform = 3; uint32 page_size = 4; string cursor = 5; }
-message MatchingAssignRequest { MutationContext mutation = 1; string provider_id = 2; string provider_game_id = 3; string gamenode_game_id = 4; }
+// Assigns one of the caller's own entries to a GameNode game. The entry is named by its
+// `installation_id`; `provider_id` and `provider_game_id` are reserved and must be empty.
+// `mutation.expected_revision` is the entry's `LibraryEntry.revision`. The reply's `resource_id`
+// is the installation id and `revision` the entry's revision after the call.
+message MatchingAssignRequest { MutationContext mutation = 1; string provider_id = 2; string provider_game_id = 3; string gamenode_game_id = 4; string installation_id = 5; }
 message ArtworkReadRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; uint64 max_bytes = 5; }
 message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; }
 message LibraryListReply { repeated LibraryEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
@@ -443,7 +450,9 @@ enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIE
 // installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
 message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; }
 message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
-message MatchCandidate { string game_id = 1; string title = 2; string platform = 3; string confidence = 4; }
+// A catalog game a search found. `platform` and `confidence` are reserved: the catalog carries
+// neither, so both are empty. `release_year` is 0 when unknown.
+message MatchCandidate { string game_id = 1; string title = 2; string platform = 3; string confidence = 4; int32 release_year = 5; }
 message LibraryEvent { uint64 revision = 1; string event_type = 2; LibraryEntry entry = 3; }
 
 message ResourceRequest {

@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::library::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
-    DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout,
-    LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
+    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChoiceSource, ChosenMatch,
+    DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
+    LibraryLayout, LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -386,7 +386,7 @@ impl LibraryStore for SqliteLibraryStore {
             None => Vec::new(),
             Some(account) => conn
                 .prepare(
-                    "SELECT entry_key, game_id, chosen_at FROM chosen_matches
+                    "SELECT entry_key, game_id, chosen_at, source FROM chosen_matches
                      WHERE account_id = ?1 ORDER BY entry_key",
                 )
                 .map_err(failed)?
@@ -395,6 +395,8 @@ impl LibraryStore for SqliteLibraryStore {
                         entry_key: row.get(0)?,
                         game_id: row.get::<_, Option<i64>>(1)?.and_then(game_id),
                         chosen_at: row.get(2)?,
+                        // The column is constrained to the known values.
+                        source: ChoiceSource::parse(&row.get::<_, String>(3)?).unwrap_or_default(),
                     })
                 })
                 .map_err(failed)?
@@ -646,11 +648,18 @@ impl LibraryStore for SqliteLibraryStore {
         let game = choice.game_id.map(db_id).transpose()?;
         self.conn()
             .execute(
-                "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(account_id, entry_key) DO UPDATE SET
-                    game_id = excluded.game_id, chosen_at = excluded.chosen_at",
-                params![account_id, choice.entry_key, game, choice.chosen_at],
+                    game_id = excluded.game_id, chosen_at = excluded.chosen_at,
+                    source = excluded.source",
+                params![
+                    account_id,
+                    choice.entry_key,
+                    game,
+                    choice.chosen_at,
+                    choice.source.as_str()
+                ],
             )
             .map(drop)
             .map_err(failed)

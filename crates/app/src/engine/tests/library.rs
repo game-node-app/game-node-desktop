@@ -136,6 +136,8 @@ pub(super) struct FakeLibrary {
     pub(super) installations: Mutex<BTreeMap<String, String>>,
     /// While set, installation id requests fail.
     pub(super) installations_fail: AtomicBool,
+    /// Match choices saved, by account.
+    pub(super) chosen: Mutex<Vec<(String, ChosenMatch)>>,
 }
 
 impl FakeLibrary {
@@ -198,7 +200,11 @@ impl LibraryStore for FakeLibrary {
         self.matches.lock().unwrap().extend_from_slice(matches);
         Ok(())
     }
-    fn save_chosen_match(&self, _account: &str, _choice: &ChosenMatch) -> Result<(), StorageError> {
+    fn save_chosen_match(&self, account: &str, choice: &ChosenMatch) -> Result<(), StorageError> {
+        self.chosen
+            .lock()
+            .unwrap()
+            .push((account.to_owned(), choice.clone()));
         Ok(())
     }
     fn delete_chosen_match(&self, _account: &str, _entry_key: &str) -> Result<(), StorageError> {
@@ -1437,4 +1443,199 @@ async fn a_plugin_favorites_only_games_its_own_entries_are_matched_to() {
     );
     h.until("the star is gone", |s| !is_favorite(s)).await;
     assert_eq!(host.favorites("steam"), [(7, false)]);
+}
+
+fn search_page(games: &[(u64, &str)]) -> gamenode_core::game_api::SearchPage {
+    gamenode_core::game_api::SearchPage {
+        games: games
+            .iter()
+            .map(|(id, name)| GameSummary {
+                id: *id,
+                name: (*name).to_owned(),
+                release_year: Some(2013),
+                cover_url: None,
+            })
+            .collect(),
+        complete: Some(true),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_catalog_search_is_bounded_offers_its_games_and_opens_no_dialog() {
+    let (h, _feed, host, _id) = plugin_library().await;
+    *h.api.search_result.lock().unwrap() = Some(Ok(search_page(&[
+        (40, "Defense of the Ancients"),
+        (41, "Dota Underlords"),
+        (42, "Dota 2"),
+    ])));
+
+    let found = host.search_catalog("dota".into(), 2).await.unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .map(|g| (g.id, g.release_year))
+            .collect::<Vec<_>>(),
+        [(40, Some(2013)), (41, Some(2013))]
+    );
+    assert!(
+        view(&h.engine.snapshot()).unwrap().match_dialog.is_none(),
+        "a plugin search never touches the user's match dialog"
+    );
+    // Only the games that were returned can be assigned.
+    let rev = h.engine.lock().library.plan_plugin_match("steam:620", 42);
+    assert_eq!(rev, gamenode_core::library::PluginMatch::UnknownGame);
+    let rev = h.engine.lock().library.plan_plugin_match("steam:620", 41);
+    assert_eq!(rev, gamenode_core::library::PluginMatch::Assign);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unavailable_catalog_is_reported_without_changing_the_library() {
+    let (h, _feed, host, _id) = plugin_library().await;
+    *h.api.search_result.lock().unwrap() = Some(Err(ApiError::Failed));
+    let error = host.search_catalog("dota".into(), 20).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Unavailable);
+    assert_eq!(
+        h.engine.lock().library.plan_plugin_match("steam:620", 40),
+        gamenode_core::library::PluginMatch::UnknownGame
+    );
+
+    // Without a verified session the catalog is not asked at all.
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let feed = crate::plugin_host::library::LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.signed_out().await;
+    let host = feed.host().unwrap();
+    let error = host.search_catalog("dota".into(), 20).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Unavailable);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_assigns_its_own_entry_through_the_library_policy() {
+    use crate::plugin_host::library::MatchWrite;
+    use gamenode_core::library::{ChoiceSource, MatchSource, MatchStatus};
+    let (mut h, feed, host, id) = plugin_library().await;
+    let ok = || Ok(());
+    *h.api.search_result.lock().unwrap() = Some(Ok(search_page(&[(40, "Dota"), (41, "Dota Two")])));
+    host.search_catalog("dota".into(), 20).await.unwrap();
+    let before = projected(&feed, &id);
+    assert_eq!(before.game_id, Some(7));
+
+    // The entry's revision guards the write; a game nobody offered is refused first.
+    assert_eq!(
+        host.assign_match("steam:620", 40, before.revision + 5, &ok)
+            .unwrap(),
+        MatchWrite::Conflict {
+            current: before.revision
+        }
+    );
+    assert_eq!(
+        host.assign_match("steam:620", 99, before.revision, &ok)
+            .unwrap(),
+        MatchWrite::UnknownGame
+    );
+    assert!(h.store.chosen.lock().unwrap().is_empty());
+
+    let MatchWrite::Applied { revision } = host
+        .assign_match("steam:620", 40, before.revision, &ok)
+        .unwrap()
+    else {
+        panic!("assigned");
+    };
+    assert!(revision > before.revision);
+    let after = projected(&feed, &id);
+    assert_eq!((after.game_id, after.revision), (Some(40), revision));
+    h.until("the library shows the plugin's choice", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.first().is_some_and(|row| {
+                row.status
+                    == MatchStatus::Matched {
+                        game_id: 40,
+                        source: MatchSource::Chosen,
+                    }
+            })
+        })
+    })
+    .await;
+    // The choice and the game it names are stored, marked as the plugin's.
+    let chosen = h.store.chosen.lock().unwrap().clone();
+    assert_eq!(chosen.len(), 1);
+    assert_eq!(chosen[0].1.entry_key, "steam:620");
+    assert_eq!(chosen[0].1.game_id, Some(40));
+    assert_eq!(chosen[0].1.source, ChoiceSource::Plugin);
+    eventually("the game record is stored", || {
+        h.store
+            .games
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|g| g.game_id == 40)
+    })
+    .await;
+
+    // The same assignment again changes nothing, whatever revision is named.
+    assert_eq!(
+        host.assign_match("steam:620", 40, 0, &ok).unwrap(),
+        MatchWrite::AlreadyApplied { revision }
+    );
+    assert_eq!(h.store.chosen.lock().unwrap().len(), 1);
+    // The plugin may replace its own choice.
+    assert!(matches!(
+        host.assign_match("steam:620", 41, revision, &ok).unwrap(),
+        MatchWrite::Applied { .. }
+    ));
+    assert_eq!(projected(&feed, &id).game_id, Some(41));
+
+    // A revoked guard changes nothing.
+    let error = host
+        .assign_match("steam:620", 40, projected(&feed, &id).revision, &|| {
+            Err(tonic::Status::permission_denied("revoked"))
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    assert_eq!(projected(&feed, &id).game_id, Some(41));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_never_replaces_what_the_user_chose_in_the_match_dialog() {
+    use crate::plugin_host::library::MatchWrite;
+    use gamenode_core::library::{ChoiceSource, Input, SelectMode};
+    let (mut h, feed, host, id) = plugin_library().await;
+    let ok = || Ok(());
+    *h.api.search_result.lock().unwrap() = Some(Ok(search_page(&[(40, "Dota"), (41, "Two")])));
+    h.engine.library_input(Input::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Replace,
+    });
+    h.engine.library_input(Input::OpenMatch);
+    h.until("the dialog has results", |s| {
+        view(s)
+            .and_then(|v| v.match_dialog.as_ref())
+            .is_some_and(|d| !d.searching && !d.results.is_empty())
+    })
+    .await;
+    h.engine.library_input(Input::PickMatch {
+        game_id: 40,
+        now: 1,
+    });
+    eventually("the pick is stored as the user's", || {
+        h.store
+            .chosen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, c)| c.game_id == Some(40) && c.source == ChoiceSource::User)
+    })
+    .await;
+    host.search_catalog("dota".into(), 20).await.unwrap();
+    let revision = projected(&feed, &id).revision;
+    assert_eq!(
+        host.assign_match("steam:620", 41, revision, &ok).unwrap(),
+        MatchWrite::UserChoice
+    );
+    assert_eq!(projected(&feed, &id).game_id, Some(40));
+    // The user's own game is simply already applied.
+    assert_eq!(
+        host.assign_match("steam:620", 40, revision, &ok).unwrap(),
+        MatchWrite::AlreadyApplied { revision }
+    );
 }

@@ -117,6 +117,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
+                source: Default::default(),
             },
         )
         .unwrap();
@@ -225,6 +226,47 @@ fn a_scan_that_fails_part_way_changes_nothing() {
 }
 
 #[test]
+fn a_choice_keeps_who_made_it_and_older_rows_read_as_the_users() {
+    use gamenode_core::library::ChoiceSource;
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let choice = |source| ChosenMatch {
+        entry_key: "epic:abc".into(),
+        game_id: Some(9),
+        chosen_at: 5,
+        source,
+    };
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::Plugin))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::Plugin)]
+    );
+    // The user choosing again takes the entry over.
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::User))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::User)]
+    );
+    // A row written without the column (before migration 12) is the user's.
+    open(&dir)
+        .conn()
+        .execute(
+            "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+             VALUES ('bob', 'steam:1', 2, 3)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("bob")).unwrap().chosen_matches[0].source,
+        ChoiceSource::User
+    );
+}
+
+#[test]
 fn chosen_matches_are_separate_per_account() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
@@ -232,6 +274,7 @@ fn chosen_matches_are_separate_per_account() {
         entry_key: "steam:620".into(),
         game_id,
         chosen_at: 5,
+        source: Default::default(),
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();
@@ -260,6 +303,7 @@ fn chosen_matches_are_separate_per_account() {
             "alice",
             &ChosenMatch {
                 chosen_at: 9,
+                source: Default::default(),
                 ..choice(Some(99))
             },
         )
@@ -437,6 +481,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
                 entry_key: "steam:620".into(),
                 game_id: Some(1),
                 chosen_at: 1,
+                source: Default::default(),
             },
         )
         .unwrap();
@@ -1066,6 +1111,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
+                source: Default::default(),
             },
         )
         .unwrap();
@@ -1304,6 +1350,7 @@ fn a_chosen_match_can_be_forgotten_for_one_account_only() {
         entry_key: "steam:620".to_owned(),
         game_id,
         chosen_at: 5,
+        source: Default::default(),
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();

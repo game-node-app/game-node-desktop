@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::actions::Reason;
 use super::machine::{Effect, LibraryMachine};
 use super::matching::MatchStatus;
-use super::store::ChosenMatch;
+use super::store::{ChoiceSource, ChosenMatch};
 
 /// Why the dialog could not show search results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,13 +241,20 @@ impl LibraryMachine {
         let Some(account) = self.account.as_ref().map(|a| a.id.clone()) else {
             return vec![];
         };
-        if self.chosen.get(key).map(|c| c.game_id) == Some(game_id) {
+        // A plugin's earlier choice of the same game still becomes the user's own, so a plugin
+        // can no longer replace it.
+        if self
+            .chosen
+            .get(key)
+            .is_some_and(|c| c.game_id == game_id && c.source == ChoiceSource::User)
+        {
             return vec![];
         }
         let choice = ChosenMatch {
             entry_key: key.to_owned(),
             game_id,
             chosen_at: now,
+            source: ChoiceSource::User,
         };
         self.chosen.insert(key.to_owned(), choice.clone());
         vec![Effect::PersistChoice {

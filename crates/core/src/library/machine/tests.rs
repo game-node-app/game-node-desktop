@@ -310,6 +310,7 @@ fn a_reinstalled_game_returns_with_its_match_and_cover() {
         entry_key: "steam:2".to_owned(),
         game_id: Some(42),
         chosen_at: 5,
+        source: Default::default(),
     };
     let game = GameRecord {
         game_id: 42,
@@ -352,6 +353,7 @@ fn a_moved_install_folder_keeps_the_entry() {
             entry_key: "steam:620".to_owned(),
             game_id: Some(7),
             chosen_at: 1,
+            source: Default::default(),
         }],
         ..LibraryCache::default()
     };
@@ -485,11 +487,13 @@ fn artwork_machine() -> LibraryMachine {
                 entry_key: "steam:1".into(),
                 game_id: Some(7),
                 chosen_at: 0,
+                source: Default::default(),
             },
             ChosenMatch {
                 entry_key: "steam:2".into(),
                 game_id: Some(8),
                 chosen_at: 0,
+                source: Default::default(),
             },
         ],
         ..LibraryCache::default()
@@ -983,6 +987,7 @@ fn clearing_the_catalog_keeps_entries_matches_and_covers() {
         entry_key: "steam:70".to_owned(),
         game_id: Some(7),
         chosen_at: 3,
+        source: Default::default(),
     };
     let game = GameRecord {
         game_id: 7,

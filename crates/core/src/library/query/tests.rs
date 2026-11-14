@@ -332,6 +332,7 @@ fn the_machine_shows_only_installed_games_with_matched_titles_and_covers() {
             entry_key: "steam:70".to_owned(),
             game_id: None,
             chosen_at: 1,
+            source: Default::default(),
         }],
         games: vec![GameRecord {
             game_id: 7,

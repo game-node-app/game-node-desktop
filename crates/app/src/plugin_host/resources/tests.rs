@@ -6,6 +6,7 @@ use crate::plugin_host::library::{
     CatalogGame, CommitGuard, FavoriteWrite, InstallState, LibraryHost, LibrarySource, MatchWrite,
     StoredArtwork,
 };
+use crate::plugin_host::network::NetworkAccess;
 use crate::plugin_host::provider::{HostServices, Lease, Registration, RegistrationOrigin};
 use crate::plugin_host::storage::PluginStorage;
 use gamenode_core::library::{ArtworkWrite, DisplayWrite};
@@ -20,6 +21,7 @@ use tonic::Code;
 use tonic::transport::Channel;
 
 mod files;
+mod network;
 mod sdk;
 mod storage;
 
@@ -49,6 +51,8 @@ struct Fixture {
     feed: Arc<LibraryFeed>,
     storage: Arc<PluginStorage>,
     files: Arc<FileAccess>,
+    network: Arc<NetworkAccess>,
+    fetcher: Arc<network::FakeFetcher>,
     /// The seconds the storage clock reads; tests move it to expire values.
     clock: Arc<std::sync::atomic::AtomicI64>,
     plugin_data: std::path::PathBuf,
@@ -96,9 +100,13 @@ impl Fixture {
         let files = Arc::new(FileAccess::new(Reserved::new(std::slice::from_ref(
             &plugin_data,
         ))));
+        // Fetches go to a scripted stand-in; the origins plugins may reach start empty.
+        let fetcher = Arc::new(network::FakeFetcher::default());
+        let network = Arc::new(NetworkAccess::new(fetcher.clone()));
         let root = crate::plugin_host::PluginApi {
             storage: storage.clone(),
             files: files.clone(),
+            network: network.clone(),
             ..Default::default()
         };
         let api = root.providers.clone();
@@ -164,6 +172,8 @@ impl Fixture {
             feed,
             storage,
             files,
+            network,
+            fetcher,
             clock,
             plugin_data,
             endpoint,
@@ -545,6 +555,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.feed.clone(),
         fixture.storage.clone(),
         fixture.files.clone(),
+        fixture.network.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {
@@ -579,7 +590,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .network_fetch(NetworkFetchRequest::default())
+        .notifications_publish(NotificationPublishRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -611,6 +622,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("FilesRead", 0),
             ("FilesWrite", 0),
             ("FilesDelete", 0),
+            ("NetworkFetch", 0),
         ]
     );
 }

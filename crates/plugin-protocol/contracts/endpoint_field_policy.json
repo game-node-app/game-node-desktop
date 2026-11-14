@@ -877,8 +877,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Network/Fetch",
-      "request_policy": "Typed approved origin/URL, HTTP method, bounded headers/body and limits",
-      "response_policy": "Typed HTTP status/headers and opaque response bytes",
+      "request_policy": "Typed https URL whose exact origin the user approved, method, bounded headers and body, response budget and deadline; no credentials of the host",
+      "response_policy": "Typed HTTP status, bounded headers, opaque response bytes and the final origin; never an address or redirect target",
       "extension_or_opaque_policy": "No generic Struct; response body can contain application JSON as bytes",
       "access_model": "Approved origins",
       "status": "protobuf_contract",

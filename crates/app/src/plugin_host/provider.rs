@@ -1343,6 +1343,25 @@ impl ProviderApi {
         })
     }
 
+    /// The denial for a resource call whose permission is held but whose *scope* is not: it is
+    /// recorded like any authorization denial and carries the machine-readable detail.
+    pub(crate) fn deny_resource_scope(
+        &self,
+        caller: &ResourceCaller,
+        permission: &'static str,
+    ) -> Status {
+        let event = {
+            let state = lock(&self.state);
+            let Some(session) = state.sessions.get(&caller.session_id) else {
+                return Status::unauthenticated("plugin session expired");
+            };
+            denial_event(session, permission, DenialReason::ScopeDenied)
+        };
+        let revision = event.grant_revision;
+        self.record_authorization_denial(event);
+        denial(DenialReason::ScopeDenied, permission, revision)
+    }
+
     /// Whether the plugin session `session_id` is still open.
     pub(crate) fn session_is_open(&self, session_id: &str) -> bool {
         lock(&self.state).sessions.contains_key(session_id)

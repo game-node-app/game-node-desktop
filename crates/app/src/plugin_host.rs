@@ -23,6 +23,7 @@ pub mod library;
 pub mod login;
 pub mod managed_packages;
 pub mod namespace;
+pub mod network;
 pub mod package;
 pub mod process;
 pub mod profile;
@@ -481,6 +482,8 @@ pub struct PluginApi {
     pub storage: Arc<storage::PluginStorage>,
     /// File approvals, handles and the host folders no plugin may reach.
     pub files: Arc<files::FileAccess>,
+    /// Approved origins and limits for plugin network fetches.
+    pub network: Arc<network::NetworkAccess>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -703,6 +706,7 @@ impl PluginApiServer {
                     api.library.clone(),
                     api.storage.clone(),
                     api.files.clone(),
+                    api.network.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -784,6 +788,7 @@ impl PluginApiServer {
                     api.library.clone(),
                     api.storage.clone(),
                     api.files.clone(),
+                    api.network.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

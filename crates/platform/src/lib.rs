@@ -25,6 +25,7 @@ pub mod playtime_db;
 pub mod plugin_artwork;
 pub mod plugin_environment;
 pub mod plugin_files;
+pub mod plugin_network;
 pub mod plugin_packages;
 pub mod plugin_registry;
 pub mod plugin_storage;

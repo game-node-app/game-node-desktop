@@ -435,12 +435,25 @@ message MatchingSearchRequest { ServiceContext context = 1; string query = 2; st
 // `mutation.expected_revision` is the entry's `LibraryEntry.revision`. The reply's `resource_id`
 // is the installation id and `revision` the entry's revision after the call.
 message MatchingAssignRequest { MutationContext mutation = 1; string provider_id = 2; string provider_game_id = 3; string gamenode_game_id = 4; string installation_id = 5; }
+// Reads the cover an own entry shows: the plugin's override, else the matched game's cover when it
+// is already on the device (nothing is downloaded). `installation_id` is required; `game_id`, if
+// set, must be the entry's current match. `artwork_kind` is "cover" or empty. `max_bytes` is the
+// caller's budget: 0 means the 5 MiB maximum, larger values are capped to it, and an image over
+// the budget is RESOURCE_EXHAUSTED rather than truncated.
 message ArtworkReadRequest { ServiceContext context = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; uint64 max_bytes = 5; }
+// Sets the cover of one of the caller's own entries, or restores the game's cover when
+// `encoded_image` is empty (then `media_type` must be empty too). The image is a static PNG, JPEG
+// or WebP of at most 4 MiB and 4096 x 4096 pixels whose bytes match `media_type`; the host decodes,
+// shrinks to fit 600 x 900 and re-encodes it, and stores its own output as that entry's cover. The
+// matched game's cover and other entries are never changed. `mutation.expected_revision` is the
+// entry's `LibraryEntry.artwork_revision`. The reply's `resource_id` is the installation id and
+// `revision` the artwork revision after the call.
 message ArtworkSetRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string artwork_kind = 4; bytes encoded_image = 5; string media_type = 6; }
 message LibraryListReply { repeated LibraryEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
 message LibraryGetReply { LibraryEntry entry = 1; uint64 revision = 2; }
 message FavoritesListReply { repeated FavoriteEntry entries = 1; string next_cursor = 2; uint64 revision = 3; }
 message MatchingSearchReply { repeated MatchCandidate candidates = 1; string next_cursor = 2; }
+// `revision` is the entry's artwork revision: 0 while the cover is the game's own.
 message ArtworkReadReply { bytes encoded_image = 1; string media_type = 2; uint64 byte_length = 3; uint64 revision = 4; }
 message MutationReply { string resource_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIED = 1; MUTATION_OUTCOME_ALREADY_APPLIED = 2; MUTATION_OUTCOME_REVISION_CONFLICT = 3; }
@@ -448,7 +461,9 @@ enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIE
 // `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
 // empty when none is set. `metadata_revision` is the revision of that override for this
 // installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
-message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; }
+// `artwork_revision` is the same for the cover override ArtworkSet writes: 0 until first written,
+// and the expected_revision of the next ArtworkSet.
+message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; uint64 artwork_revision = 10; }
 message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
 // A catalog game a search found. `platform` and `confidence` are reserved: the catalog carries
 // neither, so both are empty. `release_year` is 0 when unknown.

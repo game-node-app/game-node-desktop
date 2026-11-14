@@ -9,6 +9,7 @@ fn source(key: &str, game_id: Option<u64>, name: &str) -> LibrarySource {
         install_state: InstallState::Installed,
         display_name: None,
         metadata_revision: 0,
+        artwork_revision: 0,
     }
 }
 

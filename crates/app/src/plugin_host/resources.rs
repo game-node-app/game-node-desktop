@@ -17,6 +17,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+mod artwork;
 mod matching;
 mod mutations;
 
@@ -48,6 +49,8 @@ pub const SERVED: &[Served] = &[
     Served::new("FavoritesSet", cap::FAVORITES_WRITE, false, OWN_ENTRIES),
     Served::new("MatchingSearch", cap::MATCHING_READ, false, CATALOG),
     Served::new("MatchingAssign", cap::MATCHING_WRITE, false, OWN_ENTRIES),
+    Served::new("ArtworkRead", cap::ARTWORK_READ, false, OWN_ENTRIES),
+    Served::new("ArtworkSet", cap::ARTWORK_WRITE, false, OWN_ENTRIES),
 ];
 
 const READ_SCOPE: &str = "own provider; library.read.all for every provider";
@@ -87,6 +90,8 @@ pub struct ResourceApi {
     watches: Arc<Mutex<HashMap<String, usize>>>,
     mutations: Arc<mutations::Mutations>,
     searches: Arc<matching::SearchLimiter>,
+    /// Bounds the plugin pictures being decoded at once.
+    decoders: Arc<tokio::sync::Semaphore>,
 }
 
 impl ResourceApi {
@@ -97,6 +102,7 @@ impl ResourceApi {
             watches: Arc::default(),
             mutations: Arc::default(),
             searches: Arc::default(),
+            decoders: Arc::new(tokio::sync::Semaphore::new(artwork::DECODE_SLOTS)),
         }
     }
 
@@ -450,9 +456,21 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.assign_match(request).await
     }
 
+    async fn artwork_read(
+        &self,
+        request: Request<ArtworkReadRequest>,
+    ) -> Result<Response<ArtworkReadReply>, Status> {
+        self.read_artwork(request).await
+    }
+
+    async fn artwork_set(
+        &self,
+        request: Request<ArtworkSetRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.set_artwork(request).await
+    }
+
     not_served! {
-        artwork_read(ArtworkReadRequest) -> ArtworkReadReply;
-        artwork_set(ArtworkSetRequest) -> MutationReply;
         games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;

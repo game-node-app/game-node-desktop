@@ -9326,6 +9326,11 @@ func (x *MatchingAssignRequest) GetInstallationId() string {
 	return ""
 }
 
+// Reads the cover an own entry shows: the plugin's override, else the matched game's cover when it
+// is already on the device (nothing is downloaded). `installation_id` is required; `game_id`, if
+// set, must be the entry's current match. `artwork_kind` is "cover" or empty. `max_bytes` is the
+// caller's budget: 0 means the 5 MiB maximum, larger values are capped to it, and an image over
+// the budget is RESOURCE_EXHAUSTED rather than truncated.
 type ArtworkReadRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Context        *ServiceContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
@@ -9402,6 +9407,13 @@ func (x *ArtworkReadRequest) GetMaxBytes() uint64 {
 	return 0
 }
 
+// Sets the cover of one of the caller's own entries, or restores the game's cover when
+// `encoded_image` is empty (then `media_type` must be empty too). The image is a static PNG, JPEG
+// or WebP of at most 4 MiB and 4096 x 4096 pixels whose bytes match `media_type`; the host decodes,
+// shrinks to fit 600 x 900 and re-encodes it, and stores its own output as that entry's cover. The
+// matched game's cover and other entries are never changed. `mutation.expected_revision` is the
+// entry's `LibraryEntry.artwork_revision`. The reply's `resource_id` is the installation id and
+// `revision` the artwork revision after the call.
 type ArtworkSetRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Mutation       *MutationContext       `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
@@ -9710,6 +9722,7 @@ func (x *MatchingSearchReply) GetNextCursor() string {
 	return ""
 }
 
+// `revision` is the entry's artwork revision: 0 while the cover is the game's own.
 type ArtworkReadReply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EncodedImage  []byte                 `protobuf:"bytes,1,opt,name=encoded_image,json=encodedImage,proto3" json:"encoded_image,omitempty"`
@@ -9842,6 +9855,8 @@ func (x *MutationReply) GetOutcome() MutationOutcome {
 // `display_name` is the presentation override the owning provider wrote with MetadataUpdate and is
 // empty when none is set. `metadata_revision` is the revision of that override for this
 // installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
+// `artwork_revision` is the same for the cover override ArtworkSet writes: 0 until first written,
+// and the expected_revision of the next ArtworkSet.
 type LibraryEntry struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	GameId           string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
@@ -9853,6 +9868,7 @@ type LibraryEntry struct {
 	Revision         uint64                 `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
 	DisplayName      string                 `protobuf:"bytes,8,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	MetadataRevision uint64                 `protobuf:"varint,9,opt,name=metadata_revision,json=metadataRevision,proto3" json:"metadata_revision,omitempty"`
+	ArtworkRevision  uint64                 `protobuf:"varint,10,opt,name=artwork_revision,json=artworkRevision,proto3" json:"artwork_revision,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -9946,6 +9962,13 @@ func (x *LibraryEntry) GetDisplayName() string {
 func (x *LibraryEntry) GetMetadataRevision() uint64 {
 	if x != nil {
 		return x.MetadataRevision
+	}
+	return 0
+}
+
+func (x *LibraryEntry) GetArtworkRevision() uint64 {
+	if x != nil {
+		return x.ArtworkRevision
 	}
 	return 0
 }
@@ -19839,7 +19862,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12=\n" +
-	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\xb0\x02\n" +
+	"\aoutcome\x18\x03 \x01(\x0e2#.gamenode.plugin.v1.MutationOutcomeR\aoutcome\"\xdb\x02\n" +
 	"\fLibraryEntry\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12'\n" +
 	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12\x1f\n" +
@@ -19850,7 +19873,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\rinstall_state\x18\x06 \x01(\tR\finstallState\x12\x1a\n" +
 	"\brevision\x18\a \x01(\x04R\brevision\x12!\n" +
 	"\fdisplay_name\x18\b \x01(\tR\vdisplayName\x12+\n" +
-	"\x11metadata_revision\x18\t \x01(\x04R\x10metadataRevision\"`\n" +
+	"\x11metadata_revision\x18\t \x01(\x04R\x10metadataRevision\x12)\n" +
+	"\x10artwork_revision\x18\n" +
+	" \x01(\x04R\x0fartworkRevision\"`\n" +
 	"\rFavoriteEntry\x12\x17\n" +
 	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12\x1a\n" +
 	"\bfavorite\x18\x02 \x01(\bR\bfavorite\x12\x1a\n" +

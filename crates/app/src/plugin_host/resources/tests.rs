@@ -3,9 +3,11 @@
 use super::*;
 use crate::plugin_host::library::{
     CatalogGame, CommitGuard, FavoriteWrite, InstallState, LibraryHost, LibrarySource, MatchWrite,
+    StoredArtwork,
 };
 use crate::plugin_host::provider::{HostServices, Lease, Registration, RegistrationOrigin};
-use gamenode_core::library::DisplayWrite;
+use gamenode_core::library::{ArtworkWrite, DisplayWrite};
+use gamenode_platform::plugin_artwork::Prepared;
 use gamenode_plugin_sdk::{HostClient, Launch, Session, SessionOptions};
 use resource_host_client::ResourceHostClient;
 use resource_host_server::ResourceHost;
@@ -144,6 +146,7 @@ impl Fixture {
                     install_state: InstallState::Installed,
                     display_name: None,
                     metadata_revision: 0,
+                    artwork_revision: 0,
                 })
                 .collect(),
         );
@@ -521,7 +524,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .artwork_read(ArtworkReadRequest::default())
+        .storage_get(StorageGetRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -543,6 +546,8 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("FavoritesSet", 0),
             ("MatchingSearch", 0),
             ("MatchingAssign", 0),
+            ("ArtworkRead", 0),
+            ("ArtworkSet", 0),
         ]
     );
 }
@@ -571,6 +576,10 @@ struct FakeHost {
     offered: Mutex<std::collections::HashSet<u64>>,
     /// Explicit matches by entry key: game, whether the user made it, entry revision.
     matches: Mutex<HashMap<String, FakeMatch>>,
+    /// Cover overrides by entry key: the stored picture (`None` once cleared) and its revision.
+    covers: Mutex<HashMap<String, (Option<Prepared>, u64)>>,
+    /// The covers of the games entries are matched to, by entry key.
+    game_covers: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl FakeHost {
@@ -683,6 +692,63 @@ impl LibraryHost for FakeHost {
         self.writes.fetch_add(1, Ordering::SeqCst);
         Ok(MatchWrite::Applied {
             revision: revision + 1,
+        })
+    }
+
+    async fn read_artwork(
+        &self,
+        entry_key: String,
+        max_bytes: u64,
+    ) -> Result<StoredArtwork, Status> {
+        let covers = self.covers.lock().unwrap();
+        let (bytes, media_type, revision) = match covers.get(&entry_key) {
+            Some((Some(image), revision)) => (image.bytes.clone(), image.media_type, *revision),
+            other => {
+                let revision = other.map_or(0, |(_, revision)| *revision);
+                let game = self.game_covers.lock().unwrap().get(&entry_key).cloned();
+                (
+                    game.ok_or_else(|| Status::not_found("the entry has no cover"))?,
+                    "image/jpeg",
+                    revision,
+                )
+            }
+        };
+        if bytes.len() as u64 > max_bytes {
+            return Err(Status::resource_exhausted(
+                "the cover is larger than max_bytes",
+            ));
+        }
+        Ok(StoredArtwork {
+            bytes,
+            media_type,
+            revision,
+        })
+    }
+
+    async fn set_artwork(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        image: Option<Prepared>,
+        guard: CommitGuard,
+    ) -> Result<ArtworkWrite, Status> {
+        if let Some((api, permission)) = self.hook() {
+            api.revoke_session_permission("fixture", permission).await;
+        }
+        guard()?;
+        let mut covers = self.covers.lock().unwrap();
+        let (current, revision) = covers.get(&entry_key).cloned().unwrap_or((None, 0));
+        if revision != expected_revision {
+            return Ok(ArtworkWrite::Conflict { current: revision });
+        }
+        if current == image {
+            return Ok(ArtworkWrite::Unchanged { revision });
+        }
+        covers.insert(entry_key, (image, revision + 1));
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        Ok(ArtworkWrite::Applied {
+            revision: revision + 1,
+            replaced: None,
         })
     }
 
@@ -1698,4 +1764,430 @@ async fn a_match_is_not_committed_when_authorization_is_lost_before_commit() {
     assert_eq!(status.code(), Code::PermissionDenied);
     assert_eq!(host.writes.load(Ordering::SeqCst), 0);
     assert!(host.matches.lock().unwrap().is_empty());
+}
+
+// ---- Artwork (task 5.4) ----
+
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        width,
+        height,
+        image::Rgb([20, 120, 220]),
+    ))
+    .write_with_encoder(image::codecs::png::PngEncoder::new(&mut out))
+    .unwrap();
+    out
+}
+
+impl Fixture {
+    async fn set_cover(
+        &self,
+        key: &str,
+        expected_revision: u64,
+        installation_id: &str,
+        image: Vec<u8>,
+        media_type: &str,
+    ) -> Result<MutationReply, Status> {
+        self.set_cover_with(ArtworkSetRequest {
+            mutation: Some(self.mutation(key, expected_revision)),
+            installation_id: installation_id.into(),
+            encoded_image: image,
+            media_type: media_type.into(),
+            ..ArtworkSetRequest::default()
+        })
+        .await
+    }
+
+    async fn set_cover_with(&self, request: ArtworkSetRequest) -> Result<MutationReply, Status> {
+        self.client()
+            .artwork_set(request)
+            .await
+            .map(Response::into_inner)
+    }
+
+    async fn read_cover(
+        &self,
+        installation_id: &str,
+        max_bytes: u64,
+    ) -> Result<ArtworkReadReply, Status> {
+        self.client()
+            .artwork_read(ArtworkReadRequest {
+                context: Some(self.context()),
+                installation_id: installation_id.into(),
+                max_bytes,
+                ..ArtworkReadRequest::default()
+            })
+            .await
+            .map(Response::into_inner)
+    }
+}
+
+#[tokio::test]
+async fn an_own_entrys_cover_is_set_once_idempotently_and_guarded_by_its_revision() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+
+    let applied = fixture
+        .set_cover("k1", 0, "id-fixture:1", png(900, 1200), "image/png")
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            applied.resource_id.as_str(),
+            applied.revision,
+            applied.outcome
+        ),
+        ("id-fixture:1", 1, MutationOutcome::Applied as i32)
+    );
+    // The host stored its own smaller, re-encoded picture, not the plugin's bytes.
+    let stored = host.covers.lock().unwrap()["fixture:1"].0.clone().unwrap();
+    assert_eq!((stored.width, stored.height), (600, 800));
+    assert_eq!(stored.media_type, "image/jpeg");
+
+    // The same key and request replays the first answer without another write.
+    let again = fixture
+        .set_cover("k1", 0, "id-fixture:1", png(900, 1200), "image/png")
+        .await
+        .unwrap();
+    assert_eq!(again, applied);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+    // The same key for another picture is refused.
+    let status = fixture
+        .set_cover("k1", 0, "id-fixture:1", png(10, 10), "image/png")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+
+    // A stale revision conflicts and writes nothing; the refusal is not remembered.
+    let conflict = fixture
+        .set_cover("k2", 0, "id-fixture:1", png(40, 60), "image/png")
+        .await
+        .unwrap();
+    assert_eq!(
+        (conflict.revision, conflict.outcome),
+        (1, MutationOutcome::RevisionConflict as i32)
+    );
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+    let retried = fixture
+        .set_cover("k2", 1, "id-fixture:1", png(40, 60), "image/png")
+        .await
+        .unwrap();
+    assert_eq!(
+        (retried.revision, retried.outcome),
+        (2, MutationOutcome::Applied as i32)
+    );
+    // Setting what the entry already has is already applied.
+    let same = fixture
+        .set_cover("k3", 2, "id-fixture:1", png(40, 60), "image/png")
+        .await
+        .unwrap();
+    assert_eq!(
+        (same.revision, same.outcome),
+        (2, MutationOutcome::AlreadyApplied as i32)
+    );
+}
+
+#[tokio::test]
+async fn an_empty_image_restores_the_games_own_cover() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE, cap::ARTWORK_READ]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.game_covers
+        .lock()
+        .unwrap()
+        .insert("fixture:1".into(), b"game cover".to_vec());
+    fixture
+        .set_cover("k1", 0, "id-fixture:1", png(40, 60), "image/png")
+        .await
+        .unwrap();
+    let cleared = fixture
+        .set_cover("k2", 1, "id-fixture:1", Vec::new(), "")
+        .await
+        .unwrap();
+    assert_eq!(
+        (cleared.revision, cleared.outcome),
+        (2, MutationOutcome::Applied as i32)
+    );
+    let read = fixture.read_cover("id-fixture:1", 0).await.unwrap();
+    assert_eq!(read.encoded_image, b"game cover");
+    // Clearing again changes nothing.
+    let again = fixture
+        .set_cover("k3", 2, "id-fixture:1", Vec::new(), "")
+        .await
+        .unwrap();
+    assert_eq!(again.outcome, MutationOutcome::AlreadyApplied as i32);
+    // A media type with nothing to describe is a mistake, not a clear.
+    let status = fixture
+        .set_cover("k4", 2, "id-fixture:1", Vec::new(), "image/png")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn bad_images_never_reach_the_engine() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    let heavy = {
+        let mut out = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::new(4097, 4097))
+            .write_with_encoder(image::codecs::png::PngEncoder::new(&mut out))
+            .unwrap();
+        out
+    };
+    let mut half = png(64, 64);
+    half.truncate(half.len() / 2);
+    let mut oversized = png(8, 8);
+    oversized.resize(gamenode_platform::plugin_artwork::MAX_INPUT_BYTES + 1, 0);
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        (
+            "not an image",
+            b"#!/bin/sh\nrm -rf /\n".to_vec(),
+            "image/png",
+        ),
+        (
+            "svg",
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec(),
+            "image/svg+xml",
+        ),
+        ("lying about the type", png(8, 8), "image/jpeg"),
+        ("no type", png(8, 8), ""),
+        ("truncated", half, "image/png"),
+        ("too many pixels", heavy, "image/png"),
+        ("too many bytes", oversized, "image/png"),
+    ];
+    for (index, (what, bytes, media_type)) in cases.into_iter().enumerate() {
+        let status = fixture
+            .set_cover(
+                &format!("bad-{index}"),
+                0,
+                "id-fixture:1",
+                bytes,
+                media_type,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument, "{what}: {status}");
+    }
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    assert!(host.covers.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn covers_are_set_only_on_own_entries_that_exist() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE, cap::LIBRARY_READ_ALL]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    // Another provider's entry and an unknown one are the same refusal, even with whole-library
+    // reads; the image is not even decoded.
+    for (key, id) in [("a", "id-steam:620"), ("b", "id-nope")] {
+        let status = fixture
+            .set_cover(key, 0, id, png(40, 60), "image/png")
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::NotFound, "{id}");
+    }
+    // A game id the entry is not matched to does not name it either.
+    let status = fixture
+        .set_cover_with(ArtworkSetRequest {
+            mutation: Some(fixture.mutation("c", 0)),
+            installation_id: "id-fixture:1".into(),
+            game_id: "999".into(),
+            encoded_image: png(40, 60),
+            media_type: "image/png".into(),
+            ..ArtworkSetRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    // Naming the game it is matched to is fine.
+    fixture
+        .set_cover_with(ArtworkSetRequest {
+            mutation: Some(fixture.mutation("d", 0)),
+            installation_id: "id-fixture:1".into(),
+            game_id: "7".into(),
+            encoded_image: png(40, 60),
+            media_type: "image/png".into(),
+            ..ArtworkSetRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(host.covers.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn cover_set_requests_are_validated_before_anything_is_written() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    let base = |mutation: Option<MutationContext>| ArtworkSetRequest {
+        mutation,
+        installation_id: "id-fixture:1".into(),
+        encoded_image: png(8, 8),
+        media_type: "image/png".into(),
+        ..ArtworkSetRequest::default()
+    };
+    let cases = vec![
+        ("no mutation", base(None)),
+        ("no key", base(Some(fixture.mutation("", 0)))),
+        (
+            "no installation",
+            ArtworkSetRequest {
+                installation_id: String::new(),
+                ..base(Some(fixture.mutation("k", 0)))
+            },
+        ),
+        (
+            "long installation",
+            ArtworkSetRequest {
+                installation_id: "x".repeat(129),
+                ..base(Some(fixture.mutation("k", 0)))
+            },
+        ),
+        (
+            "another kind",
+            ArtworkSetRequest {
+                artwork_kind: "banner".into(),
+                ..base(Some(fixture.mutation("k", 0)))
+            },
+        ),
+        (
+            "bad game id",
+            ArtworkSetRequest {
+                game_id: "seven".into(),
+                ..base(Some(fixture.mutation("k", 0)))
+            },
+        ),
+    ];
+    for (what, request) in cases {
+        let status = fixture.set_cover_with(request).await.unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument, "{what}: {status}");
+    }
+    // "cover" is the one kind there is.
+    fixture
+        .set_cover_with(ArtworkSetRequest {
+            artwork_kind: "cover".into(),
+            ..base(Some(fixture.mutation("ok", 0)))
+        })
+        .await
+        .unwrap();
+    assert_eq!(host.writes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cover_calls_need_their_grants_and_the_engine_side() {
+    let fixture = Fixture::new(&[cap::ARTWORK_READ]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    let status = fixture
+        .set_cover("k", 0, "id-fixture:1", png(8, 8), "image/png")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert!(
+        fixture
+            .api
+            .authorization_audit()
+            .iter()
+            .any(|event| event.permission_id == cap::ARTWORK_WRITE)
+    );
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    let status = fixture.read_cover("id-fixture:1", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let status = fixture
+        .set_cover("k", 0, "id-fixture:1", png(8, 8), "image/png")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cover_is_not_committed_when_authorization_is_lost_before_commit() {
+    let fixture = Fixture::new(&[cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    *host.revoke_before_commit.lock().unwrap() = Some((fixture.api.clone(), cap::ARTWORK_WRITE));
+    let status = fixture
+        .set_cover("k", 0, "id-fixture:1", png(40, 60), "image/png")
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert_eq!(host.writes.load(Ordering::SeqCst), 0);
+    assert!(host.covers.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_own_entrys_cover_is_read_within_the_callers_budget() {
+    let fixture = Fixture::new(&[cap::ARTWORK_READ, cap::LIBRARY_READ_ALL]).await;
+    fixture.library(SHARED);
+    let host = fixture.with_host();
+    host.game_covers
+        .lock()
+        .unwrap()
+        .insert("fixture:1".into(), b"0123456789".to_vec());
+    host.game_covers
+        .lock()
+        .unwrap()
+        .insert("steam:620".into(), b"foreign".to_vec());
+
+    let read = fixture.read_cover("id-fixture:1", 0).await.unwrap();
+    assert_eq!(
+        (
+            read.encoded_image.as_slice(),
+            read.media_type.as_str(),
+            read.byte_length,
+            read.revision
+        ),
+        (b"0123456789".as_slice(), "image/jpeg", 10, 0)
+    );
+    assert_eq!(
+        fixture
+            .read_cover("id-fixture:1", 10)
+            .await
+            .unwrap()
+            .byte_length,
+        10
+    );
+    let status = fixture.read_cover("id-fixture:1", 9).await.unwrap_err();
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    // An entry with no cover on this device, another provider's entry and an unknown one.
+    let status = fixture.read_cover("id-fixture:2", 0).await.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    for id in ["id-steam:620", "id-nope"] {
+        let status = fixture.read_cover(id, 0).await.unwrap_err();
+        assert_eq!(status.code(), Code::NotFound, "{id}");
+    }
+    let status = fixture
+        .client()
+        .artwork_read(ArtworkReadRequest {
+            context: Some(fixture.context()),
+            installation_id: "id-fixture:1".into(),
+            artwork_kind: "screenshot".into(),
+            ..ArtworkReadRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn the_cover_a_plugin_set_is_what_it_reads_back_with_its_revision() {
+    let fixture = Fixture::new(&[cap::ARTWORK_READ, cap::ARTWORK_WRITE]).await;
+    fixture.library(SHARED);
+    fixture.with_host();
+    fixture
+        .set_cover("k", 0, "id-fixture:1", png(300, 300), "image/png")
+        .await
+        .unwrap();
+    let read = fixture.read_cover("id-fixture:1", 0).await.unwrap();
+    assert_eq!((read.media_type.as_str(), read.revision), ("image/jpeg", 1));
+    let decoded = image::load_from_memory(&read.encoded_image).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (300, 300));
 }

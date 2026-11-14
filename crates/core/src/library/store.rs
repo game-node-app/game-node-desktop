@@ -276,6 +276,33 @@ pub enum DisplayWrite {
     Conflict { current: u64 },
 }
 
+/// The cover a provider's plugin set for one of its own entries. `file` names an image in the
+/// covers folder that only this entry owns; the game's own cover is never touched. Clearing it
+/// (`file = None`) restores the game's cover. The revision counts writes per entry, starts at 1
+/// and only ever grows, so a reset keeps its row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtworkOverride {
+    pub entry_key: String,
+    pub file: Option<String>,
+    pub revision: u64,
+}
+
+/// How a guarded artwork write ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArtworkWrite {
+    /// The value changed; this is the entry's new revision, and `replaced` the file it no longer
+    /// uses (which the caller deletes).
+    Applied {
+        revision: u64,
+        replaced: Option<String>,
+    },
+    /// The entry already had this value; its revision is unchanged.
+    Unchanged { revision: u64 },
+    /// The expected revision was obsolete; nothing was written.
+    Conflict { current: u64 },
+}
+
 /// Everything the library needs at startup, read in one go.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -293,6 +320,9 @@ pub struct LibraryCache {
     /// Presentation overrides written by providers' plugins.
     #[serde(default)]
     pub display_overrides: Vec<DisplayOverride>,
+    /// Covers written by providers' plugins.
+    #[serde(default)]
+    pub artwork_overrides: Vec<ArtworkOverride>,
 }
 
 /// The last signed-in account, kept so the cached library can open before verification.
@@ -382,6 +412,15 @@ pub trait LibraryStore: Send + Sync {
         expected_revision: u64,
         display_name: Option<&str>,
     ) -> Result<DisplayWrite, StorageError>;
+
+    /// Sets (`Some`) or clears (`None`) the artwork override of `entry_key` if its current
+    /// revision is `expected_revision` (0 when it was never written), in one transaction.
+    fn save_artwork(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        file: Option<&str>,
+    ) -> Result<ArtworkWrite, StorageError>;
 
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError>;
     fn save_last_account(&self, account: &LastAccount) -> Result<(), StorageError>;

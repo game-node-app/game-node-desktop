@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::library::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChoiceSource, ChosenMatch,
-    DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
-    LibraryLayout, LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
+    ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate,
+    ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord,
+    LastAccount, LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, StoreAccount,
+    StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -472,6 +473,32 @@ impl LibraryStore for SqliteLibraryStore {
             })
             .collect();
 
+        let artwork_overrides = conn
+            .prepare(
+                "SELECT entry_key, file, revision
+                 FROM library_artwork_overrides ORDER BY entry_key",
+            )
+            .map_err(failed)?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(failed)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|(entry_key, file, revision)| {
+                Some(ArtworkOverride {
+                    entry_key,
+                    file,
+                    revision: u64::try_from(revision).ok()?,
+                })
+            })
+            .collect();
+
         Ok(LibraryCache {
             entries,
             scans,
@@ -481,6 +508,7 @@ impl LibraryStore for SqliteLibraryStore {
             games,
             excluded,
             display_overrides,
+            artwork_overrides,
         })
     }
 
@@ -829,6 +857,52 @@ impl LibraryStore for SqliteLibraryStore {
         .map_err(failed)?;
         tx.commit().map_err(failed)?;
         Ok(DisplayWrite::Applied { revision })
+    }
+
+    fn save_artwork(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        file: Option<&str>,
+    ) -> Result<ArtworkWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<(Option<String>, i64)> = tx
+            .query_row(
+                "SELECT file, revision FROM library_artwork_overrides WHERE entry_key = ?1",
+                [entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let (current_file, current_revision) = match current {
+            Some((file, revision)) => (file, u64::try_from(revision).map_err(failed)?),
+            None => (None, 0),
+        };
+        if current_revision != expected_revision {
+            return Ok(ArtworkWrite::Conflict {
+                current: current_revision,
+            });
+        }
+        if current_file.as_deref() == file {
+            return Ok(ArtworkWrite::Unchanged {
+                revision: current_revision,
+            });
+        }
+        let revision = current_revision + 1;
+        tx.execute(
+            "INSERT INTO library_artwork_overrides (entry_key, file, revision)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(entry_key) DO UPDATE SET
+                file = excluded.file, revision = excluded.revision",
+            params![entry_key, file, i64::try_from(revision).map_err(failed)?],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(ArtworkWrite::Applied {
+            revision,
+            replaced: current_file,
+        })
     }
 
     fn installation_ids(

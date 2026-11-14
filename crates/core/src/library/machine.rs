@@ -24,9 +24,9 @@ use super::match_dialog::MatchDialog;
 use super::membership::{EntryStatus, Membership};
 use super::selection::{Direction, SelectMode, Selection};
 use super::store::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, DisplayOverride,
-    FavoriteRecord, GameRecord, LastAccount, LibraryCache, ProviderScanState, StoredEntry,
-    entry_key,
+    ArtworkOverride, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
+    DisplayOverride, FavoriteRecord, GameRecord, LastAccount, LibraryCache, ProviderScanState,
+    StoredEntry, entry_key,
 };
 use super::view::LibraryView;
 
@@ -219,6 +219,13 @@ pub enum Input {
         display_name: Option<String>,
         revision: u64,
     },
+    /// A plugin's artwork override of an entry was stored (or cleared with `None`) at this
+    /// revision. Applies only to entries the library knows.
+    ArtworkStored {
+        key: String,
+        file: Option<String>,
+        revision: u64,
+    },
     /// A plugin's catalog search returned these games; they can now be assigned to its entries.
     CatalogSearched {
         games: Vec<GameSummary>,
@@ -401,6 +408,8 @@ pub struct LibraryMachine {
     pub(super) games: BTreeMap<u64, GameRecord>,
     /// Presentation overrides by entry key, written by the entry's own provider plugin.
     pub(super) display_overrides: BTreeMap<String, DisplayOverride>,
+    /// Cover overrides by entry key, written by the entry's own provider plugin.
+    pub(super) artwork_overrides: BTreeMap<String, ArtworkOverride>,
     pub(super) scan: Option<ScanRun>,
     pub(super) rescan_pending: bool,
     pub(super) layout: LibraryLayout,
@@ -468,6 +477,7 @@ impl LibraryMachine {
             chosen: BTreeMap::new(),
             games: BTreeMap::new(),
             display_overrides: BTreeMap::new(),
+            artwork_overrides: BTreeMap::new(),
             scan: None,
             rescan_pending: false,
             layout: layout.normalized(),
@@ -583,6 +593,12 @@ impl LibraryMachine {
     /// override stays here with no name, so its revision keeps counting.
     pub fn display_override(&self, key: &str) -> Option<&DisplayOverride> {
         self.display_overrides.get(key)
+    }
+
+    /// The plugin-written cover override of an entry, if one was ever written. A cleared override
+    /// stays here with no file, so its revision keeps counting.
+    pub fn artwork_override(&self, key: &str) -> Option<&ArtworkOverride> {
+        self.artwork_overrides.get(key)
     }
 
     pub fn chosen_match(&self, key: &str) -> Option<&ChosenMatch> {
@@ -724,6 +740,23 @@ impl LibraryMachine {
                         DisplayOverride {
                             entry_key: key,
                             display_name,
+                            revision,
+                        },
+                    );
+                }
+                vec![]
+            }
+            Input::ArtworkStored {
+                key,
+                file,
+                revision,
+            } => {
+                if self.entries.contains_key(&key) {
+                    self.artwork_overrides.insert(
+                        key.clone(),
+                        ArtworkOverride {
+                            entry_key: key,
+                            file,
                             revision,
                         },
                     );
@@ -1012,6 +1045,11 @@ impl LibraryMachine {
         self.excluded = cache.excluded.into_iter().collect();
         self.display_overrides = cache
             .display_overrides
+            .into_iter()
+            .map(|over| (over.entry_key.clone(), over))
+            .collect();
+        self.artwork_overrides = cache
+            .artwork_overrides
             .into_iter()
             .map(|over| (over.entry_key.clone(), over))
             .collect();

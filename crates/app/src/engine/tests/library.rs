@@ -302,6 +302,40 @@ impl LibraryStore for FakeLibrary {
             revision: revision + 1,
         })
     }
+    fn save_artwork(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        file: Option<&str>,
+    ) -> Result<gamenode_core::library::ArtworkWrite, StorageError> {
+        use gamenode_core::library::{ArtworkOverride, ArtworkWrite};
+        self.pause();
+        let mut cache = self.cache.lock().unwrap();
+        let current = cache
+            .artwork_overrides
+            .iter()
+            .find(|over| over.entry_key == entry_key)
+            .cloned();
+        let revision = current.as_ref().map_or(0, |over| over.revision);
+        if revision != expected_revision {
+            return Ok(ArtworkWrite::Conflict { current: revision });
+        }
+        if current.as_ref().and_then(|over| over.file.as_deref()) == file {
+            return Ok(ArtworkWrite::Unchanged { revision });
+        }
+        cache
+            .artwork_overrides
+            .retain(|over| over.entry_key != entry_key);
+        cache.artwork_overrides.push(ArtworkOverride {
+            entry_key: entry_key.to_owned(),
+            file: file.map(str::to_owned),
+            revision: revision + 1,
+        });
+        Ok(ArtworkWrite::Applied {
+            revision: revision + 1,
+            replaced: current.and_then(|over| over.file),
+        })
+    }
     fn load_last_account(&self) -> Result<Option<LastAccount>, StorageError> {
         Ok(self.account.lock().unwrap().clone())
     }
@@ -1637,5 +1671,234 @@ async fn a_plugin_never_replaces_what_the_user_chose_in_the_match_dialog() {
     assert_eq!(
         host.assign_match("steam:620", 40, revision, &ok).unwrap(),
         MatchWrite::AlreadyApplied { revision }
+    );
+}
+
+fn row_cover(snapshot: &Snapshot) -> Option<&str> {
+    view(snapshot)
+        .and_then(|v| v.rows.first())
+        .and_then(|row| row.cover_file.as_deref())
+}
+
+/// A prepared cover of one flat colour and a size, as the service would hand over.
+fn cover_of(shade: u8, width: u32, height: u32) -> gamenode_platform::plugin_artwork::Prepared {
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        width,
+        height,
+        image::Rgb([shade, 60, 90]),
+    ))
+    .write_with_encoder(image::codecs::png::PngEncoder::new(&mut bytes))
+    .unwrap();
+    gamenode_platform::plugin_artwork::prepare(&bytes, "image/png").unwrap()
+}
+
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_cover_is_stored_shown_read_back_replaced_and_cleared() {
+    use gamenode_core::library::ArtworkWrite;
+    use gamenode_platform::plugin_artwork::file_name;
+    let (mut h, feed, host, id) = plugin_library().await;
+    h.until("the game's own cover", |s| row_cover(s) == Some("7.jpg"))
+        .await;
+    let dir = h.covers.path().to_owned();
+    assert_eq!(projected(&feed, &id).artwork_revision, 0);
+    let own = host
+        .read_artwork("steam:620".into(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        (own.bytes.as_slice(), own.media_type, own.revision),
+        (b"jpeg".as_slice(), "image/jpeg", 0)
+    );
+
+    // Set: the image lands under a name this entry owns, the library shows it, plugins see its
+    // revision, and the game's own cover is untouched.
+    let (first, second) = (cover_of(10, 300, 450), cover_of(200, 300, 450));
+    let first_name = file_name("steam:620", &first);
+    let before = projected(&feed, &id).revision;
+    let written = host
+        .set_artwork("steam:620".into(), 0, Some(first.clone()), open_guard())
+        .await
+        .unwrap();
+    assert_eq!(
+        written,
+        ArtworkWrite::Applied {
+            revision: 1,
+            replaced: None
+        }
+    );
+    assert_eq!(files_in(&dir), ["7.jpg".to_owned(), first_name.clone()]);
+    assert_eq!(std::fs::read(dir.join("7.jpg")).unwrap(), b"jpeg");
+    assert_eq!(std::fs::read(dir.join(&first_name)).unwrap(), first.bytes);
+    h.until("the override is the cover", |s| {
+        row_cover(s) == Some(first_name.as_str())
+    })
+    .await;
+    let entry = projected(&feed, &id);
+    assert_eq!(entry.artwork_revision, 1);
+    assert!(entry.revision > before, "the entry changed");
+    let read = host
+        .read_artwork("steam:620".into(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        (read.bytes.as_slice(), read.media_type, read.revision),
+        (first.bytes.as_slice(), "image/jpeg", 1)
+    );
+
+    // Replace: the old file is deleted once the row points at the new one.
+    let second_name = file_name("steam:620", &second);
+    let written = host
+        .set_artwork("steam:620".into(), 1, Some(second.clone()), open_guard())
+        .await
+        .unwrap();
+    assert_eq!(
+        written,
+        ArtworkWrite::Applied {
+            revision: 2,
+            replaced: Some(first_name.clone())
+        }
+    );
+    assert_eq!(files_in(&dir), ["7.jpg".to_owned(), second_name.clone()]);
+
+    // A stale revision overwrites nothing and leaves no file behind.
+    let third = cover_of(90, 300, 450);
+    let written = host
+        .set_artwork("steam:620".into(), 1, Some(third), open_guard())
+        .await
+        .unwrap();
+    assert_eq!(written, ArtworkWrite::Conflict { current: 2 });
+    assert_eq!(files_in(&dir), ["7.jpg".to_owned(), second_name.clone()]);
+
+    // The same picture again changes nothing and keeps its file.
+    let written = host
+        .set_artwork("steam:620".into(), 2, Some(second), open_guard())
+        .await
+        .unwrap();
+    assert_eq!(written, ArtworkWrite::Unchanged { revision: 2 });
+    assert_eq!(files_in(&dir), ["7.jpg".to_owned(), second_name.clone()]);
+
+    // Clear: the game's own cover is back, the file is gone and the revision keeps counting.
+    let written = host
+        .set_artwork("steam:620".into(), 2, None, open_guard())
+        .await
+        .unwrap();
+    assert_eq!(
+        written,
+        ArtworkWrite::Applied {
+            revision: 3,
+            replaced: Some(second_name)
+        }
+    );
+    assert_eq!(files_in(&dir), ["7.jpg".to_owned()]);
+    h.until("the game's cover is back", |s| {
+        row_cover(s) == Some("7.jpg")
+    })
+    .await;
+    assert_eq!(projected(&feed, &id).artwork_revision, 3);
+    let back = host
+        .read_artwork("steam:620".into(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        (back.bytes.as_slice(), back.revision),
+        (b"jpeg".as_slice(), 3)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_guard_stops_a_cover_before_any_file_is_written() {
+    let (mut h, feed, host, id) = plugin_library().await;
+    h.until("the game's own cover", |s| row_cover(s) == Some("7.jpg"))
+        .await;
+    let before = projected(&feed, &id);
+    let error = host
+        .set_artwork(
+            "steam:620".into(),
+            0,
+            Some(cover_of(10, 300, 450)),
+            denying_guard(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    assert!(h.store.cache.lock().unwrap().artwork_overrides.is_empty());
+    assert_eq!(files_in(h.covers.path()), ["7.jpg".to_owned()]);
+    assert_eq!(projected(&feed, &id), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cover_read_is_bounded_and_never_downloads_or_leaves_the_covers_folder() {
+    let (mut h, _feed, host, _id) = plugin_library().await;
+    h.until("the game's own cover", |s| row_cover(s) == Some("7.jpg"))
+        .await;
+    let fetched = h.api.covers_fetched.lock().unwrap().len();
+    // 4 bytes is exactly the cover; one less is over the caller's budget.
+    assert!(host.read_artwork("steam:620".into(), 4).await.is_ok());
+    let error = host.read_artwork("steam:620".into(), 3).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::ResourceExhausted);
+    // An entry the library does not know has no cover to read.
+    let error = host
+        .read_artwork("steam:nope".into(), 1 << 20)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::NotFound);
+    // A cover the file system no longer has is not found, and nothing is fetched to fill it.
+    std::fs::remove_file(h.covers.path().join("7.jpg")).unwrap();
+    let error = host
+        .read_artwork("steam:620".into(), 1 << 20)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::NotFound);
+    assert_eq!(h.api.covers_fetched.lock().unwrap().len(), fetched);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_cover_and_its_revision_survive_a_restart() {
+    use crate::plugin_host::library::LibraryFeed;
+    use gamenode_core::library::{ArtworkOverride, ArtworkWrite};
+    let api = FakeApi::new();
+    *api.delay.lock().unwrap() = Duration::from_millis(100);
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    seed_cache(&h, Some(account("u1", "Ana")));
+    h.store
+        .cache
+        .lock()
+        .unwrap()
+        .artwork_overrides
+        .push(ArtworkOverride {
+            entry_key: "steam:620".to_owned(),
+            file: Some("plugin-aa-bb.jpg".to_owned()),
+            revision: 3,
+        });
+    let feed = LibraryFeed::new();
+    h.engine.set_library_feed(feed.clone());
+    h.engine.start();
+
+    h.until("the cached override is the cover", |s| {
+        row_cover(s) == Some("plugin-aa-bb.jpg")
+    })
+    .await;
+    eventually("the projection carries the stored revision", || {
+        feed_entries(&feed).len() == 1
+    })
+    .await;
+    let id = feed_entries(&feed)[0].0.clone();
+    assert_eq!(projected(&feed, &id).artwork_revision, 3);
+    let host = feed.host().unwrap();
+    assert_eq!(
+        host.set_artwork("steam:620".into(), 2, None, open_guard())
+            .await
+            .unwrap(),
+        ArtworkWrite::Conflict { current: 3 }
     );
 }

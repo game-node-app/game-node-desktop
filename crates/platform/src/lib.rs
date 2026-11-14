@@ -22,6 +22,7 @@ pub mod local_game_db;
 pub mod manifest_cache;
 pub mod paths;
 pub mod playtime_db;
+pub mod plugin_artwork;
 pub mod plugin_environment;
 pub mod plugin_packages;
 pub mod plugin_registry;

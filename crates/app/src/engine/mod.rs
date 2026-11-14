@@ -464,6 +464,9 @@ impl Engine {
                         metadata_revision: library
                             .display_override(&entry.key)
                             .map_or(0, |over| over.revision),
+                        artwork_revision: library
+                            .artwork_override(&entry.key)
+                            .map_or(0, |over| over.revision),
                         install_state: if entry.installed {
                             InstallState::Installed
                         } else if entry.owned {
@@ -1731,6 +1734,122 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         }
         let revision = feed.revision_of(entry_key).unwrap_or(current);
         Ok(MatchWrite::Applied { revision })
+    }
+
+    async fn read_artwork(
+        &self,
+        entry_key: String,
+        max_bytes: u64,
+    ) -> Result<crate::plugin_host::library::StoredArtwork, tonic::Status> {
+        use gamenode_platform::plugin_artwork::{self, ReadError};
+        let engine = self.engine()?;
+        let (file, revision, dir) = {
+            let state = engine.lock();
+            let library = &state.library;
+            (
+                library
+                    .is_active()
+                    .then(|| library.entry_cover_file(&entry_key))
+                    .flatten(),
+                library
+                    .artwork_override(&entry_key)
+                    .map_or(0, |over| over.revision),
+                engine.shared.ports.covers_dir.clone(),
+            )
+        };
+        let file = file.ok_or_else(|| tonic::Status::not_found("the entry has no cover"))?;
+        let name = file.clone();
+        let read =
+            tokio::task::spawn_blocking(move || plugin_artwork::read(&dir, &name, max_bytes))
+                .await
+                .map_err(|_| tonic::Status::unavailable("the library is not available"))?;
+        match read {
+            Ok(bytes) => Ok(crate::plugin_host::library::StoredArtwork {
+                bytes,
+                media_type: plugin_artwork::media_type_of(&file),
+                revision,
+            }),
+            Err(ReadError::TooLarge) => Err(tonic::Status::resource_exhausted(
+                "the cover is larger than max_bytes; ask for more",
+            )),
+            Err(ReadError::Unavailable) => Err(tonic::Status::not_found(
+                "the cover is not on this device yet",
+            )),
+        }
+    }
+
+    async fn set_artwork(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        image: Option<gamenode_platform::plugin_artwork::Prepared>,
+        guard: crate::plugin_host::library::CommitGuard,
+    ) -> Result<gamenode_core::library::ArtworkWrite, tonic::Status> {
+        use gamenode_core::library::ArtworkWrite;
+        use gamenode_platform::plugin_artwork;
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        let dir = engine.shared.ports.covers_dir.clone();
+        let name = image
+            .as_ref()
+            .map(|image| plugin_artwork::file_name(&entry_key, image));
+        let (done, written) = tokio::sync::oneshot::channel();
+        {
+            let (key, name) = (entry_key.clone(), name.clone());
+            // The storage worker runs jobs in order, so this write cannot overtake or be
+            // overtaken by other library writes; authorization is rechecked where it commits.
+            engine.shared.storage.submit(move || {
+                let result = guard().and_then(|()| {
+                    // The file goes first and the row second: a crash in between leaves a file
+                    // nothing refers to, never a row that points at nothing.
+                    let existed = match (&image, &name) {
+                        (Some(image), Some(name)) => {
+                            Some(plugin_artwork::store(&dir, name, image).map_err(|error| {
+                                tracing::warn!(%error, "could not store a plugin cover");
+                                tonic::Status::unavailable("could not store the cover")
+                            })?)
+                        }
+                        _ => None,
+                    };
+                    let outcome = store
+                        .save_artwork(&key, expected_revision, name.as_deref())
+                        .map_err(|error| {
+                            tracing::warn!(%error, "could not record a plugin cover");
+                            tonic::Status::unavailable("could not store the cover")
+                        });
+                    match &outcome {
+                        Ok(ArtworkWrite::Applied { replaced, .. }) => {
+                            if let Some(old) = replaced
+                                && Some(old) != name.as_ref()
+                            {
+                                plugin_artwork::remove(&dir, old);
+                            }
+                        }
+                        // The same file is the live one.
+                        Ok(ArtworkWrite::Unchanged { .. }) => {}
+                        // Nothing refers to the file just written, unless it was already there.
+                        Ok(ArtworkWrite::Conflict { .. }) | Err(_) => {
+                            if let (Some(false), Some(name)) = (existed, &name) {
+                                plugin_artwork::remove(&dir, name);
+                            }
+                        }
+                    }
+                    outcome
+                });
+                let _ = done.send(result);
+            });
+        }
+        let written = written
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))??;
+        if let ArtworkWrite::Applied { revision, .. } = &written {
+            engine.library_input(LibInput::ArtworkStored {
+                key: entry_key,
+                file: name,
+                revision: *revision,
+            });
+        }
+        Ok(written)
     }
 
     async fn set_display_name(

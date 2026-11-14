@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gamenode_core::library::DisplayWrite;
+use gamenode_core::library::{ArtworkWrite, DisplayWrite};
+use gamenode_platform::plugin_artwork::Prepared;
 use gamenode_plugin_protocol::proto::LibraryEntry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -65,6 +66,9 @@ pub struct LibrarySource {
     pub display_name: Option<String>,
     /// Revision of that override for this entry; 0 until it is first written.
     pub metadata_revision: u64,
+    /// Revision of the provider plugin's cover override for this entry; 0 until it is first
+    /// written.
+    pub artwork_revision: u64,
 }
 
 /// One entry as plugins see it.
@@ -77,6 +81,7 @@ pub struct Projected {
     pub install_state: InstallState,
     pub display_name: Option<String>,
     pub metadata_revision: u64,
+    pub artwork_revision: u64,
     /// The revision of the entry's last change.
     pub revision: u64,
 }
@@ -93,6 +98,7 @@ impl Projected {
             revision: self.revision,
             display_name: self.display_name.clone().unwrap_or_default(),
             metadata_revision: self.metadata_revision,
+            artwork_revision: self.artwork_revision,
         }
     }
 
@@ -103,6 +109,7 @@ impl Projected {
             && self.install_state == other.install_state
             && self.display_name == other.display_name
             && self.metadata_revision == other.metadata_revision
+            && self.artwork_revision == other.artwork_revision
     }
 }
 
@@ -289,6 +296,7 @@ impl LibraryFeed {
                     install_state: source.install_state,
                     display_name: source.display_name.clone(),
                     metadata_revision: source.metadata_revision,
+                    artwork_revision: source.artwork_revision,
                     revision: next,
                 },
             );
@@ -526,6 +534,15 @@ pub enum MatchWrite {
     UserChoice,
 }
 
+/// A cover read back for an entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredArtwork {
+    pub bytes: Vec<u8>,
+    pub media_type: &'static str,
+    /// The entry's artwork revision: 0 while the cover is the game's own, not a plugin's.
+    pub revision: u64,
+}
+
 /// The engine's side of plugin library services: everything that reads or changes state the
 /// library machine owns. Implementations take the engine's own locks; callers never hold one.
 #[async_trait::async_trait]
@@ -562,6 +579,27 @@ pub trait LibraryHost: Send + Sync {
         expected_revision: u64,
         guard: &dyn Fn() -> Result<(), Status>,
     ) -> Result<MatchWrite, Status>;
+
+    /// The cover `entry_key` shows: its plugin override, else the matched game's own. Reads at
+    /// most `max_bytes` on a worker thread. `NOT_FOUND` when the entry has no cover on this
+    /// device; `RESOURCE_EXHAUSTED` when the image is larger than `max_bytes`. Nothing is
+    /// downloaded.
+    async fn read_artwork(
+        &self,
+        entry_key: String,
+        max_bytes: u64,
+    ) -> Result<StoredArtwork, Status>;
+
+    /// Sets the cover override of `entry_key` to the prepared image, or clears it with `None`,
+    /// if `expected_revision` is current. The file is written before the row and the replaced
+    /// file removed after it; the call returns once the library applied the change.
+    async fn set_artwork(
+        &self,
+        entry_key: String,
+        expected_revision: u64,
+        image: Option<Prepared>,
+        guard: CommitGuard,
+    ) -> Result<ArtworkWrite, Status>;
 
     /// Stores the display-name override of `entry_key` if `expected_revision` is current,
     /// returning only after the write reached the database and the library applied it.

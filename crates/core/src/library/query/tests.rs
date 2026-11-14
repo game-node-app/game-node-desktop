@@ -987,3 +987,103 @@ fn stored_display_names_load_with_their_revision() {
     assert_eq!(machine.display_override("steam:620").unwrap().revision, 4);
     assert_eq!(machine.display_override("steam:70").unwrap().revision, 2);
 }
+
+fn covers_cache(artwork_overrides: Vec<crate::library::ArtworkOverride>) -> LibraryCache {
+    let mut cache = override_cache(vec![]);
+    cache.games[0].cover_file = Some("7.jpg".to_owned());
+    cache.artwork_overrides = artwork_overrides;
+    cache
+}
+
+fn covers(machine: &mut LibraryMachine) -> BTreeMap<String, Option<String>> {
+    machine
+        .all_rows()
+        .into_iter()
+        .map(|row| (row.key, row.cover_file))
+        .collect()
+}
+
+fn stored_cover(machine: &mut LibraryMachine, key: &str, file: Option<&str>, revision: u64) {
+    machine.handle(Input::ArtworkStored {
+        key: key.to_owned(),
+        file: file.map(str::to_owned),
+        revision,
+    });
+}
+
+#[test]
+fn a_plugin_cover_wins_over_the_matched_games_cover_until_cleared() {
+    let (mut machine, _) = loaded(false, covers_cache(vec![]));
+    scan_both(&mut machine);
+    assert_eq!(covers(&mut machine)["steam:620"].as_deref(), Some("7.jpg"));
+    assert_eq!(covers(&mut machine)["steam:70"], None, "no matched game");
+
+    // The override replaces the game's cover for this entry, and also gives an unmatched entry
+    // a cover; the game record is untouched.
+    stored_cover(&mut machine, "steam:620", Some("plugin-a-b.jpg"), 1);
+    stored_cover(&mut machine, "steam:70", Some("plugin-c-d.png"), 1);
+    assert_eq!(
+        covers(&mut machine)["steam:620"].as_deref(),
+        Some("plugin-a-b.jpg")
+    );
+    assert_eq!(
+        covers(&mut machine)["steam:70"].as_deref(),
+        Some("plugin-c-d.png")
+    );
+    assert_eq!(
+        machine.game(7).unwrap().cover_file.as_deref(),
+        Some("7.jpg")
+    );
+    assert_eq!(
+        machine.entry_cover_file("steam:620").as_deref(),
+        Some("plugin-a-b.jpg")
+    );
+
+    // Clearing restores each entry's own cover and the revision keeps counting.
+    stored_cover(&mut machine, "steam:620", None, 2);
+    stored_cover(&mut machine, "steam:70", None, 2);
+    assert_eq!(covers(&mut machine)["steam:620"].as_deref(), Some("7.jpg"));
+    assert_eq!(covers(&mut machine)["steam:70"], None);
+    assert_eq!(
+        machine.entry_cover_file("steam:620").as_deref(),
+        Some("7.jpg")
+    );
+    assert_eq!(machine.artwork_override("steam:620").unwrap().revision, 2);
+}
+
+#[test]
+fn a_cover_for_an_unknown_entry_is_ignored() {
+    let (mut machine, _) = loaded(false, covers_cache(vec![]));
+    scan_both(&mut machine);
+    stored_cover(&mut machine, "steam:nope", Some("plugin-x-y.jpg"), 1);
+    assert!(machine.artwork_override("steam:nope").is_none());
+    assert_eq!(machine.entry_cover_file("steam:nope"), None);
+}
+
+#[test]
+fn stored_covers_load_with_their_revision() {
+    let (mut machine, _) = loaded(
+        false,
+        covers_cache(vec![
+            crate::library::ArtworkOverride {
+                entry_key: "steam:620".to_owned(),
+                file: Some("plugin-a-b.jpg".to_owned()),
+                revision: 4,
+            },
+            // Cleared earlier: no file, but its revision is kept.
+            crate::library::ArtworkOverride {
+                entry_key: "steam:70".to_owned(),
+                file: None,
+                revision: 2,
+            },
+        ]),
+    );
+    scan_both(&mut machine);
+    assert_eq!(
+        covers(&mut machine)["steam:620"].as_deref(),
+        Some("plugin-a-b.jpg")
+    );
+    assert_eq!(covers(&mut machine)["steam:70"], None);
+    assert_eq!(machine.artwork_override("steam:620").unwrap().revision, 4);
+    assert_eq!(machine.artwork_override("steam:70").unwrap().revision, 2);
+}

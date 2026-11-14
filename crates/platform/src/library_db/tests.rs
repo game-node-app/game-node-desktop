@@ -1607,3 +1607,73 @@ fn display_names_are_guarded_by_a_revision_and_reset_keeps_counting() {
         }]
     );
 }
+
+#[test]
+fn artwork_overrides_are_guarded_by_a_revision_and_report_the_file_they_replace() {
+    use gamenode_core::library::{ArtworkOverride, ArtworkWrite};
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir);
+    let library = store.library_store();
+    let key = "steam:620";
+    assert_eq!(
+        library.save_artwork(key, 2, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Conflict { current: 0 }
+    );
+    assert!(
+        library
+            .load_cache(None)
+            .unwrap()
+            .artwork_overrides
+            .is_empty()
+    );
+    assert_eq!(
+        library.save_artwork(key, 0, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 1,
+            replaced: None
+        }
+    );
+    assert_eq!(
+        library.save_artwork(key, 1, Some("a.jpg")).unwrap(),
+        ArtworkWrite::Unchanged { revision: 1 }
+    );
+    assert_eq!(
+        library.save_artwork(key, 0, Some("b.jpg")).unwrap(),
+        ArtworkWrite::Conflict { current: 1 }
+    );
+    // Replacing names the file that is no longer used, so the caller can delete it.
+    assert_eq!(
+        library.save_artwork(key, 1, Some("b.jpg")).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 2,
+            replaced: Some("a.jpg".to_owned())
+        }
+    );
+    // Clearing restores the game's cover and keeps counting.
+    assert_eq!(
+        library.save_artwork(key, 2, None).unwrap(),
+        ArtworkWrite::Applied {
+            revision: 3,
+            replaced: Some("b.jpg".to_owned())
+        }
+    );
+    assert_eq!(
+        library.save_artwork(key, 3, None).unwrap(),
+        ArtworkWrite::Unchanged { revision: 3 }
+    );
+    drop(library);
+    drop(store);
+    let reopened = open(&dir);
+    assert_eq!(
+        reopened
+            .library_store()
+            .load_cache(None)
+            .unwrap()
+            .artwork_overrides,
+        [ArtworkOverride {
+            entry_key: key.to_owned(),
+            file: None,
+            revision: 3,
+        }]
+    );
+}

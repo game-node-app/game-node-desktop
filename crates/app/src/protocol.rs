@@ -1035,6 +1035,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_plugin_cover_is_served_like_any_cover_with_the_type_of_its_bytes() {
+        let dir = tempdir().unwrap();
+        let name = "plugin-0123456789abcdef-fedcba9876543210.png";
+        assert!(valid_cover_file(name));
+        std::fs::write(dir.path().join(name), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let res = handle_asset_uri_str(
+            &format!("gamenode-asset://localhost/cover/{name}"),
+            dir.path(),
+            &|_| None,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
+    }
+
+    #[tokio::test]
     async fn return_404_for_missing_cover_file() {
         let dir = tempdir().unwrap();
         let res = handle_asset_uri_str(

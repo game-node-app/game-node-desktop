@@ -47,8 +47,9 @@ pub use plugin_match::{MAX_OFFERED_GAMES, PluginMatch};
 pub use query::{ProviderCount, Row};
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChoiceSource, ChosenMatch,
-    DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
-    LibraryStore, ProviderScanState, StoreAccount, StoredEntry, entry_key,
+    ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate,
+    ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord,
+    LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount, StoredEntry,
+    entry_key,
 };
 pub use view::{DetailView, EmptyState, LibraryView};

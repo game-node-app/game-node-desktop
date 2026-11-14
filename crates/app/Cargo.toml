@@ -73,3 +73,4 @@ base64 = "0.22.1"
 ring = "0.17.14"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

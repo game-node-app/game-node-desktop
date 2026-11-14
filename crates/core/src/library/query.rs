@@ -13,7 +13,7 @@ use super::layout::{
 };
 use super::machine::LibraryMachine;
 use super::matching::{self, MatchStatus};
-use super::store::StoredEntry;
+use super::store::{GameRecord, StoredEntry};
 
 /// One visible game as the view shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +86,26 @@ impl LibraryMachine {
         matching::resolve(self.chosen.get(&entry.key), auto)
     }
 
+    /// The cover an entry shows: its provider plugin's override if one is set, else the matched
+    /// game's own.
+    fn cover_for(&self, key: &str, game: Option<&GameRecord>) -> Option<String> {
+        self.artwork_overrides
+            .get(key)
+            .and_then(|over| over.file.clone())
+            .or_else(|| game.and_then(|game| game.cover_file.clone()))
+    }
+
+    /// The cover file of the entry `key` as the library shows it, if the entry is known and has
+    /// one.
+    pub fn entry_cover_file(&self, key: &str) -> Option<String> {
+        let entry = self.entries.get(key)?;
+        let game = self
+            .match_status(entry)
+            .game_id()
+            .and_then(|id| self.games.get(&id));
+        self.cover_for(key, game)
+    }
+
     fn row(&self, entry: &StoredEntry) -> Row {
         let status = self.match_status(entry);
         let game = status.game_id().and_then(|id| self.games.get(&id));
@@ -118,7 +138,7 @@ impl LibraryMachine {
             owned: entry.owned,
             shared: entry.shared && !entry.owned,
             status,
-            cover_file: game.and_then(|game| game.cover_file.clone()),
+            cover_file: self.cover_for(&entry.key, game),
             release_year: game.and_then(|game| game.release_year),
             added_at: entry.first_seen,
             is_favorite,

@@ -532,6 +532,18 @@ Mod installation or file modifications require their own scoped operations/confi
 
 Reference rationale: https://cheatsheetseries.owasp.org/cheatsheets/OS_Command_Injection_Defense_Cheat_Sheet.html . Parameter separation and validation address command/argument injection boundaries; they do not certify arbitrary executable behavior.
 
+### 20. Host-issued user intents for standard launch and install
+
+`GamesRequestLaunch` and `GamesRequestInstall` execute nothing without the user's explicit intent, whatever the plugin's grants. An intent is host state, never a claim made by the plugin: an opaque, unguessable `user_intent_id` that the host keeps in a table with its binding, expiry and use. The plugin cannot create one. Both operations always answer with a job (task 7.1) so that waiting for the user is visible and cancellable.
+
+An intent is born in one of two ways. **Pre-issued:** the user acts in Core (for example starts a launch extension for a chosen game, or confirms a Core dialog) and the host gives the id to the plugin it concerns. **On request:** the plugin calls the operation without an id; the job stays queued, "awaiting confirmation", while Core shows a confirmation dialog (game, plugin and publisher, and what will happen: start the detected target unchanged, or open the store's install flow); approving runs the job, declining or timing out ends it as failed and `JobsCancel` withdraws the request. With a valid pre-issued id the dialog is skipped. Both go through the same host check at dispatch.
+
+Binding: plugin identity with pinned publisher, profile epoch, game and installation, operation kind (launch or install) and, for launch, the detected-target revision. A pre-issued id is single use and valid for 60 seconds; the on-request dialog waits at most 5 minutes (the folder-approval limit) with one pending confirmation per plugin and game. An id for another plugin, profile, game, operation or revision, a used one and an expired one are refused without saying which. The dialog is plain text, Cancel is the default, and, like every Core approval, it states that GameNode checked the scope of the request and does not certify the programs it starts. The AppModal and its asynchronous Tauri commands never block the UI thread; a build without the dialog answers `FAILED_PRECONDITION`.
+
+Scope per game: a provider session can name only its own library entries; an extension session can name only its target game, chosen by the user. `library.read.all` does not widen what may be launched or installed. The standard launch request has no override fields (see section 11); customization keeps its own recipe approval (section 19).
+
+The confirmation can be remembered for one plugin and one game: the dialog offers "allow this plugin to launch (or install) this game" as an explicit choice, off by default. A remembered approval is bound to plugin identity with publisher, profile, game and installation, operation kind and, for launch, the detected-target revision; a changed target asks again. It never covers another game, another operation or another plugin, is listed per plugin in settings with revoke, and is removed with the plugin or its package. The call still needs the current permission and a valid request; the approval only replaces the dialog. A launch the user started with Play in Core, with no plugin involved, is unaffected.
+
 ## Risks / Trade-offs
 
 - Native plugin can bypass API restrictions or alter same-user files → explicit consent/disclosure; API checks still protect cooperative calls and prevent confused host authority, without claiming OS confinement.

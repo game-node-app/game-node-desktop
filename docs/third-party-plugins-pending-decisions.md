@@ -424,3 +424,14 @@ Tomadas com o usuário; **nada foi implementado**, a 7.2 continua aberta.
 | **O lançamento padrão não tem campos de override.** Lançamento customizado sem `game.custom_launch` é negado de forma explícita, e o host nunca o rebaixa para um lançamento padrão; o plugin pode fazer esse fallback por conta própria. Uma mensagem no formato customizado enviada ao método padrão tem os campos extras descartados pelo protobuf e não é detectada: está dito na documentação. | 7.2, spec `desktop-plugin-api`. |
 | Consequência: o registro de jobs da 7.1 continua sem nenhuma operação que o use; o primeiro uso real vem com a 10.10 ou com a 7.3. | 7.1, 7.2. |
 
+## Q. Decisões sobre as intenções do usuário, tarefa 10.10 (2026-11-14)
+
+Tomadas com o usuário; **nada foi implementado**. Estão no design (seção 20) e na spec `desktop-plugin-api`.
+
+| Decisão | Alcance |
+| --- | --- |
+| **A intenção nasce de duas formas**: pré-emitida pelo host a partir de uma ação do usuário no Core, ou sob pedido (sem id, o job fica "aguardando confirmação" enquanto o Core mostra um diálogo). Toda chamada devolve um job (7.1). | 10.10. |
+| **Escopo por jogo**: sessão de provedor nomeia só as próprias entradas; sessão de extensão só o jogo alvo escolhido pelo usuário. `library.read.all` não amplia o que pode ser lançado ou instalado. | 10.10. |
+| **A confirmação pode ser lembrada por plugin e jogo** (escolha do usuário; eu recomendava perguntar sempre). Por padrão a caixa vem desmarcada. A aprovação lembrada vale para plugin+publisher, perfil, jogo/instalação, operação e revisão do alvo detectado; alvo mudou, pergunta de novo. Lista por plugin e revogação nas configurações, removida com o plugin. | 10.10. |
+| Valores escolhidos por mim, sem medir: id pré-emitido vale 60 s e é de uso único; o diálogo espera até 5 minutos (o mesmo limite da aprovação de pastas); uma confirmação pendente por plugin e jogo. A aprovação lembrada não depende da revisão dos grants (a permissão é verificada em cada chamada) nem da versão do plugin, porque o lançamento padrão não executa nada do plugin. | 10.10. |
+

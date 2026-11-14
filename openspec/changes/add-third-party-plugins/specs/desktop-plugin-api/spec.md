@@ -331,6 +331,25 @@ The game.launch permission SHALL authorize launch through the game's current det
 - **WHEN** a plugin whose custom launch was denied wants the game started anyway
 - **THEN** it must make its own standard launch request without parameters, and the host never turns the denied custom request into a standard launch by itself
 
+### Requirement: Host-issued user intent for standard launch and install
+The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. An intent SHALL be bound to the plugin identity and publisher, profile, game and installation, operation kind and, for launch, the detected-target revision; it SHALL be single use and expire. Without an intent the request SHALL return a job that waits for a host confirmation dialog, which the user can approve or decline and the plugin can cancel. A provider session SHALL name only its own entries and an extension session only its user-selected target game. The user MAY remember the confirmation for one plugin and one game and revoke it.
+
+#### Scenario: Request without intent
+- **WHEN** a plugin with game.launch requests a launch without a user intent id
+- **THEN** the job waits while the host asks the user, and nothing starts until the user approves
+
+#### Scenario: Reused or shifted intent
+- **WHEN** a plugin presents an intent that was already used, expired, or issued for another plugin, profile, game, operation or target revision
+- **THEN** the host refuses it without saying which condition failed and starts nothing
+
+#### Scenario: Another provider's game
+- **WHEN** a provider session or an extension session names a game that is neither its own entry nor its selected target
+- **THEN** the host denies the request even if the plugin can read the whole library
+
+#### Scenario: Remembered confirmation
+- **WHEN** the user allowed one plugin to launch one game and that game's detected target is unchanged
+- **THEN** the plugin's request for that game runs without a dialog, while another game, another operation or a changed target asks again
+
 ### Requirement: Custom game launch permission
 The independent game.custom_launch grant SHALL authorize plugin-owned per-game recipes and their approved execution, including alternate URI/executable, arguments, working directory, runtime wrappers and environment overrides. Recipes SHALL use typed target/resource handles and argument vectors rather than shell command strings. This grant SHALL NOT imply installation or normal-launch permission.
 

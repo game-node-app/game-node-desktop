@@ -158,6 +158,18 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a request redirects to an unapproved origin or a private/local destination
 - **THEN** the host refuses the redirected request without forwarding credentials
 
+#### Scenario: Fetch from an origin the user did not approve
+- **WHEN** a plugin holding network.fetch requests a URL whose exact scheme, host and port are not an approved origin, or no origin is approved
+- **THEN** the host sends nothing, denies the request with an audited scope denial, and a revoked or narrowed approval also stops a fetch already running
+
+#### Scenario: Private or local destination
+- **WHEN** an approved origin's host name resolves to, or the URL names, a loopback, private, link-local or otherwise non-public address
+- **THEN** the host refuses before connecting, so no data from that address reaches the plugin and nothing is revealed about where the name resolved
+
+#### Scenario: Fetch bounds
+- **WHEN** a response exceeds the caller's byte budget (at most 8 MiB) or the fetch exceeds its deadline (at most 30 seconds, redirects and body included)
+- **THEN** the host reports resource exhaustion or deadline expiry without returning partial data
+
 #### Scenario: File access without a user-approved folder
 - **WHEN** a plugin holds a files grant but the user has not approved a folder for that plugin and installation, or the approval does not allow the operation
 - **THEN** no handle is issued or the operation is denied, and nothing is read, written or deleted

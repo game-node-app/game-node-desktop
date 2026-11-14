@@ -248,6 +248,26 @@ library entries, says what it needs (`read`, `write`, `delete`) and which folder
 Until the settings UI connects the approval dialog, a new approval is not available; handles for
 folders already approved work.
 
+## Network fetch
+
+`NetworkFetch` asks the host to fetch an https URL for you, from an origin the user approved. See
+"Network fetch" in `docs/plugin-api-permissions.md` for the rules, limits and errors. The practical
+points:
+
+- Declare `network.fetch` and name the exact origins you need (scheme, host and port; no
+  wildcards or paths). The user approves them; an origin you did not declare, or the user did not
+  approve, is `PERMISSION_DENIED` and nothing is sent.
+- The host never connects to loopback, private, link-local or similar addresses, even for an
+  approved origin, and it follows redirects only to approved origins. A plugin that must talk to a
+  local service does so over its own native IPC, not through this API.
+- Treat `PERMISSION_DENIED` after a redirect as "the server sent me somewhere I may not go": the
+  error does not say where. Ask the user to approve the extra origin you need and declare it.
+- Set `max_response_bytes` and `timeout_ms` for what you expect; a response over the budget is
+  `RESOURCE_EXHAUSTED` and nothing is truncated. Response bytes are not decompressed.
+- Send your own `Authorization` if your service needs one; the host adds none and never sends any
+  GameNode credential.
+- At most 4 fetches per plugin run at once; retry later on `RESOURCE_EXHAUSTED`.
+
 ## Bounded work, cancellation and failures
 
 The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most

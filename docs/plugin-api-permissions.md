@@ -524,6 +524,92 @@ namespace lock.
 - The Windows implementation was type-checked for the Windows target but has not been run; see
   "Limitations" in `docs/development.md` for native acceptance.
 
+## Network fetch
+
+`NetworkFetch` (`network.fetch`) lets a plugin ask the host to fetch an HTTPS URL. The host is the
+one on the network, so every rule below is enforced before data reaches the plugin.
+
+- **Two things are needed: the grant and an approved origin.** An origin is exactly scheme, host
+  and port (`https://api.example.com`, or `https://api.example.com:8443`); the default port is left
+  out and the host is lowercased. There are no wildcards, no paths and no prefixes: `www.` or
+  another subdomain, another port, `http`, and `api.example.com.evil.test` are all other origins.
+  Nothing is reachable until the user approves one, and the approved set is asked again for every
+  fetch and for every redirect, so approving, widening, narrowing or revoking takes effect on the
+  next call and stops a fetch already running. A refusal for scope is `PERMISSION_DENIED` with
+  the `DENIAL_REASON_SCOPE_DENIED` detail naming `network.fetch`, and is audited.
+- **Only public addresses.** The host name is resolved by the client's own resolver, and the
+  connection is refused when **any** answer is loopback, private (10/8, 172.16/12, 192.168/16),
+  link-local (including the cloud metadata address 169.254.169.254), shared address space
+  (100.64/10), unique-local or site-local IPv6, multicast, unspecified, documentation, benchmarking,
+  reserved, Teredo, or an IPv4-mapped, NAT64 or 6to4 form that embeds such an IPv4 address. The
+  client connects to exactly the addresses that passed, so a name cannot pass the check and then
+  point elsewhere. A URL that names an address (`127.0.0.1`, `[::1]`, `2130706433`, `0x7f.1`) is
+  judged the same way before connecting. This holds even for an origin the user approved: a
+  plugin cannot use the host to reach the user's own machine or network.
+- **Redirects** are followed by the host, at most 5, and every target must be an https URL of an
+  approved origin, checked before anything is sent to it. A redirect to an unapproved origin ends
+  the fetch with `PERMISSION_DENIED`; the plugin is never told where it pointed and the redirect
+  response's body is never read. `Authorization`, `Cookie` and `Proxy-Authorization` that the plugin
+  sent do not follow a redirect to another origin. 303, and POST after 301/302, continue as a GET
+  without a body; 307 and 308 repeat the method and body.
+- **No credentials of GameNode.** The host adds none: no cookies, no authorization, no referer,
+  no GameNode session or token. The only header it adds is a `User-Agent`
+  (`GameNode-Desktop/<version> plugin-fetch`), which the plugin may replace. A plugin may send its own
+  `Authorization` or `Cookie` for its own service.
+- **Nothing is shared between fetches.** There is no connection pool, no cookie jar and no
+  proxy. The system proxy settings are deliberately ignored: a proxy resolves names itself and would
+  bypass the address check.
+- **Request shape.** `url` is an https URL of at most 2,048 bytes with no user name or password
+  (the fragment is dropped); `method` is empty (GET), `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or
+  `DELETE`; at most 32 headers, names that are valid tokens (compared in lowercase, no
+  repeats), values of at most 4,096 bytes without control characters; the headers the host controls
+  (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`, `Expect`,
+  `Proxy-*`, `Via`, `Forwarded`, `X-Forwarded-*`) cannot be sent. A body is at most 1 MiB and only for
+  POST, PUT, PATCH and DELETE. Anything else is `INVALID_ARGUMENT`, and nothing is fetched.
+- **Bounds.** `max_response_bytes` 0 means 1 MiB and is capped at 8 MiB. A response over the budget
+  is `RESOURCE_EXHAUSTED`: it is refused as soon as the `Content-Length` or the bytes read exceed
+  the budget, and nothing is truncated. The budget counts the bytes on the wire: the host does not
+  decompress, so a plugin that sends `Accept-Encoding` receives the compressed bytes. `timeout_ms` 0
+  or above 30 seconds means 30 seconds, and one deadline covers the whole fetch (every redirect and
+  the body); expiry is `DEADLINE_EXCEEDED`.
+- **Reply.** `status_code` is the HTTP status of the final response (any status, including 4xx and
+  5xx, is a reply, not an error). `headers` are lowercase, repeated headers joined with `, `, at
+  most 64 and 32 KiB (the rest are dropped). `body` is the opaque response. `final_origin` is the
+  origin of the final response, never a path, an address or the redirect chain.
+- **Errors never say where.** `UNAVAILABLE` is "could not be reached" (DNS failure, connection
+  failure or a certificate that is not accepted), with nothing about addresses or names;
+  `FAILED_PRECONDITION` is too many redirects; `RESOURCE_EXHAUSTED` is also what a plugin gets
+  when it is over its allowance of running fetches (4 per plugin, 16 for all plugins; extra
+  fetches are not queued).
+- **Not a sandbox.** Native plugins can still open their own sockets. This API controls what the
+  *host* fetches for them.
+
+### Network limits
+
+The 8 MiB response, 30 s deadline, exact HTTPS origins and the address and redirect checks come
+from the design. The rest were chosen by reasoning, not measured, and are open to change.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Response | 8 MiB cap, default 1 MiB | Design cap; the default keeps a careless call small. |
+| Deadline | 30 s cap and default | Design cap. |
+| Redirects | 5 | Browsers allow 20; legitimate API flows rarely need more than two, and each hop is another origin check and connection. |
+| Request body | 1 MiB | Plugin messages are capped at 8 MiB; requests are small API calls. |
+| URL, headers | 2,048 bytes; 32 headers of at most 4,096 bytes | Common server limits. |
+| Response headers returned | 64, 32 KiB | Keeps a reply small. |
+| Concurrent fetches | 4 per plugin, 16 in all | Bounds sockets and memory; over the allowance is `RESOURCE_EXHAUSTED`, not a queue. |
+
+There is no per-plugin rate limit and no total-bytes quota, so a plugin may fetch repeatedly.
+
+### What is not covered yet
+
+- The source of approved origins belongs to plugin activation and the permission store. Until it
+  is connected (`NetworkAccess::set_scopes`), no origin is approved and every fetch is denied.
+- The client has been tested against local plain-HTTP servers with its address check relaxed, and
+  against the real strict client for the destinations it must refuse. A fetch over real TLS to a
+  public server has not been run in this environment.
+- Proxy-only networks are not supported (system proxies are ignored on purpose).
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

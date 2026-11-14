@@ -299,3 +299,34 @@ Sem limite de taxa por plugin. **Não verificado em execução:** o backend Wind
 
 Efeito no banco: esquema 2 do arquivo SQLite por plugin (`file_roots`), sem mudança no banco principal. Efeito no protocolo: campo aditivo `FilesWriteRequest.name = 6`; contrato `endpoint_field_policy.json` atualizado.
 
+## K. Decisões adotadas na implementação da tarefa 6.3 (2026-11-14)
+
+O design já fixava o essencial de `Network.Fetch`: origens HTTPS exatas, resposta de até 8 MiB, prazo de até 30 s, revalidação de redirecionamentos e DNS, negação de loopback, redes privadas e link-local, e nenhuma credencial do GameNode. Não foi feita pergunta ao usuário nesta tarefa; as decisões abaixo são detalhe de engenharia dentro desse escopo, para revisão.
+
+| Decisão | Alcance |
+| --- | --- |
+| **Origens aprovadas vêm de uma porta (`OriginScopes`)**, consultada de novo a cada fetch e a cada redirecionamento, no mesmo molde do aprovador de pastas da 6.2. Nada é aprovado por padrão. **Nenhuma implementação está ligada ao app**: o armazenamento de permissões ainda não é consultado por sessões de terceiros, então todo fetch responde `PERMISSION_DENIED` até a ativação (seção 8/10) chamar `NetworkAccess::set_scopes`. | 6.3, 8.x, 10.x. |
+| Origem é esquema, host e porta exatos (porta padrão omitida, host em minúsculas, punycode); sem curingas, caminhos ou prefixos. Hosts com caracteres que não pertencem a um nome (como `*`) não formam origem. | 6.3. |
+| O host resolve o nome com o próprio resolvedor do cliente e **recusa a conexão se qualquer resposta for não pública** (loopback, privada, link-local, CGNAT, local única/site-local IPv6, multicast, não especificada, documentação, benchmarking, reservada, Teredo, e formas IPv4-mapped, NAT64 e 6to4 que embutem um IPv4 proibido). Conecta só nos endereços que passaram, então o nome não pode passar e depois apontar para outro lugar. URLs com endereço literal (inclusive `2130706433` e `0x7f.1`) passam pelo mesmo teste. Vale também para origens aprovadas. | 6.3. |
+| Redirecionamentos são seguidos pelo host, no máximo 5, cada alvo checado contra as origens aprovadas antes de qualquer envio; o plugin nunca sabe para onde apontava e o corpo do redirecionamento nunca é lido. `Authorization`, `Cookie` e `Proxy-Authorization` do plugin não atravessam origens. | 6.3. |
+| Sem pool de conexões, sem cookies e **sem proxy do sistema** (um proxy resolveria os nomes e contornaria a checagem de endereços). Redes que só saem por proxy não são suportadas. | 6.3. |
+| O orçamento conta bytes do fio: o host não descomprime. Um único prazo cobre redirecionamentos e corpo. | 6.3. |
+
+### Limites de rede e como foram decididos
+
+Resposta de 8 MiB, prazo de 30 s e a exigência de origens exatas vêm do design; o resto foi escolhido pelo assistente por raciocínio, **sem medição**. Detalhes em `docs/plugin-api-permissions.md#network-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Resposta | teto de 8 MiB, padrão 1 MiB | Teto do design; o padrão evita chamadas descuidadas grandes. |
+| Prazo | teto e padrão de 30 s | Design. |
+| Redirecionamentos | 5 | Assistente: navegadores aceitam 20, fluxos de API raramente passam de dois, e cada salto é outra checagem e conexão. |
+| Corpo do pedido | 1 MiB | Assistente: pedidos são chamadas de API pequenas. |
+| URL, cabeçalhos | 2.048 bytes; 32 cabeçalhos de até 4.096 bytes | Assistente: limites comuns de servidores. |
+| Cabeçalhos devolvidos | 64, 32 KiB | Assistente. |
+| Fetches simultâneos | 4 por plugin, 16 no total, sem fila | Assistente: limita sockets e memória; excesso é `RESOURCE_EXHAUSTED`. |
+
+Sem limite de taxa nem cota total de bytes por plugin. **Não verificado em execução:** um fetch por TLS real a um servidor público (o ambiente de teste só alcança servidores locais, com a checagem de endereço relaxada, mais o cliente estrito real contra os destinos que ele deve recusar).
+
+Efeito no protocolo: nenhum campo novo; `endpoint_field_policy.json` atualizado. Sem mudança de banco.
+

@@ -200,6 +200,29 @@ host in the desktop's service tests:
 | `star_matched_games` | Stars every game one of the plugin's entries is matched to, once each. |
 | `follow_library` | Lists the library, then follows the changes after it, listing again when the host no longer retains the position. |
 
+## Private key/value storage
+
+`StorageGet`, `StoragePut` and `StorageDelete` keep a plugin's own small non-secret data (settings,
+caches, bookkeeping) in a namespace the host derives from the plugin's authenticated identity and the
+active account profile. The request names only a key; see "Private storage" in
+`docs/plugin-api-permissions.md` for the grants, limits and error codes. The practical rules:
+
+- Declare `storage.read`, `storage.write` and `storage.delete` for what you use, and `storage.persist`
+  only if the data must outlive the session. The user approves it separately; without it a
+  `PERSISTENT` write is `PERMISSION_DENIED`, so handle that by asking for `SESSION_ONLY` explicitly
+  rather than expecting a fallback.
+- Read the key first: its `revision` (0 when absent) is the `expected_revision` of your next write,
+  and a `MUTATION_OUTCOME_REVISION_CONFLICT` reply means someone else changed it, so read again and
+  merge. Use one `idempotency_key` per intended change and reuse it only to retry that same change.
+- Keep values within 1 MiB and the namespace within 16 MiB per layer; `RESOURCE_EXHAUSTED` changes
+  nothing, so free space (delete or let values expire with `ttl_seconds`) and retry.
+- Session-only values vanish when your last session ends, durable ones do not: after a restart read
+  your state back from storage instead of assuming it is empty or intact.
+- Secrets never belong here. Use the provider `Secret` service for tokens and credentials.
+
+The Rust SDK has no typed storage helpers yet (they arrive with the utility-service examples of task
+6.5); use the generated `ResourceHost` client as the Go example does.
+
 ## Bounded work, cancellation and failures
 
 The host and SDK cap encoded and decoded gRPC messages at 8 MiB. A provider session has at most

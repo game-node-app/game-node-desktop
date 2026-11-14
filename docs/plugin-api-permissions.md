@@ -334,6 +334,79 @@ There is no per-plugin rate limit for `ArtworkSet`. Writes are serialized, at mo
 decoded at once and a retried key does no decoding, which bounds CPU and memory but not how often a
 plugin may replace its cover. Revisit this with the rate limits once there are real plugins.
 
+## Private storage
+
+`StorageGet` (`storage.read`), `StoragePut` (`storage.write`, plus `storage.persist` for durable
+writes) and `StorageDelete` (`storage.delete`) keep a plugin's own small, non-secret data. They use
+the same resource context as the other services and need no other grant.
+
+- **The namespace is the plugin, not a request field.** Data belongs to the authenticated plugin id,
+  its pinned publisher fingerprint and the active GameNode account profile. A request carries a
+  `key` and nothing that could name another owner, a path or another profile, and a key that looks
+  like a path or an identity (`../x`, `org.other/k`) is just a key in the caller's own namespace.
+  Two plugins, two publishers of the same plugin id and two accounts never see each other's keys,
+  usage or quota. Official providers use trusted host adapters instead and get
+  `FAILED_PRECONDITION`.
+- **Durability is explicit.** `StoragePut.durability` must be `SESSION_ONLY` or `PERSISTENT`;
+  `UNSPECIFIED` is `INVALID_ARGUMENT`. A `PERSISTENT` write without `storage.persist` is
+  `PERMISSION_DENIED` (the denial detail names `storage.persist`) and stores nothing, in memory or on
+  disk: the host never turns it into a volatile success. `SESSION_ONLY` needs only `storage.write`.
+  Reads and deletes of values already stored need only `storage.read` and `storage.delete`, so
+  revoking `storage.persist` stops new durable writes without hiding or trapping existing data.
+- **Two layers, one key space.** A *session-only* value stays in the host's memory and is discarded
+  when the plugin's last open session ends or the account profile changes. A *persistent* value
+  survives restarts until it is deleted or expires. A key lives in one layer at a time: writing it
+  with the other durability moves it (its previous copy is removed), and `StorageGetReply.durability`
+  says where it is now.
+- **Revisions.** A key's revision is 0 while it does not exist and `expected_revision` of the next
+  put or delete must equal it, so a first write sends 0. An obsolete revision returns
+  `MUTATION_OUTCOME_REVISION_CONFLICT` with the current revision and changes nothing. Revisions come
+  from one counter per namespace that survives deletions, layer moves and restarts, so a key that is
+  deleted and created again never repeats a revision a stale writer may still hold. A put always
+  writes (`MUTATION_OUTCOME_APPLIED`); deleting a key that is not there is
+  `MUTATION_OUTCOME_ALREADY_APPLIED` with revision 0, whatever `expected_revision` says.
+- **Lifetime.** `ttl_seconds` 0 means the value does not expire; otherwise it expires that many
+  seconds after the write, up to 30 days (`INVALID_ARGUMENT` beyond). `expires_at` (Unix seconds,
+  0 for none) is returned by the put and the get. An expired value is a key that does not exist and
+  frees its space.
+- **Quota.** Each layer of a namespace may hold `QUOTA_BYTES` (16 MiB) of logical data. A write
+  that would exceed it is `RESOURCE_EXHAUSTED` ("nothing was changed") and leaves every stored value,
+  including the one it would have replaced, as it was: durable writes check the quota and write in
+  one transaction. The put reply carries `usage_bytes` and `quota_bytes` of the layer written.
+- **Idempotency and commit.** Writes and deletes need an idempotency key like the other mutations. A
+  retry with the same request returns the original outcome without writing again; the same key with
+  another request is `FAILED_PRECONDITION`; a revision conflict or a failure is not remembered. The
+  caller's grants and the grant revision are checked again immediately before the first change, so a
+  revocation that wins the race stops the write.
+- **No physical paths.** Replies and errors never contain a path or the name of a file. Durable data
+  is in a private store the host keeps for the plugin and the account, below its own data folder;
+  only the user, through the host's own administration, can see where. A plugin cannot ask for it,
+  and the Files service excludes every host persistence folder.
+- **Non-secret versus Secret.** Storage is for preferences, caches and bookkeeping. It is not
+  encrypted and the host does not treat it as sensitive. Credentials, tokens and anything that must
+  not be readable by other software on the machine go through the provider `Secret` service, which
+  maps a logical key to the OS credential store (see "Provider secrets" in the development guide).
+  Secrets are never kept here.
+
+### Storage limits
+
+The constants are in `crates/platform/src/plugin_storage.rs`. The value size and the 16 MiB quota
+come from the design; the rest were chosen by reasoning, not measured, and are open to change.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Key | 1 to 256 bytes, no control characters | Keys are names, not data; the bound keeps the index small. |
+| Value | at most 1 MiB | From the design. A value is read and written whole, and plugin messages are capped at 8 MiB. |
+| Quota per layer | 16 MiB of logical bytes | From the design ("16 MiB private-data quota"). The 64 MiB managed total of the design also covers data of other services, which are not implemented yet. |
+| Per-entry overhead | 64 bytes charged on top of key and value | An empty value must not be free, or a plugin could keep millions of keys without being charged. With it, 16 MiB holds at most about 260,000 entries. |
+| Lifetime | `ttl_seconds` 0 (none) to 30 days | A plugin cannot ask for a lifetime it cannot also be cleaned up after; long-lived data uses no expiry. |
+| Layers | quota applies to each layer alone | The session-only layer is host memory, so 16 MiB per plugin is the most it can hold; the durable layer has its own 16 MiB. |
+
+The quota counts logical bytes, not the size of the store file, which is larger (SQLite pages and
+indexes). There is no per-plugin rate limit on writes; they are serialized per namespace, which
+bounds contention but not frequency. The user-facing cleanup, usage screens, uninstall choices and
+the `Persistence*` methods are separate tasks (16.x, 17.2).
+
 ## Account-bound plugin profiles
 
 Third-party plugins run inside the profile of the signed-in GameNode account.

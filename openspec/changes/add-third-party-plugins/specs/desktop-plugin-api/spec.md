@@ -162,6 +162,22 @@ The API SHALL provide namespaced storage get/put/delete, user-approved filesyste
 - **WHEN** a plugin writes beyond its documented namespace quota
 - **THEN** the host reports resource exhaustion and preserves previously stored values
 
+#### Scenario: Durable storage write without storage.persist
+- **WHEN** a plugin without storage.persist puts a value with persistent durability
+- **THEN** the host denies it naming storage.persist, stores the value neither in memory nor on disk, and still accepts explicit session-only writes
+
+#### Scenario: Storage isolated by plugin and profile
+- **WHEN** different plugins, different publishers of one plugin id or different account profiles use the same storage key
+- **THEN** each reads, writes, deletes and is charged only in its own namespace, and no response exposes another namespace's keys, usage, revisions or a physical path
+
+#### Scenario: Session-only storage ends with the session
+- **WHEN** a plugin's last open session ends or the account profile changes
+- **THEN** its session-only values are gone while its persistent values remain available to the same plugin in the same profile
+
+#### Scenario: Obsolete storage revision
+- **WHEN** a plugin puts or deletes a key with a revision other than the key's current one
+- **THEN** the host reports the revision conflict with the current revision and changes nothing
+
 ### Requirement: Host-owned execution and installation services
 The API SHALL expose game launch/install requests, backups list/create/restore, tools list/apply/remove and PC ports list/detail/install. These services SHALL reuse host-approved targets and domain workflows, require user intent for execution, preserve confirmations for filesystem changes, and explicitly report unsupported platforms.
 

@@ -232,3 +232,34 @@ Detalhes de engenharia dentro do escopo da 5.5, para revisão; nenhuma mudança 
 | As receitas são código compilado (`crates/plugin-sdk/examples/library_recipes.rs`) e executado nesses mesmos testes, não trechos soltos na documentação. | 5.5. |
 | O SDK é só Rust; clientes Go usam o cliente gerado com as mesmas regras (o exemplo Go não tem SDK). | 5.5. |
 
+## I. Decisões adotadas na implementação da tarefa 6.1 (2026-11-14)
+
+Confirmadas pelo usuário durante a tarefa 6.1 (onde guardar o durável, vida do dado de sessão e TTL) e implementadas para `Storage.Get`, `Storage.Put` e `Storage.Delete`. Os limites numéricos que não vêm do design são detalhe de engenharia, para revisão.
+
+| ID | Decisão | Alcance |
+| --- | --- | --- |
+| Backend durável | Um arquivo SQLite por plugin e perfil de conta em `plugin-data/<fingerprint>/<plugin>/<perfil>/storage.sqlite3`, como no layout do design. Quota e revisão são checadas na mesma transação, então escrita acima da quota não muda nada, e apagar o namespace é apagar a pasta. Nomes de pasta são a identidade com caracteres inseguros em `%XX`, ou um resumo se ficarem longos demais. Leitura nunca cria arquivo. | 6.1. |
+| `SESSION_ONLY` | Memória do host, por namespace; descartado quando a última sessão aberta do plugin termina ou o perfil muda. Todas as sessões abertas do mesmo plugin compartilham o espaço, então uma janela de configuração enxerga o que o provider gravou. Só exige `storage.write`. | 6.1. |
+| Durabilidade explícita | `UNSPECIFIED` é `INVALID_ARGUMENT`. `PERSISTENT` sem `storage.persist` é `PERMISSION_DENIED` e não grava nada, nem em memória: nunca vira sucesso volátil. Ler e apagar valores já gravados não exigem `storage.persist`, então revogá-lo só impede novas escritas duráveis, sem esconder nem prender dados existentes. | 6.1; design §16. |
+| Uma camada por chave | A chave vive em uma camada por vez; gravar com a outra durabilidade move o valor e remove a cópia anterior. Os dois espaços compartilham o conjunto de chaves e `StorageGetReply.durability` informa onde está. | 6.1. |
+| Revisões | Contador único por namespace (mantido em memória e gravado no arquivo durável como maior revisão usada): chave apagada e recriada nunca repete revisão, nem ao mover entre camadas ou reiniciar. `expected_revision` deve ser a revisão atual (0 para chave inexistente). Apagar chave ausente é `ALREADY_APPLIED`, revisão 0, qualquer que seja o `expected_revision`. | 6.1. |
+| TTL e resposta | `ttl_seconds` 0 não expira; máximo de 30 dias. Campos aditivos: `durability` e `expires_at` (segundos Unix, 0 sem expiração) em `StorageGetReply` e `StorageMutationReply`. Valor vencido é chave inexistente e libera espaço. | 6.1; design 16 ("durability, expiry and owner"). |
+| Idempotência e commit | Mesmas regras de 5.2 a 5.4 (chave obrigatória, nova checagem de permissão e revisão de grants antes da primeira mudança). A fila de serialização é por namespace, não a global das mutações de biblioteca, para um disco lento de um plugin não travar os outros. | 6.1. |
+| Secret x Storage | Storage não é cifrado nem sensível; credenciais seguem pelo serviço `Secret`. Documentado. | 6.1. |
+
+### Limites de storage e como foram decididos
+
+Valor máximo e quota vêm do design (1 MiB, 16 MiB). Os demais foram escolhidos pelo assistente, **sem medição nem pergunta ao usuário** (o TTL máximo de 30 dias foi a opção recomendada confirmada). Detalhes em `docs/plugin-api-permissions.md#storage-limits`.
+
+| Limite | Valor | Origem |
+| --- | --- | --- |
+| Valor | até 1 MiB | Design. |
+| Quota | 16 MiB de bytes lógicos por camada e namespace | Design. O total gerenciado de 64 MiB do design cobre também dados de outros serviços, ainda não implementados. |
+| Chave | 1 a 256 bytes, sem caracteres de controle | Assistente: chaves são nomes; o limite mantém o índice pequeno. |
+| Sobrecarga por entrada | 64 bytes cobrados além de chave e valor | Assistente: valor vazio não pode ser grátis, ou um plugin guardaria milhões de chaves sem pagar; com isso cabem no máximo ~260 mil entradas. |
+| TTL | até 30 dias | Opção confirmada pelo usuário. |
+| Camadas | quota separada por camada | Assistente: a camada de sessão é memória do host, então 16 MiB por plugin é o máximo que ela ocupa. |
+
+A quota conta bytes lógicos, não o tamanho do arquivo (páginas e índices do SQLite pesam mais). Não há limite de taxa por plugin para escritas. Faltam, em tarefas próprias, a interface de uso e limpeza, a escolha de manter ou apagar na desinstalação (16.4, 17.2) e os métodos `Persistence*` (16.2). A 16.1 (stores duráveis por dono com respostas explícitas de durabilidade e expiração) ficou parcialmente coberta por esta tarefa: restam o consentimento de retenção do receptor e o armazenamento de dados compartilhados.
+
+Efeito no protocolo: campos aditivos `durability` e `expires_at` nas respostas do Storage; contrato `endpoint_field_policy.json` atualizado. Sem migração do banco principal.

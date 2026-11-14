@@ -155,9 +155,13 @@ Every third-party permission SHALL start disabled at installation. File read/wri
 - **WHEN** writing one selected resource would affect several games
 - **THEN** the full shared scope must be reviewed and authorized before the host permits the write
 
-#### Scenario: Plugin-declared save location
-- **WHEN** a plugin declares the default folder where a game's saves live
-- **THEN** Core shows it as declared by the plugin and not verified, the declaration alone grants nothing, and the user confirms that folder or chooses another before any approval
+#### Scenario: Plugin-declared save locations
+- **WHEN** a plugin declares an ordered list of default folders where a game's saves live
+- **THEN** Core shows them in that order as declared by the plugin and not verified, pre-selects the first that exists, and the declarations alone grant nothing: the user confirms one or chooses another folder before any approval
+
+#### Scenario: Verify contents before asking to write
+- **WHEN** a plugin approved read-only for a folder inspects its files and then asks for write
+- **THEN** the read-only approval gives no write, and Core asks again, showing what is already approved and what is added, before any write is allowed
 
 #### Scenario: Approval requires the Core dialog
 - **WHEN** a plugin asks for access to a folder

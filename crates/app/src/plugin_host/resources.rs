@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status};
 
 mod artwork;
 mod files;
+mod games;
 mod jobs;
 mod matching;
 mod mutations;
@@ -27,6 +28,7 @@ mod notifications;
 mod storage;
 
 use super::files::FileAccess;
+use super::intents::Intents;
 use super::jobs::Jobs;
 use super::library::{
     Change, CursorBinding, CursorError, DEFAULT_PAGE_SIZE, LibraryFeed, MAX_PAGE_SIZE,
@@ -86,10 +88,20 @@ pub const SERVED: &[Served] = &[
         false,
         OWN_NOTICES,
     ),
+    Served::new("GamesRequestLaunch", cap::GAME_LAUNCH, false, OWN_OR_TARGET),
+    Served::new(
+        "GamesRequestInstall",
+        cap::GAMES_INSTALL,
+        false,
+        OWN_OR_TARGET,
+    ),
     Served::new("JobsGet", UNDERLYING, false, OWN_JOBS),
     Served::new("JobsWatch", UNDERLYING, false, OWN_JOBS),
     Served::new("JobsCancel", UNDERLYING, false, OWN_JOBS),
 ];
+
+const OWN_OR_TARGET: &str =
+    "own provider entries; an extension session's selected game; needs the user's intent";
 
 /// Jobs have no permission of their own: each needs the one of the operation that made it.
 const UNDERLYING: &str = "";
@@ -148,6 +160,8 @@ pub struct ResourceApi {
     notifications: Arc<Notifications>,
     /// The long operations plugins started.
     jobs: Jobs,
+    /// What the user wanted to start.
+    intents: Arc<Intents>,
 }
 
 impl ResourceApi {
@@ -159,10 +173,12 @@ impl ResourceApi {
         network: Arc<NetworkAccess>,
         notifications: Arc<Notifications>,
         jobs: Jobs,
+        intents: Arc<Intents>,
     ) -> Self {
         Self {
             providers,
             jobs,
+            intents,
             library,
             storage,
             files,
@@ -609,6 +625,20 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.publish_notification(request).await
     }
 
+    async fn games_request_launch(
+        &self,
+        request: Request<GameLaunchRequest>,
+    ) -> Result<Response<GameLaunchReply>, Status> {
+        self.request_launch(request).await
+    }
+
+    async fn games_request_install(
+        &self,
+        request: Request<GameInstallRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.request_install(request).await
+    }
+
     async fn jobs_get(
         &self,
         request: Request<JobGetRequest>,
@@ -631,11 +661,9 @@ impl resource_host_server::ResourceHost for ResourceApi {
     }
 
     not_served! {
-        games_request_launch(GameLaunchRequest) -> GameLaunchReply;
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
-        games_request_install(GameInstallRequest) -> JobReply;
         backups_list(BackupsListRequest) -> BackupsListReply;
         backups_request_create(BackupCreateRequest) -> JobReply;
         backups_request_restore(BackupRestoreRequest) -> JobReply;

@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, transport::Server};
 pub mod compatibility;
 pub mod files;
 pub mod grants;
+pub mod intents;
 pub mod jobs;
 pub mod library;
 pub mod login;
@@ -490,6 +491,8 @@ pub struct PluginApi {
     pub notifications: Arc<notifications::Notifications>,
     /// The long operations plugins started; each belongs to the plugin that started it.
     pub jobs: jobs::Jobs,
+    /// What the user wanted to start, and the dialog that asks for it.
+    pub intents: Arc<intents::Intents>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -720,6 +723,7 @@ impl PluginApiServer {
                     api.network.clone(),
                     api.notifications.clone(),
                     api.jobs.clone(),
+                    api.intents.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -804,6 +808,7 @@ impl PluginApiServer {
                     api.network.clone(),
                     api.notifications.clone(),
                     api.jobs.clone(),
+                    api.intents.clone(),
                 ))
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

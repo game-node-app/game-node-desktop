@@ -199,6 +199,17 @@ struct CatalogSync {
 }
 
 /// Cheap to clone; all clones share one state.
+/// Why [`Engine::open_entry_then`] did not hand the entry's link to the operating system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OpenError {
+    /// The same opening is under way, or the game is already running.
+    Busy,
+    /// The entry or its provider is not in the library any more.
+    NotFound,
+    /// The provider's action could not run.
+    Launch(gamenode_core::library::LaunchError),
+}
+
 #[derive(Clone)]
 pub struct Engine {
     shared: Arc<Shared>,
@@ -885,22 +896,39 @@ impl Engine {
     /// Opens the provider's Play or Install link for an entry. The result appears in the
     /// snapshot's `launch`: "opening" until the operating system accepted the link.
     pub fn open_entry(&self, entry_key: String, kind: LaunchKind) {
+        self.open_entry_then(entry_key, kind, |_| {});
+    }
+
+    /// [`open_entry`](Self::open_entry) that also reports how it ended to `done`, which runs
+    /// exactly once: on the worker when the link was handled, or at once when nothing was
+    /// started (the same opening is already under way, the game is already running, or the
+    /// entry is gone).
+    pub(crate) fn open_entry_then(
+        &self,
+        entry_key: String,
+        kind: LaunchKind,
+        done: impl FnOnce(Result<(), OpenError>) + Send + 'static,
+    ) {
         let mut state = self.lock();
         if state.launch.as_ref().is_some_and(|launch| {
             launch.entry_key == entry_key
                 && launch.kind == kind
                 && matches!(launch.state, LaunchState::Opening)
         }) {
-            return;
+            drop(state);
+            return done(Err(OpenError::Busy));
         }
         if kind == LaunchKind::Play && state.playtime.tracker.running().contains(&entry_key) {
-            return;
+            drop(state);
+            return done(Err(OpenError::Busy));
         }
         let Some(entry) = state.library.entry(&entry_key).cloned() else {
-            return;
+            drop(state);
+            return done(Err(OpenError::NotFound));
         };
         let Some(provider) = state.library.provider(&entry.provider).cloned() else {
-            return;
+            drop(state);
+            return done(Err(OpenError::NotFound));
         };
         state.launch_seq += 1;
         let seq = state.launch_seq;
@@ -946,6 +974,7 @@ impl Engine {
                 open_action(&*opener, &provider, &entry.record(), kind)
             };
             let mut state = engine.lock();
+            let outcome = result.clone().map_err(OpenError::Launch);
             if state.launch_seq == seq {
                 state.launch = result.err().map(|error| LaunchStatus {
                     state: LaunchState::Failed(error),
@@ -953,6 +982,8 @@ impl Engine {
                 });
                 engine.publish(&mut state);
             }
+            drop(state);
+            done(outcome);
         });
     }
 
@@ -1851,6 +1882,105 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
             });
         }
         Ok(written)
+    }
+
+    async fn launch_fingerprint(&self, entry_key: String) -> Result<u64, tonic::Status> {
+        use sha2::{Digest, Sha256};
+        let engine = self.engine()?;
+        let (entry, provider) = {
+            let state = engine.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .cloned()
+                .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+            let provider = state
+                .library
+                .provider(&entry.provider)
+                .cloned()
+                .ok_or_else(|| tonic::Status::not_found("library entry not found"))?;
+            (entry, provider)
+        };
+        let worker = engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut hash = Sha256::new();
+            let mut part = |bytes: &[u8]| {
+                hash.update((bytes.len() as u64).to_be_bytes());
+                hash.update(bytes);
+            };
+            if provider.is_manual_executable() {
+                let store = worker.shared.ports.local_games.as_ref().ok_or_else(|| {
+                    tonic::Status::unimplemented("starting games is not available")
+                })?;
+                let registrations = store
+                    .registrations()
+                    .map_err(|_| tonic::Status::unavailable("the library is not available"))?;
+                let registration = registrations
+                    .iter()
+                    .find(|r| r.key() == entry.key && !r.removed)
+                    .ok_or_else(|| {
+                        tonic::Status::failed_precondition("the game has no approved executable")
+                    })?;
+                part(b"manual");
+                part(registration.id.as_bytes());
+                part(registration.executable.as_bytes());
+                part(registration.working_directory.as_bytes());
+                for argument in &registration.arguments {
+                    part(argument.as_bytes());
+                }
+                part(&registration.revision.to_be_bytes());
+            } else {
+                match provider.launch_uri(&entry.record()) {
+                    Ok(uri) => {
+                        part(b"uri");
+                        part(uri.as_str().as_bytes());
+                    }
+                    Err(_) => part(b"none"),
+                }
+            }
+            let digest = hash.finalize();
+            Ok(u64::from_be_bytes(
+                digest[..8].try_into().expect("a digest has eight bytes"),
+            ))
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("the library is not available"))?
+    }
+
+    async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), tonic::Status> {
+        use gamenode_core::library::LaunchError;
+        let engine = self.engine()?;
+        let (done, opened) = tokio::sync::oneshot::channel();
+        let kind = if install {
+            LaunchKind::Install
+        } else {
+            LaunchKind::Play
+        };
+        engine.open_entry_then(entry_key, kind, move |result| {
+            let _ = done.send(result);
+        });
+        match opened
+            .await
+            .map_err(|_| tonic::Status::unavailable("the library is not available"))?
+        {
+            Ok(()) => Ok(()),
+            Err(OpenError::Busy) => Err(tonic::Status::failed_precondition(
+                "the game is already running or being opened",
+            )),
+            Err(OpenError::NotFound) => Err(tonic::Status::not_found("library entry not found")),
+            Err(OpenError::Launch(LaunchError::Unsupported)) => Err(tonic::Status::unimplemented(
+                "this provider does not support that action",
+            )),
+            Err(OpenError::Launch(LaunchError::Incomplete)) => Err(
+                tonic::Status::failed_precondition("the game is missing data the provider needs"),
+            ),
+            Err(OpenError::Launch(LaunchError::NoHandler)) => Err(
+                tonic::Status::failed_precondition("the store application is not available"),
+            ),
+            Err(OpenError::Launch(LaunchError::Failed)) => {
+                Err(tonic::Status::unavailable("the link could not be opened"))
+            }
+        }
     }
 
     async fn set_display_name(

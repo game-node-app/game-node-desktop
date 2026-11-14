@@ -24,6 +24,7 @@ use tonic::transport::Channel;
 mod artwork_handles;
 mod declared_locations;
 mod files;
+mod games;
 mod jobs;
 mod network;
 mod notifications;
@@ -62,6 +63,8 @@ struct Fixture {
     notifications: Arc<Notifications>,
     /// The jobs plugins started; tests start some from the host side.
     jobs: Jobs,
+    /// The intents and the dialog behind game launches and installs.
+    intents: Arc<Intents>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -134,6 +137,7 @@ impl Fixture {
             ..Default::default()
         };
         let jobs = root.jobs.clone();
+        let intents = root.intents.clone();
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -201,6 +205,7 @@ impl Fixture {
             fetcher,
             notifications,
             jobs,
+            intents,
             notice_clock,
             notices,
             clock,
@@ -587,6 +592,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.network.clone(),
         fixture.notifications.clone(),
         fixture.jobs.clone(),
+        fixture.intents.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {
@@ -655,6 +661,8 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("FilesDelete", 0),
             ("NetworkFetch", 0),
             ("NotificationsPublish", 0),
+            ("GamesRequestLaunch", 0),
+            ("GamesRequestInstall", 0),
             ("JobsGet", 0),
             ("JobsWatch", 0),
             ("JobsCancel", 0),
@@ -698,6 +706,12 @@ struct FakeHost {
     covers: Mutex<HashMap<String, (Option<Prepared>, u64)>>,
     /// The covers of the games entries are matched to, by entry key.
     game_covers: Mutex<HashMap<String, Vec<u8>>>,
+    /// Entries the library was asked to open: the entry key and whether it was an install.
+    opened: Mutex<Vec<(String, bool)>>,
+    /// The code the next opening fails with, if any.
+    open_fails: Mutex<Option<tonic::Code>>,
+    /// What a launch would start now; tests change it to change the target.
+    launch_target: std::sync::atomic::AtomicU64,
 }
 
 impl FakeHost {
@@ -715,6 +729,18 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl LibraryHost for FakeHost {
+    async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), Status> {
+        if let Some(code) = *self.open_fails.lock().unwrap() {
+            return Err(Status::new(code, "the provider could not do that"));
+        }
+        self.opened.lock().unwrap().push((entry_key, install));
+        Ok(())
+    }
+
+    async fn launch_fingerprint(&self, _entry_key: String) -> Result<u64, Status> {
+        Ok(self.launch_target.load(Ordering::SeqCst))
+    }
+
     fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {
         self.games
             .lock()

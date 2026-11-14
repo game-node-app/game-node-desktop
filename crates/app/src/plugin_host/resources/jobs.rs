@@ -139,8 +139,7 @@ impl ResourceApi {
     ///
     /// The work's fence is the same check every mutation makes at its commit: the permission is
     /// still held and the grants have not changed since the call began.
-    // Called by the operations that return jobs (7.2 and later); tests exercise it meanwhile.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_job(
         &self,
         caller: &ResourceCaller,
@@ -148,6 +147,7 @@ impl ResourceApi {
         permission: &'static str,
         key: &str,
         hash: [u8; 32],
+        awaiting: Option<&'static str>,
         work: Work,
     ) -> Result<(JobReply, bool), Status> {
         let owner = JobOwner::of(caller)?;
@@ -171,6 +171,7 @@ impl ResourceApi {
                 hash,
                 fence,
                 profile: self.providers.profiles().subscribe(),
+                awaiting,
             },
             work,
         )

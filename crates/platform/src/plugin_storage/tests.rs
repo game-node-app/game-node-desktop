@@ -346,3 +346,92 @@ fn a_version_2_store_gains_the_origin_column_and_old_approvals_count_as_the_user
         ORIGIN_DECLARED
     );
 }
+
+fn remembered(id: &str, installation: &str, operation: &str) -> IntentApproval {
+    IntentApproval {
+        id: id.into(),
+        game_id: "42".into(),
+        installation_id: installation.into(),
+        operation: operation.into(),
+        target_revision: 7,
+        game_name: "Game".into(),
+        approved_at: 100,
+    }
+}
+
+#[test]
+fn remembered_confirmations_are_kept_per_installation_and_operation_and_can_be_revoked() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    let mut first = store(&dir);
+    first
+        .save_intent_approval(&remembered("a", "inst-1", "launch"))
+        .unwrap();
+    first
+        .save_intent_approval(&remembered("b", "inst-1", "install"))
+        .unwrap();
+    // The same installation and operation again replaces the earlier approval.
+    let mut newer = remembered("c", "inst-1", "launch");
+    newer.target_revision = 9;
+    first.save_intent_approval(&newer).unwrap();
+    drop(first);
+
+    let mut second = store(&dir);
+    assert_eq!(
+        second
+            .intent_approval("inst-1", "launch")
+            .unwrap()
+            .map(|a| (a.id, a.target_revision)),
+        Some(("c".into(), 9))
+    );
+    assert!(
+        second
+            .intent_approval("inst-2", "launch")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(second.intent_approvals().unwrap().len(), 2);
+    assert!(!second.revoke_intent_approval("nothing").unwrap());
+    assert!(second.revoke_intent_approval("c").unwrap());
+    assert!(
+        second
+            .intent_approval("inst-1", "launch")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        second
+            .intent_approval("inst-1", "install")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn only_launch_and_install_can_be_remembered() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp.path().join("ns"));
+    assert!(
+        store
+            .save_intent_approval(&remembered("a", "inst", "restore"))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_version_3_store_gains_the_remembered_confirmations_table() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    {
+        let first = store(&dir);
+        drop(first);
+        let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+        conn.execute_batch("DROP TABLE intent_approvals; PRAGMA user_version = 3;")
+            .unwrap();
+    }
+    let mut upgraded = store(&dir);
+    upgraded
+        .save_intent_approval(&remembered("a", "inst", "launch"))
+        .unwrap();
+    assert_eq!(upgraded.intent_approvals().unwrap().len(), 1);
+}

@@ -16,7 +16,7 @@ const WRITE: &str = cap::STORAGE_WRITE;
 const GRANTS: &[&str] = &[cap::STORAGE_WRITE, cap::STORAGE_READ];
 
 impl Fixture {
-    fn service(&self) -> ResourceApi {
+    pub(super) fn service(&self) -> ResourceApi {
         ResourceApi::new(
             self.api.clone(),
             self.feed.clone(),
@@ -25,6 +25,7 @@ impl Fixture {
             self.network.clone(),
             self.notifications.clone(),
             self.jobs.clone(),
+            self.intents.clone(),
         )
     }
 
@@ -47,13 +48,14 @@ impl Fixture {
                 WRITE,
                 key,
                 [hash; 32],
+                None,
                 run,
             )
             .unwrap()
             .0
     }
 
-    async fn job(&self, id: &str) -> Result<JobReply, Status> {
+    pub(super) async fn job(&self, id: &str) -> Result<JobReply, Status> {
         self.client()
             .jobs_get(JobGetRequest {
                 context: Some(self.context()),
@@ -63,7 +65,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn cancel_job(&self, key: &str, id: &str) -> Result<JobReply, Status> {
+    pub(super) async fn cancel_job(&self, key: &str, id: &str) -> Result<JobReply, Status> {
         self.client()
             .jobs_cancel(JobCancelRequest {
                 mutation: Some(self.mutation(key, 0)),
@@ -350,6 +352,7 @@ async fn a_restarted_plugin_finds_its_jobs_but_not_the_authority_to_commit() {
             WRITE,
             "done",
             [1; 32],
+            None,
             quick(),
         )
         .unwrap();
@@ -423,6 +426,7 @@ async fn a_profile_switch_hides_the_old_jobs_and_stops_their_commit() {
             WRITE,
             "one",
             [1; 32],
+            None,
             quick(),
         )
         .unwrap();

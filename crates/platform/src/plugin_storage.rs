@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -174,6 +174,25 @@ impl DurableStore {
                 "BEGIN;
                  ALTER TABLE file_roots ADD COLUMN origin TEXT NOT NULL DEFAULT 'user';
                  PRAGMA user_version = 3;
+                 COMMIT;",
+            )?;
+        }
+        if version < 4 {
+            // Confirmations the user asked to remember (launch or install of one game by this
+            // plugin). The row is the approval: revoking deletes it.
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS intent_approvals (
+                     id TEXT NOT NULL UNIQUE,
+                     game_id TEXT NOT NULL,
+                     installation_id TEXT NOT NULL,
+                     operation TEXT NOT NULL CHECK (operation IN ('launch', 'install')),
+                     target_revision INTEGER NOT NULL CHECK (target_revision >= 0),
+                     game_name TEXT NOT NULL,
+                     approved_at INTEGER NOT NULL,
+                     PRIMARY KEY (installation_id, operation)
+                 ) STRICT;
+                 PRAGMA user_version = 4;
                  COMMIT;",
             )?;
         }
@@ -416,6 +435,102 @@ impl DurableStore {
             "UPDATE file_roots SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, now],
         )?;
+        Ok(changed > 0)
+    }
+}
+
+/// A confirmation the user asked the host to remember: this plugin may launch (or install) this
+/// game without asking again, while the game's detected target is the one approved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentApproval {
+    /// Opaque random id the settings list uses to revoke it.
+    pub id: String,
+    pub game_id: String,
+    pub installation_id: String,
+    /// `launch` or `install`.
+    pub operation: String,
+    /// The detected-target revision approved (0 for an install, which has none).
+    pub target_revision: u64,
+    /// The game's name when approved, for the list; plain text.
+    pub game_name: String,
+    pub approved_at: i64,
+}
+
+const INTENT_COLUMNS: &str =
+    "id, game_id, installation_id, operation, target_revision, game_name, approved_at";
+
+fn intent_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<IntentApproval> {
+    Ok(IntentApproval {
+        id: row.get(0)?,
+        game_id: row.get(1)?,
+        installation_id: row.get(2)?,
+        operation: row.get(3)?,
+        target_revision: row.get::<_, i64>(4)? as u64,
+        game_name: row.get(5)?,
+        approved_at: row.get(6)?,
+    })
+}
+
+impl DurableStore {
+    /// Remembers `approval`, replacing the earlier one for the same installation and operation.
+    pub fn save_intent_approval(
+        &mut self,
+        approval: &IntentApproval,
+    ) -> Result<(), PluginStorageError> {
+        self.conn.execute(
+            "INSERT INTO intent_approvals (id, game_id, installation_id, operation,
+                 target_revision, game_name, approved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(installation_id, operation) DO UPDATE SET
+                 id = excluded.id, game_id = excluded.game_id,
+                 target_revision = excluded.target_revision, game_name = excluded.game_name,
+                 approved_at = excluded.approved_at",
+            params![
+                approval.id,
+                approval.game_id,
+                approval.installation_id,
+                approval.operation,
+                approval.target_revision as i64,
+                approval.game_name,
+                approval.approved_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The remembered approval of `installation_id` for `operation`.
+    pub fn intent_approval(
+        &self,
+        installation_id: &str,
+        operation: &str,
+    ) -> Result<Option<IntentApproval>, PluginStorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {INTENT_COLUMNS} FROM intent_approvals
+                     WHERE installation_id = ?1 AND operation = ?2"
+                ),
+                params![installation_id, operation],
+                intent_from,
+            )
+            .optional()?)
+    }
+
+    /// Every remembered approval, in a stable order.
+    pub fn intent_approvals(&self) -> Result<Vec<IntentApproval>, PluginStorageError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {INTENT_COLUMNS} FROM intent_approvals ORDER BY installation_id, operation"
+        ))?;
+        let rows = statement.query_map([], intent_from)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Forgets an approval; the next request asks the user again. Returns whether it existed.
+    pub fn revoke_intent_approval(&mut self, id: &str) -> Result<bool, PluginStorageError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM intent_approvals WHERE id = ?1", [id])?;
         Ok(changed > 0)
     }
 }

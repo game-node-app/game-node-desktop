@@ -49,6 +49,7 @@ impl Env {
             hash: [hash; 32],
             fence: Arc::new(|| Ok(())),
             profile: self.profiles.subscribe(),
+            awaiting: None,
         }
     }
 
@@ -583,4 +584,107 @@ async fn stopped_work_reports_why_without_internal_detail() {
         Outcome::stopped(&Status::failed_precondition("secret detail")),
         Outcome::Failed { code, .. } if code == "failed_precondition"
     ));
+}
+
+#[tokio::test]
+async fn a_job_that_waits_for_the_user_stays_queued_until_its_work_starts_it() {
+    let env = Env::new();
+    let owner = env.owner(1);
+    let (release, wait) = tokio::sync::oneshot::channel::<()>();
+    let mut submission = env.submission("k", 1);
+    submission.awaiting = Some("awaiting confirmation");
+    let (reply, _) = env
+        .jobs
+        .submit(
+            &owner,
+            submission,
+            work(move |ctx| async move {
+                let _ = wait.await;
+                ctx.start().unwrap();
+                ctx.progress(40);
+                Outcome::succeeded("done", "")
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        (reply.state(), reply.message.as_str()),
+        (JobState::Queued, "awaiting confirmation")
+    );
+    // It stays queued, with its message, for as long as the work waits.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let waiting = env.jobs.get(&owner, &reply.job_id).unwrap();
+    assert_eq!(
+        (waiting.state(), waiting.message.as_str()),
+        (JobState::Queued, "awaiting confirmation")
+    );
+
+    release.send(()).unwrap();
+    let done = env.over(&owner, &reply.job_id).await;
+    assert_eq!(done.state(), JobState::Succeeded);
+    let (events, _, _) = env.jobs.events_after(&owner, &reply.job_id, 0).unwrap();
+    let seen: Vec<_> = events
+        .iter()
+        .map(|e| (e.state(), e.message.as_str(), e.progress_percent))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (JobState::Queued, "awaiting confirmation", 0),
+            (JobState::Running, "", 0),
+            (JobState::Running, "", 40),
+            (JobState::Succeeded, "", 100),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_job_that_waits_for_the_user_withdraws_it() {
+    let env = Env::new();
+    let owner = env.owner(1);
+    let mut submission = env.submission("k", 1);
+    submission.awaiting = Some("awaiting confirmation");
+    let started = Arc::new(AtomicUsize::new(0));
+    let (reply, _) = env
+        .jobs
+        .submit(
+            &owner,
+            submission,
+            work({
+                let started = started.clone();
+                move |mut ctx| async move {
+                    ctx.cancelled().await;
+                    // Cancelled while waiting: it may not start, whatever the user decides next.
+                    if ctx.start().is_ok() {
+                        started.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Outcome::cancelled("withdrawn")
+                }
+            }),
+        )
+        .unwrap();
+    let cancelled = env.jobs.cancel(&owner, &reply.job_id).await.unwrap();
+    assert_eq!(cancelled.state(), JobState::Cancelled);
+    assert_eq!(started.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_retry_can_be_answered_before_anything_is_spent_on_it() {
+    let env = Env::new();
+    let owner = env.owner(1);
+    assert_eq!(env.jobs.replay(&owner, "k", [1; 32]).unwrap(), None);
+    let id = env.start(&owner, "k", quick()).job_id;
+    let replayed = env.jobs.replay(&owner, "k", [1; 32]).unwrap().unwrap();
+    assert_eq!(replayed.job_id, id);
+    assert_eq!(
+        env.jobs.replay(&owner, "k", [2; 32]).unwrap_err().code(),
+        tonic::Code::FailedPrecondition
+    );
+    // Another owner's key space is its own.
+    assert_eq!(env.jobs.replay(&env.owner(2), "k", [1; 32]).unwrap(), None);
+    env.over(&owner, &id).await;
+    env.advance(FINISHED_RETENTION + Duration::from_secs(1));
+    assert_eq!(
+        env.jobs.replay(&owner, "k", [1; 32]).unwrap_err().code(),
+        tonic::Code::FailedPrecondition
+    );
 }

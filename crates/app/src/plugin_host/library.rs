@@ -637,6 +637,28 @@ pub trait LibraryHost: Send + Sync {
         guard: CommitGuard,
     ) -> Result<ArtworkWrite, Status>;
 
+    /// Hands the entry's Play (`install` false) or Install link to the operating system through
+    /// the library's own path, so the user's own Play button and a plugin's request behave the
+    /// same: the same launch status, the same refusals, and playtime detection as before. The
+    /// call returns once the link was handled. `UNIMPLEMENTED` when the provider has no such
+    /// action; `FAILED_PRECONDITION` when the game is already running or being opened, or when
+    /// the entry lacks data or the store application is missing; `UNAVAILABLE` when the link
+    /// could not be opened.
+    async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), Status> {
+        let _ = (entry_key, install);
+        Err(Status::unimplemented("starting games is not available"))
+    }
+
+    /// A stable number for what a launch of `entry_key` would start now: it changes when the
+    /// detected target changes (another launch URI, another approved executable, its arguments or
+    /// working directory) and not otherwise. A remembered confirmation and a pre-issued intent
+    /// are bound to it, so a changed target asks the user again. `NOT_FOUND` for an unknown
+    /// entry; `FAILED_PRECONDITION` when the entry has no launchable target.
+    async fn launch_fingerprint(&self, entry_key: String) -> Result<u64, Status> {
+        let _ = entry_key;
+        Ok(0)
+    }
+
     /// Stores the display-name override of `entry_key` if `expected_revision` is current,
     /// returning only after the write reached the database and the library applied it.
     async fn set_display_name(

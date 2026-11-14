@@ -167,6 +167,9 @@ pub struct Submission {
     pub fence: Fence,
     /// The account profile; a change ends the job.
     pub profile: watch::Receiver<Option<ProfileContext>>,
+    /// `Some(message)` when the work first waits for something the user must do: the job stays
+    /// `QUEUED` with this message until the work calls [`JobContext::start`].
+    pub awaiting: Option<&'static str>,
 }
 
 /// What the work sees of its own job.
@@ -189,6 +192,17 @@ impl JobContext {
     /// Resolves when cancellation is requested (at once if it already was).
     pub async fn cancelled(&mut self) {
         let _ = self.cancel.wait_for(|cancelled| *cancelled).await;
+    }
+
+    /// Moves a job that was waiting for the user to `RUNNING`. Refused when the job was cancelled
+    /// while it waited (it ends as cancelled and the work must stop). A job that does not wait is
+    /// started by the host and needs no call.
+    pub fn start(&self) -> Result<(), Status> {
+        if self.jobs.begin(&self.id) {
+            Ok(())
+        } else {
+            Err(Status::cancelled("the job was cancelled before it started"))
+        }
     }
 
     /// Reports progress, 0 to 100. A value that does not go forward is ignored, which also keeps
@@ -376,6 +390,35 @@ impl Jobs {
         });
     }
 
+    /// The job an earlier request with the same idempotency key started, if any: `Ok(None)` when
+    /// the key is new, and the same refusals as [`submit`](Self::submit) for a key used for
+    /// another request or whose job is no longer kept. Lets a caller answer a retry before it
+    /// spends anything (an intent, a dialog) on the request.
+    pub fn replay(
+        &self,
+        owner: &JobOwner,
+        key: &str,
+        hash: [u8; 32],
+    ) -> Result<Option<JobReply>, Status> {
+        let mut state = self.lock();
+        self.prune(&mut state, owner.epoch);
+        let Some(seen) = state.keys.get(&(owner.clone(), key.to_owned())) else {
+            return Ok(None);
+        };
+        if seen.hash != hash {
+            return Err(Status::failed_precondition(
+                "the idempotency key was already used for a different request",
+            ));
+        }
+        match state.jobs.get(&seen.job_id) {
+            Some(job) => Ok(Some(job.reply(&seen.job_id))),
+            None => Err(Status::failed_precondition(
+                "the job of this idempotency key finished and is no longer kept; \
+                 use a new key to start it again",
+            )),
+        }
+    }
+
     /// Starts `work` as a job of `owner`, or answers with the job an earlier request with the
     /// same idempotency key already started (`true`: it is a replay and nothing was started).
     ///
@@ -392,6 +435,7 @@ impl Jobs {
             hash,
             fence,
             profile,
+            awaiting,
         } = submission;
         let id = new_id()?;
         let (cancel, cancel_rx) = watch::channel(false);
@@ -452,7 +496,9 @@ impl Jobs {
                 permission,
                 state: JobState::Queued,
                 code: String::new(),
-                message: String::new(),
+                message: awaiting
+                    .map(|text| clip(text, MAX_MESSAGE_BYTES))
+                    .unwrap_or_default(),
                 progress: 0,
                 events: Vec::new(),
                 cancel,
@@ -480,7 +526,10 @@ impl Jobs {
                 },
             )
         };
-        tokio::spawn(self.clone().run(id, owner.epoch, profile, work, context));
+        tokio::spawn(
+            self.clone()
+                .run(id, owner.epoch, profile, work, context, awaiting.is_some()),
+        );
         Ok((reply, false))
     }
 
@@ -491,12 +540,14 @@ impl Jobs {
         mut profile: watch::Receiver<Option<ProfileContext>>,
         work: Work,
         context: JobContext,
+        awaits_start: bool,
     ) {
         // A profile that already changed while the job was being set up ends it before it starts.
         if profile.borrow().as_ref().map(ProfileContext::epoch) != Some(epoch) {
             self.cancel_job(&id);
         }
-        if !self.begin(&id) {
+        // A job that waits for the user is started by its own work, once the user has decided.
+        if !awaits_start && !self.begin(&id) {
             return;
         }
         // The work runs in its own task so that a panic ends the job instead of leaving it
@@ -536,8 +587,11 @@ impl Jobs {
             self.finish(id, Outcome::cancelled("cancelled before it started"));
             return false;
         }
-        job.state = JobState::Running;
-        job.record();
+        if job.state == JobState::Queued {
+            job.state = JobState::Running;
+            job.message.clear();
+            job.record();
+        }
         true
     }
 

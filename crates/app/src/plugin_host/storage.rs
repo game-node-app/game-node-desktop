@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gamenode_platform::plugin_storage::{
-    self as durable, DurableStore, FileApproval, PluginStorageError, PutResult,
+    self as durable, DurableStore, FileApproval, IntentApproval, PluginStorageError, PutResult,
 };
 use tonic::Status;
 
@@ -155,6 +155,40 @@ impl PluginStorage {
             return Err(Status::failed_precondition("resource context is stale"));
         }
         Ok(slot.inner.clone())
+    }
+
+    /// Runs `work` on a blocking worker with exclusive use of a plugin's namespace on behalf of
+    /// the host itself (the settings list of remembered confirmations), not of a plugin session:
+    /// it does not count as a session using the namespace.
+    pub(crate) async fn run_for_host<T: Send + 'static>(
+        &self,
+        resolver: &ExternalNamespaceResolver,
+        profile_epoch: u64,
+        work: impl FnOnce(&mut Namespace<'_>) -> Result<T, Status> + Send + 'static,
+    ) -> Result<T, Status> {
+        let owner = resolver.storage_owner();
+        let identity = resolver.identity();
+        let dir = self.root.as_ref().map(|root| {
+            durable::namespace_dir(
+                root,
+                &identity.publisher_fingerprint,
+                &identity.plugin_id,
+                &identity.profile_id,
+            )
+        });
+        let inner = self.slot(*owner.key(), profile_epoch)?;
+        let mut guard = inner.lock_owned().await;
+        let clock = self.clock.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut namespace = Namespace {
+                inner: &mut guard,
+                dir: dir.as_deref(),
+                now: clock(),
+            };
+            work(&mut namespace)
+        })
+        .await
+        .map_err(|_| Status::unavailable("plugin storage is unavailable"))?
     }
 
     /// Runs `work` on a blocking worker with exclusive use of the caller's namespace.
@@ -458,6 +492,50 @@ impl Namespace<'_> {
             .durable(true)?
             .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
         store.save_approval(approval).map_err(unavailable)
+    }
+
+    /// The remembered confirmation of `installation_id` for `operation`, if any.
+    pub fn intent_approval(
+        &mut self,
+        installation_id: &str,
+        operation: &str,
+    ) -> Result<Option<IntentApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store
+                .intent_approval(installation_id, operation)
+                .map_err(unavailable),
+            None => Ok(None),
+        }
+    }
+
+    /// Remembers a confirmation, replacing the earlier one for the same installation and
+    /// operation. `guard` is checked right before the change.
+    pub fn save_intent_approval(
+        &mut self,
+        approval: &IntentApproval,
+        guard: &CommitGuard,
+    ) -> Result<(), Status> {
+        guard()?;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("plugin storage is unavailable"))?;
+        store.save_intent_approval(approval).map_err(unavailable)
+    }
+
+    /// Every remembered confirmation of this plugin.
+    pub fn intent_approvals(&mut self) -> Result<Vec<IntentApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.intent_approvals().map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Forgets a remembered confirmation. Returns whether it existed.
+    pub fn revoke_intent_approval(&mut self, id: &str) -> Result<bool, Status> {
+        match self.durable(false)? {
+            Some(store) => store.revoke_intent_approval(id).map_err(unavailable),
+            None => Ok(false),
+        }
     }
 
     /// Revokes an approval; its handles stop working at once. Returns whether it was active.

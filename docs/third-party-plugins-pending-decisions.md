@@ -448,3 +448,19 @@ As decisões de modelo estão na seção Q (confirmadas pelo usuário). O que se
 | A pré-emitida é só de memória, 256 no máximo, 60 s. A entrega ao plugin precisa da sessão de extensão (8.1); hoje existe `Intents::issue` e o resgate. A lista de aprovações lembradas aparece nos detalhes de um plugin que tenha `publisherFingerprint` (campo novo e opcional de `PluginInfo`); os plugins embarcados não têm, e os de terceiros entram no inventário na 10.2. | 10.10, 8.1, 10.2. |
 | Caixa de diálogo: Cancelar com o foco, "não perguntar de novo" desmarcada, fila quando há várias, Esc recusa, texto do plugin e do jogo sempre como texto puro (de novo limpo na UI). **Não foi visto em um navegador nem no app nativo.** | 10.10. |
 
+## S. Decisões adotadas na implementação da tarefa 13.1 (2026-11-14)
+
+As três primeiras linhas foram decididas com o usuário; o resto é detalhe de engenharia.
+
+| Decisão | Alcance |
+| --- | --- |
+| **Perfis ficam no armazenamento do plugin, por conta** (SQLite do mesmo namespace das aprovações de pasta, schema v5, tabela `save_profiles`). Sobrevivem a reiniciar o plugin e a sair e entrar na mesma conta; outra conta não os vê; o perfil nunca existe sem as aprovações em que se apoia. O texto do design diz "independente do login": isso vale para a nova correspondência no catálogo, não para trocar de conta. | 13.1. |
+| **A aprovação é a das pastas (6.2)**: cada pasta do perfil é uma pasta já aprovada para o mesmo plugin e a mesma entrada, e as regras só estreitam. Não há diálogo de preview. Revogar a aprovação deixa o perfil com a pasta sem handle. Se um dia perfis dispararem backup automático pelo Core sem o plugin pedir, essa ativação pede aprovação própria. | 13.1, 7.3. |
+| **Acesso a perfil de outro plugin é uma concessão explícita provisória**, por perfil e operação (ler, atualizar, apagar), numa porta que o app conecta (`SaveAccess::set_grants`). **Nada está conectado no app real.** Quem recebe vê o criador e nenhum handle, nunca muda as pastas do criador, e só vê o perfil se o id vier em `shared_records.selected_record_ids`. A 12.3 e a tela de permissões (10.4) devem redefinir isso. | 13.1, 12.3, 10.4. |
+| O serviço `Saves` não estava montado: agora é montado ao lado de `ResourceHost` (Linux e Windows), listado no `DescribeApi` como serviço `Saves`, com o cliente bruto `HostClient::saves_client()` no SDK. Os demais serviços de domínio seguem sem implementação. | 13.1. |
+| Só entradas do próprio plugin podem ter perfil (as aprovações da 6.2 são por entrada própria). Perfil para o jogo de outro provedor depende da sessão de extensão (8.1). | 13.1, 8.1. |
+| O nome é único por entrada, sem diferenciar caixa. A revisão vem do mesmo contador do namespace; remover também gasta uma revisão. Um conflito de revisão é um resultado (`REVISION_CONFLICT`), não um erro, e não é lembrado pela idempotência. | 13.1. |
+| Regras de nome: glob relativo (`*`, `?`, `**` como nome inteiro), `!` exclui; sem caminho absoluto, `..`, `.`, nome vazio, unidade, barra invertida, colchetes ou chaves. Limites, sem medir: 16 perfis por entrada e 256 por plugin; 8 pastas; 16 regras de até 256 bytes por pasta; nomes de até 120 bytes; metadados de até 8 KiB, 4 níveis e 64 itens (até a 12.6 trazer a validação estrutural). | 13.1, 12.6. |
+| Remover um perfil só apaga a configuração: nenhum arquivo das pastas e nenhum arquivo de backup é tocado. Backup e restauração a partir de perfil continuam sendo a 7.3. | 13.1, 7.3. |
+| Exportar e importar dados do GameNode (perfis mais dados dos plugins num pacote) foi **adiado** a pedido do usuário, para depois de os plugins estarem implementados. | futuro. |
+

@@ -416,6 +416,22 @@ The API SHALL support save-profile CRUD for approved games with scoped files/dir
 - **WHEN** two plugins declare different approved save directories and naming rules for the same ROM
 - **THEN** both profiles remain associated with the same game and their runtime contexts without assuming either directory is beside the ROM
 
+#### Scenario: Folders outside the approvals
+- **WHEN** a plugin creates a profile naming a folder that was not approved for that plugin and game entry, or whose approval was revoked
+- **THEN** the host refuses it and keeps nothing, and a profile whose approval is later revoked keeps its rules but gives the folder no handle
+
+#### Scenario: Distinct runtimes for one game
+- **WHEN** a plugin creates two profiles for one game entry with different runtime ids and save folders
+- **THEN** both exist independently with their own revisions, and the same name for one entry is refused
+
+#### Scenario: Removing a profile
+- **WHEN** a plugin removes a profile
+- **THEN** only the configuration is deleted; no file in the folders and no backup archive is touched, and a profile created afterwards never reuses a revision
+
+#### Scenario: Another plugin's profile
+- **WHEN** a plugin without an explicit grant for a profile another plugin created asks for it, and again with a grant for one operation
+- **THEN** it is not found without the grant, and with it only that operation succeeds, naming the creator, with no folder handles and with the creator's folders unchangeable
+
 ### Requirement: Runtime save descriptors preserve optional compatibility
 Save contracts SHALL support optional versioned descriptors for artifact kind, format/version, content binding, naming and runtime compatibility with attributed evidence. Unknown metadata SHALL remain unknown. Format declarations SHALL NOT authorize conversion or execution. Rich save browsing, platform parsers and converters SHALL remain future capabilities rather than required Core implementations in this delivery.
 

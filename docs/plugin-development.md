@@ -661,9 +661,9 @@ The existing provider grant set (`capability::ALL`) is:
 | `auth.webview` | Open, focus, cancel and close this provider's isolated sign-in attempt. The host enforces the packaged navigation policy. |
 | `auth.webview.cookies.read` | Read only the approved cookie names for the active login attempt. Required only when the trusted policy declares cookies. |
 | `auth.webview.page.read` | Read only the bounded page probe at the exact origin in the trusted login policy. Plugins cannot submit arbitrary scripts or origins. |
-| `secrets.read` | Read this provider's logical secret slot. |
-| `secrets.write` | Write this provider's logical secret slot. |
-| `secrets.delete` | Delete this provider's logical secret slot. |
+| `secrets.read` | Read one of this provider's host-owned logical secret slots. |
+| `secrets.write` | Write one of this provider's host-owned logical secret slots. |
+| `secrets.delete` | Delete one of this provider's host-owned logical secret slots. |
 | `playtime.counter` | Return provider-local total-playtime and last-played observations. Core retains tracking, attribution, deduplication and submission policy. |
 | `provider.actions.declare` | Declare approved provider actions that the host validates against trusted URI schemes and templates. It does not authorize arbitrary commands, shells or filesystem changes. |
 | `achievements.read` | Return bounded per-game achievement definitions and the connected account's unlock state for this provider. The host rejects unrequested game ids, oversized batches and strings, and results fenced by an account change. Available from API minor 4. |
@@ -673,10 +673,13 @@ free-form: a descriptor containing an unknown name is invalid and is not loaded.
 
 ## Provider secrets
 
-Every provider sees one logical secret slot named `session`; the host rejects any other key. A
-plugin cannot choose a physical keyring account, file name or another provider's slot.
+An official bundled provider sees its trusted logical `session` slot; the host rejects other keys.
+An authenticated third-party provider may use logical keys from 1 to 128 ASCII letters, digits,
+periods, underscores or hyphens. The host derives each physical slot from the authenticated plugin
+id, pinned publisher, active account profile, provider id and logical key. A plugin cannot choose a
+physical keyring account, file name, owner identity or another plugin's/profile's slot.
 
-The physical slot is derived from the provider id, unless the trusted descriptor declares an alias:
+Official physical slots are derived from the provider id, unless the trusted descriptor declares an alias:
 
 - **Default keyring account:** `provider.<provider_id>`.
 - **Default Linux private file:** `private/provider-<provider_id>.secret` below the application data
@@ -686,7 +689,10 @@ The physical slot is derived from the provider id, unless the trusted descriptor
   re-sign-in.
 
 The GameNode account session remains in its own `session` keyring account and
-`private/session-token` file. Descriptor aliases may not reuse those names. On Windows the host
+`private/session-token` file. Descriptor aliases may not reuse those names. Third-party aliases use
+a separate host-generated prefix and digest, so they cannot select the GameNode session or trusted
+Steam alias. Their non-secret account records use a separate persistence adapter keyed by the same
+authenticated namespace and never enter Core's official account table. On Windows the host
 uses Credential Manager and has no plaintext fallback. On Linux it uses Secret Service and falls
 back to a user-only private file only when no Secret Service exists; a locked or failing service is
 reported as an error. Secret read, write and delete are independent grants, and a reported storage
@@ -695,10 +701,16 @@ method is not proof that a write was durable.
 ## Login policies and cookie-free extraction
 
 `auth.webview` opens an isolated window with an ephemeral profile scoped to the provider. URLs,
-allowed hosts, the page probe and any cookies come from the trusted login policy. Runtime requests
+allowed hosts, the page probe and any cookies come from host-approved login policy. Runtime requests
 supply only window handles and operations. External HTTPS links outside the approved hosts open in
 the system browser. The probe runs only at the exact `probe_origin`, and a navigation change
 invalidates an in-flight result.
+
+Third-party login metadata names a supported `probe_id`; it cannot contain JavaScript. The current
+`oauth_authorization_code` probe returns only a non-empty `code` query value as
+`page_result_json`. Unknown probe ids, publisher-provided `probe_script` fields and invalid
+non-HTTPS origins are rejected. Cookie reads are limited to the declared names and URLs in the
+approved policy.
 
 A policy may read cookies or only approve a page probe:
 

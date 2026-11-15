@@ -2219,7 +2219,12 @@ impl provider_host_server::ProviderHost for ProviderApi {
         };
         let (lease, services) = self.lease(request.context.clone(), permission)?;
         if request.key != "session" {
-            return Err(lease.deny_scope_for(permission));
+            let namespace = lease
+                .namespace()
+                .map_err(|_| lease.deny_scope_for(permission))?;
+            namespace
+                .secret_slot(&request.key)
+                .map_err(|_| Status::invalid_argument("invalid logical secret key"))?;
         }
         if request
             .value

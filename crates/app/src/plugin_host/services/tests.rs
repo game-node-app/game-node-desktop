@@ -6,7 +6,84 @@ use crate::plugin_host::{
 use gamenode_platform::db::SqliteSettingsStore;
 use gamenode_plugin_protocol::capability as cap;
 use gamenode_plugin_sdk::{HostClient, Launch, Session};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[test]
+fn external_secret_slots_are_namespace_bound_and_cannot_select_core_or_steam_aliases() {
+    use crate::plugin_host::{grants::PluginIdentity, namespace::ExternalNamespaceResolver};
+    use gamenode_platform::credentials::{CredentialAlias, CredentialSlot};
+
+    let resolver = |plugin: &str, publisher: &str, profile: &str| {
+        ExternalNamespaceResolver::new(
+            PluginIdentity {
+                plugin_id: plugin.into(),
+                publisher_fingerprint: publisher.into(),
+                profile_id: profile.into(),
+            },
+            Some("provider.example".into()),
+            1,
+        )
+        .unwrap()
+    };
+    let slot = resolver("org.example.plugin", "publisher-a", "account-a")
+        .secret_slot("session")
+        .unwrap();
+    let alias = external_credential_slot(&slot);
+    let other_plugin = external_credential_slot(
+        &resolver("org.example.other", "publisher-a", "account-a")
+            .secret_slot("session")
+            .unwrap(),
+    );
+    let other_profile = external_credential_slot(
+        &resolver("org.example.plugin", "publisher-a", "account-b")
+            .secret_slot("session")
+            .unwrap(),
+    );
+    let core = CredentialSlot::Session;
+    let steam = CredentialSlot::provider(
+        "steam",
+        Some(CredentialAlias {
+            keyring_account: "steam".into(),
+            private_file: "steam-token".into(),
+        }),
+    );
+
+    assert_ne!(alias, other_plugin);
+    assert_ne!(alias, other_profile);
+    assert_ne!(alias.keyring_account(), core.keyring_account());
+    assert_ne!(alias.keyring_account(), steam.keyring_account());
+    assert_ne!(
+        alias.private_file(&gamenode_platform::paths::DataPaths::at("/unused")),
+        steam.private_file(&gamenode_platform::paths::DataPaths::at("/unused"))
+    );
+}
+
+#[test]
+fn external_login_metadata_accepts_only_host_defined_probe_ids() {
+    let json = r#"{
+        "start_url":"https://login.example.test/authorize",
+        "probe_origin":"https://login.example.test/",
+        "title":"Example sign in",
+        "allowed_hosts":["example.test"],
+        "probe_id":"oauth_authorization_code",
+        "width":640,
+        "height":720,
+        "timeout_seconds":300
+    }"#;
+    let policy: ExternalLoginPolicy = serde_json::from_str(json).unwrap();
+    let host_policy = policy.into_host_policy().unwrap();
+    assert!(host_policy.probe_script.contains("authorization_code"));
+    assert!(!host_policy.probe_script.contains("example.test"));
+
+    let with_script = json.replace(
+        "\"probe_id\":\"oauth_authorization_code\",",
+        "\"probe_id\":\"oauth_authorization_code\",\"probe_script\":\"alert(1)\",",
+    );
+    assert!(serde_json::from_str::<ExternalLoginPolicy>(&with_script).is_err());
+    let unknown_probe = json.replace("oauth_authorization_code", "publisher_script");
+    assert!(serde_json::from_str::<ExternalLoginPolicy>(&unknown_probe).is_err());
+}
 
 struct FakeCredentials {
     value: Mutex<Option<SessionCredential>>,
@@ -22,6 +99,12 @@ impl FakeCredentials {
             fail_write: false.into(),
             fail_delete: false.into(),
         })
+    }
+
+    fn empty() -> Arc<Self> {
+        let store = Self::new();
+        *lock(&store.value) = None;
+        store
     }
 }
 impl CredentialStore for FakeCredentials {
@@ -50,6 +133,56 @@ impl CredentialStore for FakeCredentials {
             *lock(&self.value) = None;
             Ok(())
         }
+    }
+}
+
+#[derive(Default)]
+struct FakeExternalCredentialStores(Mutex<BTreeMap<String, Arc<FakeCredentials>>>);
+
+impl ExternalCredentialStoreFactory for FakeExternalCredentialStores {
+    fn open(
+        &self,
+        slot: gamenode_platform::credentials::CredentialSlot,
+    ) -> Arc<dyn CredentialStore> {
+        let mut stores = lock(&self.0);
+        stores
+            .entry(slot.keyring_account().to_owned())
+            .or_insert_with(FakeCredentials::empty)
+            .clone()
+    }
+}
+
+#[derive(Default)]
+struct FakeExternalAccounts(Mutex<BTreeMap<(Vec<u8>, String), models::StoreAccount>>);
+
+impl ExternalAccountPersistence for FakeExternalAccounts {
+    fn load(
+        &self,
+        owner: &crate::plugin_host::namespace::NamespaceOwner,
+        provider: &str,
+    ) -> Result<Option<models::StoreAccount>, Status> {
+        Ok(lock(&self.0)
+            .get(&(owner.key().to_vec(), provider.to_owned()))
+            .cloned())
+    }
+
+    fn save(
+        &self,
+        owner: &crate::plugin_host::namespace::NamespaceOwner,
+        account: models::StoreAccount,
+        _clear_ownership: bool,
+    ) -> Result<(), Status> {
+        lock(&self.0).insert((owner.key().to_vec(), account.provider.clone()), account);
+        Ok(())
+    }
+
+    fn clear(
+        &self,
+        owner: &crate::plugin_host::namespace::NamespaceOwner,
+        provider: &str,
+    ) -> Result<(), Status> {
+        lock(&self.0).remove(&(owner.key().to_vec(), provider.to_owned()));
+        Ok(())
     }
 }
 
@@ -147,6 +280,101 @@ impl Harness {
         }
     }
 
+    async fn third_party(
+        plugin_id: &str,
+        account_id: &str,
+        credentials: Arc<dyn ExternalCredentialStoreFactory>,
+        accounts: Arc<dyn ExternalAccountPersistence>,
+    ) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let library: Arc<dyn LibraryStore> = Arc::new(
+            SqliteSettingsStore::open(&temp.path().join("library.db"))
+                .unwrap()
+                .library_store(),
+        );
+        let services = Arc::new(
+            ProviderServices::new_external_with_credentials(
+                ProviderContext {
+                    provider_id: "fixture-provider".into(),
+                    platform: std::env::consts::OS.into(),
+                    manifest_toml: "id = \"fixture-provider\"\nname = \"Fixture\"\nplatforms = [\"linux\"]\nsource = \"fixture\"\n[scan]\nnative = \"fixture\"\n".into(),
+                    granted_capabilities: cap::ALL.iter().map(|capability| (*capability).into()).collect(),
+                    ..Default::default()
+                },
+                credentials,
+                library.clone(),
+                accounts,
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        let root = PluginApi::default();
+        let api = root.providers.clone();
+        api.profiles().update(Some(account_id), true);
+        api.register(Registration {
+            provider_id: "fixture-provider".into(),
+            plugin_id: plugin_id.into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Provider,
+            origin: crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "ab".repeat(32),
+            },
+            capabilities: cap::ALL
+                .iter()
+                .map(|capability| (*capability).into())
+                .collect(),
+            shared_catalog: false,
+            services: services.clone(),
+        })
+        .unwrap();
+        let launch = api.begin_launch("fixture-provider").unwrap();
+        let credential = launch
+            .credential
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap())
+            .collect();
+        #[cfg(target_os = "linux")]
+        let server = PluginApiServer::start(
+            &tokio::runtime::Handle::current(),
+            temp.path().join("plugins.sock"),
+            root,
+        )
+        .unwrap();
+        #[cfg(windows)]
+        let server =
+            PluginApiServer::start_windows(&tokio::runtime::Handle::current(), root).unwrap();
+        let client = Session::open(
+            Launch {
+                endpoint: server.endpoint().to_owned(),
+                credential,
+                operation_id: "launch".into(),
+            },
+            plugin_id,
+            "fixture-provider",
+            "1.0",
+            cap::ALL,
+        )
+        .await
+        .unwrap();
+        launch.ready.await.unwrap();
+        Self {
+            api,
+            client,
+            services,
+            library,
+            _server: server,
+            _temp: temp,
+        }
+    }
+
     async fn operation(
         &mut self,
         kind: ProviderOperation,
@@ -154,8 +382,20 @@ impl Harness {
         HostClient,
         tokio::task::JoinHandle<Result<super::super::provider::Completion, Status>>,
     ) {
+        self.operation_for("steam", kind).await
+    }
+
+    async fn operation_for(
+        &mut self,
+        provider: &str,
+        kind: ProviderOperation,
+    ) -> (
+        HostClient,
+        tokio::task::JoinHandle<Result<super::super::provider::Completion, Status>>,
+    ) {
         let api = self.api.clone();
-        let pending = tokio::spawn(async move { api.execute("steam", kind).await });
+        let provider = provider.to_owned();
+        let pending = tokio::spawn(async move { api.execute(&provider, kind).await });
         loop {
             let command = self.client.commands.message().await.unwrap().unwrap();
             if command.operation == ProviderOperation::Acknowledge as i32 {
@@ -164,6 +404,101 @@ impl Harness {
             assert_eq!(command.operation, kind as i32);
             return (self.client.host.for_command(&command).unwrap(), pending);
         }
+    }
+}
+
+#[tokio::test]
+async fn third_party_account_and_secret_slots_persist_only_for_their_plugin_profile() {
+    let credentials = Arc::new(FakeExternalCredentialStores::default());
+    let accounts = Arc::new(FakeExternalAccounts::default());
+    let mut first = Harness::third_party(
+        "org.example.plugin",
+        "account-a",
+        credentials.clone(),
+        accounts.clone(),
+    )
+    .await;
+    let (client, pending) = first
+        .operation_for("fixture-provider", ProviderOperation::Check)
+        .await;
+    client
+        .account_save(models::StoreAccount {
+            provider: "fixture-provider".into(),
+            account_id: "store-account".into(),
+            account_name: Some("Player".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    for (key, value) in [
+        ("session", "external-session"),
+        ("refresh", "external-refresh"),
+    ] {
+        client
+            .secret(
+                SecretOperation::Write,
+                key,
+                Some(&models::SessionCredential::new(value).unwrap()),
+            )
+            .await
+            .unwrap();
+    }
+    client.finish(completed()).await.unwrap();
+    pending.await.unwrap().unwrap();
+
+    let mut same_identity = Harness::third_party(
+        "org.example.plugin",
+        "account-a",
+        credentials.clone(),
+        accounts.clone(),
+    )
+    .await;
+    let (client, pending) = same_identity
+        .operation_for("fixture-provider", ProviderOperation::Check)
+        .await;
+    assert_eq!(
+        client.account_load().await.unwrap().unwrap().account_id,
+        "store-account"
+    );
+    for (key, expected) in [
+        ("session", "external-session"),
+        ("refresh", "external-refresh"),
+    ] {
+        assert_eq!(
+            client
+                .secret(SecretOperation::Read, key, None)
+                .await
+                .unwrap()
+                .outcome,
+            Some(secret_reply::Outcome::Value(expected.as_bytes().to_vec()))
+        );
+    }
+    client.finish(completed()).await.unwrap();
+    pending.await.unwrap().unwrap();
+
+    for (plugin_id, profile_id) in [
+        ("org.example.other", "account-a"),
+        ("org.example.plugin", "account-b"),
+    ] {
+        let mut foreign =
+            Harness::third_party(plugin_id, profile_id, credentials.clone(), accounts.clone())
+                .await;
+        let (client, pending) = foreign
+            .operation_for("fixture-provider", ProviderOperation::Check)
+            .await;
+        assert_eq!(client.account_load().await.unwrap(), None);
+        for key in ["session", "refresh"] {
+            assert_eq!(
+                client
+                    .secret(SecretOperation::Read, key, None)
+                    .await
+                    .unwrap()
+                    .outcome,
+                Some(secret_reply::Outcome::Absent(true))
+            );
+        }
+        client.finish(completed()).await.unwrap();
+        pending.await.unwrap().unwrap();
     }
 }
 

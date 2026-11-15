@@ -45,6 +45,10 @@ export function formatReason(
         return t('Library::Select a game first.');
       case 'multipleSelected':
         return t('Library::Select a single game.');
+      case 'targetNeedsApproval':
+        return t('Library::Review this target before GameNode can start it.');
+      case 'targetUnavailable':
+        return t('Library::This target is missing or changed. Locate its executable to repair it.');
       case 'noLaunchRule':
         return t('Library::This store cannot start games from GameNode.');
       case 'noInstallRule':

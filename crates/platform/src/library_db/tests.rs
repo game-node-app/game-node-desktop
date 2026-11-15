@@ -74,6 +74,75 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
 }
 
 #[test]
+fn a_detected_target_approval_is_revision_checked_and_survives_reopening() {
+    use gamenode_core::library::{DetectedTarget, TargetApproval, TargetSpec};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    let spec = TargetSpec::Executable {
+        root: r"C:\Games\Portal 2".into(),
+        path: "Portal2.exe".into(),
+        arguments: vec![],
+        working_directory: String::new(),
+    };
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), spec)]),
+            100,
+        )
+        .unwrap();
+    let candidate = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(!candidate.approved);
+    assert_eq!(candidate.revision, 1);
+
+    let approved = DetectedTarget {
+        approved: true,
+        identity: Some("volume:file-id".into()),
+        ..candidate.clone()
+    };
+    assert_eq!(
+        store.save_target_review("steam:620", 1, &approved).unwrap(),
+        TargetApproval::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_target_review("steam:620", 0, &approved).unwrap(),
+        TargetApproval::Conflict { current: 1 }
+    );
+
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), approved.spec.clone())]),
+            200,
+        )
+        .unwrap();
+
+    drop(store);
+    drop(db);
+    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
+    let target = reopened
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(target.approved);
+    assert_eq!(target.identity.as_deref(), Some("volume:file-id"));
+}
+
+#[test]
 fn a_rescan_updates_entries_adds_new_ones_and_keeps_first_seen() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
@@ -84,7 +153,12 @@ fn a_rescan_updates_entries_adds_new_ones_and_keeps_first_seen() {
     let mut moved = record("620", "Portal 2");
     moved.install_dir = "/other/Portal 2".into();
     store
-        .save_scan("steam", &[moved, record("570", "Dota 2")], &BTreeMap::new(), 200)
+        .save_scan(
+            "steam",
+            &[moved, record("570", "Dota 2")],
+            &BTreeMap::new(),
+            200,
+        )
         .unwrap();
 
     let cache = store.load_cache(None).unwrap();
@@ -130,7 +204,9 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
     store.save_cover_ready(72, "72.jpg").unwrap();
 
     // Steam no longer lists it.
-    store.save_scan("steam", &[], &BTreeMap::new(), 200).unwrap();
+    store
+        .save_scan("steam", &[], &BTreeMap::new(), 200)
+        .unwrap();
     let cache = store.load_cache(Some("acct")).unwrap();
     assert_eq!(keys(&cache), [("steam:620", false)]);
     assert_eq!(cache.auto_matches.len(), 1);
@@ -1024,7 +1100,12 @@ fn catalog_names_follow_installed_then_existing_then_catalog_precedence() {
 
     // Once installed, the installed scan's name wins over a catalog name.
     store
-        .save_scan("steam", &[record("730", "Installed name")], &BTreeMap::new(), 400)
+        .save_scan(
+            "steam",
+            &[record("730", "Installed name")],
+            &BTreeMap::new(),
+            400,
+        )
         .unwrap();
     store
         .save_catalog(
@@ -1074,7 +1155,9 @@ fn save_scan_never_changes_owned_or_shared_facts() {
     );
 
     // A scan that no longer finds an entry only clears installed.
-    store.save_scan("steam", &[], &BTreeMap::new(), 300).unwrap();
+    store
+        .save_scan("steam", &[], &BTreeMap::new(), 300)
+        .unwrap();
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
@@ -1519,7 +1602,12 @@ fn installation_ids_are_random_durable_and_never_change_for_their_key() {
     }
     // A rescan, a match change or another request does not touch the ids.
     library
-        .save_scan("steam", &[record("620", "Portal 2 GOTY")], &BTreeMap::new(), 2)
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2 GOTY")],
+            &BTreeMap::new(),
+            2,
+        )
         .unwrap();
     library
         .save_auto_matches(&[AutoMatch {

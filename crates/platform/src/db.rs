@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -383,6 +383,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
     }
@@ -480,12 +481,12 @@ mod tests {
     }
 
     const V14_OK: Migration = Migration {
-        version: 14,
+        version: 15,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
     const V14_BAD: Migration = Migration {
-        version: 14,
+        version: 15,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -515,6 +516,7 @@ mod tests {
             MIGRATIONS[10],
             MIGRATIONS[11],
             MIGRATIONS[12],
+            MIGRATIONS[13],
             V14_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
@@ -534,7 +536,8 @@ mod tests {
                 (11, "library_display_overrides".into()),
                 (12, "chosen_match_source".into()),
                 (13, "library_artwork_overrides".into()),
-                (14, "add_notes".into())
+                (14, "library_entry_targets".into()),
+                (15, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -579,11 +582,12 @@ mod tests {
                 MIGRATIONS[10],
                 MIGRATIONS[11],
                 MIGRATIONS[12],
+                MIGRATIONS[13],
                 V14_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 14 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 15 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -602,6 +606,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -636,6 +641,7 @@ mod tests {
                     MIGRATIONS[10],
                     MIGRATIONS[11],
                     MIGRATIONS[12],
+                    MIGRATIONS[13],
                     V14_OK,
                 ],
             )
@@ -643,12 +649,12 @@ mod tests {
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 13
+        let err = open(&path).unwrap_err(); // this build only knows schema 14
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 14,
-                supported: 13
+                found: 15,
+                supported: 14
             }
         );
         assert_eq!(
@@ -670,7 +676,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 13,
+                found: 14,
                 supported: 7
             }
         );
@@ -715,6 +721,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
         for table in [
@@ -750,7 +757,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 13,
+                found: 14,
                 supported: 1
             }
         );
@@ -821,6 +828,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
 
@@ -955,6 +963,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
 
@@ -1156,6 +1165,7 @@ mod tests {
                 (11, "library_display_overrides".to_string()),
                 (12, "chosen_match_source".to_string()),
                 (13, "library_artwork_overrides".to_string()),
+                (14, "library_entry_targets".to_string()),
             ]
         );
 
@@ -1402,10 +1412,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 13);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(13, "library_artwork_overrides".to_owned()))
+            Some(&(14, "library_entry_targets".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1505,10 +1515,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 13);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(13, "library_artwork_overrides".to_owned()))
+            Some(&(14, "library_entry_targets".to_owned()))
         );
         assert_eq!(
             conn.query_row(

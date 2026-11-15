@@ -31,6 +31,7 @@ use tokio::runtime::Handle;
 
 mod achievements;
 mod artwork;
+mod detected_target;
 mod drm_free;
 pub mod pc_ports;
 mod playtime;
@@ -951,7 +952,11 @@ impl Engine {
         self.publish(&mut state);
         let (engine, opener) = (self.clone(), self.shared.ports.uri.clone());
         self.shared.runtime.spawn_blocking(move || {
-            let result = if provider.is_manual_executable() {
+            let result = if kind == LaunchKind::Play
+                && let Some(target) = entry.target.as_ref()
+            {
+                detected_target::launch(&engine, &entry, target)
+            } else if provider.is_manual_executable() {
                 if kind != LaunchKind::Play {
                     Err(gamenode_core::library::LaunchError::Unsupported)
                 } else {

@@ -53,5 +53,5 @@ pub use store::{
     LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount, StoredEntry,
     TargetApproval, entry_key,
 };
-pub use target::{DetectedTarget, TargetSpec};
+pub use target::{DetectedTarget, DetectedTargetView, TargetSpec};
 pub use view::{DetailView, EmptyState, LibraryView};

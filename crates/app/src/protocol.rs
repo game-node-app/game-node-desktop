@@ -1569,6 +1569,7 @@ mod tests {
             membership: Membership::NotChecked,
             achievement_backend: false,
             achievements: None,
+            detected_target: None,
         };
 
         // Snapshot without library returns None

@@ -372,15 +372,13 @@ pub trait LibraryStore: Send + Sync {
 
     /// Stores the user's approval (or repair) of `entry_key`'s detected target if its revision is
     /// still `expected_revision`. A changed target is a conflict and writes nothing.
-    fn save_target_approval(
+    fn save_target_review(
         &self,
         entry_key: &str,
         expected_revision: u64,
-        approved: bool,
-        available: bool,
-        identity: Option<&str>,
+        replacement: &super::target::DetectedTarget,
     ) -> Result<TargetApproval, StorageError> {
-        let _ = (entry_key, expected_revision, approved, available, identity);
+        let _ = (entry_key, expected_revision, replacement);
         Ok(TargetApproval::Missing)
     }
 

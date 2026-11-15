@@ -171,6 +171,7 @@ impl ProviderRuntime for Runtime {
                                 name: r.name.unwrap_or_default(),
                                 install_dir: r.install_dir,
                                 fields: r.fields.into_iter().collect(),
+                                target: None,
                             })
                             .collect(),
                     });

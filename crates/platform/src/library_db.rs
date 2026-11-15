@@ -603,7 +603,13 @@ impl LibraryStore for SqliteLibraryStore {
                     .map_err(failed)?;
                 upsert
                     .execute(params![
-                        key, provider, record.id, record.name, record.install_dir, fields, now,
+                        key,
+                        provider,
+                        record.id,
+                        record.name,
+                        record.install_dir,
+                        fields,
+                        now,
                         target_json
                     ])
                     .map_err(failed)?;
@@ -643,13 +649,11 @@ impl LibraryStore for SqliteLibraryStore {
         tx.commit().map_err(failed)
     }
 
-    fn save_target_approval(
+    fn save_target_review(
         &self,
         entry_key: &str,
         expected_revision: u64,
-        approved: bool,
-        available: bool,
-        identity: Option<&str>,
+        replacement: &gamenode_core::library::DetectedTarget,
     ) -> Result<gamenode_core::library::TargetApproval, StorageError> {
         use gamenode_core::library::TargetApproval;
         let mut conn = self.conn();
@@ -665,8 +669,7 @@ impl LibraryStore for SqliteLibraryStore {
         let Some(Some(json)) = stored else {
             return Ok(TargetApproval::Missing);
         };
-        let Ok(mut target) =
-            serde_json::from_str::<gamenode_core::library::DetectedTarget>(&json)
+        let Ok(target) = serde_json::from_str::<gamenode_core::library::DetectedTarget>(&json)
         else {
             return Ok(TargetApproval::Missing);
         };
@@ -675,17 +678,26 @@ impl LibraryStore for SqliteLibraryStore {
                 current: target.revision,
             });
         }
-        target.approved = approved;
-        target.available = available;
-        target.identity = identity.map(str::to_owned);
+        if replacement.revision < target.revision
+            || replacement.revision > target.revision.saturating_add(1)
+            || (replacement.spec != target.spec && replacement.revision == target.revision)
+            || !replacement.spec.validate_shape()
+        {
+            return Ok(TargetApproval::Conflict {
+                current: target.revision,
+            });
+        }
         tx.execute(
             "UPDATE library_entries SET target_json = ?1 WHERE key = ?2",
-            params![serde_json::to_string(&target).map_err(failed)?, entry_key],
+            params![
+                serde_json::to_string(replacement).map_err(failed)?,
+                entry_key
+            ],
         )
         .map_err(failed)?;
         tx.commit().map_err(failed)?;
         Ok(TargetApproval::Applied {
-            revision: target.revision,
+            revision: replacement.revision,
         })
     }
 

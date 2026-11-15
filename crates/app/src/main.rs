@@ -419,6 +419,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::library_input,
         commands::activate_entry,
         commands::open_entry,
+        commands::review_detected_target,
+        commands::repair_detected_target,
         commands::launch_selected,
         commands::dismiss_launch,
         commands::rescan_library,

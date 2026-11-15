@@ -77,6 +77,7 @@ mod linux {
                                     name: record.name.unwrap_or_default(),
                                     install_dir: record.install_dir,
                                     fields: record.fields.into_iter().collect(),
+                                    target: None,
                                 })
                                 .collect(),
                         }),

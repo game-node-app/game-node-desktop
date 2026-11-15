@@ -23,7 +23,15 @@ pub const MAX_ARGUMENTS: usize = 64;
 pub const MAX_ARGUMENT_BYTES: usize = 4096;
 /// Schemes a detected URI may never use: they open local content or script instead of a game.
 const DENIED_SCHEMES: &[&str] = &[
-    "about", "blob", "data", "file", "javascript", "ms-msdt", "search-ms", "shell", "vbscript",
+    "about",
+    "blob",
+    "data",
+    "file",
+    "javascript",
+    "ms-msdt",
+    "search-ms",
+    "shell",
+    "vbscript",
 ];
 
 /// What a provider reported for one game.
@@ -111,6 +119,13 @@ impl TargetSpec {
 #[serde(rename_all = "camelCase")]
 pub struct DetectedTarget {
     pub spec: TargetSpec,
+    /// Last target the provider reported. A user repair may change `spec` while scans keep
+    /// reporting this original value; a later provider change still creates a new revision.
+    #[serde(default)]
+    pub reported_spec: Option<TargetSpec>,
+    /// `spec` was explicitly chosen by the user as a repair for the same provider candidate.
+    #[serde(default)]
+    pub user_override: bool,
     /// Grows when the provider reports a different target; approval is bound to it.
     pub revision: u64,
     /// Whether the user approved this revision.
@@ -128,15 +143,28 @@ impl DetectedTarget {
     /// The target after a scan reported `spec`. The same target keeps its revision and approval;
     /// a different one starts a new revision without approval, so changed paths ask again.
     pub fn reported(existing: Option<&Self>, spec: TargetSpec, now: i64) -> Self {
+        if let Some(existing) = existing
+            && existing.user_override
+            && existing.reported_spec.as_ref() == Some(&spec)
+        {
+            return Self {
+                available: true,
+                reported_at: now,
+                ..existing.clone()
+            };
+        }
         match existing {
             Some(existing) if existing.spec == spec => Self {
                 available: true,
                 reported_at: now,
+                reported_spec: Some(spec),
                 ..existing.clone()
             },
             _ => Self {
                 revision: existing.map_or(1, |existing| existing.revision.saturating_add(1)),
-                spec,
+                spec: spec.clone(),
+                reported_spec: Some(spec),
+                user_override: false,
                 approved: false,
                 available: true,
                 identity: None,
@@ -151,6 +179,25 @@ impl DetectedTarget {
             available: false,
             reported_at: now,
             ..existing.clone()
+        }
+    }
+
+    /// User-selected replacement executable for a previously reported target.
+    pub fn repaired(&self, spec: TargetSpec, identity: String, now: i64) -> Self {
+        let changed = self.spec != spec;
+        Self {
+            revision: if changed {
+                self.revision.saturating_add(1)
+            } else {
+                self.revision
+            },
+            spec,
+            user_override: changed || self.user_override,
+            approved: true,
+            available: true,
+            identity: Some(identity),
+            reported_at: now,
+            ..self.clone()
         }
     }
 
@@ -170,7 +217,11 @@ impl DetectedTarget {
         };
         part(b"detected");
         part(&self.revision.to_be_bytes());
-        part(if self.approved { b"approved" } else { b"unapproved" });
+        part(if self.approved {
+            b"approved"
+        } else {
+            b"unapproved"
+        });
         part(if self.available {
             b"available"
         } else {
@@ -186,6 +237,27 @@ impl DetectedTarget {
     /// Whether Play may run this target now.
     pub fn ready(&self) -> bool {
         self.approved && self.available
+    }
+}
+
+/// Non-secret target state exposed in the selected library entry's detail view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedTargetView {
+    pub spec: TargetSpec,
+    pub revision: u64,
+    pub approved: bool,
+    pub available: bool,
+}
+
+impl From<&DetectedTarget> for DetectedTargetView {
+    fn from(target: &DetectedTarget) -> Self {
+        Self {
+            spec: target.spec.clone(),
+            revision: target.revision,
+            approved: target.approved,
+            available: target.available,
+        }
     }
 }
 
@@ -284,6 +356,49 @@ mod tests {
     }
 
     #[test]
+    fn a_user_repair_survives_the_same_scan_but_a_provider_change_revokes_it() {
+        let reported = DetectedTarget::reported(None, executable(), 10);
+        let replacement = TargetSpec::Executable {
+            root: r"C:\Games\Celeste".into(),
+            path: "bin/Celeste.exe".into(),
+            arguments: vec!["--fast".into()],
+            working_directory: String::new(),
+        };
+        let repaired = reported.repaired(replacement, "vol:new-file".into(), 20);
+        assert!(repaired.ready());
+        assert!(repaired.user_override);
+        let repeated = DetectedTarget::reported(Some(&repaired), executable(), 30);
+        assert_eq!(repeated.spec, repaired.spec);
+        assert_eq!(repeated.revision, repaired.revision);
+        assert!(repeated.ready());
+
+        let changed = TargetSpec::Executable {
+            root: r"C:\Games\Celeste".into(),
+            path: "Celeste64.exe".into(),
+            arguments: vec![],
+            working_directory: String::new(),
+        };
+        let next = DetectedTarget::reported(Some(&repeated), changed, 40);
+        assert_eq!(next.revision, repeated.revision + 1);
+        assert!(!next.approved);
+        assert!(!next.user_override);
+        assert_eq!(next.identity, None);
+    }
+
+    #[test]
+    fn target_view_does_not_expose_the_approved_file_identity() {
+        let target = DetectedTarget {
+            approved: true,
+            identity: Some("volume:secret-file-id".into()),
+            ..DetectedTarget::reported(None, executable(), 10)
+        };
+        let view = DetectedTargetView::from(&target);
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("secret-file-id"));
+        assert!(json.contains("revision"));
+    }
+
+    #[test]
     fn only_relative_paths_inside_the_reported_root_are_accepted() {
         for path in ["Celeste.exe", "bin/game.exe", r"bin\game.exe"] {
             let spec = TargetSpec::Executable {
@@ -294,7 +409,13 @@ mod tests {
             };
             assert!(spec.validate_shape(), "{path}");
         }
-        for path in ["", "..\\escape.exe", "/abs/game.exe", r"C:\abs.exe", "bin/../../x.exe"] {
+        for path in [
+            "",
+            "..\\escape.exe",
+            "/abs/game.exe",
+            r"C:\abs.exe",
+            "bin/../../x.exe",
+        ] {
             let spec = TargetSpec::Executable {
                 root: r"C:\Games\Celeste".into(),
                 path: path.into(),
@@ -314,7 +435,11 @@ mod tests {
 
     #[test]
     fn uris_keep_their_scheme_and_never_open_local_content() {
-        for uri in ["steam://rungameid/620", "https://example.com/play?id=1", "uplay://launch/1/0"] {
+        for uri in [
+            "steam://rungameid/620",
+            "https://example.com/play?id=1",
+            "uplay://launch/1/0",
+        ] {
             assert!(
                 TargetSpec::Uri { uri: uri.into() }.validate_shape(),
                 "{uri}"

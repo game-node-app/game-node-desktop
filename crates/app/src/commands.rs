@@ -297,6 +297,31 @@ pub async fn open_entry(
     Ok(())
 }
 
+/// Approves the currently displayed detected target after worker-side host validation.
+#[tauri::command]
+pub async fn review_detected_target(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_revision: u64,
+) -> Result<(), String> {
+    engine
+        .review_detected_target(entry_key, expected_revision)
+        .await
+}
+
+/// Opens a native picker to repair a missing detected executable. Selecting a file is explicit
+/// approval for the replacement target; validation and persistence run on a worker.
+#[tauri::command]
+pub async fn repair_detected_target(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_revision: u64,
+) -> Result<(), String> {
+    engine
+        .repair_detected_target(entry_key, expected_revision)
+        .await
+}
+
 #[tauri::command]
 pub async fn launch_selected(
     engine: tauri::State<'_, Engine>,

@@ -39,6 +39,9 @@ pub struct DetailView {
     /// The compact achievement summary, present when a cache row exists.
     #[serde(default)]
     pub achievements: Option<crate::achievements::AchievementSummaryView>,
+    /// Host-validated candidate reported for this installed entry, if any.
+    #[serde(default)]
+    pub detected_target: Option<super::target::DetectedTargetView>,
 }
 
 impl DetailView {
@@ -242,6 +245,9 @@ impl LibraryMachine {
             membership: game_id.map_or(Membership::NotChecked, |id| self.membership(id)),
             achievement_backend: false,
             achievements: None,
+            detected_target: entry
+                .and_then(|entry| entry.target.as_ref())
+                .map(super::target::DetectedTargetView::from),
         }
     }
 }

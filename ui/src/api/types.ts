@@ -161,6 +161,25 @@ export interface DetailView {
   membership: Membership;
   achievementBackend?: boolean;
   achievements?: AchievementSummary | null;
+  detectedTarget?: DetectedTargetView | null;
+}
+
+export type DetectedTargetSpec =
+  | { uri: string }
+  | {
+      executable: {
+        root: string;
+        path: string;
+        arguments: string[];
+        workingDirectory: string;
+      };
+    };
+
+export interface DetectedTargetView {
+  spec: DetectedTargetSpec;
+  revision: number;
+  approved: boolean;
+  available: boolean;
 }
 
 export type EmptyState =
@@ -293,6 +312,8 @@ export type Reason =
   | 'noMatchedGames'
   | 'checkingMembership'
   | 'membershipUnavailable'
+  | 'targetNeedsApproval'
+  | 'targetUnavailable'
   | { alreadyInLibrary: EntryStatus | null };
 
 export type Availability = 'available' | { disabled: Reason };

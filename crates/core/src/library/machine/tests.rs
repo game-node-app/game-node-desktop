@@ -144,7 +144,7 @@ pub(crate) fn scanned(
     now: i64,
 ) -> Vec<Effect> {
     machine.handle(Input::ProviderScanned {
-            targets: Default::default(),
+        targets: Default::default(),
         op,
         provider: provider.to_owned(),
         result: result.map_err(str::to_owned),

@@ -98,6 +98,20 @@ export const commands = {
   openEntry: (entryKey: string, kind: LaunchKind) =>
     safeInvoke<void>('open_entry', { entryKey, kind }, () => undefined),
 
+  reviewDetectedTarget: (entryKey: string, expectedRevision: number) =>
+    safeInvoke<void>(
+      'review_detected_target',
+      { entryKey, expectedRevision },
+      () => undefined,
+    ),
+
+  repairDetectedTarget: (entryKey: string, expectedRevision: number) =>
+    safeInvoke<void>(
+      'repair_detected_target',
+      { entryKey, expectedRevision },
+      () => undefined,
+    ),
+
   launchSelected: (kind: LaunchKind) =>
     safeInvoke<void>('launch_selected', { kind }, () => undefined),
 

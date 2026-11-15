@@ -898,6 +898,63 @@ describe('Library Feature Tests', () => {
   });
 
   describe('DetailPane and Localized Disabled Reasons', () => {
+    it('requires approval before a detected launch target can be used', async () => {
+      const reviewSpy = vi.spyOn(commands, 'reviewDetectedTarget').mockResolvedValue();
+      const snapshot = createDefaultSnapshot();
+      const row = createMockRows(1)[0];
+      snapshot.library = {
+        generation: 1,
+        layout: {
+          view: 'grid',
+          sort: { key: 'title', direction: 'ascending' },
+          filter: 'all',
+          filters: createDefaultFilters(),
+          sidebarWidth: 200,
+          detailWidth: 320,
+          detailOpen: true,
+        },
+        search: '',
+        access: 'verified',
+        total: 1,
+        installedTotal: 1,
+        providers: [],
+        rows: [row],
+        scanning: false,
+        failedProviders: [],
+        selected: ['game-0'],
+        focused: 'game-0',
+        detail: {
+          running: false,
+          row,
+          installDir: 'C:\\Games\\Hades',
+          releaseYear: 2020,
+          hasArtwork: true,
+          membership: 'checking',
+          detectedTarget: {
+            spec: { executable: { root: 'C:\\Games\\Hades', path: 'Hades.exe', arguments: [], workingDirectory: '' } },
+            revision: 3,
+            approved: false,
+            available: true,
+          },
+        },
+        actions: {
+          selected: 1,
+          play: { disabled: 'targetNeedsApproval' },
+          install: 'available',
+          matchGame: 'available',
+          addToGamenode: 'available',
+          changeMatch: false,
+        },
+      };
+
+      renderWithProviders(<DetailPane />, snapshot);
+      expect(screen.getByTestId('detected-target-review')).toHaveTextContent('Hades.exe');
+      expect(screen.getByTestId('detail-play-reason')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('approve-detected-target'));
+
+      await waitFor(() => expect(reviewSpy).toHaveBeenCalledWith('game-0', 3));
+    });
+
     it('handles resize drag, commits setDetailWidth, and closes pane', async () => {
       const libraryInputSpy = vi.spyOn(commands, 'libraryInput');
 

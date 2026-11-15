@@ -204,6 +204,7 @@ pub enum Input {
     /// target first and reports the stored value.
     TargetReviewed {
         entry_key: String,
+        expected_revision: u64,
         target: super::target::DetectedTarget,
     },
     /// The answer to an [`Effect::SyncCatalog`]. `owned`/`shared` are `None` when that fact set
@@ -730,10 +731,20 @@ impl LibraryMachine {
                 targets,
                 now,
             } => self.on_provider_scanned(op, provider, result, targets, now),
-            Input::TargetReviewed { entry_key, target } => {
+            Input::TargetReviewed {
+                entry_key,
+                expected_revision,
+                target,
+            } => {
                 if let Some(entry) = self.entries.get_mut(&entry_key) {
-                    entry.target = Some(target);
-                    self.view_dirty = true;
+                    if entry
+                        .target
+                        .as_ref()
+                        .is_some_and(|current| current.revision == expected_revision)
+                    {
+                        entry.target = Some(target);
+                        self.view_dirty = true;
+                    }
                 }
                 vec![]
             }

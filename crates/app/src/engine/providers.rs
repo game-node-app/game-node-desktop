@@ -20,7 +20,10 @@ fn detected_targets(
 ) -> std::collections::BTreeMap<String, gamenode_core::library::TargetSpec> {
     let mut targets = std::collections::BTreeMap::new();
     for record in records {
-        let Some(detected) = record.target.as_ref().and_then(|target| target.target.as_ref())
+        let Some(detected) = record
+            .target
+            .as_ref()
+            .and_then(|target| target.target.as_ref())
         else {
             continue;
         };
@@ -413,47 +416,46 @@ impl Engine {
                     let committed = completion
                         .commit(move |result, _| {
                             let mut scanned = None;
-                            let result =
-                                if result.disposition == OperationDisposition::Completed as i32 {
-                                    result
-                                        .discovery
-                                        .filter(|d| d.provider_id == provider)
-                                        .map(|d| {
-                                            // Targets are collected before the records are
-                                            // flattened, so a provider's typed target can never
-                                            // be mistaken for a template field.
-                                            let detected = detected_targets(&provider, &d.records);
-                                            let records =
-                                                gamenode_core::provider::record::finish_records(
-                                                    &provider,
-                                                    d.records
-                                                        .into_iter()
-                                                        .map(|r| {
-                                                            gamenode_core::provider::RawRecord {
-                                                                id: Some(r.id),
-                                                                name: Some(r.name),
-                                                                install_dir: Some(r.install_dir),
-                                                                fields: r.fields.into_iter().collect(),
-                                                            }
-                                                        })
-                                                        .collect(),
-                                                    &found.manifest().exclude_ids,
-                                                );
-                                            let targets = detected
-                                                .into_iter()
-                                                .filter(|(id, _)| {
-                                                    records.iter().any(|record| &record.id == id)
-                                                })
-                                                .collect();
-                                            scanned = Some(targets);
-                                            records
-                                        })
-                                        .ok_or_else(|| {
-                                            "provider discovery returned no observations".into()
-                                        })
-                                } else {
-                                    Err("provider discovery failed".into())
-                                };
+                            let result = if result.disposition
+                                == OperationDisposition::Completed as i32
+                            {
+                                result
+                                    .discovery
+                                    .filter(|d| d.provider_id == provider)
+                                    .map(|d| {
+                                        // Targets are collected before the records are
+                                        // flattened, so a provider's typed target can never
+                                        // be mistaken for a template field.
+                                        let detected = detected_targets(&provider, &d.records);
+                                        let records =
+                                            gamenode_core::provider::record::finish_records(
+                                                &provider,
+                                                d.records
+                                                    .into_iter()
+                                                    .map(|r| gamenode_core::provider::RawRecord {
+                                                        id: Some(r.id),
+                                                        name: Some(r.name),
+                                                        install_dir: Some(r.install_dir),
+                                                        fields: r.fields.into_iter().collect(),
+                                                    })
+                                                    .collect(),
+                                                &found.manifest().exclude_ids,
+                                            );
+                                        let targets = detected
+                                            .into_iter()
+                                            .filter(|(id, _)| {
+                                                records.iter().any(|record| &record.id == id)
+                                            })
+                                            .collect();
+                                        scanned = Some(targets);
+                                        records
+                                    })
+                                    .ok_or_else(|| {
+                                        "provider discovery returned no observations".into()
+                                    })
+                            } else {
+                                Err("provider discovery failed".into())
+                            };
                             engine.library_input(LibInput::ProviderScanned {
                                 op,
                                 provider,

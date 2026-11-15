@@ -113,7 +113,34 @@ Native Linux and Windows builds require their corresponding prerequisites above.
 This change does not configure hosted CI runners; its verification commands are
 run locally, and cross-compilation does not replace native OS acceptance.
 
-## Required checks (both platforms)
+## Scoped verification for implementation tasks
+
+Start with the smallest checks that exercise the changed behavior: the focused test
+or test filter, formatting for changed Rust files, `git diff --check`, and the
+relevant OpenSpec validation. Expand to the directly affected crate when the
+change crosses module boundaries or lacks a focused test. Run workspace-wide
+tests, Clippy or builds when the change affects shared contracts across crates,
+a focused check exposes an integration issue, the task explicitly requires the
+broader check, or release readiness is being evaluated. Do not run the full
+project test suite by default for a scoped task. Record any unrun broader checks
+as such instead of implying they passed.
+
+Every Cargo check in this workflow must use the external target configured in
+[Required Cargo target location](#required-cargo-target-location); a previous
+shell's `export` does not carry into a new tool invocation. For example:
+
+```sh
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
+  cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
+```
+
+## Full workspace and release checks (both platforms)
+
+These broader checks are appropriate for workspace integration, release
+readiness or when a change specifically calls for them. They are not the default
+validation for every individual implementation task; use
+[Scoped verification for implementation tasks](#scoped-verification-for-implementation-tasks)
+first.
 
 ```sh
 pnpm --dir ui build

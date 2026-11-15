@@ -24,6 +24,10 @@ pub struct Manifest {
     pub api: ApiRange,
     #[serde(default)]
     pub permissions: Vec<PermissionRequest>,
+    /// OS-level capabilities requested by the package. These are disclosures only; package
+    /// updates never grant them automatically.
+    #[serde(default)]
+    pub native_access: Vec<String>,
     pub targets: Vec<Target>,
     pub publisher: Publisher,
     pub license: LicenseNotice,
@@ -272,6 +276,13 @@ impl Manifest {
             return invalid("api.min must not exceed api.max");
         }
         let _ = version;
+        let valid_native_access = ["files", "network", "process", "registry", "dbus"];
+        let mut seen_native_access = std::collections::HashSet::new();
+        if self.native_access.iter().any(|access| {
+            !valid_native_access.contains(&access.as_str()) || !seen_native_access.insert(access)
+        }) {
+            return invalid("native_access must contain unique supported access names");
+        }
         if self.targets.is_empty() {
             return invalid("at least one target is required");
         }

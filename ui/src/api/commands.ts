@@ -8,6 +8,9 @@ import type {
   LaunchKind,
   LibraryInput,
   PluginInfo,
+  PluginUpdatePreferences,
+  AvailablePluginUpdate,
+  PluginUpdateReview,
   PlaytimeSource,
   Registration,
   Snapshot,
@@ -123,6 +126,29 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+
+  pluginUpdatePreferences: () =>
+    safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),
+  pluginUpdateAvailable: () =>
+    safeInvoke<AvailablePluginUpdate[]>('plugin_update_available', undefined, () => []),
+  pluginUpdateSetPeriodicChecks: (enabled: boolean) =>
+    safeInvoke<PluginUpdatePreferences>('plugin_update_set_periodic_checks', { enabled }, () => ({ periodicChecks: enabled })),
+  pluginUpdateCheck: () =>
+    safeInvoke<AvailablePluginUpdate[]>('plugin_update_check', undefined, () => []),
+  pluginUpdateReview: (pluginId: string, version: string) =>
+    safeInvoke<PluginUpdateReview>('plugin_update_review', { pluginId, version }, () => ({
+      pluginId, installedVersion: '1.0.0', candidateVersion: version,
+      addedPermissions: [], removedPermissions: [], changedPermissions: [], permissionChanges: [],
+      addedNativeAccess: [], removedNativeAccess: [], apiChanged: false, installedApi: '1.0.0 – 1.0.0',
+      candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT',
+      candidateLicense: 'MIT', installedLicenseFiles: [], candidateLicenseFiles: [],
+      installedLicenseNotices: [], candidateLicenseNotices: [], publisherChanged: false,
+      installedPublisherKeyId: 'publisher', candidatePublisherKeyId: 'publisher', requiresManualApproval: true,
+    })),
+  pluginUpdateApprove: (pluginId: string, version: string) =>
+    safeInvoke<string>('plugin_update_approve', { pluginId, version }, () => version),
+  pluginUpdateDecline: (pluginId: string) =>
+    safeInvoke<void>('plugin_update_decline', { pluginId }, () => undefined),
 
   /** Answers a plugin's confirmation. Late, repeated or unknown answers are ignored by the host. */
   pluginConfirmationAnswer: (id: string, approved: boolean, remember: boolean) =>

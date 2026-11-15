@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let paths = DataPaths::resolve().ok_or("Could not locate your application data directory")?;
     paths.ensure_data_dir()?;
+    let plugin_updates = gamenode_app::plugin_host::updates::PluginUpdateService::open(&paths)?;
     let logging = gamenode_app::logging::init(&paths);
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -397,6 +398,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder = builder.manage(engine.clone());
     builder = builder.manage(confirmations);
     builder = builder.manage(plugin_approvals);
+    builder = builder.manage(plugin_updates.clone());
     builder = builder.manage(logging.location().clone());
     // Serves `gamenode-asset://localhost/port-art/<catalogId>/<capsule|hero>`; without this state
     // every port artwork request is answered 404.
@@ -406,6 +408,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         paths.data_dir(),
     )?);
+    let periodic_updates = plugin_updates.clone();
+    let background_runtime = runtime.handle().clone();
+    builder = builder.setup(move |app| {
+        let app = app.handle().clone();
+        let updates = periodic_updates.clone();
+        background_runtime.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                if !updates.preferences().periodic_checks {
+                    continue;
+                }
+                match updates.check_updates().await {
+                    Ok(available) if !available.is_empty() => {
+                        use tauri::Emitter;
+                        if let Err(error) = app.emit("plugin:update-available", &available) {
+                            tracing::warn!(%error, "could not notify the UI about plugin updates");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::debug!(%error, "periodic plugin update check failed"),
+                }
+            }
+        });
+        Ok(())
+    });
     builder = builder.invoke_handler(tauri::generate_handler![
         commands::get_snapshot,
         commands::get_app_info,
@@ -467,6 +495,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::open_tool_source,
         commands::clear_tool_cache,
         commands::plugin_inventory,
+        commands::plugin_update_preferences,
+        commands::plugin_update_available,
+        commands::plugin_update_set_periodic_checks,
+        commands::plugin_update_check,
+        commands::plugin_update_review,
+        commands::plugin_update_approve,
+        commands::plugin_update_decline,
         commands::plugin_confirmation_answer,
         commands::plugin_remembered_confirmations,
         commands::plugin_revoke_confirmation,

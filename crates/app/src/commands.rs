@@ -379,6 +379,62 @@ pub async fn plugin_inventory(
     .map_err(|_| "plugin inventory worker failed".to_owned())
 }
 
+#[tauri::command]
+pub async fn plugin_update_preferences(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
+    Ok(updates.preferences())
+}
+
+#[tauri::command]
+pub async fn plugin_update_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginUpdate>, String> {
+    Ok(updates.available_updates())
+}
+
+#[tauri::command]
+pub async fn plugin_update_set_periodic_checks(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    enabled: bool,
+) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
+    updates.set_periodic_checks(enabled)
+}
+
+#[tauri::command]
+pub async fn plugin_update_check(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginUpdate>, String> {
+    updates.check_updates().await
+}
+
+#[tauri::command]
+pub async fn plugin_update_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    updates.review(&plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_update_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+) -> Result<String, String> {
+    updates.approve(&plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_update_decline(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+) -> Result<(), String> {
+    updates.decline(&plugin_id).await;
+    Ok(())
+}
+
 /// Delivers the user's answer to a plugin's confirmation. A late, repeated or unknown answer is
 /// ignored: only a confirmation that is still waiting takes one.
 #[tauri::command]

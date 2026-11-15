@@ -18,7 +18,7 @@ The application SHALL install third-party plugins only through explicit package 
 - **THEN** installation is rejected without changing the active version or writing outside staging
 
 ### Requirement: Versioned manifest and integrity contract
-Packages SHALL declare stable plugin/provider identity, publisher key, SemVer version, API range, target entrypoints, required/optional scoped permissions, native access and bundled license notices. The host SHALL verify a publisher signature and hashes covering all payload files and reject unsupported schema versions or unlisted payloads.
+Packages SHALL declare stable plugin/provider identity, publisher key, SemVer version, API range, target entrypoints, required/optional scoped permissions, optional native access disclosures and bundled license notices. Native access disclosures SHALL be limited to supported OS access names, covered by package integrity, and treated as information rather than sandbox rules. The host SHALL verify a publisher signature and hashes covering all payload files and reject unsupported schema versions or unlisted payloads.
 
 #### Scenario: Modified executable
 - **WHEN** any packaged executable or manifest differs from its signed integrity metadata
@@ -132,11 +132,19 @@ The user SHALL be able to enable and disable each third-party plugin persistentl
 - **THEN** its sessions, packages and grants are removed, library history is preserved and private configuration/secret deletion is a separate choice
 
 ### Requirement: Verified consented updates
-The host SHALL check a plugin's configured HTTPS update feed using its pinned publisher key, metadata expiry and anti-replay sequence. The feed SHALL return a bounded JSON envelope containing base64 exact index JSON bytes and a lowercase hexadecimal detached Ed25519 signature over `GameNode/plugin-update-index/v1\0` plus those bytes. A release URL SHALL return the existing ZIP package format (`integrity.json`, `signature.ed25519` and signed payload). The host SHALL verify the index signature, expiry and sequence, then the ZIP size/hash, and extract only payload paths in its signed integrity allowlist using the same bounded path/entry/expanded-size checks as local import. Redirect destinations SHALL pass the same origin, HTTPS and public-address checks at every hop. Updates SHALL require user approval, platform/API compatibility and full package validation. Failed checks, offline feeds, interrupted downloads, invalid archives or failed candidate validation SHALL leave the active version unchanged. New permissions or wider scopes SHALL NOT be granted implicitly.
+The host SHALL check a plugin's configured HTTPS update feed using its pinned publisher key, metadata expiry and anti-replay sequence. Periodic checks SHALL be disabled until the user opts in, run no more frequently than once per 24 hours while the app is running, and inspect feed metadata without executing plugin code. The feed SHALL return a bounded JSON envelope containing base64 exact index JSON bytes and a lowercase hexadecimal detached Ed25519 signature over `GameNode/plugin-update-index/v1\0` plus those bytes. A release URL SHALL return the existing ZIP package format (`integrity.json`, `signature.ed25519` and signed payload). The host SHALL verify the index signature, expiry and sequence, then the ZIP size/hash, and extract only payload paths in its signed integrity allowlist using the same bounded path/entry/expanded-size checks as local import. Redirect destinations SHALL pass the same origin, HTTPS and public-address checks at every hop. Updates SHALL require user approval, platform/API compatibility and full package validation. Review SHALL compare permission ids, required status and scopes, native access, license expression/files/notices, publisher identity and API range. Approving package activation SHALL NOT create or widen permission grants. Failed checks, offline feeds, interrupted downloads, invalid archives or failed candidate validation SHALL leave the active version unchanged. New permissions or wider scopes SHALL NOT be granted implicitly.
 
 #### Scenario: Update requests additional access
 - **WHEN** an update requests a new permission or wider resource scope
-- **THEN** the review shows the difference and activation requires approval of any newly required access
+- **THEN** the review shows the old and new permission scopes and required status; approving the package does not grant those requests, which remain denied until separately approved in plugin permissions
+
+#### Scenario: Periodic update checks are opt-in
+- **WHEN** the user has not enabled periodic checks or a check is due
+- **THEN** the host does not contact update feeds unless opted in; opted-in checks inspect signed metadata at most daily and never execute plugin code
+
+#### Scenario: Review native access, license and API changes
+- **WHEN** a candidate package changes native access declarations, license details or API range
+- **THEN** the approval review displays the installed and candidate values before activation
 
 #### Scenario: Expired or replayed feed
 - **WHEN** update metadata is expired, has an older sequence or has an invalid signature

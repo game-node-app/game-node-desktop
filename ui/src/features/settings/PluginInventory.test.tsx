@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { appTheme } from '../../AppProviders';
 import { commands, type PluginInfo } from '../../api';
@@ -115,5 +115,37 @@ describe('PluginInventory', () => {
 
     expect(await screen.findByText('Execução de processos locais')).toBeInTheDocument();
     expect(screen.getByText('D-Bus do sistema')).toBeInTheDocument();
+  });
+
+  it('checks updates, presents the signed manifest diff, and requires explicit approval', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    const setPeriodic = vi.spyOn(commands, 'pluginUpdateSetPeriodicChecks').mockResolvedValue({ periodicChecks: true });
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateCheck').mockResolvedValue([{
+      pluginId: plugin.pluginId, name: plugin.name, installedVersion: '1.0.0', versions: ['2.0.0'],
+    }]);
+    vi.spyOn(commands, 'pluginUpdateReview').mockResolvedValue({
+      pluginId: plugin.pluginId, installedVersion: '1.0.0', candidateVersion: '2.0.0',
+      addedPermissions: ['network.fetch'], removedPermissions: [], changedPermissions: ['files.read'],
+      permissionChanges: [{ id: 'files.read', installedScope: 'selected-game', candidateScope: 'all-games', installedRequired: false, candidateRequired: true }],
+      addedNativeAccess: ['process'], removedNativeAccess: [], apiChanged: true,
+      installedApi: '1.0.0 – 1.4.0', candidateApi: '1.0.0 – 2.0.0',
+      licenseChanged: true, installedLicense: 'MIT', candidateLicense: 'GPL-3.0-only',
+      installedLicenseFiles: ['LICENSE'], candidateLicenseFiles: ['LICENSE', 'NOTICE'],
+      installedLicenseNotices: [], candidateLicenseNotices: ['Third-party notice'],
+      publisherChanged: false, installedPublisherKeyId: 'publisher-1', candidatePublisherKeyId: 'publisher-1',
+      requiresManualApproval: true,
+    });
+    const approve = vi.spyOn(commands, 'pluginUpdateApprove').mockResolvedValue('2.0.0');
+    renderInventory();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Check periodically/ }));
+    await waitFor(() => expect(setPeriodic).toHaveBeenCalledWith(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates now' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review version 2.0.0' }));
+    expect(await screen.findByRole('article', { name: 'Review plugin update' })).toHaveTextContent('selected-game → all-games');
+    expect(screen.getByText(/New permissions and wider scopes stay denied/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve update' }));
+    await waitFor(() => expect(approve).toHaveBeenCalledWith(plugin.pluginId, '2.0.0'));
   });
 });

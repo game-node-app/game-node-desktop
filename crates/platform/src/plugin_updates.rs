@@ -151,6 +151,7 @@ impl UpdateIndexVerifier {
         record
             .write_all(&index.sequence.to_le_bytes())
             .map_err(io_error)?;
+        record.write_all(&Sha256::digest(raw)).map_err(io_error)?;
         record.sync_all().map_err(io_error)?;
         sync_dir(&state_dir).map_err(io_error)?;
         Ok(index)
@@ -188,8 +189,61 @@ impl UpdateIndexVerifier {
             .decode(envelope.payload)
             .map_err(|_| UpdateError::InvalidIndex)?;
         let signature = decode_signature(&envelope.signature)?;
-        self.verify(&raw, &signature, publisher_key, now_unix)
-            .map(VerifiedUpdateIndex)
+        match self.verify(&raw, &signature, publisher_key, now_unix) {
+            Ok(index) => Ok(VerifiedUpdateIndex(index)),
+            // A periodic/manual reread of the exact accepted feed is safe and useful. Equal
+            // sequence with different bytes and every lower sequence remain rejected.
+            Err(UpdateError::Replay) => self
+                .verify_same_sequence(&raw, &signature, publisher_key, now_unix)
+                .map(VerifiedUpdateIndex),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn verify_same_sequence(
+        &self,
+        raw: &[u8],
+        signature: &[u8],
+        key: &[u8],
+        now_unix: u64,
+    ) -> Result<UpdateIndex, UpdateError> {
+        if raw.is_empty() || raw.len() > MAX_INDEX_BYTES || key.len() != 32 || signature.len() != 64
+        {
+            return Err(UpdateError::InvalidIndex);
+        }
+        let mut signed = Vec::with_capacity(INDEX_SIGNATURE_DOMAIN.len() + raw.len());
+        signed.extend_from_slice(INDEX_SIGNATURE_DOMAIN);
+        signed.extend_from_slice(raw);
+        UnparsedPublicKey::new(&ED25519, key)
+            .verify(&signed, signature)
+            .map_err(|_| UpdateError::InvalidSignature)?;
+        let index: UpdateIndex =
+            serde_json::from_slice(raw).map_err(|_| UpdateError::InvalidIndex)?;
+        validate_index(&index)?;
+        if index.expires_at <= now_unix {
+            return Err(UpdateError::Expired);
+        }
+        let _guard = self
+            .commit_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let state_dir = self.root.join(safe_id(&index.plugin_id));
+        if highest_sequence(&state_dir)? != index.sequence {
+            return Err(UpdateError::Replay);
+        }
+        let record =
+            fs::read(state_dir.join(format!("seq-{}", index.sequence))).map_err(io_error)?;
+        let digest = Sha256::digest(raw);
+        let sequence_matches = record.len() >= 8 && record[..8] == index.sequence.to_le_bytes();
+        // Older schema-1 state files stored only the sequence. Continue accepting that exact
+        // high-water mark after signature and expiry validation; new records bind the sequence
+        // to the exact signed payload bytes.
+        let digest_matches =
+            record.len() == 8 || (record.len() == 8 + digest.len() && record[8..] == digest[..]);
+        if !sequence_matches || !digest_matches {
+            return Err(UpdateError::Replay);
+        }
+        Ok(index)
     }
 
     /// Downloads a release through the same HTTPS, public-address, redirect and timeout checks
@@ -408,5 +462,33 @@ mod tests {
         release.package_url = "https://example.com/a".into();
         release.package_size = MAX_PACKAGE_BYTES + 1;
         assert_eq!(validate_release(&release), Err(UpdateError::InvalidIndex));
+    }
+
+    #[test]
+    fn exact_current_feed_can_be_reread_but_same_sequence_changes_are_rejected() {
+        let dir = tempdir().unwrap();
+        let verifier = UpdateIndexVerifier::open(dir.path()).unwrap();
+        let key = key();
+        let (raw, signature) = signed(&key, 1, 500);
+        verifier
+            .verify(&raw, &signature, key.public_key().as_ref(), 100)
+            .unwrap();
+        assert_eq!(
+            verifier
+                .verify_same_sequence(&raw, &signature, key.public_key().as_ref(), 100)
+                .unwrap()
+                .sequence,
+            1
+        );
+        let (different, different_signature) = signed(&key, 1, 600);
+        assert_eq!(
+            verifier.verify_same_sequence(
+                &different,
+                &different_signature,
+                key.public_key().as_ref(),
+                100
+            ),
+            Err(UpdateError::Replay)
+        );
     }
 }

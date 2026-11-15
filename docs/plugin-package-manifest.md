@@ -26,6 +26,11 @@ requests do not grant access. `configuration` optionally declares `external` and
 package-relative resource paths. `source_url` is an optional absolute HTTP(S) URL;
 `update_url` is an optional HTTPS URL.
 
+`native_access` is an optional array of unique declarations from `files`, `network`,
+`process`, `registry`, and `dbus`. These signed declarations disclose operating-system access
+the program may use; they are not sandbox rules and do not grant GameNode plugin permissions.
+Update review compares this list with the installed version.
+
 The parser rejects unknown fields, duplicate JSON object keys at every depth, and SPDX
 identifiers or exceptions absent from the strict SPDX catalog. Paths
 must be relative, must not contain traversal or drive prefixes, and must not be empty.
@@ -266,6 +271,7 @@ content are covered by `python3 -m unittest scripts.tests.test_plugin_package_to
   "permissions": [
     { "id": "library.read", "required": false, "scope": "own-provider", "reason": "Read imported games" }
   ],
+  "native_access": ["files", "network"],
   "targets": [
     { "os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/linux-x64/plugin" }
   ],

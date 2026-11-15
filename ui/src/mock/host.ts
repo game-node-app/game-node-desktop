@@ -776,6 +776,7 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
   /** Confirmations the fictional user left open, and what they chose to remember, by plugin. */
   const openConfirmations = new Map<string, PluginConfirmation>();
   const remembered = new Map<string, RememberedConfirmation[]>();
+  let periodicPluginChecks = false;
   const snapshot = createDefaultSnapshot();
   const ports = createMockPortsView(options.portsScenario ?? 'default');
   snapshot.ports = ports;
@@ -1303,6 +1304,15 @@ export function createMockHost(options: { signedOut?: boolean; locale?: string; 
     },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
+      if (cmd === 'plugin_update_preferences') return { periodicChecks: periodicPluginChecks };
+      if (cmd === 'plugin_update_available') return [];
+      if (cmd === 'plugin_update_set_periodic_checks') {
+        periodicPluginChecks = args.enabled === true;
+        return { periodicChecks: periodicPluginChecks };
+      }
+      if (cmd === 'plugin_update_check') return [];
+      if (cmd === 'plugin_update_review') return null;
+      if (cmd === 'plugin_update_approve' || cmd === 'plugin_update_decline') return undefined;
       if (cmd === 'plugin_confirmation_answer') {
         const id = String(args.id ?? '');
         const asked = openConfirmations.get(id);

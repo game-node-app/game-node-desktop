@@ -761,6 +761,49 @@ export interface StoreAccountView {
   canRemoveCredential: boolean;
 }
 
+export interface PluginUpdatePreferences {
+  periodicChecks: boolean;
+}
+
+export interface AvailablePluginUpdate {
+  pluginId: string;
+  name: string;
+  installedVersion: string;
+  versions: string[];
+}
+
+export interface PluginUpdateReview {
+  pluginId: string;
+  installedVersion: string;
+  candidateVersion: string;
+  addedPermissions: string[];
+  removedPermissions: string[];
+  changedPermissions: string[];
+  permissionChanges: Array<{
+    id: string;
+    installedScope: string;
+    candidateScope: string;
+    installedRequired: boolean;
+    candidateRequired: boolean;
+  }>;
+  addedNativeAccess: string[];
+  removedNativeAccess: string[];
+  apiChanged: boolean;
+  installedApi: string;
+  candidateApi: string;
+  licenseChanged: boolean;
+  installedLicense: string;
+  candidateLicense: string;
+  installedLicenseFiles: string[];
+  candidateLicenseFiles: string[];
+  installedLicenseNotices: string[];
+  candidateLicenseNotices: string[];
+  publisherChanged: boolean;
+  installedPublisherKeyId: string;
+  candidatePublisherKeyId: string;
+  requiresManualApproval: boolean;
+}
+
 export interface PluginInfo {
   providerId: string;
   pluginId: string;

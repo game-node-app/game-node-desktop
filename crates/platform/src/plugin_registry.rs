@@ -216,6 +216,45 @@ impl PluginPackageRegistry {
         Ok(self.read_complete(&self.version_path(plugin_id, &version), plugin_id, &version))
     }
 
+    /// Lists valid active package versions. Callers must perform filesystem work on a blocking
+    /// worker; malformed pointers and incomplete packages are omitted.
+    pub fn active_versions(&self) -> io::Result<Vec<InstalledPluginVersion>> {
+        let active_dir = self.root.join("active");
+        match fs::symlink_metadata(&active_dir) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "active path is not a real directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        }
+        let mut active = Vec::new();
+        for entry in fs::read_dir(active_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(plugin_id) = decode_key(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let Ok(version) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            if let Some(installed) = self.read_complete(
+                &self.version_path(&plugin_id, &version),
+                &plugin_id,
+                &version,
+            ) {
+                active.push(installed);
+            }
+        }
+        active.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+        Ok(active)
+    }
+
     pub fn versions(&self, plugin_id: &str) -> io::Result<Vec<InstalledPluginVersion>> {
         validate_identity(plugin_id)?;
         let versions_dir = self
@@ -664,6 +703,23 @@ mod tests {
             b"one"
         );
         assert!(!active.package_path.join(COMPLETE_FILE).exists());
+    }
+
+    #[test]
+    fn active_versions_lists_only_complete_active_packages() {
+        let temp = TempDir::new().unwrap();
+        let registry = PluginPackageRegistry::at(temp.path().join("registry")).unwrap();
+        let package = source(&temp, "package", b"payload");
+        registry
+            .install_verified("org.example.one", "1.0.0", &package, true)
+            .unwrap();
+        registry
+            .install_verified("org.example.two", "2.0.0", &package, false)
+            .unwrap();
+        let active = registry.active_versions().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].plugin_id, "org.example.one");
+        assert_eq!(active[0].version, "1.0.0");
     }
 
     #[test]

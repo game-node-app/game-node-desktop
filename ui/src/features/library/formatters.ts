@@ -106,6 +106,9 @@ export function formatMatchStatus(
   if (typeof status === 'object' && 'matched' in status) {
     return t('Library::Matched');
   }
+  if (typeof status === 'object' && 'ambiguous' in status) {
+    return t('Library::Several possible matches');
+  }
   switch (status) {
     case 'ambiguous':
       return t('Library::Several possible matches');
@@ -121,7 +124,7 @@ export function getMatchDotColor(status: MatchStatus): string {
   if (typeof status === 'object' && 'matched' in status) {
     return 'var(--color-success, #3DD68C)';
   }
-  if (status === 'ambiguous') {
+  if (status === 'ambiguous' || (typeof status === 'object' && 'ambiguous' in status)) {
     return 'var(--color-warning, #F5A524)';
   }
   return 'var(--color-text-dimmed, #808080)';

@@ -175,6 +175,86 @@ fn counter_games_emit_running_and_one_read_without_sessions() {
     );
 }
 #[test]
+fn a_game_already_running_at_the_first_read_keeps_its_process_start() {
+    let mut tracker = setup(false);
+    // Created 20 seconds before GameNode first listed processes at startup.
+    let game = process(1, 80, "/games/one/main");
+    listed(&mut tracker, 100, vec![game.clone()]);
+    assert_eq!(
+        tracker.running_started_at(),
+        BTreeMap::from([("steam:1".into(), 80)])
+    );
+    // Refresh/scan/selection never restart the clock, and neither does a later listing.
+    listed(&mut tracker, 160, vec![game]);
+    assert_eq!(
+        tracker.running_started_at(),
+        BTreeMap::from([("steam:1".into(), 80)])
+    );
+}
+#[test]
+fn counter_games_report_a_session_start_without_a_durable_session() {
+    let mut tracker = setup(true);
+    let game = process(1, 80, "/games/one/main");
+    let effects = listed(&mut tracker, 100, vec![game]);
+    assert!(
+        effects.iter().all(|e| !matches!(e, Effect::OpenSession(_))),
+        "counter-backed entries do not open durable sessions"
+    );
+    assert_eq!(
+        tracker.running_started_at(),
+        BTreeMap::from([("steam:1".into(), 80)])
+    );
+}
+#[test]
+fn daily_checkpoints_keep_the_execution_start_and_exit_clears_it() {
+    let mut tracker = setup(false);
+    let game = process(1, 80, "/games/one/main");
+    listed(&mut tracker, 100, vec![game.clone()]);
+    let effects = apply(&mut tracker, Input::Tick { now: 80 + DAY });
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::OpenSession(row) if row.started_at == 80 + DAY)),
+        "the daily split opens a new durable session at the boundary"
+    );
+    assert_eq!(
+        tracker.running_started_at(),
+        BTreeMap::from([("steam:1".into(), 80)]),
+        "the same execution keeps one clock across its daily sessions"
+    );
+    apply(
+        &mut tracker,
+        Input::Exited {
+            process: game,
+            at: 90 + DAY,
+        },
+    );
+    assert!(tracker.running_started_at().is_empty());
+}
+#[test]
+fn account_switch_and_stop_clear_every_session_start() {
+    for account in [None, Some("b".into())] {
+        let mut tracker = setup(false);
+        listed(&mut tracker, 100, vec![process(1, 80, "/games/one/main")]);
+        apply(
+            &mut tracker,
+            Input::Library {
+                account,
+                entries: vec![entry("steam:1", "/games/one")],
+                at: 120,
+            },
+        );
+        assert!(
+            tracker.running_started_at().is_empty(),
+            "tracking is isolated per account"
+        );
+    }
+    let mut tracker = setup(false);
+    listed(&mut tracker, 100, vec![process(1, 80, "/games/one/main")]);
+    apply(&mut tracker, Input::Stop { at: 120 });
+    assert!(tracker.running_started_at().is_empty());
+}
+#[test]
 fn checkpoints_split_fifty_hours_contiguously_with_distinct_ids() {
     let mut tracker = setup(false);
     let mut id = 0;

@@ -162,25 +162,31 @@ VITE_UI_MOCK=1 pnpm --dir ui dev
 
 Restart an already running Vite server with the variable set; the mode is selected
 at startup. Open `http://localhost:4777/`. It starts with a fictional signed-in account and
-12 fictional games, local cover images, and a verified library. Search, the filter panel
-(availability, running, match state, play history, last played, release decade, date
-added and favorites), active-filter chips, sorting by title, store, match status, release
-year, playtime, last played or date added, grid/list view, selection, details, favorites
-(the star in the grid, list, detail pane and context menu), basic matching, the add
-dialog and sign-out/sign-in update the in-memory snapshot. Reload to reset it. Use
-`http://localhost:4777/?scenario=signed-out` to start signed out, add `&library=large`
-for 328 owned Steam games (18 installed, a few family-shared), and add
-`&steam=expired` (or any store scenario) plus `&locale=pt-BR` (or `?locale=pt-BR` on
-its own) for Portuguese.
+12 fictional games, local cover images, and a verified library. Search, the filter popover
+(availability, stores, favorites/running/show hidden, match state, GameNode status,
+playtime, history, last session, release decades and date added), active-filter chips,
+sorting and grouping menus, the grid/list views, selection and the batch bar, details,
+favorites, matching and match suggestions, the add and undo flows, saved views, hidden
+games, collection scopes, the GameNode catalog, the command palette, the shortcuts dialog,
+the shell notifications and sign-out/sign-in update the in-memory snapshot. Reload to
+reset it. Use `http://localhost:4777/?scenario=signed-out` to start signed out, add
+`&library=large` for 328 owned Steam games (18 installed, a few family-shared), add
+`&library=variants` for every match state and the DRM-free detail fixtures, and add
+`&library=empty`, `&library=no-installed`, `&discoveries=1` or `&scanning=1` for the
+state fixtures (`?scenario=first-run` starts the signed-in first-run guide). Add `&steam=expired` (or any store scenario) plus `&locale=pt-BR`
+(or `?locale=pt-BR` on its own) for Portuguese.
 
 The **Stores** settings panel includes the Steam account fixture and bundled plugin
 inventory. Use `&steam=notConnected`, `&steam=signingIn`, `&steam=expired`,
-`&steam=unreachable` or `&steam=credentialError` to exercise account actions and
-progress. The inventory shows trusted origin, executable/session status, exact granted
-capability IDs and native OS access separately; it contains no credential values. The
-mock snapshot carries Steam account and PC ports state together, and the same locale
-parameter covers English and Brazilian Portuguese. Sign-in, check, cancel, focus and
-sign-out use the generic provider command interface.
+`&steam=unreachable`, `&steam=credentialError`, `&steam=catalogExpired` or
+`&steam=catalogUnreachable` to exercise account actions and progress. The last two
+stay connected while the catalog reports the problem, so the same banner and
+recovery path is reachable from `catalogError`. The inventory shows trusted origin,
+executable/session status, exact granted capability IDs and native OS access
+separately; it contains no credential values. The mock snapshot carries Steam
+account and PC ports state together, and the same locale parameter covers English
+and Brazilian Portuguese. Sign-in, check, cancel, focus and sign-out use the
+generic provider command interface.
 
 The mock replaces the Tauri command and snapshot-event bridge, including when
 Vite is displayed inside a native dev window. Unsupported commands produce a
@@ -190,6 +196,181 @@ not exercise OAuth, remote endpoint contracts, native adapters, or persistence.
 The native Rust host still starts normally if you run it, so use the browser for
 an isolated UI session. The switch only works in Vite development mode; normal
 production builds and ordinary `pnpm --dir ui dev` keep their existing behavior.
+
+#### Library organization, catalog and failure fixtures
+
+The redesigned library, sidebar, filter popover, batch bar, detail variants and
+catalog view are mounted, so the fixtures below are reachable through the UI.
+Run the mock as above. Everything stays in memory and a reload resets it.
+
+Fixtures: 12 fictional local games plus the hidden **Hidden Harbor** entry, the
+`Backlog curto` and `Coop no sofá` collections, the **Steam 10 h+** saved view,
+three stores, the GameNode statuses plus matched and unmatched rows, one running
+game, store-account scenarios and 40 fictional GameNode catalog games. The
+comprehensive L6 fixture, discovered candidates, first-run, no-installed and
+scanning states are opt-in as described below.
+
+**Comprehensive L1–L6 fixture** — `?library=variants` (or `&library=variants`
+after another parameter) adds the rows and local registrations below to the
+default fixture; the default counts stay unchanged.
+
+| Surface | Row key | Title | What it shows |
+|---|---|---|---|
+| Matched, installed | `steam:1` | Aster Vale | Play, achievements and GameNode status |
+| Unmatched | `steam:3` | Clockwork Harbor | No-match notice plus two suggestions |
+| Ambiguous | `steam:1301` | Neon Courier 2088 | Needs-review notice plus two suggestions |
+| Marked as not a game | `steam:1302` | Wallpaper Foundry | Not-a-game note; no suggestions |
+| DRM-free running | `manual:brasa` | Brasa | Running session timer, matched `ongoing`, launch arguments, save folder, active protection and 12 backups |
+| DRM-free unmatched | `manual:drift` | Drift | Unmatched DRM-free row with two scored suggestions |
+| Family shared, not installed | `steam:7` | Glass Garden | Install primary and the Steam Family note |
+| Hidden | `steam:900` | Hidden Harbor | Hidden until **Show hidden** |
+
+The fixture also keeps both collections, the saved view and the hidden entry,
+adds the **DRM-free** provider shortcut with the two manual registrations, and
+shows three discovered candidates (Signal Ridge, Paper Harbor and Tiny Comet) so
+the banner, sidebar count and review modal are reachable without a separate
+parameter. The unmatched keys accept **Not a game** from the match dialog and
+**Use** from the suggestions list.
+
+Use it to reach each L6 detail variant: select `manual:brasa` (DRM-free running),
+`manual:drift` or `steam:3` (unmatched with suggestions), `steam:1301`
+(ambiguous), `steam:1302` (not a game), `steam:7` (family shared) and three rows
+with Ctrl/Shift (multi-selection). Add `&locale=pt-BR` for Portuguese.
+
+**State and failure scenarios**
+
+| Query | What it opens |
+|---|---|
+| `?scenario=first-run` | Signed-in first-run with no library, no connected store and no watched folder (first-run guide) |
+| `?library=empty` | Signed-in empty library while a store stays connected (no-games state with Rescan) |
+| `?library=empty&scanning=1` | The empty library while its initial rescan runs (centered scanning panel and skeletons) |
+| `?scanning=1` | Starts a rescan on load over the normal rows (scanning panel above usable rows) |
+| `?library=no-installed` | Owned and family-shared rows with nothing installed; opens on the **Installed** scope so **NoInstalled** and **Show all** are immediate |
+| `?discoveries=1` | Adds the three watched-folder candidates to any scenario without changing the library rows |
+| `?steam=expired` | Steam account state `expired` (Sign in again) |
+| `?steam=catalogExpired` | Steam `connected` with `catalogError: expired` (same banner and action) |
+| `?steam=catalogUnreachable` | Steam `connected` with `catalogError: unreachable` (Try now) |
+| `?viewWrite=fail-once` | The first saved-view save or rename answers `failed`; the retry succeeds without reloading |
+| `?viewWrite=fail` | Every saved-view storage write fails |
+| `?mutations=fail` | Add, batch status and add-to-collection GameNode writes fail |
+| `?catalog=error`, `?catalog=offline`, `?catalog=incomplete` | Catalog failure, offline and incomplete answers |
+
+**L1–L6 and catalog checklist**
+
+1. **L1 grid + detail** — the default fixture; click the first tile. Resize the
+   detail pane and clear the search.
+2. **L2 list grouped + multi-select** — Ctrl+L, Group menu › Store, then select
+   three rows. `?library=variants` adds ambiguous, unmatched and DRM-free rows.
+3. **L3 filters** — Ctrl+Shift+F (or Filters). Check a facet, search an option,
+   and inspect the counts; apply a store, decade and history combination.
+4. **L4 menus, palette, save view, tooltip** — Ctrl+K; the app menu (Add a game,
+   Rescan, Settings, Keyboard shortcuts, About, Sign out, Quit); the tile/row
+   context menu; hover an icon with a label. Change a filter, then **Save as
+   view** (use `?viewWrite=fail-once` to see the failure and retry); press `?`
+   for the shortcuts dialog.
+5. **L5 states, banners, notifications, shortcuts** — open the states above in
+   turn: `?scenario=first-run`, `?library=empty`, `?library=no-installed`,
+   `?library=empty&scanning=1`. Expired and unreachable banners come from
+   `?steam=expired`, `?steam=catalogExpired` or `?steam=catalogUnreachable`;
+   dismissed banners stay dismissed until a successful sync. Recover with
+   Settings › Stores › Check (or sign in again after an expiry); the banner
+   disappears, and a later failure shows again. Discovered comes from
+   `?discoveries=1` or `?library=variants`.
+   Add a game from **Explore GameNode** to see Undo/View on GameNode, hide one
+   to see Show again, and fail an add with `?mutations=fail` for its danger
+   notification.
+6. **L6 detail variants** — the keys in the table above; the catalog view is
+   **Explore GameNode** in the sidebar (40 games; type at least two characters
+   and wait for the 250 ms mock answer).
+
+Add `&locale=pt-BR` (or start with `?locale=pt-BR`) to check every surface in
+Portuguese. All of these fixtures still go through the mock's real view query,
+library inputs and commands; they do not bypass the UI or invent host behavior.
+
+**Saved views**
+
+1. Under **Collections and views** in the sidebar, select **Steam 10 h+**. The
+   library applies its Steam store filter, 10 h+ playtime filter, playtime sort,
+   store grouping and grid view; the header names the view and the sidebar item
+   is highlighted.
+2. To save another combination, change a filter, the sort, the grouping or the
+   view mode (or pick a scope other than All games), then choose **Save as view**
+   in the filter chips row or the **+** button beside **Collections and views**.
+   Enter a name and confirm. Empty and duplicate names are blocked, and a
+   notification confirms the save.
+3. Open the context menu on a saved view to rename or delete it. Delete asks for
+   confirmation and keeps the current filters applied; changing a filter, sort or
+   grouping after applying a view drops its highlight without changing the saved
+   view.
+
+**Hidden games and Show hidden**
+
+1. **Hidden Harbor** (`steam:900`) starts hidden. To hide another entry, open its
+   context menu (right-click, Shift+F10, or the tile/row menu) and choose
+   **Hide from library**. The entry leaves the rows, counts, groups and Select
+   all, and the notification offers **Show again**.
+2. Open **Filters › Shortcuts** and turn on **Show hidden**. Hidden entries appear
+   dimmed with an eye-off indicator, are included in the counts, and their context
+   menu offers **Show in library**. Turn **Show hidden** off to hide them again;
+   an entry revealed with **Show in library** stays visible.
+
+**Collections**
+
+1. Select **Backlog curto** or **Coop no sofá** under **Collections and views**.
+   The library shows the local rows whose cached GameNode entry belongs to that
+   collection and the header names the collection.
+2. To add a game, open its context menu and choose **Add to collection ›
+   Backlog curto** (or the other collection). Its status is preserved, a
+   notification confirms the change, and the collection count updates. On a game
+   that is not in the GameNode library the item is disabled with **Add to
+   GameNode first**.
+
+**Catalog (40 games)**
+
+1. Choose **Explore GameNode** in the sidebar. In the catalog search, type at
+   least two characters and pause; the view sends the query after 300 ms and the
+   mock answers after another 250 ms. The fixture has 40 games, and its first 12
+   titles match local games so results can show **In your library** and **On this
+   PC** without a network.
+2. Select a tile to open the catalog detail slot, or open its context menu.
+   **Add to GameNode…** opens the normal add dialog in catalog mode; after the
+   add the result shows **In your library**. **Show in library** switches back to
+   the matched local row, clearing the search, scope, collapsed groups and filters
+   as needed and revealing a hidden row with **Show hidden** instead of unhiding
+   it.
+3. Combine the scenarios below with `&locale=pt-BR` to check the translated
+   states.
+
+**GameNode status and mutation failures**
+
+1. Start with `?mutations=fail`. Add, batch status and add-to-collection writes
+   then answer failure instead of changing the fixture.
+2. Select two or more games, use **Change status** in the batch bar (or the
+   status select in one game's detail pane), and confirm the danger notification;
+   the game keeps its previous status. The same flag makes an add from the library
+   or catalog fail and leaves a catalog result that was not already in the library
+   without **In your library**. A failed add creates no entry, so its notification
+   has no **Undo**.
+
+**Catalog failures** — `?catalog=error` fails every search, `?catalog=offline`
+reports that a connection is needed without sending a request, and
+`?catalog=incomplete` marks ready results as possibly incomplete.
+
+**Locale and sign-out** — `?locale=pt-BR` (or `&locale=pt-BR` after another
+parameter) translates the shell, library, menus, notifications and catalog.
+`?scenario=signed-out` starts signed out; combine it with `&locale=pt-BR` as
+needed. Signing out from the app menu also returns to the signed-out shell, and
+signing back in restores the fixture library.
+
+These control paths document the mock fixtures only. They are not a record of the
+browser visual comparison or of native Windows acceptance.
+
+The mock keeps its state in memory and never writes the database. In the native
+host, migration `0010_library_organization.sql` adds the five per-account tables
+`saved_views`, `hidden_entries`, `account_library_entries`, `account_collections`
+and `account_library_reads`; the watched-folder check time is stored as
+`discovery.lastCheckedAt`. See [local-state.md](local-state.md) for their columns,
+replacement rules and retention.
 
 #### PC ports mock
 

@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AppProviders } from './AppProviders';
 import { App } from './App';
-import { resetUiStore } from './store/uiStore';
+import { resetUiStore, uiStore } from './store/uiStore';
 import {
   createDefaultFilters,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   type AppInfo,
   type LibraryView,
@@ -75,27 +76,41 @@ function rows(count: number): Row[] {
     releaseYear: 2011,
     addedAt: 1_700_000_000,
     isFavorite: false,
+    hidden: false,
+    gamenode: null,
   }));
 }
 
 function libraryView(count = 200, overrides: Partial<LibraryView> = {}): LibraryView {
+  const games = rows(count);
   return {
+    ...createDefaultLibraryView(),
     generation: 1,
     layout: {
       view: 'grid',
       sort: { key: 'title', direction: 'ascending' },
-      filter: 'all',
+      scope: 'all',
+      group: 'none',
+      collapsedGroups: {},
       filters: createDefaultFilters(),
       sidebarWidth: 216,
       detailWidth: 320,
       detailOpen: false,
+      sidebarCollapsed: false,
     },
     search: '',
     access: 'verified',
     total: count,
     installedTotal: count,
     providers: [{ id: 'steam', name: 'Steam', count, installedCount: count, ownedCount: count, sharedCount: 0, sharedLabel: 'Steam Family' }],
-    rows: rows(count),
+    rows: games,
+    paletteIndex: games.map((game) => ({
+      key: game.key,
+      title: game.title,
+      providerName: game.providerName,
+      installed: game.installed,
+      playtimeLabel: null,
+    })),
     scanning: false,
     failedProviders: [],
     selected: [],
@@ -158,6 +173,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     await mountApp();
     expect(screen.getByTestId('top-bar')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('status-bar')).toBeInTheDocument();
     expect(screen.getByTestId('signed-out-view')).toBeInTheDocument();
   });
 
@@ -182,39 +198,135 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     const tiles = screen.getAllByRole('listitem');
     expect(tiles.length).toBeGreaterThan(0);
     expect(tiles.length).toBeLessThan(60);
-    const cover = screen.getAllByRole('img')[0];
-    expect(cover.getAttribute('src')).toMatch(/^gamenode-asset:\/\/localhost\/cover\//);
+    const cover = screen
+      .getAllByRole('img')
+      .find((img) => img.getAttribute('src')?.startsWith('gamenode-asset://localhost/cover/'));
+    expect(cover).toBeDefined();
     expect(cover).toHaveAttribute('loading', 'lazy');
     expect(cover).toHaveAttribute('decoding', 'async');
   });
 
-  it('sidebar provider filter sends a library_input command', async () => {
+  it('sidebar provider filter sends the All scope and a store facet', async () => {
     await mountApp();
     await publish(signedIn(current));
     const sidebar = await screen.findByTestId('sidebar');
     fireEvent.click(within(sidebar).getByText('Steam'));
     await waitFor(() =>
       expect(calls('library_input').at(-1)?.args).toEqual({
-        input: { setFilter: { provider: 'steam' } },
+        input: {
+          setFilters: expect.objectContaining({ stores: ['steam'] }),
+        },
       }),
     );
+    expect(calls('library_input').map((call) => call.args?.input)).toContainEqual({
+      setScope: 'all',
+    });
   });
 
   it('switches the content area to PC ports and back to the filtered library', async () => {
     await mountApp();
     await publish(signedIn(current));
 
-    fireEvent.click(await screen.findByTestId('sidebar-ports'));
+    fireEvent.click(
+      within(await screen.findByTestId('sidebar-ports')).getByRole('button'),
+    );
     expect(await screen.findByTestId('ports-view')).toBeInTheDocument();
     expect(screen.queryByTestId('library-screen')).not.toBeInTheDocument();
     expect(calls('ports_open')).toHaveLength(1);
 
-    fireEvent.click(screen.getByTestId('sidebar-provider-steam'));
+    fireEvent.click(
+      within(screen.getByTestId('sidebar-provider-steam')).getByRole('button', {
+        name: 'Steam',
+      }),
+    );
     expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
     expect(screen.queryByTestId('ports-view')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(calls('library_input').at(-1)?.args).toEqual({
+        input: {
+          setFilters: expect.objectContaining({ stores: ['steam'] }),
+        },
+      }),
+    );
+  });
+
+  it('switches the content area to the catalog and back to the library', async () => {
+    await mountApp();
+    await publish(signedIn(current));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Explore GameNode' }));
+    expect(await screen.findByTestId('catalog-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-screen')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'All games' }));
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('catalog-view')).not.toBeInTheDocument();
+  });
+
+  it('opens the selected game menu from the palette while the catalog is shown', async () => {
+    await mountApp();
+    await publish(signedIn(current));
+
+    const catalogTrigger = await screen.findByRole('button', { name: 'Explore GameNode' });
+    fireEvent.click(catalogTrigger);
+    expect(await screen.findByTestId('catalog-view')).toBeInTheDocument();
+    catalogTrigger.focus();
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    const input = await screen.findByTestId('command-palette-input');
+    fireEvent.change(input, { target: { value: 'Game 1' } });
+    fireEvent.keyDown(input, { key: 'F10', shiftKey: true });
+
+    const menu = await screen.findByTestId('library-context-menu');
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(within(menu).getByText('Game 1')).toBeInTheDocument();
     expect(calls('library_input').at(-1)?.args).toEqual({
-      input: { setFilter: { provider: 'steam' } },
+      input: { select: { key: 'steam:1', mode: 'replace' } },
     });
+    expect(uiStore.state.activeDestination).toBe('library');
+    expect(
+      uiStore.state.contextMenu.x === 0 && uiStore.state.contextMenu.y === 0,
+    ).toBe(false);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('library-context-menu')).not.toBeInTheDocument(),
+    );
+    // The palette handed focus back to its trigger; the menu did not steal or lose it.
+    expect(document.activeElement).toBe(catalogTrigger);
+
+    // The invisible-open bug swallowed Ctrl+K; the menu is visible and now gone.
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(await screen.findByTestId('command-palette')).toBeInTheDocument();
+  });
+
+  it('opens the selected game menu from the palette while PC ports is shown', async () => {
+    await mountApp();
+    await publish(signedIn(current));
+
+    const portsButton = within(
+      await screen.findByTestId('sidebar-ports'),
+    ).getByRole('button');
+    fireEvent.click(portsButton);
+    expect(await screen.findByTestId('ports-view')).toBeInTheDocument();
+    portsButton.focus();
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    const input = await screen.findByTestId('command-palette-input');
+    fireEvent.change(input, { target: { value: 'Game 1' } });
+    fireEvent.keyDown(input, { key: 'F10', shiftKey: true });
+
+    const menu = await screen.findByTestId('library-context-menu');
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(within(menu).getByText('Game 1')).toBeInTheDocument();
+    expect(uiStore.state.activeDestination).toBe('library');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('library-context-menu')).not.toBeInTheDocument(),
+    );
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(await screen.findByTestId('command-palette')).toBeInTheDocument();
   });
 
   it('shows the one-time sync explanation after sign-in and dismisses it through IPC', async () => {
@@ -230,7 +342,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
 
   it('opens Settings from the app menu and with Ctrl+,', async () => {
     await mountApp();
-    fireEvent.click(screen.getByRole('button', { name: 'Application menu' }));
+    fireEvent.click(screen.getByTestId('app-menu-trigger'));
     const menu = await screen.findByTestId('app-menu');
     fireEvent.click(within(menu).getByText('Settings'));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();

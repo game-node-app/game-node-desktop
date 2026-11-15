@@ -65,6 +65,129 @@ fn toggle(machine: &mut LibraryMachine, key: &str, favorite: bool) -> Vec<Effect
     })
 }
 
+fn keys(ids: &[&str]) -> Vec<String> {
+    ids.iter()
+        .map(|id| crate::library::entry_key("steam", id))
+        .collect()
+}
+
+#[test]
+fn favorite_all_and_unfavorite_all_apply_to_matched_games_only() {
+    let mut machine = crate::library::add_dialog::tests::library();
+    let mixed = keys(&["620", "570", "500", "1145360", "504230"]);
+
+    let effects = machine.handle(Input::SetFavorites {
+        keys: mixed.clone(),
+        favorite: true,
+        now: 70,
+    });
+    assert!(pushes(&effects).is_empty(), "sync is off");
+    let saved = persisted(&effects);
+    assert_eq!(
+        saved
+            .iter()
+            .map(|record| record.game_id)
+            .collect::<Vec<_>>(),
+        [7, 8, 9, 10],
+        "the unmatched entry changes nothing"
+    );
+    assert!(
+        saved
+            .iter()
+            .all(|record| record.is_favorite && record.pending)
+    );
+    for game_id in [7, 8, 9, 10] {
+        let state = machine.favorite_state(game_id).unwrap();
+        assert!(state.is_favorite && state.pending);
+    }
+    assert!(machine.favorite_state(99).is_none());
+    assert_eq!(
+        machine
+            .visible_rows("")
+            .iter()
+            .filter(|row| row.key != "steam:570")
+            .count(),
+        4
+    );
+
+    // Unfavorite all is the same local-first change in reverse.
+    let effects = machine.handle(Input::SetFavorites {
+        keys: mixed,
+        favorite: false,
+        now: 71,
+    });
+    assert!(pushes(&effects).is_empty());
+    for game_id in [7, 8, 9, 10] {
+        let state = machine.favorite_state(game_id).unwrap();
+        assert!(!state.is_favorite && state.pending);
+    }
+    assert!(machine.visible_rows("").iter().all(|row| !row.is_favorite));
+}
+
+#[test]
+fn a_batch_favorite_keeps_one_pending_push_per_game() {
+    let mut machine = crate::library::add_dialog::tests::library();
+    machine.handle(Input::SetFavorites {
+        keys: keys(&["620", "570", "500", "1145360", "504230"]),
+        favorite: true,
+        now: 70,
+    });
+
+    // Turning sync on reads first, as a single favorite does.
+    let effects = machine.handle(Input::SetSyncActive(true));
+    let sync = syncs(&effects);
+    assert_eq!(sync.len(), 1);
+    assert!(pushes(&effects).is_empty());
+    let effects = machine.handle(Input::FavoritesSynced {
+        op: sync[0].0,
+        result: Ok(vec![]),
+        now: 71,
+    });
+    let push = pushes(&effects);
+    assert_eq!(
+        push.iter()
+            .map(|(_, game_id, _)| *game_id)
+            .collect::<Vec<_>>(),
+        [7, 8, 9, 10]
+    );
+    assert!(push.iter().all(|(_, _, favorite)| *favorite));
+    for game_id in [7, 8, 9, 10] {
+        assert!(machine.favorite_state(game_id).unwrap().pending);
+    }
+
+    // A confirmed push clears only that game's pending state.
+    let (op, game_id, favorite) = push[0];
+    let effects = machine.handle(Input::FavoritePushed {
+        op,
+        game_id,
+        favorite,
+        result: Ok(()),
+        now: 72,
+    });
+    assert!(!machine.favorite_state(game_id).unwrap().pending);
+    assert!(
+        persisted(&effects)
+            .iter()
+            .any(|record| { record.game_id == game_id && record.is_favorite && !record.pending })
+    );
+    for other in [8, 9, 10] {
+        assert!(machine.favorite_state(other).unwrap().pending);
+    }
+
+    // With sync off again, Unfavorite all stays local.
+    machine.handle(Input::SetSyncActive(false));
+    let effects = machine.handle(Input::SetFavorites {
+        keys: keys(&["620", "570", "500", "1145360", "504230"]),
+        favorite: false,
+        now: 73,
+    });
+    assert!(pushes(&effects).is_empty());
+    for game_id in [7, 8, 9, 10] {
+        let state = machine.favorite_state(game_id).unwrap();
+        assert!(!state.is_favorite && state.pending);
+    }
+}
+
 #[test]
 fn a_toggle_is_local_first_and_persisted_for_the_account() {
     let mut machine = machine_with_portal();

@@ -7,6 +7,7 @@ import {
   APP_INFO_QUERY_KEY,
   SNAPSHOT_QUERY_KEY,
   commands,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   type LibraryView,
   type Snapshot,
@@ -61,15 +62,19 @@ function epicAccount(overrides: Partial<StoreAccountView> = {}): StoreAccountVie
 
 function library(): LibraryView {
   return {
+    ...createDefaultLibraryView(),
     generation: 1,
     layout: {
       view: 'grid',
       sort: { key: 'title', direction: 'ascending' },
-      filter: 'all',
+      scope: 'all',
+      group: 'none',
+      collapsedGroups: {},
       filters: createDefaultFilters(),
       sidebarWidth: 216,
       detailWidth: 320,
       detailOpen: false,
+      sidebarCollapsed: false,
     },
     search: '',
     access: 'verified',

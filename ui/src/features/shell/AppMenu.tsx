@@ -1,17 +1,32 @@
-import { useEffect, useRef, useState } from 'react';
 import {
+  IconBooks,
+  IconChevronDown,
   IconInfoCircle,
-  IconLibrary,
+  IconKeyboard,
   IconLogout,
   IconPlus,
   IconPower,
   IconRefresh,
   IconSettings,
+  IconUser,
 } from '@tabler/icons-react';
 import type { TablerIcon } from '@tabler/icons-react';
+import { Menu } from '@mantine/core';
 import { commands } from '../../api/commands';
-import { openSettingsModal, uiStore } from '../../store/uiStore';
+import {
+  openSettingsModal,
+  openShortcuts,
+  setActiveDestination,
+  uiStore,
+  useUiStore,
+} from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { KbdCombo } from '../../components/ui/Kbd';
+import {
+  menuItemShortcutClass,
+  menuItemStackClass,
+} from '../../components/ui/menuClasses';
+import { MenuSurface } from '../../components/ui/MenuSurface';
 
 export interface AppMenuItem {
   id: string;
@@ -22,187 +37,184 @@ export interface AppMenuItem {
 
 export interface AppMenuProps {
   isSignedIn?: boolean;
+  /** The signed-in user's display name; omitted when signed out. */
+  userName?: string | null;
   onClose?: () => void;
   className?: string;
 }
 
-const MENU_ICONS: Record<string, TablerIcon> = {
-  library: IconLibrary,
-  rescan: IconRefresh,
-  'add-game': IconPlus,
-  settings: IconSettings,
-  about: IconInfoCircle,
-  'sign-out': IconLogout,
-  quit: IconPower,
-};
+/** Closes the menu before running an action that is not a modal opener itself. */
+function closeMenu(): void {
+  uiStore.setState((state) =>
+    state.appMenuOpen ? { ...state, appMenuOpen: false } : state,
+  );
+}
 
+function MenuIcon({ icon: Icon }: { icon: TablerIcon }) {
+  return <Icon size={16} stroke={2} aria-hidden="true" className="text-text-secondary" />;
+}
+
+function MenuShortcut({ keys }: { keys: string[] }) {
+  return (
+    <span className={menuItemShortcutClass}>
+      <KbdCombo keys={keys} />
+    </span>
+  );
+}
+
+/**
+ * The account menu opened by the top-bar avatar, per D9 and
+ * `raw/06-L4-menus-popovers.txt`: a connection header, the Library section,
+ * Settings/About and the session section. Mantine Menu supplies focus,
+ * keyboard navigation and outside-click handling; `MenuSurface` supplies the
+ * shared redesign surface.
+ */
 export function AppMenu({
   isSignedIn = false,
+  userName,
   onClose,
   className,
-}: AppMenuProps) {
+}: AppMenuProps = {}) {
   const { t } = useI18n();
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [focusedIndex, setFocusedIndex] = useState(0);
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const appMenuOpen = useUiStore((state) => state.appMenuOpen);
+  const name = userName?.trim() ?? '';
+  const initial = name ? name.charAt(0).toUpperCase() : '';
+  const connectedLabel = t('AppMenu::Connected to GameNode');
 
-  const handleClose = () => {
-    uiStore.setState((s) => ({ ...s, appMenuOpen: false }));
+  const run = (action: () => void) => {
+    closeMenu();
     onClose?.();
-  };
-
-  const items: AppMenuItem[] = [
-    {
-      id: 'library',
-      label: t('Library'),
-      action: () => {
-        handleClose();
-        uiStore.setState((s) => ({ ...s, settingsOpen: false }));
-      },
-    },
-    {
-      id: 'rescan',
-      label: t('Rescan library'),
-      action: () => {
-        handleClose();
-        commands.rescanLibrary();
-      },
-    },
-    {
-      id: 'add-game',
-      label: t('Add a game'),
-      action: () => {
-        handleClose();
-        commands.pickLocalExecutable(null);
-      },
-    },
-    {
-      id: 'settings',
-      label: t('Settings'),
-      action: () => {
-        openSettingsModal('account');
-      },
-    },
-    {
-      id: 'about',
-      label: t('About & licenses'),
-      action: () => {
-        openSettingsModal('about');
-      },
-    },
-    ...(isSignedIn
-      ? [
-          {
-            id: 'sign-out',
-            label: t('Sign out'),
-            action: () => {
-              handleClose();
-              commands.dispatchAuth('signOut');
-            },
-            separatorBefore: true,
-          },
-        ]
-      : []),
-    {
-      id: 'quit',
-      label: t('Quit'),
-      action: () => {
-        handleClose();
-        commands.quitApp();
-      },
-      separatorBefore: !isSignedIn,
-    },
-  ];
-
-  useEffect(() => {
-    itemRefs.current = itemRefs.current.slice(0, items.length);
-  }, [items.length]);
-
-  useEffect(() => {
-    const btn = itemRefs.current[focusedIndex];
-    if (btn) {
-      btn.focus();
-    }
-  }, [focusedIndex]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      handleClose();
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setFocusedIndex((prev) => (prev + 1) % items.length);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setFocusedIndex((prev) => (prev - 1 + items.length) % items.length);
-    } else if (e.key === 'Home') {
-      e.preventDefault();
-      setFocusedIndex(0);
-    } else if (e.key === 'End') {
-      e.preventDefault();
-      setFocusedIndex(items.length - 1);
-    } else if (e.key === 'Tab') {
-      handleClose();
-    }
+    action();
   };
 
   return (
-    <>
-      <div
-        data-testid="app-menu-backdrop"
-        onClick={handleClose}
-        className="fixed inset-0 z-[900] bg-transparent"
-      />
+    <MenuSurface
+      opened={appMenuOpen}
+      onChange={(open) => {
+        uiStore.setState((state) => ({ ...state, appMenuOpen: open }));
+        if (!open) onClose?.();
+      }}
+      position="bottom-end"
+      offset={4}
+      width={260}
+      transitionProps={{ duration: 0 }}
+      classNames={{
+        dropdown: className,
+      }}
+      closeOnItemClick
+    >
+      <Menu.Target>
+        <button
+          type="button"
+          data-testid="app-menu-trigger"
+          aria-label={t('Shell::Account menu')}
+          className="flex h-[32px] shrink-0 items-center gap-[8px] rounded-control px-[8px] text-text-default transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <span
+            aria-hidden="true"
+            className="flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-tertiary text-[11px] font-semibold leading-none text-text-primary"
+          >
+            {initial || <IconUser size={14} stroke={2} />}
+          </span>
+          {isSignedIn && name && (
+            <span
+              data-testid="user-display-name"
+              className="max-w-[120px] truncate text-[13px] font-medium text-text-default"
+            >
+              {name}
+            </span>
+          )}
+          <IconChevronDown
+            size={14}
+            stroke={2}
+            aria-hidden="true"
+            className="text-text-dimmed"
+          />
+        </button>
+      </Menu.Target>
 
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label={t('Application menu')}
-        tabIndex={-1}
-        onKeyDown={handleKeyDown}
-        data-testid="app-menu"
-        className={`absolute top-[calc(100%_+_4px)] right-md z-[1000] flex min-w-[220px] flex-col gap-[2px] rounded-md border border-border-subtle bg-raised p-compact shadow-modal ${className ?? ''}`}
-      >
-        {items.map((item, index) => {
-          const isFocused = index === focusedIndex;
-          const ItemIcon = MENU_ICONS[item.id];
-          return (
-            <div key={item.id} className="contents">
-              {item.separatorBefore && (
-                <div
-                  role="separator"
-                  className="mx-[4px] my-[6px] h-px bg-border-subtle"
-                />
-              )}
-              <button
-                ref={(el) => {
-                  itemRefs.current[index] = el;
-                }}
-                type="button"
-                role="menuitem"
-                tabIndex={isFocused ? 0 : -1}
-                onClick={item.action}
-                onMouseEnter={() => setFocusedIndex(index)}
-                className={`flex w-full cursor-pointer items-center gap-compact rounded-sm px-sm py-compact text-left text-sm outline-none ${
-                  isFocused
-                    ? 'bg-surface text-on-primary'
-                    : 'bg-transparent text-text-default'
-                }`}
-              >
-                {ItemIcon && (
-                  <ItemIcon
-                    size={16}
-                    stroke={1.75}
-                    aria-hidden="true"
-                    className="shrink-0"
-                  />
-                )}
-                {item.label}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </>
+      <Menu.Dropdown data-testid="app-menu" aria-label={t('Application menu')}>
+        <div
+          data-testid="app-menu-header"
+          className="flex items-center gap-[10px] p-[10px]"
+        >
+          <span
+            aria-hidden="true"
+            className="flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-tertiary text-[13px] font-semibold leading-none text-text-primary"
+          >
+            {initial || <IconUser size={16} stroke={2} />}
+          </span>
+          <div className={menuItemStackClass}>
+            <span className="truncate text-[13px] font-semibold text-text-primary">
+              {name || (isSignedIn ? connectedLabel : t('AppMenu::Offline'))}
+            </span>
+            {isSignedIn && name && (
+              <span className="truncate text-[11px] text-text-dimmed">
+                {connectedLabel}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <Menu.Divider />
+
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconBooks} />}
+          onClick={() => run(() => setActiveDestination('library'))}
+        >
+          {t('AppMenu::Library')}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconPlus} />}
+          onClick={() => run(() => commands.pickLocalExecutable(null))}
+        >
+          {t('AppMenu::Add a game')}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconRefresh} />}
+          onClick={() => run(() => commands.rescanLibrary())}
+        >
+          {t('AppMenu::Rescan library')}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconSettings} />}
+          rightSection={<MenuShortcut keys={['Ctrl', ',']} />}
+          onClick={() => run(() => openSettingsModal('account'))}
+        >
+          {t('AppMenu::Settings')}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconKeyboard} />}
+          rightSection={<MenuShortcut keys={['?']} />}
+          onClick={() => run(() => openShortcuts())}
+        >
+          {t('AppMenu::Keyboard shortcuts')}
+        </Menu.Item>
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconInfoCircle} />}
+          onClick={() => run(() => openSettingsModal('about'))}
+        >
+          {t('AppMenu::About and licenses')}
+        </Menu.Item>
+
+        <Menu.Divider />
+
+        {isSignedIn && (
+          <Menu.Item
+            leftSection={<MenuIcon icon={IconLogout} />}
+            onClick={() => run(() => commands.dispatchAuth('signOut'))}
+          >
+            {t('AppMenu::Sign out')}
+          </Menu.Item>
+        )}
+        <Menu.Item
+          leftSection={<MenuIcon icon={IconPower} />}
+          rightSection={<MenuShortcut keys={['Ctrl', 'Q']} />}
+          onClick={() => run(() => commands.quitApp())}
+        >
+          {t('AppMenu::Quit GameNode')}
+        </Menu.Item>
+      </Menu.Dropdown>
+    </MenuSurface>
   );
 }

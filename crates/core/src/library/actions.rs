@@ -127,7 +127,7 @@ impl LibraryMachine {
         };
         let provider = self.provider(&entry.provider);
         let record = entry.record();
-        let play = if self.running.contains(key) {
+        let play = if self.running.contains_key(key) {
             Availability::Disabled(Reason::Running)
         } else {
             rule(

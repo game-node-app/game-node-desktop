@@ -55,6 +55,71 @@ describe('i18n catalogs', () => {
     }
   });
 
+  it('keeps the redesign namespaces translated in English, not copied from pt-BR', () => {
+    const namespaces = [
+      'Shell',
+      'Sidebar',
+      'StatusBar',
+      'Library',
+      'Detail',
+      'Notify',
+      'AppMenu',
+      'Palette',
+      'Views',
+      'Shortcuts',
+      'Catalog',
+    ];
+    const isRedesignKey = (key: string) =>
+      namespaces.some((namespace) => key.startsWith(`${namespace}::`));
+    const redesignKeys = Object.keys(en).filter(isRedesignKey);
+
+    expect(redesignKeys.length).toBeGreaterThan(250);
+
+    const placeholders = (value: string) => (value.match(/\{[^}]*\}/g) ?? []).sort();
+    const portugueseLetters = /[ãõçáéíóúâêôàÃÕÇÁÉÍÓÚÂÊÔÀ]/;
+
+    for (const key of redesignKeys) {
+      const enValue = (en as Record<string, string>)[key];
+      const ptValue = (ptBR as Record<string, string>)[key];
+
+      expect(ptValue, `missing pt-BR value for ${key}`).toBeTruthy();
+      expect(placeholders(ptValue), `placeholder mismatch for ${key}`).toEqual(
+        placeholders(enValue),
+      );
+      expect(portugueseLetters.test(enValue), `untranslated English value for ${key}`).toBe(false);
+    }
+  });
+
+  it('keeps representative redesign strings in English', () => {
+    const expected: Record<string, string> = {
+      'Shell::Search games, actions and settings': 'Search games, actions and settings',
+      'Sidebar::Your space': 'Your space',
+      'StatusBar::just now': 'just now',
+      'Library::Unknown release': 'Unknown release',
+      'Library::{}s': '{}s',
+      'Detail::Close details': 'Close details',
+      'Detail::Playing on GameNode': 'Playing on GameNode',
+      'Notify::Undo': 'Undo',
+      'Palette::Games': 'Games',
+      'Views::Save as view': 'Save as view',
+      'Shortcuts::General': 'General',
+      'Catalog::Explore GameNode': 'Explore GameNode',
+    };
+
+    for (const [key, value] of Object.entries(expected)) {
+      expect((en as Record<string, string>)[key], key).toBe(value);
+    }
+  });
+
+  it('uses Favorite as the indicator and the action keys for actions', () => {
+    expect(en['Library::Favorite']).toBe('Favorite');
+    expect(en['Library::Add to favorites']).toBe('Add to favorites');
+    expect(en['Library::Remove from favorites']).toBe('Remove from favorites');
+    expect(ptBR['Library::Favorite']).toBe('Favorito');
+    expect(ptBR['Library::Add to favorites']).toBe('Adicionar aos favoritos');
+    expect(ptBR['Library::Remove from favorites']).toBe('Remover dos favoritos');
+  });
+
   it('supports named parameter interpolation for en and pt-BR', () => {
     const key = 'Skia failed to initialize: {gpu}\nGameNode could not restart with software rendering: {error}\nYour saved settings and session were preserved. Restart after updating your graphics driver.';
 

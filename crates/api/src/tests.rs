@@ -296,3 +296,50 @@ fn no_diagnostics_contain_the_credential() {
     );
     assert!(!all.contains("tok"));
 }
+
+#[test]
+fn the_web_url_defaults_and_follows_the_environment() {
+    unsafe { std::env::remove_var(WEB_URL_ENV) };
+    assert_eq!(
+        web_url_from_env().unwrap().as_str(),
+        "https://gamenode.app/"
+    );
+
+    unsafe { std::env::set_var(WEB_URL_ENV, "https://staging.gamenode.test/prefix/") };
+    assert_eq!(
+        web_url_from_env().unwrap().as_str(),
+        "https://staging.gamenode.test/prefix/"
+    );
+
+    for invalid in ["not a url", "ftp://gamenode.test", "file:///etc/passwd", ""] {
+        unsafe { std::env::set_var(WEB_URL_ENV, invalid) };
+        assert!(
+            matches!(web_url_from_env(), Err(ClientError::InvalidWebUrl)),
+            "{invalid:?}"
+        );
+    }
+    unsafe { std::env::remove_var(WEB_URL_ENV) };
+}
+
+#[test]
+fn web_pages_are_built_under_the_configured_base() {
+    let base = Url::parse("https://staging.gamenode.test/prefix/?x=1#frag").unwrap();
+    assert_eq!(
+        game_page_url(&base, 42).as_str(),
+        "https://staging.gamenode.test/prefix/game/42"
+    );
+    assert_eq!(
+        library_page_url(&base, "user-1").as_str(),
+        "https://staging.gamenode.test/prefix/library/user-1"
+    );
+
+    let production = Url::parse("https://gamenode.app").unwrap();
+    assert_eq!(
+        game_page_url(&production, 7).as_str(),
+        "https://gamenode.app/game/7"
+    );
+    assert_eq!(
+        library_page_url(&production, "a/b").as_str(),
+        "https://gamenode.app/library/a%2Fb"
+    );
+}

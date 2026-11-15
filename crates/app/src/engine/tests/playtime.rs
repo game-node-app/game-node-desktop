@@ -140,6 +140,33 @@ async fn internal_records_sessions_and_source_switch_preserves_histories() {
         s.tracking.running.contains("steam:620")
     })
     .await;
+    let snapshot = h.engine.snapshot();
+    let started = snapshot
+        .tracking
+        .session_started_at
+        .get("steam:620")
+        .copied()
+        .expect("the snapshot carries the execution start");
+    let row = snapshot
+        .library
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.key == "steam:620")
+        .unwrap();
+    assert_eq!(row.session_started_at, Some(started));
+    assert!(row.running);
+    // A refresh builds a new snapshot; the same execution keeps its original clock.
+    h.engine.maintenance();
+    assert_eq!(
+        h.engine
+            .snapshot()
+            .tracking
+            .session_started_at
+            .get("steam:620"),
+        Some(&started)
+    );
     eventually(|| h.processes.watch_count() > 0).await;
     assert!(h.api.playtimes.lock().unwrap().is_empty());
     eventually(|| {
@@ -188,6 +215,12 @@ async fn quit_flushes_a_closed_session_and_signout_preserves_its_account() {
         h.until("running", |s| !s.tracking.running.is_empty()).await;
         if signout {
             h.engine.dispatch(Input::SignOut);
+            let tracking = h.engine.snapshot().tracking;
+            assert!(tracking.running.is_empty());
+            assert!(
+                tracking.session_started_at.is_empty(),
+                "signing out clears the live session clock with the tracked account"
+            );
         }
         h.engine.shutdown();
         let rows = h.engine.shared.ports.playtime.sessions("u1").unwrap();
@@ -235,6 +268,49 @@ async fn idle_maintenance_does_not_publish_but_a_running_change_does() {
         publishes.load(std::sync::atomic::Ordering::SeqCst) > before,
         "a running set change did not publish"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_publishes_the_execution_start_for_a_counter_game_without_a_session() {
+    let mut h = ready().await;
+    let process = process();
+    let started = process
+        .created_at
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    h.processes.start(process);
+    h.engine.maintenance();
+    h.until("running counter game", |s| {
+        s.tracking.running.contains("steam:620")
+    })
+    .await;
+    let snapshot = h.engine.snapshot();
+    assert_eq!(
+        snapshot.tracking.session_started_at.get("steam:620"),
+        Some(&started),
+        "counter-backed entries keep a live session clock without a durable session"
+    );
+    assert!(
+        h.engine
+            .shared
+            .ports
+            .playtime
+            .sessions("u1")
+            .unwrap()
+            .is_empty(),
+        "the store counter never opens a measured session"
+    );
+    let row = snapshot
+        .library
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.key == "steam:620")
+        .unwrap();
+    assert_eq!(row.session_started_at, Some(started));
+    h.engine.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

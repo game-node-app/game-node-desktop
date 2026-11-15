@@ -217,7 +217,36 @@ impl LibraryMachine {
         let Some(dialog) = self.dialog.take() else {
             return vec![];
         };
-        self.choose(&dialog.key, None, now)
+        self.mark_key_no_game(&dialog.key, now)
+    }
+
+    /// Marks one entry as having no GameNode game without the match dialog, as the detail pane's
+    /// Not a game action does. The entry must still be the single shown selection, and must still
+    /// be unmatched: a stale action after the selection moved or a lookup matched the entry
+    /// changes nothing. The choice is persisted exactly like the dialog's, and the entry's cached
+    /// suggestions are dropped.
+    pub(super) fn mark_entry_no_game(&mut self, key: &str, now: i64) -> Vec<Effect> {
+        let selected = self.selected_keys();
+        if selected.len() != 1 || selected[0] != key {
+            return vec![];
+        }
+        let Some(entry) = self.entries.get(key) else {
+            return vec![];
+        };
+        if !matches!(self.match_status(entry), MatchStatus::Unmatched) {
+            return vec![];
+        }
+        if self.dialog.as_ref().is_some_and(|dialog| dialog.key == key) {
+            self.dialog = None;
+        }
+        self.mark_key_no_game(key, now)
+    }
+
+    /// Stores the user's "no GameNode game" choice and forgets what was suggested for the entry.
+    fn mark_key_no_game(&mut self, key: &str, now: i64) -> Vec<Effect> {
+        self.suggestions.remove(key);
+        self.suggestion_requests.remove(key);
+        self.choose(key, None, now)
     }
 
     /// Forgets the user's choice for the dialog's entry. The automatic match applies again.
@@ -237,7 +266,7 @@ impl LibraryMachine {
         }]
     }
 
-    fn choose(&mut self, key: &str, game_id: Option<u64>, now: i64) -> Vec<Effect> {
+    pub(super) fn choose(&mut self, key: &str, game_id: Option<u64>, now: i64) -> Vec<Effect> {
         let Some(account) = self.account.as_ref().map(|a| a.id.clone()) else {
             return vec![];
         };

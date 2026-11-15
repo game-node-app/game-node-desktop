@@ -5,6 +5,7 @@ import type {
   AchievementListView,
   AppInfo,
   AuthInput,
+  GameNodePage,
   LaunchKind,
   LibraryInput,
   PluginInfo,
@@ -90,6 +91,9 @@ export const commands = {
 
   libraryInput: (input: LibraryInput) =>
     safeInvoke<void>('library_input', { input }, () => undefined),
+
+  openGameNodePage: (page: GameNodePage) =>
+    safeInvoke<void>('open_gamenode_page', { page }, () => undefined),
 
   activateEntry: () =>
     safeInvoke<void>('activate_entry', undefined, () => undefined),

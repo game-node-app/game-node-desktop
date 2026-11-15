@@ -393,6 +393,98 @@ fn marking_no_game_is_sticky_and_leaves_the_entry_playable() {
 }
 
 #[test]
+fn marking_no_game_without_the_dialog_marks_the_selected_entry_and_persists_it() {
+    let mut machine = library();
+    select(&mut machine, "570");
+    let effects = machine.handle(Input::MarkEntryNoGame {
+        key: entry_key("steam", "570"),
+        now: NOW,
+    });
+    assert!(matches!(
+        without_reads(effects).as_slice(),
+        [Effect::PersistChoice { account_id, choice }]
+            if account_id == "a"
+                && choice.entry_key == entry_key("steam", "570")
+                && choice.game_id.is_none()
+                && choice.chosen_at == NOW
+    ));
+    assert_eq!(status(&machine, "570"), MatchStatus::NoGame);
+    // The other entries keep their own status.
+    assert_eq!(
+        status(&machine, "620"),
+        MatchStatus::Matched {
+            game_id: 7,
+            source: MatchSource::Automatic
+        }
+    );
+    assert_eq!(
+        status(&machine, "70"),
+        MatchStatus::Ambiguous {
+            candidates: vec![20, 21]
+        }
+    );
+    let view = machine.view().unwrap();
+    assert!(view.match_dialog.is_none());
+    assert!(view.actions.play.is_available());
+    assert!(view.actions.change_match, "it can be changed back");
+}
+
+#[test]
+fn the_direct_no_game_action_ignores_another_selection_or_a_missing_entry() {
+    let mut machine = library();
+    select(&mut machine, "620");
+    let effects = machine.handle(Input::MarkEntryNoGame {
+        key: entry_key("steam", "570"),
+        now: NOW,
+    });
+    assert!(without_reads(effects).is_empty());
+    assert_eq!(status(&machine, "570"), MatchStatus::Unmatched);
+    assert_eq!(
+        status(&machine, "620"),
+        MatchStatus::Matched {
+            game_id: 7,
+            source: MatchSource::Automatic
+        }
+    );
+
+    let effects = machine.handle(Input::MarkEntryNoGame {
+        key: entry_key("steam", "999"),
+        now: NOW,
+    });
+    assert!(without_reads(effects).is_empty());
+    assert_eq!(status(&machine, "620").game_id(), Some(7));
+}
+
+#[test]
+fn the_direct_no_game_action_refuses_an_entry_that_is_already_decided() {
+    for id in ["620", "70"] {
+        let mut machine = library();
+        let before = status(&machine, id);
+        select(&mut machine, id);
+        let effects = machine.handle(Input::MarkEntryNoGame {
+            key: entry_key("steam", id),
+            now: NOW,
+        });
+        assert!(without_reads(effects).is_empty(), "{id}");
+        assert_eq!(status(&machine, id), before, "{id}");
+    }
+}
+
+#[test]
+fn the_direct_no_game_action_is_dropped_when_the_account_changes() {
+    let mut machine = library();
+    select(&mut machine, "570");
+    machine.handle(Input::AccountChanged(None));
+    let effects = machine.handle(Input::MarkEntryNoGame {
+        key: entry_key("steam", "570"),
+        now: NOW,
+    });
+    assert!(effects.is_empty());
+    assert!(machine.view().is_none());
+    assert!(machine.chosen_match(&entry_key("steam", "570")).is_none());
+}
+
+#[test]
 fn clearing_forgets_only_the_users_choice() {
     let mut machine = library();
     open(&mut machine, "620");

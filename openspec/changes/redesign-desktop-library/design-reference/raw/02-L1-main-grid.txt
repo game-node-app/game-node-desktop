@@ -1,0 +1,56 @@
+## 5361:1052 Main (L1 · grid)
+F [Main] 840x826 col FF
+ F [Header] 840x77 row gap8 p20/24/14/24 ai:center FH
+  F 405x43 col gap2 FH
+   T "Todos os jogos" 22/600 text/primary
+   T "248 jogos · 37 instalados neste PC · 3 lojas" 13/400 text-dimmed
+  C <Button Variant=Ghost, Size=SM> 172x32 "Verificar novamente" icons=refresh:text/secondary
+  C <Button Variant=Primary, Size=SM> 199x32 "Adicionar ao GameNode" icons=plus:text/primary
+ F [Toolbar] 840x46 row gap8 p0/24/12/24 ai:center FH
+  F [Search] 210x34 row gap8 p0/10/0/10 ai:center FF bg=surface bd1=border/subtle r6
+   I search 16:text-dimmed
+   T "Buscar nos seus jogos" 13/400 text-dimmed ellipsis fillW
+   C <Kbd> 30x18 "Ctrl"
+   C <Kbd> 19x18 "F"
+  F [Filtros (2)] 109x34 row gap6 p0/12/0/12 ai:center HF bg=accent/subtle bd1=primary r6     (ACTIVE state: >=1 filter)
+   I adjustments-horizontal 16:primary
+   T "Filtros" 13/500 text/primary
+   F 18x18 row jc:center ai:center bg=primary r999
+    T "2" 11/700 text/primary
+  F [Ordenar] 195x34 row gap6 p0/12/0/12 ai:center HF bg=bg/raised bd1=border/subtle r6
+   I arrows-sort 16:text/secondary
+   T "Jogado recentemente" 13/400 text-default
+   I chevron-down 14:text-dimmed
+  F [Agrupar (NOVO)] 138x34 row gap6 p0/12/0/12 ai:center HF bg=bg/raised bd1=border/subtle r6     (INACTIVE: "Sem grupos")
+   I category 16:text/secondary
+   T "Sem grupos" 13/400 text-default
+   I chevron-down 14:text-dimmed
+  F [Visualização] 66x34 row gap2 p3 HH bg=bg/canvas bd1=border/subtle r8     (Mantine SegmentedControl restyled)
+   F 28x26 row jc:center ai:center bg=bg/raised r5      (selected)
+    I layout-grid 16:text/primary
+   F 28x26 row jc:center ai:center r5
+    I layout-list 16:text-dimmed
+  F [icon-button] 34x34 row jc:center ai:center bg=bg/raised r6     (detail pane toggle, PRESSED state)
+   I layout-sidebar-right 16:text/primary
+ F [Filtros ativos] 840x46 row gap8 p0/24/14/24 ai:center FH      (only rendered when >=1 filter active)
+  F [filter-chip] 163x28 row gap6 p0/6/0/10 ai:center HF bg=accent/subtle bd1=primary r999
+   T "Loja:" 12/400 text/secondary
+   T "Steam, DRM-free" 12/600 text/primary
+   I x 14:text/secondary
+  F [filter-chip] 157x28 row gap6 p0/6/0/10 ai:center HF bg=accent/subtle bd1=primary r999
+   T "Tempo de jogo:" 12/400 text/secondary
+   T "10 h+" 12/600 text/primary
+   I x 14:text/secondary
+  T "Limpar filtros" 13/500 primary
+  F [spacer] FF
+  T "Mostrando 42 de 248" 12/400 text-dimmed
+  C <Button Variant=Ghost, Size=SM> 161x32 "Salvar como visão" icons=bookmark-plus:text/secondary
+ F [Grade (virtualizada)] 840x657 col p0/24/24/24 FF
+  F [grid] 792 row gap16 wrap FH      (virtualized rows of Game tile 172 wide; gap 16 both axes)
+   C <Game tile State=Selected> "Emberfall: Iron Trail"|"Instalado"|"Emberfall: Iron Trail"|"Steam"|"42 h" icons=star-filled:warning,device-desktop:success,brand-steam:text-dimmed
+   C <Game tile State=Default> "Aster Vale: Revival"|"Instalado"|...|"Steam"|"118 h" icons=star-filled:warning,device-desktop:success,brand-steam
+   C <Game tile State=Default> "Distant Skies: Recompiled"|"Em execução"|...|"DRM-free"|"3 h" icons=player-play-filled:#0b0b0b (running badge: bg success, dark text/icon),folder
+   C <Game tile State=Hover> "Glass Garden: Enhanced"|"Instalado"|...|"DRM-free"|"12 h" icons=device-desktop:success,player-play-filled:text/primary (hover play circle),folder
+   C <Game tile State=Default> "Lantern Tide"|"Instalado"|"Steam"|"64 h"
+   C <Game tile State=Default> "Iron Orchard Tactics"|"Steam"|"31 h"   (no installed badge when not installed)
+   ... (12 tiles total)

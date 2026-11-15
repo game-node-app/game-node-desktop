@@ -253,7 +253,10 @@ fn availability_helpers() {
 fn running_disables_play_and_updates_rows_and_details_until_exit() {
     let mut machine = library(Access::Verified);
     select(&mut machine, &["steam:620"]);
-    machine.set_running(std::collections::BTreeSet::from(["steam:620".into()]));
+    machine.set_running(std::collections::BTreeMap::from([(
+        "steam:620".into(),
+        1_000,
+    )]));
     assert_eq!(machine.actions().play, disabled(Reason::Running));
     let view = machine.view().unwrap();
     assert!(

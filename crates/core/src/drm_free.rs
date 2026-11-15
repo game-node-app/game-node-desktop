@@ -516,6 +516,8 @@ pub struct LocalView {
     pub discovery_scanning: bool,
     pub discovery_completed: bool,
     pub discovery_error: Option<String>,
+    /// Unix seconds of the last completed watched-folder check, kept across restarts.
+    pub discovery_last_checked_at: Option<i64>,
     pub watches: Vec<WatchRoot>,
     pub review_selected: Vec<String>,
     pub versions: Vec<BackupVersion>,

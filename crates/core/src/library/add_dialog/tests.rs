@@ -216,6 +216,7 @@ fn an_existing_detected_game_can_be_edited_with_saved_choices() {
     let mut machine = library();
     let effects = select(&mut machine, "620");
     let existing = LibraryEntry {
+        id: "e1".into(),
         status: Some(EntryStatus::Finished),
         collection_ids: vec!["c".into()],
         platform_ids: vec![6, 48],
@@ -257,7 +258,7 @@ fn an_existing_detected_game_can_be_edited_with_saved_choices() {
     assert!(collection_ids.is_empty());
     assert_eq!(saved, &existing);
     let (op, game_id) = (*op, *game_id);
-    machine.handle(Input::EntryCreated {
+    machine.handle(Input::EntryUpdated {
         op,
         game_id,
         result: Err(ApiError::Failed),
@@ -270,7 +271,7 @@ fn an_existing_detected_game_can_be_edited_with_saved_choices() {
     let [Effect::UpdateEntry { op, game_id, .. }] = updates.as_slice() else {
         panic!()
     };
-    machine.handle(Input::EntryCreated {
+    machine.handle(Input::EntryUpdated {
         op: *op,
         game_id: *game_id,
         result: Ok(()),
@@ -284,6 +285,11 @@ fn an_existing_detected_game_can_be_edited_with_saved_choices() {
         machine.installed_entries().count(),
         5,
         "editing does not import GameNode games"
+    );
+    let view = machine.view().unwrap();
+    assert!(
+        view.add_summary.is_some_and(|summary| !summary.undoable),
+        "an edit has nothing to undo"
     );
 }
 

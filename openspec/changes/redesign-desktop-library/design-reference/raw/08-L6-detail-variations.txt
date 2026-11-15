@@ -1,0 +1,53 @@
+## L6 · Variações do painel de detalhes (panel 340–360 wide; same section/row/stat-card primitives as 03-L1-detail-panel.txt)
+HERO (variations): 170h ; artwork + bottom fade grad(#1a1a1a00 → #1a1a1a) ; title 19–20/600 text/primary ; meta 12/400 text/secondary
+
+### 5367:2694 1 · DRM-free em execução (local game, running)
+ hero meta "DRM-free · 2024 · Brasa Interactive"
+ actions: F 36h row gap8 p0/14/0/14 jc:center ai:center FF bg=success-subtle bd1=success r6 ; I player-play-filled 16:success ; T "Em execução · 0:42:10" 14/600 text/primary   (non-interactive running indicator, live timer)
+          icon-button folder-open ; icon-button dots
+ pills: <Pill Neutral> "DRM-free" icons=folder ; <Pill Neutral> "Associado" icons=link ; <Pill Success> "Saves protegidos" icons=shield-check   (when save protection enabled)
+ stats: "Tempo" "3 h 05 min" "Contador interno" | "Sessão" "Agora" "Iniciada 13:52" | "Saves" "12 cópias" "Última 14:20"   (3rd card = save backups for local games with protection; achievements otherwise)
+ [Configurações do jogo] header + link "Editar…" (→ LocalGameEditor)
+  row "Executável" … T "D:\\Jogos\\DistantSkies\\skies.exe" 12/400 text-default ellipsis
+  row "Argumentos" … "--windowed --fps 120"
+  row "Pasta de saves" … "%APPDATA%\\DistantSkies"
+ [Ferramentas e proteção] header
+  row "Proteção local dos saves" … <Pill Success> "Ativa" (or T "Desativada" text-dimmed) ; chevron-right   (→ SaveProtectionModal)
+  row "Ferramentas do jogo" … T "Nenhuma" 13/400 text-dimmed ; chevron-right   (→ GameToolsPanel)
+ footer link: row gap6 ; I trash 14:danger ; T "Remover da biblioteca…" 13/500 danger   (→ RemoveLocalGameModal)
+
+### 5367:2797 2 · Sem correspondência (unmatched)
+ hero meta "Steam · Instalado"
+ actions: Primary MD "Jogar" fillW ; icon-button star ; icon-button dots
+ warning card: col gap10 p12 bg=warning-subtle bd1=warning r8
+  row gap8 ; I alert-triangle 16:warning ; T "Sem correspondência no GameNode" 13/600 text/primary
+  T "Associe para sincronizar status, coleções e tempo de jogo com o seu perfil." 12/400 lh17 text/secondary
+  row gap8 ; <Button Primary SM> "Associar…" icons=link (→ MatchDialog) ; <Button Ghost SM> "Não é um jogo" (→ markNoGame)
+ [Sugestões] header (NEW: top 2 automatic candidates with confidence)
+  row gap10 p8/0/8/0 bd-bottom1 ; cover 28x37 r3 ; col: T "Neon Courier 2088" 13/500 text-default ; T "2023 · Glasshouse Works" 11/400 text-dimmed ; <Pill Success> "92%" ; <Button Secondary SM> "Usar"
+  row … "Neon Courier" / "2019 · Glasshouse Works" ; <Pill Warning> "61%" ; "Usar"
+  (confidence tone: >=80 Success, 50–79 Warning, <50 Neutral)
+ stats: "Tempo" "14 h" "Contador da Steam" | "Sessão" "Fev. 2026" "2 h 10 min" | "Conquistas" "9/40" "Steam"
+ (ambiguous state uses same card with title "Correspondência precisa de revisão" and button "Revisar…")
+
+### 5367:2891 3 · Compartilhado pela família, não instalado
+ hero meta "Steam · 2021 · Brasa Interactive"
+ actions: Primary MD "Instalar" icons=download fillW ; icon-button star ; icon-button dots
+ pills: <Pill Neutral> "Compartilhado pela família" icons=users-group ; <Pill Neutral> "Não instalado" icons=download
+ info box: row gap10 p12 bg=surface bd1=border/subtle r8 ; I info-circle 16:text/secondary ; T "Este jogo vem da Família Steam. O tempo de jogo e as conquistas são da sua conta; o acesso pode ser pausado quando o dono estiver jogando." 12/400 lh17 text/secondary
+ stats: "Tempo" "31 h" "Contador da Steam" | "Sessão" "Jan. 2026" "45 min" | "Conquistas" "12/36" "Steam"
+ [No GameNode] "Editar no GameNode" ; row "Status" … <Pill Neutral> "Na lista" ; row "Coleções" … T "Nenhuma" text-dimmed
+
+### 5367:2974 4 · Seleção múltipla (selected.length >= 2)
+ header block: col gap12 p16 bd-bottom1=border/subtle
+  stacked covers 150x110: 3 covers 76x102 r6 bd2=secondary, offset fan (last selected on top, each shifted ~37px right and rotated slightly is NOT in design — straight offsets)
+  T "3 jogos selecionados" 18/600 text/primary
+  T "Steam · todos instalados" 12/400 text-dimmed   (summary: common store or "{n} lojas" · "todos instalados" | "{k} instalados")
+ stats: "Tempo total" "224 h" "Soma das lojas" | "No GameNode" "2 de 3" "1 fora" | "Favoritos" "2 de 3" ""
+ actions col gap8 (MD buttons fillW):
+  Primary "Adicionar ao GameNode…" icons=plus
+  Secondary "Alterar status no GameNode" icons=bookmark
+  Secondary "Favoritar todos" icons=star          ("Remover dos favoritos" when all selected are favorite)
+  Secondary "Salvar em coleção" icons=bookmark-plus
+ [Seleção] header + link "Limpar"
+  rows 41h row gap10 p6/0/6/0 ; cover 22x29 r3 ; T title 13/400 text-default fillW ; I x 14:text-dimmed (remove from selection)

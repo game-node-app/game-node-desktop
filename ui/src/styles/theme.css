@@ -66,10 +66,63 @@
   --font-size-xl: 20px;
 
   /* Chrome Component Sizes */
-  --size-topbar-height: 54px;
+  --size-topbar-height: 48px;
+  /* Task-facing alias for the redesign top bar; Tailwind `h-topbar` uses the
+     Version 3.0 canonical `--size-topbar-height` above. */
+  --topbar-height: 48px;
   --size-control-height: 36px;
   --size-logo-width: 72.8px;
   --size-logo-height: 28px;
+
+  /* -------------------------------------------------------------------------
+     Desktop library redesign tokens.
+
+     Source: Figma section 5361:766 (1 · Biblioteca) and components 5357:677,
+     transcribed in
+     openspec/changes/redesign-desktop-library/design-reference/tokens.md.
+     Each value keeps the Figma variable / token name as its provenance. These
+     are additive to the Version 3.0 tokens above; only the top-bar height
+     changes (54px -> 48px per the redesign).
+     ------------------------------------------------------------------------- */
+
+  /* Figma text/primary, text/muted and bg/canvas */
+  --color-text-primary: #FFFFFF;
+  --color-text-muted: #7A7A7A;
+  --color-canvas: #0B0B0B;
+
+  /* Control and overlay borders: checkbox-unchecked, menu/popover, floating bar */
+  --color-border-strong: #4A4A4A;
+  --color-border-overlay: #333333;
+  --color-border-floating: #3A3A3A;
+
+  /* Tooltip surface */
+  --color-tooltip: #2E2E2E;
+
+  /* Radii: thumb cover, segmented-control segment, controls, popover, palette */
+  --radius-thumb: 3px;
+  --radius-segment: 5px;
+  --radius-control: 6px;
+  --radius-popover: 10px;
+  --radius-palette: 12px;
+
+  /* Type scale: badges, overline labels, captions, body, titles, headings */
+  --font-size-badge: 9px;
+  --font-size-overline: 10px;
+  --font-size-caption: 11px;
+  --font-size-body: 13px;
+  --font-size-title: 15px;
+  --font-size-heading: 22px;
+
+  /* Overlay shadows */
+  --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-notification: 0 10px 28px rgba(0, 0, 0, 0.45);
+
+  /* Status bar and window-control cell. The `--size-*` aliases keep the
+     names recorded in design-reference/tokens.md available too. */
+  --statusbar-height: 26px;
+  --size-statusbar-height: var(--statusbar-height);
+  --window-control-width: 46px;
+  --size-window-control: var(--window-control-width);
 
   /* Settings Modal and Overlay Design Tokens */
   --settings-bg-base: #0B0B0B;

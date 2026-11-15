@@ -195,3 +195,53 @@ Verified in tests and pending physical Windows verification:
 - [ ] Test edit-tracking recovery: if an unmonitored executable runs, open **Game settings**, add it to gameplay targets, and verify tracking starts immediately without restarting GameNode or losing historical save archives.
 - [ ] Confirm elevated processes (run as Administrator) or processes outside the game root log known inspection limitations rather than guessing identity.
 
+### Desktop library redesign — 2026-11-15
+
+Installed the current release package using `scripts/install-windows-wsl.sh`.
+The old installed application was first exited through its Quit action; no
+forced process termination was used. The installed executable and packaged
+executable had identical SHA-256:
+`dcca3fb6b318defd166bbf35cdd3ef650b55dc62053d97be88e1e6c992b2e42a`.
+The custom window controls, redesigned sidebar and real cached library were
+present in the installed app, independently of the Vite mock.
+
+Native interaction checks used UI Automation, Win32 window measurements and
+actual keyboard/mouse input on the Windows desktop at 150% scaling (144 DPI).
+
+- [x] Drag a non-interactive area of the top bar. The window moved from
+  `(150,120)` to `(230,180)` without changing its 1900×1150 outer size.
+- [x] Double-click the top bar to maximize; restore and maximize controls work.
+  The maximized client covered the 3440×1368 working area.
+- [x] Minimize sets the native iconic state. Reopening the installed executable
+  restores the existing instance rather than creating a second instance.
+- [x] Close hides the main window and leaves one application process running.
+  Reopening shows the same instance again.
+- [x] Resize all four edges and all four corners with mouse input. Each changed
+  the expected position/dimensions. Dragging the bottom-right corner below the
+  minimum stopped at a 1440×900 physical outer window, equivalent to 960×600
+  logical window pixels at 150%. The Win32 client rectangle at that size was
+  1418×887 physical pixels; these measurements include the native resize frame
+  in the outer window and distinguish it from the browser viewport.
+- [x] Quit normally and restart. The old process exited; the new process
+  restored the exact outer rectangle `(150,120,1900,1150)` and client size
+  1878×1137 at 144 DPI.
+- [x] Inspect the top bar at 150%. Its 48 logical pixels render as 72 physical
+  pixels; the wordmark, search, sync indicator, account menu and all three
+  window controls were visible in the native capture.
+- [ ] Inspect the top bar at 100% DPI on Windows.
+- [ ] Inspect the top bar at 125% DPI on Windows.
+- [x] Record the Snap Layouts tradeoff: the web maximize button does not supply
+  the native title-bar hover flyout. Custom chrome retains the app's explicit
+  maximize/restore actions; this check does not claim native hover Snap Layouts.
+
+The attempt to open Windows display settings did not expose a usable Settings
+window through UI Automation, so no system scaling change was made. The 100%
+and 125% checks remain pending. Browser viewport resizing and unit tests are
+not substitutes for those checks; OpenSpec task 21.3 remains unchecked.
+
+The native capture is retained locally as
+`%TEMP%\gamenode-redesign-native.png`; it contains the real user's library and
+is not added to the repository. Browser reference comparisons and integrated
+test results are in
+`openspec/changes/redesign-desktop-library/acceptance-notes.md`.
+

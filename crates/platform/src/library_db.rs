@@ -6,10 +6,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use gamenode_core::game_api::{AccountEntry, Collection};
 use gamenode_core::library::{
-    AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord,
-    LastAccount, LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, StoreAccount,
-    StoredEntry, entry_key,
+    AccountLibrary, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
+    EntryStatus, FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout,
+    LibraryStore, ProviderScanState, SavedView, SavedViewPayload, StoreAccount, StoredEntry,
+    entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -316,6 +318,126 @@ fn load_auto_matches(conn: &Connection) -> rusqlite::Result<Vec<AutoMatch>> {
     Ok(matches)
 }
 
+/// Reads a stored status. A value this build does not know means "in the library, status
+/// unknown" and is kept as `None` rather than dropping the entry.
+fn read_status(value: Option<String>) -> Option<EntryStatus> {
+    value.and_then(|name| EntryStatus::from_api_name(&name))
+}
+
+fn read_collection_ids(raw: &str, game: u64) -> Vec<String> {
+    serde_json::from_str(raw)
+        .inspect_err(
+            |error| tracing::warn!(%error, game, "ignored unreadable account collection ids"),
+        )
+        .unwrap_or_default()
+}
+
+fn load_saved_views(conn: &Connection, account_id: &str) -> rusqlite::Result<Vec<SavedView>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, payload, position, created_at FROM saved_views
+         WHERE account_id = ?1 ORDER BY position, id",
+    )?;
+    let rows = stmt.query_map([account_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut views = Vec::new();
+    for row in rows {
+        let (id, name, payload_json, position, created_at) = row?;
+        // A damaged payload cannot be applied; it is dropped so the sidebar has no broken item.
+        let Ok(payload) = serde_json::from_str::<SavedViewPayload>(&payload_json) else {
+            tracing::warn!(id, "ignored an unreadable saved view");
+            continue;
+        };
+        views.push(SavedView {
+            id,
+            name,
+            payload,
+            position,
+            created_at,
+        });
+    }
+    Ok(views)
+}
+
+fn load_hidden(conn: &Connection, account_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT entry_key FROM hidden_entries WHERE account_id = ?1 ORDER BY entry_key")?;
+    stmt.query_map([account_id], |row| row.get(0))?.collect()
+}
+
+/// Reads the account's last complete read. Entries or collections written before a complete read
+/// are not exposed: without the read marker there is no complete library to show.
+fn load_account_library(
+    conn: &Connection,
+    account_id: &str,
+) -> rusqlite::Result<Option<AccountLibrary>> {
+    let read_at: Option<i64> = conn
+        .query_row(
+            "SELECT read_at FROM account_library_reads WHERE account_id = ?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(read_at) = read_at else {
+        return Ok(None);
+    };
+
+    let mut collections_stmt = conn.prepare(
+        "SELECT collection_id, name, default_status FROM account_collections
+         WHERE account_id = ?1 ORDER BY position, collection_id",
+    )?;
+    let collections = collections_stmt
+        .query_map([account_id], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                default_status: read_status(row.get::<_, Option<String>>(2)?),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut entries_stmt = conn.prepare(
+        "SELECT game_id, entry_id, status, collection_ids FROM account_library_entries
+         WHERE account_id = ?1 ORDER BY game_id",
+    )?;
+    let rows = entries_stmt.query_map([account_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut entries = BTreeMap::new();
+    for row in rows {
+        let (raw_game_id, id, status, collection_ids) = row?;
+        let Some(game_id) = game_id(raw_game_id) else {
+            continue;
+        };
+        entries.insert(
+            game_id,
+            AccountEntry {
+                id,
+                game_id,
+                status: read_status(status),
+                collection_ids: read_collection_ids(&collection_ids, game_id),
+            },
+        );
+    }
+
+    Ok(Some(AccountLibrary {
+        entries,
+        collections,
+        read_at,
+    }))
+}
+
 impl LibraryStore for SqliteLibraryStore {
     fn load_cache(&self, account_id: Option<&str>) -> Result<LibraryCache, StorageError> {
         let conn = self.conn();
@@ -444,6 +566,17 @@ impl LibraryStore for SqliteLibraryStore {
             })
             .unwrap_or_default();
 
+        // Organization and the account library are per account. Signing out (no account) keeps
+        // the rows for that account's next sign-in but exposes nothing.
+        let (saved_views, hidden, account_library) = match account_id {
+            None => (Vec::new(), Vec::new(), None),
+            Some(account) => (
+                load_saved_views(&conn, account).map_err(failed)?,
+                load_hidden(&conn, account).map_err(failed)?,
+                load_account_library(&conn, account).map_err(failed)?,
+            ),
+        };
+
         Ok(LibraryCache {
             entries,
             scans,
@@ -452,6 +585,9 @@ impl LibraryStore for SqliteLibraryStore {
             favorites,
             games,
             excluded,
+            saved_views,
+            hidden,
+            account_library,
         })
     }
 
@@ -669,6 +805,203 @@ impl LibraryStore for SqliteLibraryStore {
         )
         .map(drop)
         .map_err(failed)
+    }
+
+    fn save_view(&self, account_id: &str, view: &SavedView) -> Result<i64, StorageError> {
+        let payload = serde_json::to_string(&view.payload).map_err(failed)?;
+        let conn = self.conn();
+        if view.id != 0 {
+            let updated = conn
+                .execute(
+                    "UPDATE saved_views SET name = ?3, payload = ?4, position = ?5
+                     WHERE account_id = ?1 AND id = ?2",
+                    params![account_id, view.id, view.name, payload, view.position],
+                )
+                .map_err(failed)?;
+            if updated == 0 {
+                return Err(failed("saved view not found"));
+            }
+            return Ok(view.id);
+        }
+
+        // A new view without an explicit position goes after the account's last one.
+        let position: i64 = if view.position > 0 {
+            view.position
+        } else {
+            conn.query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM saved_views WHERE account_id = ?1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .map_err(failed)?
+        };
+        conn.execute(
+            "INSERT INTO saved_views (account_id, name, payload, position, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![account_id, view.name, payload, position, view.created_at],
+        )
+        .map_err(failed)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn delete_view(&self, account_id: &str, id: i64) -> Result<(), StorageError> {
+        self.conn()
+            .execute(
+                "DELETE FROM saved_views WHERE account_id = ?1 AND id = ?2",
+                params![account_id, id],
+            )
+            .map(drop)
+            .map_err(failed)
+    }
+
+    fn set_hidden(
+        &self,
+        account_id: &str,
+        keys: &[String],
+        hidden: bool,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        {
+            let mut hide = tx
+                .prepare(
+                    "INSERT INTO hidden_entries (account_id, entry_key, hidden_at)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(account_id, entry_key) DO UPDATE SET
+                        hidden_at = excluded.hidden_at",
+                )
+                .map_err(failed)?;
+            let mut reveal = tx
+                .prepare("DELETE FROM hidden_entries WHERE account_id = ?1 AND entry_key = ?2")
+                .map_err(failed)?;
+            for key in keys {
+                if hidden {
+                    hide.execute(params![account_id, key, now])
+                        .map_err(failed)?;
+                } else {
+                    reveal.execute(params![account_id, key]).map_err(failed)?;
+                }
+            }
+        }
+        tx.commit().map_err(failed)
+    }
+
+    fn replace_account_library(
+        &self,
+        account_id: &str,
+        entries: &[AccountEntry],
+        collections: &[Collection],
+        read_at: i64,
+    ) -> Result<(), StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        tx.execute(
+            "DELETE FROM account_library_entries WHERE account_id = ?1",
+            [account_id],
+        )
+        .map_err(failed)?;
+        tx.execute(
+            "DELETE FROM account_collections WHERE account_id = ?1",
+            [account_id],
+        )
+        .map_err(failed)?;
+        {
+            let mut put_collection = tx
+                .prepare(
+                    "INSERT INTO account_collections
+                        (account_id, collection_id, name, default_status, position)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(failed)?;
+            for (position, collection) in collections.iter().enumerate() {
+                let position = i64::try_from(position).map_err(failed)?;
+                put_collection
+                    .execute(params![
+                        account_id,
+                        collection.id,
+                        collection.name,
+                        collection.default_status.map(EntryStatus::api_name),
+                        position
+                    ])
+                    .map_err(failed)?;
+            }
+
+            let mut put_entry = tx
+                .prepare(
+                    "INSERT INTO account_library_entries
+                        (account_id, game_id, entry_id, status, collection_ids)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(account_id, game_id) DO UPDATE SET
+                        entry_id = excluded.entry_id,
+                        status = excluded.status,
+                        collection_ids = excluded.collection_ids",
+                )
+                .map_err(failed)?;
+            for entry in entries {
+                let game_id = db_id(entry.game_id)?;
+                let collection_ids =
+                    serde_json::to_string(&entry.collection_ids).map_err(failed)?;
+                put_entry
+                    .execute(params![
+                        account_id,
+                        game_id,
+                        entry.id,
+                        entry.status.map(EntryStatus::api_name),
+                        collection_ids
+                    ])
+                    .map_err(failed)?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO account_library_reads (account_id, read_at) VALUES (?1, ?2)
+             ON CONFLICT(account_id) DO UPDATE SET read_at = excluded.read_at",
+            params![account_id, read_at],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)
+    }
+
+    fn save_account_entry(
+        &self,
+        account_id: &str,
+        game_id: u64,
+        entry: Option<&AccountEntry>,
+    ) -> Result<(), StorageError> {
+        let game_id = db_id(game_id)?;
+        let Some(entry) = entry else {
+            return self
+                .conn()
+                .execute(
+                    "DELETE FROM account_library_entries WHERE account_id = ?1 AND game_id = ?2",
+                    params![account_id, game_id],
+                )
+                .map(drop)
+                .map_err(failed);
+        };
+        let collection_ids = serde_json::to_string(&entry.collection_ids).map_err(failed)?;
+        self.conn()
+            .execute(
+                "INSERT INTO account_library_entries
+                    (account_id, game_id, entry_id, status, collection_ids)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(account_id, game_id) DO UPDATE SET
+                    entry_id = excluded.entry_id,
+                    status = excluded.status,
+                    collection_ids = excluded.collection_ids",
+                params![
+                    account_id,
+                    game_id,
+                    entry.id,
+                    entry.status.map(EntryStatus::api_name),
+                    collection_ids
+                ],
+            )
+            .map(drop)
+            .map_err(failed)
     }
 
     fn save_games(&self, games: &[GameRecord]) -> Result<(), StorageError> {

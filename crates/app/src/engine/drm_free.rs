@@ -58,6 +58,10 @@ impl Engine {
             view.discovery_scanning = state.local.discovery_scanning;
             view.discovery_completed = state.local.discovery_completed;
             view.discovery_error = state.local.discovery_error.clone();
+            view.discovery_last_checked_at = state
+                .local
+                .discovery_last_checked_at
+                .or(view.discovery_last_checked_at);
             state.local = view;
             engine.publish(&mut state);
         });
@@ -269,6 +273,10 @@ impl Engine {
                 view.discovery_scanning = state.local.discovery_scanning;
                 view.discovery_completed = state.local.discovery_completed;
                 view.discovery_error = state.local.discovery_error.clone();
+                view.discovery_last_checked_at = state
+                    .local
+                    .discovery_last_checked_at
+                    .or(view.discovery_last_checked_at);
                 view.review_selected = state
                     .local
                     .review_selected
@@ -309,10 +317,18 @@ impl Engine {
                         })
                 })
                 .collect();
+            let discovery_last_checked_at = self
+                .shared
+                .ports
+                .settings
+                .load_discovery_last_checked_at()
+                .ok()
+                .flatten();
             Ok::<_, StorageError>(LocalView {
                 watches,
                 registrations,
                 candidates,
+                discovery_last_checked_at,
                 profiles: store.profiles()?,
                 jobs: store.jobs()?,
                 settings: {
@@ -589,6 +605,10 @@ impl Engine {
             view.discovery_scanning = state.local.discovery_scanning;
             view.discovery_completed = state.local.discovery_completed;
             view.discovery_error = state.local.discovery_error.clone();
+            view.discovery_last_checked_at = state
+                .local
+                .discovery_last_checked_at
+                .or(view.discovery_last_checked_at);
             state.local = view;
             state.local_backup_busy = false;
             engine.publish(&mut state);
@@ -1254,6 +1274,19 @@ impl Engine {
                 state.local.discovery_scanning = false;
                 state.local.discovery_completed = true;
                 state.local.discovery_error = result.err().map(|error| error.to_string());
+                // The check completed (successfully or not): remember when, for the status bar
+                // after a restart. A failed write leaves the previous value.
+                let checked_at = unix_now();
+                if let Err(error) = engine
+                    .shared
+                    .ports
+                    .settings
+                    .save_discovery_last_checked_at(checked_at)
+                {
+                    tracing::warn!(%error, "could not save the watched-folder check time");
+                } else {
+                    state.local.discovery_last_checked_at = Some(checked_at);
+                }
                 engine.publish(&mut state);
             }
             if !added_titles.is_empty() {

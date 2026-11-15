@@ -1,0 +1,86 @@
+## 5361:1517 Painel de detalhes (L1, single selection, installed + matched + in GameNode)
+F [Painel de detalhes] 360x826 col FF bg=secondary bd0/0/0/1=border/subtle
+ F [Hero] 359x196 FF bg=grad(#5a1e0e,#f2913d)       (REAL: artwork via gamenode-asset://localhost/artwork/<game_id>; fallback = cover blurred / surface)
+  ELL [Ellipse] 300x300 bg=#ffffff1a                 (decorative placeholder; do NOT implement)
+  REC [Rectangle] 360x196 bg=grad(#1a1a1a00,#1a1a1a) (bottom fade to panel bg — implement as gradient overlay)
+  F [icon-button] 28x28 row jc:center ai:center bg=#00000073 r6   abs top-right 12px → close (setDetailOpen false)
+   I x 16:text/primary
+  F 328x41 col gap4 FH           abs bottom-left 16px
+   T "Emberfall: Iron Trail" 20/600 text/primary
+   T "Steam · 2019 · Brasa Interactive" 12/400 text/secondary     (store · releaseYear · developer when known; omit missing parts)
+ F [Conteúdo] 359x634 col gap18 p16 FH   (scrollable)
+  F [Ações] 327x36 row gap8 ai:center FH
+   C <Button Variant=Primary, Size=MD> "Jogar" icons=player-play-filled fillW
+   F [icon-button] 36x36 bg=bg/raised bd1=border/subtle r6 → I star-filled 16:warning (favorite on) / star text/secondary (off)
+   F [icon-button] 36x36 bg=bg/raised bd1=border/subtle r6 → I folder-open 16:text/secondary (open install folder; hidden when not installed)
+   F [icon-button] 36x36 bg=bg/raised bd1=border/subtle r6 → I dots 16:text/secondary (opens the same game context menu anchored to the button)
+  F [Estado] 327 row gap6 wrap FH
+   C <Pill Tone=Success> "Instalado neste PC" icons=device-desktop:success
+   C <Pill Tone=Brand> "Jogando no GameNode" icons=device-gamepad-2:primary        (status-specific label, see copy.md)
+   C <Pill Tone=Neutral> "Associado" icons=link:text-default
+  F [Estatísticas] 327x73 row gap8 FH      (3 equal stat cards)
+   F col gap4 p10 FH bg=background bd1=border/subtle r6
+    T "Tempo de jogo" 10/600 ls0.6 upper text/muted
+    T "42 h 18 min" 15/600 text/primary
+    T "Contador da Steam" 11/400 text-dimmed
+   F col gap4 p10 FH bg=background bd1=border/subtle r6
+    T "Última sessão" 10/600 ls0.6 upper text/muted
+    T "Ontem" 15/600 text/primary
+    T "1 h 12 min" 11/400 text-dimmed
+   F col gap4 p10 FH bg=background bd1=border/subtle r6
+    T "Conquistas" 10/600 ls0.6 upper text/muted
+    T "31/58" 15/600 text/primary
+    F 4px progress track bg=bg/raised r2 ; fill bg=primary r2 (width = unlocked/total)
+  F [No GameNode] 327 col gap8 FH
+   F row ai:center FH
+    T "No GameNode" 11/600 ls0.8 upper text/muted
+    F [spacer] FF
+    T "Editar no GameNode" 12/500 primary      (opens GameNode website game page in browser)
+   F row gap8 p6/0/6/0 ai:center FH bd-bottom1=border/subtle
+    T "Status" 13/400 text/secondary
+    F [spacer] FF
+    F 84x26 row gap6 p0/8/0/8 ai:center HF bg=bg/raised bd1=border/subtle r6     (status select → Mantine Menu)
+     T "Jogando" 12/500 text/primary
+     I chevron-down 12:text-dimmed
+   F row gap8 p6/0/6/0 ai:center FH
+    T "Coleções" 13/400 text/secondary
+    F [spacer] FF
+    F row gap4 HH
+     C <Pill Tone=Neutral> "Backlog curto"
+     C <Pill Tone=Neutral> "+"            (opens "Adicionar à coleção" menu)
+  F [Correspondência] 327 col gap8 FH
+   F row ai:center FH
+    T "Correspondência" 11/600 ls0.8 upper text/muted
+    F [spacer] FF
+    T "Alterar…" 12/500 primary          (opens MatchDialog)
+   F row gap10 ai:center HH
+    REC 28x37 r3  (matched game cover)
+    F col gap2 HH
+     T "Emberfall: Iron Trail (2019)" 13/500 text-default
+     T "Associado automaticamente pelo título e ano" 12/400 text-dimmed    (source=automatic) | "Escolhido por você" (source=chosen)
+  F [Conquistas] 327 col gap8 FH
+   F row ai:center FH
+    T "Conquistas" 11/600 ls0.8 upper text/muted
+    F [spacer] FF
+    T "Ver todas" 12/500 primary      (opens AchievementListModal)
+   F row gap6 HH
+    REC 40x40 r6 ×5   (latest unlocked achievement icons via achievementIconAssetUrl)
+    F 40x40 row jc:center ai:center bg=bg/raised r6
+     T "+26" 12/600 text/secondary
+  F [Neste PC] 327 col gap8 FH       (only when installed or a local game)
+   F row ai:center FH
+    T "Neste PC" 11/600 ls0.8 upper text/muted
+   F row gap8 p6/0/6/0 ai:center FH bd-bottom1=border/subtle   (clickable → open folder)
+    T "Pasta de instalação" 13/400 text/secondary
+    F [spacer] FF
+    T "D:\\Steam\\…\\Emberfall" 13/500 text-default   (middle-ellipsized path)
+    I chevron-right 14:text-dimmed
+   F row gap8 p6/0/6/0 ai:center FH bd-bottom1=border/subtle
+    T "Contador de tempo" 13/400 text/secondary
+    F [spacer] FF
+    T "Steam" 13/500 text-default          ("Steam" / "Interno")
+   F row gap8 p6/0/6/0 ai:center FH     (clickable → GameToolsPanel)
+    T "Ferramentas do jogo" 13/400 text/secondary
+    F [spacer] FF
+    C <Pill Tone=Success> "OptiScaler 0.7.4"   | T "Nenhuma" 13/400 text-dimmed when none
+    I chevron-right 14:text-dimmed

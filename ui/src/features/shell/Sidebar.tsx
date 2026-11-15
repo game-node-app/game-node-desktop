@@ -1,10 +1,31 @@
 import { providerLabel } from '../../i18n/providerLabel';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { Menu } from '@mantine/core';
+import {
+  IconBookmark,
+  IconBooks,
+  IconChevronLeft,
+  IconChevronRight,
+  IconCompass,
+  IconDeviceDesktop,
+  IconDeviceGamepad2,
+  IconFilter,
+  IconHistory,
+  IconPackage,
+  IconPencil,
+  IconPlayerPlay,
+  IconPlus,
+  IconRadar,
+  IconSettings,
+  IconStar,
+  IconTrash,
+} from '@tabler/icons-react';
 import {
   useAppInfo,
   useAuth,
   useLibraryView,
   useLocalGames,
+  useSnapshot,
 } from '../../api/useSnapshot';
 import {
   detectPortPlatform,
@@ -13,27 +34,36 @@ import {
   type PortsView,
 } from '../../api/ports';
 import { commands } from '../../api/commands';
-import type { LibraryView, LocalView, User } from '../../api/types';
 import {
+  createDefaultFilters,
+  type LibraryView,
+  type LocalView,
+  type StoreAccountView,
+  type User,
+} from '../../api/types';
+import {
+  Button,
+  IconButton,
+  KbdCombo,
+  MenuSurface,
+  NavItem,
+  SectionLabel,
+  Tooltip,
+  menuItemDangerClass,
+} from '../../components/ui';
+import {
+  openRenameView,
+  openSaveView,
   openSettingsModal,
   setActiveDestination,
   uiStore,
   useUiStore,
 } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import {
-  IconAdjustmentsHorizontal,
-  IconAlertTriangle,
-  IconBooks,
-  IconChevronLeft,
-  IconChevronRight,
-  IconCompass,
-  IconDeviceGamepad2,
-  IconPlus,
-  IconRadar,
-} from '@tabler/icons-react';
 import { formatI18n } from '../library/formatters';
 import { ResizeHandle } from './ResizeHandle';
+import { SaveViewModal } from './SaveViewModal';
+import { DeleteViewModal } from './DeleteViewModal';
 
 export interface SidebarProps {
   library?: LibraryView | null;
@@ -44,153 +74,48 @@ export interface SidebarProps {
   signedIn?: boolean;
   /** Injected in tests; the snapshot auth user decides otherwise. */
   user?: User | null;
+  /** Injected in tests; the snapshot store accounts decide otherwise. */
+  storeAccounts?: StoreAccountView[] | null;
   /** Injected in tests; `AppInfo.platform` or the user agent decides otherwise. */
   platform?: PortPlatform;
   className?: string;
 }
 
-interface SidebarItemStatus {
-  testId?: string;
-  label: string;
-  count: number;
-}
+type ScopeId = 'all' | 'installed' | 'favorites' | 'recent' | 'running';
 
-interface SidebarItemProps {
-  testId?: string;
+interface DestinationGroupProps {
   label: string;
-  icon: ReactNode;
   collapsed: boolean;
-  active?: boolean;
-  onClick: () => void;
-  count?: number;
-  countTestId?: string;
-  subline?: string;
-  sublineTestId?: string;
-  warning?: { testId: string; label: string };
-  status?: SidebarItemStatus;
+  action?: ReactNode;
+  children: ReactNode;
 }
 
-/**
- * One dock destination. Expanded rows show the reference design's label, optional
- * count and provider subline; collapsed rows keep the accessible name through
- * `aria-label`/`title` and reduce status to a dot on the icon.
- */
-function SidebarItem({
-  testId,
+function DestinationGroup({
   label,
-  icon,
   collapsed,
-  active,
-  onClick,
-  count,
-  countTestId,
-  subline,
-  sublineTestId,
-  warning,
-  status,
-}: SidebarItemProps) {
-  const stateClasses = active
-    ? 'bg-accent-subtle font-semibold text-brand'
-    : 'font-normal text-text-secondary hover:bg-raised';
-
-  // The button's own label replaces its contents for assistive tech, so status joins it here.
-  const collapsedName = [label, status?.label, warning?.label].filter(Boolean).join(', ');
-
+  action,
+  children,
+}: DestinationGroupProps) {
   return (
-    <button
-      type="button"
-      data-testid={testId}
-      aria-current={active ? 'page' : undefined}
-      aria-label={collapsed ? collapsedName : undefined}
-      title={collapsed ? label : undefined}
-      onClick={onClick}
-      className={`flex h-[40px] shrink-0 cursor-pointer items-center rounded-md text-left text-sm transition-colors focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset focus-visible:outline-none ${
-        collapsed ? 'w-[48px] justify-center' : 'w-full gap-sm px-sm'
-      } ${stateClasses}`}
-    >
-      <span className="relative flex shrink-0 items-center justify-center">
-        {icon}
-        {collapsed && status && (
-          <span
-            data-testid={status.testId}
-            aria-label={status.label}
-            title={status.label}
-            className="absolute -top-[2px] -right-[2px] h-[8px] w-[8px] rounded-full bg-brand"
-          />
-        )}
-        {collapsed && warning && (
-          <span
-            data-testid={warning.testId}
-            aria-label={warning.label}
-            title={warning.label}
-            className="absolute -top-[2px] -right-[2px] h-[8px] w-[8px] rounded-full bg-warning"
-          />
-        )}
-      </span>
-
+    <section className="flex flex-col gap-[2px]">
       {!collapsed && (
-        <>
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="flex items-center gap-[6px] overflow-hidden">
-              <span className="truncate">{label}</span>
-              {warning && (
-                <span
-                  data-testid={warning.testId}
-                  aria-label={warning.label}
-                  title={warning.label}
-                  className="shrink-0 text-warning"
-                >
-                  <IconAlertTriangle size={14} stroke={1.75} aria-hidden="true" />
-                </span>
-              )}
-            </span>
-            {subline && (
-              <span
-                data-testid={sublineTestId}
-                className="truncate text-[11px] font-normal text-text-dimmed"
-              >
-                {subline}
-              </span>
-            )}
-          </span>
-
-          {count !== undefined && (
-            <span
-              data-testid={countTestId}
-              className={`ml-auto shrink-0 text-xs ${
-                active ? 'text-brand' : 'text-text-secondary'
-              }`}
-            >
-              {count}
-            </span>
-          )}
-
-          {status && (
-            <span
-              data-testid={status.testId}
-              aria-label={status.label}
-              className="ml-auto shrink-0 rounded-full bg-brand px-[6px] py-[1px] text-[11px] font-semibold text-on-primary"
-            >
-              {status.count}
-            </span>
-          )}
-        </>
+        <SectionLabel inset action={action}>
+          {label}
+        </SectionLabel>
       )}
-    </button>
+      {children}
+    </section>
   );
 }
 
-function providerIcon(_id: string): ReactNode {
-  // Every provider shares a generic glyph so host crates and the UI never branch on a store id.
-  return <IconDeviceGamepad2 size={20} stroke={1.75} aria-hidden="true" />;
-}
+const ATTENTION_STATES = new Set(['expired', 'unreachable', 'credentialError']);
 
 export function Sidebar({
   library: propLibrary,
   localGames: propLocalGames,
   ports: propPorts,
   signedIn: propSignedIn,
-  user: propUser,
+  storeAccounts: propStoreAccounts,
   platform: propPlatform,
   className,
 }: SidebarProps = {}) {
@@ -198,6 +123,7 @@ export function Sidebar({
   const hookLibrary = useLibraryView();
   const hookLocalGames = useLocalGames();
   const hookPorts = usePortsView();
+  const snapshotStoreAccounts = useSnapshot((s) => s.storeAccounts).data;
   const { auth } = useAuth();
   const appInfo = useAppInfo();
   const dragWidth = useUiStore((s) => s.sidebarDragWidth);
@@ -206,12 +132,8 @@ export function Sidebar({
   const library = propLibrary !== undefined ? propLibrary : hookLibrary;
   const localGames = propLocalGames !== undefined ? propLocalGames : hookLocalGames;
   const ports = propPorts !== undefined ? propPorts : hookPorts;
-
-  const authUser =
-    typeof auth === 'object' && auth !== null && 'signedIn' in auth
-      ? auth.signedIn.user
-      : null;
-  const user = propUser !== undefined ? propUser : authUser;
+  const storeAccounts =
+    propStoreAccounts !== undefined ? propStoreAccounts ?? [] : snapshotStoreAccounts ?? [];
 
   const signedIn =
     propSignedIn ??
@@ -225,53 +147,93 @@ export function Sidebar({
   const showPortsDestination = signedIn && platform === 'windows';
 
   const collapsed = library?.layout?.sidebarCollapsed ?? false;
-  const storedWidth = library?.layout?.sidebarWidth ?? 248;
+  const storedWidth = library?.layout?.sidebarWidth ?? 240;
   const rawWidth = dragWidth ?? storedWidth;
   const clampedWidth = Math.min(360, Math.max(160, Math.round(rawWidth)));
 
-  // Exactly one destination is active. The library's filter only marks one of its items
-  // while the library destination itself is showing.
   const onLibraryDestination = destination === 'library';
+  const onCatalogDestination = destination === 'catalog';
   const onPortsDestination = destination === 'ports';
-  const activeFilter = library?.layout?.filter ?? 'all';
-  const installedFiltered = library?.layout?.filters?.availability.installed ?? false;
-  const isAllActive = onLibraryDestination && activeFilter === 'all';
+  const scope = library?.layout?.scope ?? 'all';
+  const stores = library?.layout?.filters?.stores ?? [];
+  const filters = library?.layout?.filters ?? createDefaultFilters();
+  const scopeCounts = library?.scopeCounts;
+  const providers = library?.providers ?? [];
+  const collections = library?.collections ?? [];
+  const savedViews = library?.savedViews ?? [];
+
+  const isAllActive =
+    onLibraryDestination && scope === 'all' && stores.length === 0;
+  const isScopeActive = (id: Exclude<ScopeId, 'all'>) =>
+    onLibraryDestination && scope === id;
   const isProviderActive = (id: string) =>
+    onLibraryDestination && scope === 'all' && stores.length === 1 && stores[0] === id;
+  const isCollectionActive = (id: string) =>
     onLibraryDestination &&
-    typeof activeFilter === 'object' &&
-    activeFilter !== null &&
-    'provider' in activeFilter &&
-    activeFilter.provider === id;
-  // Provider counts already reflect every active facet except the provider choice, so their sum
-  // is exactly what "All games" would show.
-  const allCount = (library?.providers ?? []).reduce(
-    (sum, provider) => sum + provider.count,
-    0,
-  );
+    typeof scope === 'object' &&
+    'collection' in scope &&
+    scope.collection === id;
+  const isSavedViewActive = (id: number, active: boolean) =>
+    onLibraryDestination &&
+    (active ||
+      (typeof scope === 'object' &&
+        'savedView' in scope &&
+        scope.savedView === id));
 
   const failedProviders = library?.failedProviders ?? [];
-  const isProviderFailed = (id: string, name: string) =>
-    failedProviders.includes(id) || failedProviders.includes(name);
+  const accountsByProvider = new Map(
+    storeAccounts.map((account) => [account.provider, account]),
+  );
+  const providerNeedsAttention = (id: string, name: string) => {
+    if (failedProviders.includes(id) || failedProviders.includes(name)) return true;
+    const account = accountsByProvider.get(id);
+    return account
+      ? ATTENTION_STATES.has(account.state) || account.persistFailed
+      : false;
+  };
 
-  const candidates = (localGames?.candidates ?? []).filter((c) => !c.ignored);
+  const candidates = (localGames?.candidates ?? []).filter(
+    (candidate) => !candidate.ignored,
+  );
   const hasCandidates = candidates.length > 0;
   const unseenInstalls = ports?.unseenCount ?? 0;
 
-  const displayName = user ? user.username || user.email || user.id : '';
-  const avatarInitial = displayName.slice(0, 1).toUpperCase();
+  const [deleteViewId, setDeleteViewId] = useState<number | null>(null);
 
   const handleToggleCollapsed = () => {
     commands.libraryInput({ setSidebarCollapsed: !collapsed });
   };
 
-  const handleSelectAll = () => {
+  const handleSelectScope = (next: ScopeId) => {
     setActiveDestination('library');
-    commands.libraryInput({ setFilter: 'all' });
+    if (next === 'all' && stores.length > 0) {
+      // Leaving a store shortcut: All games means no store facet, while every other
+      // facet and the search text stay exactly as they are.
+      commands.libraryInput({ setScope: 'all' });
+      commands.libraryInput({ setFilters: { ...filters, stores: [] } });
+      return;
+    }
+    commands.libraryInput({ setScope: next });
   };
 
   const handleSelectProvider = (providerId: string) => {
     setActiveDestination('library');
-    commands.libraryInput({ setFilter: { provider: providerId } });
+    // The store shortcut is the All scope plus exactly that store. Every other facet and
+    // the search text stay untouched.
+    commands.libraryInput({ setScope: 'all' });
+    commands.libraryInput({
+      setFilters: { ...filters, stores: [providerId] },
+    });
+  };
+
+  const handleSelectCollection = (collectionId: string) => {
+    setActiveDestination('library');
+    commands.libraryInput({ setScope: { collection: collectionId } });
+  };
+
+  const handleSelectSavedView = (id: number) => {
+    setActiveDestination('library');
+    commands.libraryInput({ applyView: { id } });
   };
 
   const handleSelectPorts = () => {
@@ -279,6 +241,10 @@ export function Sidebar({
     // The host starts the first catalog fetch only when it has none; the command is
     // idempotent, so repeated selections do not refetch.
     commands.portsOpen();
+  };
+
+  const handleOpenCatalog = () => {
+    setActiveDestination('catalog');
   };
 
   const handleAddGame = () => {
@@ -293,217 +259,293 @@ export function Sidebar({
     openSettingsModal('account');
   };
 
+  const newViewButton = (
+    <Tooltip label={t('Sidebar::New view from current filters')}>
+      <button
+        type="button"
+        data-testid="sidebar-save-view"
+        aria-label={t('Sidebar::New view from current filters')}
+        onClick={openSaveView}
+        className="flex h-[20px] w-[20px] cursor-pointer items-center justify-center rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+      >
+        <IconPlus size={14} stroke={2} aria-hidden="true" />
+      </button>
+    </Tooltip>
+  );
+
   return (
     <aside
       data-testid="sidebar"
-      className={`relative flex h-full shrink-0 flex-row border-r border-border-subtle bg-chrome select-none ${
+      className={`group relative flex h-full shrink-0 flex-row border-r border-border-subtle bg-chrome select-none ${
         collapsed ? '' : 'min-w-[160px] max-w-[360px]'
       } ${className ?? ''}`}
       style={{ width: `${collapsed ? 72 : clampedWidth}px` }}
     >
+      {!collapsed && (
+        <IconButton
+          data-testid="sidebar-collapse-toggle"
+          icon={IconChevronLeft}
+          label={t('Sidebar::Collapse sidebar')}
+          aria-expanded
+          variant="toggle"
+          size="sm"
+          onClick={handleToggleCollapsed}
+          className="absolute right-[8px] top-[8px] z-10 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+        />
+      )}
+
       <div
-        className={`flex h-full min-w-0 flex-1 flex-col gap-md overflow-hidden ${
-          collapsed ? 'px-sm py-md' : 'p-md'
+        className={`flex h-full min-w-0 flex-1 flex-col overflow-hidden ${
+          collapsed ? 'px-sm py-md' : 'px-[12px] pb-[12px] pt-[16px]'
         }`}
       >
-        {/* Header: navigation label plus the collapse/expand dock control. */}
-        <div
-          className={`flex h-[40px] shrink-0 items-center ${
-            collapsed ? 'justify-center' : 'justify-between gap-sm'
-          }`}
-        >
-          {!collapsed && (
-            <span className="truncate text-sm font-semibold text-white">
-              {t('Navigate')}
-            </span>
-          )}
-          <button
-            type="button"
-            data-testid="sidebar-collapse-toggle"
-            aria-label={collapsed ? t('Expand sidebar') : t('Collapse sidebar')}
-            aria-expanded={!collapsed}
-            onClick={handleToggleCollapsed}
-            className="flex h-[40px] w-[40px] shrink-0 cursor-pointer items-center justify-center rounded-md text-text-default transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset focus-visible:outline-none"
-          >
-            {collapsed ? (
-              <IconChevronRight size={20} stroke={1.75} aria-hidden="true" />
-            ) : (
-              <IconChevronLeft size={20} stroke={1.75} aria-hidden="true" />
-            )}
-          </button>
-        </div>
+        {collapsed && (
+          <div className="mb-[4px] flex shrink-0 justify-center">
+            <IconButton
+              data-testid="sidebar-collapse-toggle"
+              icon={IconChevronRight}
+              label={t('Sidebar::Expand sidebar')}
+              aria-expanded={false}
+              variant="toggle"
+              size="sm"
+              onClick={handleToggleCollapsed}
+            />
+          </div>
+        )}
 
-        {/* Scrolling destinations; the utilities and account rows stay pinned below. */}
-        <div className="flex min-h-0 flex-1 flex-col gap-md overflow-y-auto overflow-x-hidden">
-          {showPortsDestination && (
-            <section
-              data-testid="sidebar-explore-group"
-              className="flex flex-col gap-sm"
-            >
-              {!collapsed && (
-                <div className="text-xs font-normal text-text-secondary">
-                  {t('Explore')}
+        {/* Scrolling destinations; the footer stays pinned below. */}
+        <div className="flex min-h-0 flex-1 flex-col gap-[20px] overflow-y-auto overflow-x-hidden">
+          <DestinationGroup label={t('Sidebar::Your space')} collapsed={collapsed}>
+            <NavItem
+              icon={IconBooks}
+              label={t('Sidebar::All games')}
+              count={scopeCounts?.all ?? 0}
+              active={isAllActive}
+              collapsed={collapsed}
+              onClick={() => handleSelectScope('all')}
+            />
+            <NavItem
+              icon={IconDeviceDesktop}
+              label={t('Sidebar::Installed')}
+              count={scopeCounts?.installed ?? 0}
+              active={isScopeActive('installed')}
+              collapsed={collapsed}
+              onClick={() => handleSelectScope('installed')}
+            />
+            <NavItem
+              icon={IconStar}
+              label={t('Sidebar::Favorites')}
+              count={scopeCounts?.favorites ?? 0}
+              active={isScopeActive('favorites')}
+              collapsed={collapsed}
+              onClick={() => handleSelectScope('favorites')}
+            />
+            <NavItem
+              icon={IconHistory}
+              label={t('Sidebar::Recently played')}
+              count={scopeCounts?.recent ?? 0}
+              active={isScopeActive('recent')}
+              collapsed={collapsed}
+              onClick={() => handleSelectScope('recent')}
+            />
+            <NavItem
+              icon={IconPlayerPlay}
+              label={t('Sidebar::Running')}
+              count={scopeCounts?.running ?? 0}
+              active={isScopeActive('running')}
+              collapsed={collapsed}
+              onClick={() => handleSelectScope('running')}
+            />
+          </DestinationGroup>
+
+          <DestinationGroup label={t('Sidebar::Stores')} collapsed={collapsed}>
+            {providers.map((provider) => {
+              const label = providerLabel(provider.id, provider.name, t);
+              const attention = providerNeedsAttention(provider.id, provider.name);
+              const warning = attention
+                ? formatI18n(t('Sidebar::{} needs attention'), label)
+                : undefined;
+              return (
+                <div
+                  key={provider.id}
+                  data-testid={`sidebar-provider-${provider.id}`}
+                  className="relative"
+                >
+                  <NavItem
+                    icon={IconDeviceGamepad2}
+                    label={label}
+                    count={provider.count}
+                    active={isProviderActive(provider.id)}
+                    collapsed={collapsed}
+                    warning={warning}
+                    onClick={() => handleSelectProvider(provider.id)}
+                  />
+                  {collapsed && warning && (
+                    <span
+                      data-testid={`provider-warning-${provider.id}`}
+                      aria-label={warning}
+                      title={warning}
+                      className="absolute right-[4px] top-[4px] h-[8px] w-[8px] rounded-full bg-warning"
+                    />
+                  )}
                 </div>
-              )}
-              <div className="flex flex-col gap-[4px]">
-                <SidebarItem
-                  testId="sidebar-ports"
-                  label={t('PC ports')}
-                  icon={<IconCompass size={20} stroke={1.75} aria-hidden="true" />}
+              );
+            })}
+          </DestinationGroup>
+
+          <DestinationGroup
+            label={t('Sidebar::Collections and views')}
+            collapsed={collapsed}
+            action={!collapsed && library ? newViewButton : undefined}
+          >
+            {collapsed && library && (
+              <div className="flex justify-center">{newViewButton}</div>
+            )}
+            {collections.map((collection) => (
+              <div
+                key={collection.id}
+                data-testid={`sidebar-collection-${collection.id}`}
+              >
+                <NavItem
+                  icon={IconBookmark}
+                  label={collection.name}
+                  count={collection.count}
+                  active={isCollectionActive(collection.id)}
                   collapsed={collapsed}
-                  active={onPortsDestination}
-                  onClick={handleSelectPorts}
-                  status={
-                    unseenInstalls > 0
-                      ? {
-                          testId: 'sidebar-ports-badge',
-                          label: formatI18n(
-                            t('Ports::{} installs running or unseen'),
-                            unseenInstalls,
-                          ),
-                          count: unseenInstalls,
-                        }
-                      : undefined
-                  }
+                  onClick={() => handleSelectCollection(collection.id)}
                 />
               </div>
-            </section>
-          )}
+            ))}
+            {savedViews.map((view) => (
+              <MenuSurface key={view.id} withinPortal position="bottom-start">
+                <Menu.ContextMenu>
+                  <div data-testid={`sidebar-saved-view-${view.id}`}>
+                    <NavItem
+                      icon={IconFilter}
+                      label={view.name}
+                      count={view.count}
+                      active={isSavedViewActive(view.id, view.active)}
+                      collapsed={collapsed}
+                      onClick={() => handleSelectSavedView(view.id)}
+                    />
+                  </div>
+                </Menu.ContextMenu>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    leftSection={
+                      <IconPencil size={16} stroke={2} aria-hidden="true" />
+                    }
+                    onClick={() => openRenameView(view.id)}
+                  >
+                    {t('Sidebar::Rename view')}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<IconTrash size={16} stroke={2} aria-hidden="true" />}
+                    className={menuItemDangerClass}
+                    onClick={() => setDeleteViewId(view.id)}
+                  >
+                    {t('Sidebar::Delete view')}
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </MenuSurface>
+            ))}
+            {!collapsed && collections.length === 0 && savedViews.length === 0 && (
+              <p
+                data-testid="sidebar-views-empty"
+                className="px-[10px] py-[4px] text-xs font-normal text-text-dimmed"
+              >
+                {t('Sidebar::No collections or views yet')}
+              </p>
+            )}
+          </DestinationGroup>
 
-          <section className="flex flex-col gap-sm">
-            {!collapsed && (
-              <div className="text-xs font-normal text-text-secondary">
-                {t('Your space')}
+          <DestinationGroup label={t('Sidebar::Browse')} collapsed={collapsed}>
+            {hasCandidates && (
+              <div data-testid="sidebar-discovery-button">
+                <NavItem
+                  icon={IconRadar}
+                  label={t('Sidebar::Discovered games')}
+                  count={candidates.length}
+                  countTone="brand"
+                  collapsed={collapsed}
+                  onClick={handleOpenDiscovery}
+                />
               </div>
             )}
-            <div className="flex flex-col gap-[4px]">
-              <SidebarItem
-                testId="sidebar-all-games"
-                label={t('All games')}
-                icon={<IconBooks size={20} stroke={1.75} aria-hidden="true" />}
+            {signedIn && (
+              <NavItem
+                icon={IconCompass}
+                label={t('Sidebar::Explore GameNode')}
+                active={onCatalogDestination}
                 collapsed={collapsed}
-                active={isAllActive}
-                onClick={handleSelectAll}
-                count={allCount}
-                countTestId="sidebar-all-count"
+                onClick={handleOpenCatalog}
               />
-
-              {library?.providers && library.providers.length > 0 && (
-                <div
-                  data-testid="sidebar-providers-list"
-                  className="flex flex-col gap-[4px]"
-                >
-                  {library.providers.map((provider) => {
-                    const active = isProviderActive(provider.id);
-                    const failed = isProviderFailed(provider.id, provider.name);
-                    const showInstalledSubline =
-                      !installedFiltered &&
-                      provider.count !== provider.installedCount;
-
-                    return (
-                      <SidebarItem
-                        key={provider.id}
-                        testId={`sidebar-provider-${provider.id}`}
-                        label={providerLabel(provider.id, provider.name, t)}
-                        icon={providerIcon(provider.id)}
-                        collapsed={collapsed}
-                        active={active}
-                        onClick={() => handleSelectProvider(provider.id)}
-                        count={provider.count}
-                        countTestId={`sidebar-provider-count-${provider.id}`}
-                        subline={
-                          showInstalledSubline
-                            ? formatI18n(
-                                t('Library::{} installed'),
-                                provider.installedCount,
-                              )
-                            : undefined
-                        }
-                        sublineTestId={`sidebar-provider-installed-${provider.id}`}
-                        warning={
-                          failed
-                            ? {
-                                testId: `provider-warning-${provider.id}`,
-                                label: 'Provider sync failure',
-                              }
-                            : undefined
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </section>
-
-          <div className="flex-1" aria-hidden="true" />
-        </div>
-
-        {/* Utilities, pinned to the bottom of the navigation column. */}
-        <div className="flex shrink-0 flex-col gap-[4px]">
-          {hasCandidates && (
-            <SidebarItem
-              testId="sidebar-discovery-button"
-              label={t('Discovered games')}
-              icon={<IconRadar size={20} stroke={1.75} aria-hidden="true" />}
-              collapsed={collapsed}
-              onClick={handleOpenDiscovery}
-              status={{
-                testId: 'sidebar-discovery-badge',
-                label: formatI18n(t('Library::{} games'), candidates.length),
-                count: candidates.length,
-              }}
-            />
-          )}
-          <SidebarItem
-            testId="sidebar-add-game"
-            label={t('Add a game')}
-            icon={<IconPlus size={20} stroke={1.75} aria-hidden="true" />}
-            collapsed={collapsed}
-            onClick={handleAddGame}
-          />
-          <SidebarItem
-            testId="sidebar-settings-button"
-            label={t('Settings')}
-            icon={
-              <IconAdjustmentsHorizontal
-                size={20}
-                stroke={1.75}
-                aria-hidden="true"
-              />
-            }
-            collapsed={collapsed}
-            onClick={handleOpenSettings}
-          />
-        </div>
-
-        {/* Account row: the snapshot has no avatar, so the initial stands in for it. */}
-        {signedIn && user && (
-          <button
-            type="button"
-            data-testid="sidebar-account-button"
-            aria-label={collapsed ? displayName : undefined}
-            title={collapsed ? displayName : undefined}
-            onClick={handleOpenSettings}
-            className={`flex h-[52px] shrink-0 cursor-pointer items-center rounded-md transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset focus-visible:outline-none ${
-              collapsed ? 'w-[48px] justify-center' : 'w-full gap-sm pr-sm pl-[8px]'
-            }`}
-          >
-            <span className="flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-full bg-surface text-sm font-semibold text-white">
-              {avatarInitial}
-            </span>
-            {!collapsed && (
-              <span className="flex min-w-0 flex-1 flex-col text-left">
-                <span className="truncate text-sm font-semibold text-white">
-                  {displayName}
-                </span>
-                <span className="truncate text-xs font-normal text-text-secondary">
-                  {t('My account')}
-                </span>
-              </span>
             )}
-          </button>
-        )}
+            {showPortsDestination && (
+              <div data-testid="sidebar-ports">
+                <NavItem
+                  icon={IconPackage}
+                  label={t('Sidebar::PC ports')}
+                  active={onPortsDestination}
+                  collapsed={collapsed}
+                  count={collapsed && unseenInstalls > 0 ? unseenInstalls : undefined}
+                  countTone="brand"
+                  trailing={
+                    !collapsed && unseenInstalls > 0 ? (
+                      <span
+                        data-testid="sidebar-ports-badge"
+                        aria-label={formatI18n(
+                          t('Ports::{} installs running or unseen'),
+                          unseenInstalls,
+                        )}
+                        className="rounded-full bg-accent-subtle px-[6px] text-[10px] font-medium leading-[16px] text-brand"
+                      >
+                        {unseenInstalls}
+                      </span>
+                    ) : undefined
+                  }
+                  onClick={handleSelectPorts}
+                />
+              </div>
+            )}
+          </DestinationGroup>
+        </div>
+
+        {/* Footer: Add DRM-free game and Settings. */}
+        <div className="mt-[12px] flex shrink-0 flex-col gap-[2px]">
+          {collapsed ? (
+            <div className="flex justify-center">
+              <IconButton
+                data-testid="sidebar-add-game"
+                icon={IconPlus}
+                label={t('Sidebar::Add DRM-free game')}
+                variant="outlined"
+                size="md"
+                onClick={handleAddGame}
+              />
+            </div>
+          ) : (
+            <Button
+              data-testid="sidebar-add-game"
+              variant="secondary"
+              size="sm"
+              leftIcon={IconPlus}
+              fullWidth
+              onClick={handleAddGame}
+            >
+              {t('Sidebar::Add DRM-free game')}
+            </Button>
+          )}
+          <div data-testid="sidebar-settings-button">
+            <NavItem
+              icon={IconSettings}
+              label={t('Sidebar::Settings')}
+              collapsed={collapsed}
+              onClick={handleOpenSettings}
+              trailing={!collapsed ? <KbdCombo keys={['Ctrl', ',']} /> : undefined}
+            />
+          </div>
+        </div>
       </div>
 
       {/* Resizable handle on the right edge; the collapsed dock keeps a fixed width. */}
@@ -513,6 +555,14 @@ export function Sidebar({
           <ResizeHandle currentWidth={clampedWidth} className="[&>div]:bg-transparent" />
         </div>
       )}
+
+      <SaveViewModal library={library ?? null} />
+      <DeleteViewModal
+        open={deleteViewId != null}
+        viewId={deleteViewId}
+        library={library ?? null}
+        onClose={() => setDeleteViewId(null)}
+      />
     </aside>
   );
 }

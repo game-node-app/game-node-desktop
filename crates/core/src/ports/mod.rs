@@ -71,6 +71,17 @@ pub enum StorageError {
 pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Result<Settings, StorageError>;
     fn save(&self, settings: &Settings) -> Result<(), StorageError>;
+
+    /// The last completed watched-folder check, as unix seconds. It lives in the same settings
+    /// store so the status bar can show it after a restart.
+    fn load_discovery_last_checked_at(&self) -> Result<Option<i64>, StorageError> {
+        Ok(None)
+    }
+
+    /// Records a completed watched-folder check.
+    fn save_discovery_last_checked_at(&self, _at: i64) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 /// Why a credential operation failed. Deliberately not "unavailable": absence of a credential

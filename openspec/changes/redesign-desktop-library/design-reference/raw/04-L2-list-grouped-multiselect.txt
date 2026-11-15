@@ -1,0 +1,59 @@
+## 5363:1400 Main (L2 · list, grouped by store, 3 selected) — width 1200 (detail pane closed)
+F [Main] 1200x826 col FF
+ F [Header] row gap8 p20/24/14/24 ai:center FH
+  F col gap2 FH
+   T "Todos os jogos" 22/600 text/primary
+   T "248 jogos · agrupados por loja · 3 selecionados" 13/400 text-dimmed
+  C <Button Ghost SM> "Verificar novamente" icons=refresh
+  C <Button Primary SM> "Adicionar ao GameNode" icons=plus
+ F [Toolbar] row gap8 p0/24/12/24 ai:center FH
+  F [Search] FF (grows) 34h ... same as L1
+  F [Filtros (2)] ACTIVE ... same as L1
+  F [Ordenar] "Jogado recentemente" ... same as L1
+  F [Agrupar (NOVO)] 146x34 row gap6 p0/12/0/12 ai:center HF bg=accent/subtle bd1=primary r6     (ACTIVE: grouping != none)
+   I category 16:primary
+   T "Agrupar: Loja" 13/400 text-default
+   I chevron-down 14:text-dimmed
+  F [Visualização] list selected (layout-list text/primary on bg/raised; layout-grid text-dimmed)
+  F [icon-button] 34x34 r6 (NO bg = detail pane closed / not pressed)
+   I layout-sidebar-right 16:text/secondary
+ F [Filtros ativos] same as L1
+ F [Tabela (virtualizada)] col p0/24/24/24 FF
+  F [Cabeçalho da tabela] 34h row gap12 p0/12/0/12 ai:center FF bd-bottom1=border/subtle   (sticky)
+   F [select-all (misto)] 16x16 jc:center ai:center bg=primary r3 ; REC 8x2 bg=text/primary   (Checkbox Mixed)
+   F [th —] 30 (cover col, empty)
+   F [th Título] fills ; T "Título" 11/600 ls0.6 upper text/muted
+   F [th Loja] 130 ; T "Loja"
+   F [th No GameNode] 120 ; T "No GameNode"
+   F [th Correspondência] 130 ; T "Correspondência"
+   F [th Tempo] 90 ; T "Tempo"
+   F [th Última sessão] 110 row gap4 ; T "Última sessão" 11/600 ls0.6 upper text/primary ; I sort-descending 12:primary   (SORTED column: text/primary + direction icon sort-ascending|sort-descending)
+   F [th —] 28 (favorite col, empty)
+  F [Grupo: Steam] 1152x36 row gap8 p0/4/0/4 ai:center FF       (group header; button; toggles collapse)
+   I chevron-down 14:text-dimmed          (expanded) | chevron-right (collapsed)
+   I brand-steam 16:text/secondary         (group icon: store icon / status / match dot / etc.)
+   T "Steam" 13/600 text/primary
+   T "164 jogos" 12/400 text-dimmed
+   F 1px line FF bg=border/subtle        (rule fills remaining width)
+  C <Game row State=Selected> "Emberfall: Iron Trail"|"Instalado"|"Steam"|"Jogando"|"Associado"|"42 h 18 min"|"Ontem" icons=check(checkbox),device-desktop:success,brand-steam:text/secondary,star-filled:warning
+  C <Game row State=Selected> "Aster Vale: Revival"|"Instalado"|"Steam"|"Zerado"|"Associado"|"118 h"|"3 dias atrás"
+  C <Game row State=Selected> "Lantern Tide"|"Instalado"|"Steam"|"—"|"Associado"|"64 h 02 min"|"Semana passada" icons=...,star:text/muted
+  C <Game row State=Default> "Hollow Mountain: Deep Delve"|"Não instalado"|"Steam"|"—"|"Revisar"|"12 h 40 min"|"Mar. 2026" icons=download:text/secondary,...
+  C <Game row State=Default> "Neon Courier 2088"|"Instalado"|"Steam"|"—"|"Sem correspondência"|"14 h"|"Fev. 2026"
+  C <Game row State=Default> "Iron Orchard Tactics"|"Compartilhado pela família"|"Steam"|"Na lista"|"Associado"|"31 h"|"Jan. 2026" icons=users-group:text/secondary,...
+  C <Game row State=Default> "Frostline Express"|"Não instalado"|"Steam"|"Abandonado"|"Associado"|"48 h 30 min"|"2025"
+  F [Grupo: Jogos DRM-free] ... I folder 16 ; "Jogos DRM-free" ; "32 jogos"
+  C <Game row> "Distant Skies: Recompiled"|"Em execução · 0:42:10"|"DRM-free"|"Jogando"|"Associado"|"3 h 05 min"|"Agora" icons=player-play-filled:success,folder,...
+  C <Game row> "Glass Garden: Enhanced"|"Instalado"|"DRM-free"|"Zerado"|"Associado"|"12 h"|"Ontem"
+  C <Game row> "Rune & Rail"|"Instalado"|"DRM-free"|"—"|"Revisar"|"19 h"|"Out. 2025"
+  F [Grupo: Epic Games Store] I chevron-right (COLLAPSED) ; I device-gamepad-2 ; "Epic Games Store" ; "52 jogos"
+ F [Barra de ações em lote (NOVO)] 878x52 row gap8 p0/8/0/16 ai:center HF  abs bottom-center (24px above bottom) bg=bg/raised bd1=#3a3a3a r10 sh(0,12,32,0,#00000080)
+  F 22x22 jc:center ai:center bg=primary r999 ; T "3" 12/700 text/primary
+  T "jogos selecionados" 13/500 text/primary
+  F 1x24 divider bg=border/subtle
+  C <Button Primary SM> "Adicionar ao GameNode…" icons=plus
+  C <Button Secondary SM> "Alterar status" icons=bookmark
+  C <Button Secondary SM> "Favoritar" icons=star
+  C <Button Secondary SM> "Associar…" icons=link       (only enabled when exactly... see design.md: opens match for the focused unmatched entries one by one)
+  F 1x24 divider bg=border/subtle
+  F [Limpar seleção] 30h row gap6 p0/8/0/8 ai:center HF r6 ; T "Limpar" 13/400 text/secondary ; C <Kbd> "Esc"

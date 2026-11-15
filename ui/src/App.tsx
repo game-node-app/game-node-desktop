@@ -3,11 +3,16 @@ import { useAppInfo, useAuth, useLibraryView } from './api';
 import { detectPortPlatform } from './api/ports';
 import { useI18n } from './i18n';
 import { SignedOutView } from './features/auth';
+import { CatalogView } from './features/catalog/CatalogView';
 import { LibraryScreen } from './features/library';
+import { useLibraryNotifications } from './features/library/useLibraryNotifications';
 import { PortsView } from './features/ports';
 import { ToastContainer } from './features/settings/ToastContainer';
-import { useSettingsKeyboardShortcut } from './features/settings/useSettingsKeyboardShortcut';
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
+import { CommandPalette } from './features/shell/CommandPalette';
+import { ShortcutsModal } from './features/shell/ShortcutsModal';
+import { StatusBar } from './features/shell/StatusBar';
+import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
 import { useUiStore } from './store/uiStore';
 
@@ -76,7 +81,8 @@ export const App: React.FC = () => {
   const library = useLibraryView();
   const appInfo = useAppInfo();
 
-  useSettingsKeyboardShortcut();
+  useGlobalShortcuts();
+  useLibraryNotifications();
   useLocalGameErrorToast();
 
   // Adopt the OS locale the host reports once, so a manual switch is not overwritten later.
@@ -104,6 +110,8 @@ export const App: React.FC = () => {
   let main: React.ReactNode;
   if (destination === 'ports' && portsVisible) {
     main = <PortsView />;
+  } else if (destination === 'catalog') {
+    main = <CatalogView />;
   } else if (library) {
     main = <LibraryScreen />;
   } else if (signedIn) {
@@ -117,15 +125,20 @@ export const App: React.FC = () => {
       data-testid="app-root"
       className="flex h-full w-full flex-col overflow-hidden bg-body"
     >
-      <TopBar />
-      <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <main className="flex min-w-0 flex-1 flex-col overflow-auto">
-          {main}
-        </main>
+      <div className="grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)_26px]">
+        <TopBar />
+        <div className="flex min-h-0 min-w-0">
+          <Sidebar />
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            {main}
+          </main>
+        </div>
+        <StatusBar />
       </div>
 
       {/* Overlays: each one gates itself on the snapshot or the UI store. */}
+      <CommandPalette />
+      <ShortcutsModal />
       <SyncExplanationModal />
       <LazyOverlay>
         <SettingsModal />

@@ -3,15 +3,18 @@
 //! Every adapter is a double with a switchable delay, so the tests can show that slow scans,
 //! requests and storage never hold up the caller.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use gamenode_core::game_api::{ApiError, ExternalMatch, GameSummary};
+use gamenode_core::game_api::{AccountEntry, ApiError, Collection, ExternalMatch, GameSummary};
 use gamenode_core::library::{
-    AutoMatch, CatalogUpdate, ChosenMatch, FavoriteRecord, GameRecord, LastAccount, LaunchError,
-    LaunchKind, LaunchState, LibraryCache, LibraryLayout, LibraryStore, LibraryView, MatchStatus,
-    ProviderScanState, StoreAccount, StoredEntry,
+    AccountLibrary, AutoMatch, CatalogUpdate, ChosenMatch, EntryStatus, FavoriteRecord, GameRecord,
+    LastAccount, LaunchError, LaunchKind, LaunchState, LibraryCache, LibraryFilters, LibraryLayout,
+    LibraryStore, LibraryView, MatchStatus, ProviderScanState, SavedView, Sort, SortDirection,
+    SortKey, StoreAccount, StoredEntry,
 };
 use gamenode_core::ports::{HostFiles, StorageError, UriError, UriOpener};
 use gamenode_core::provider::Record;
@@ -224,6 +227,114 @@ impl LibraryStore for FakeLibrary {
         }
         Ok(())
     }
+    fn save_view(&self, _account: &str, view: &SavedView) -> Result<i64, StorageError> {
+        self.pause();
+        let mut cache = self.cache.lock().unwrap();
+        if view.id != 0
+            && let Some(existing) = cache
+                .saved_views
+                .iter_mut()
+                .find(|saved| saved.id == view.id)
+        {
+            existing.name.clone_from(&view.name);
+            existing.payload.clone_from(&view.payload);
+            existing.position = view.position;
+            return Ok(view.id);
+        }
+        let id = cache
+            .saved_views
+            .iter()
+            .map(|saved| saved.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let position = if view.position > 0 {
+            view.position
+        } else {
+            cache
+                .saved_views
+                .iter()
+                .map(|saved| saved.position)
+                .max()
+                .unwrap_or(-1)
+                + 1
+        };
+        cache.saved_views.push(SavedView {
+            id,
+            name: view.name.clone(),
+            payload: view.payload.clone(),
+            position,
+            created_at: view.created_at,
+        });
+        Ok(id)
+    }
+    fn delete_view(&self, _account: &str, id: i64) -> Result<(), StorageError> {
+        self.pause();
+        self.cache
+            .lock()
+            .unwrap()
+            .saved_views
+            .retain(|saved| saved.id != id);
+        Ok(())
+    }
+    fn set_hidden(
+        &self,
+        _account: &str,
+        keys: &[String],
+        hidden: bool,
+        _now: i64,
+    ) -> Result<(), StorageError> {
+        self.pause();
+        let mut cache = self.cache.lock().unwrap();
+        for key in keys {
+            if hidden {
+                if !cache.hidden.contains(key) {
+                    cache.hidden.push(key.clone());
+                }
+            } else {
+                cache.hidden.retain(|saved| saved != key);
+            }
+        }
+        Ok(())
+    }
+    fn replace_account_library(
+        &self,
+        _account: &str,
+        entries: &[AccountEntry],
+        collections: &[Collection],
+        read_at: i64,
+    ) -> Result<(), StorageError> {
+        self.pause();
+        self.cache.lock().unwrap().account_library = Some(AccountLibrary {
+            entries: entries
+                .iter()
+                .map(|entry| (entry.game_id, entry.clone()))
+                .collect(),
+            collections: collections.to_vec(),
+            read_at,
+        });
+        Ok(())
+    }
+    fn save_account_entry(
+        &self,
+        _account: &str,
+        game_id: u64,
+        entry: Option<&AccountEntry>,
+    ) -> Result<(), StorageError> {
+        self.pause();
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(library) = &mut cache.account_library {
+            match entry {
+                Some(entry) => {
+                    library.entries.insert(game_id, entry.clone());
+                }
+                None => {
+                    library.entries.remove(&game_id);
+                }
+            }
+        }
+        Ok(())
+    }
     fn load_layout(&self) -> Result<LibraryLayout, StorageError> {
         Ok(LibraryLayout::default())
     }
@@ -312,6 +423,23 @@ fn portal_2_match() -> ExternalMatch {
             release_year: Some(2011),
             cover_url: Some(COVER.to_owned()),
         },
+    }
+}
+
+fn finished_entry() -> AccountEntry {
+    AccountEntry {
+        id: "entry-7".to_owned(),
+        game_id: 7,
+        status: Some(EntryStatus::Finished),
+        collection_ids: vec!["backlog".to_owned()],
+    }
+}
+
+fn backlog() -> Collection {
+    Collection {
+        id: "backlog".to_owned(),
+        name: "Backlog curto".to_owned(),
+        default_status: None,
     }
 }
 
@@ -691,7 +819,8 @@ async fn scanning_matching_launching_and_signing_in_never_create_entries() {
         }));
     });
     let creates = server.mock(|when, then| {
-        when.any_request().path_includes("collections-entries");
+        // Reading the account library is a GET; only a create is a write.
+        when.method(POST).path_includes("collections-entries");
         then.status(500);
     });
     let remote = std::sync::Arc::new(
@@ -879,6 +1008,139 @@ async fn activating_an_entry_launches_playable_games_and_opens_details_when_unav
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn verification_syncs_the_account_library_and_persists_the_complete_read() {
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    *api.account_entries.lock().unwrap() = Some(Ok(vec![finished_entry()]));
+    *api.collections_result.lock().unwrap() = Some(Ok(vec![backlog()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+
+    let snapshot = h
+        .until("the status from the account library", |s| {
+            view(s).is_some_and(|v| {
+                v.rows.iter().any(|row| {
+                    row.gamenode
+                        .as_ref()
+                        .is_some_and(|entry| entry.status == Some(EntryStatus::Finished))
+                })
+            })
+        })
+        .await;
+    let library = view(&snapshot).unwrap();
+    assert!(library.filter_counts.gamenode_status.available);
+    assert_eq!(library.filter_counts.gamenode_status.finished, 1);
+    assert!(*h.api.account_library_reads.lock().unwrap() >= 1);
+    assert!(*h.api.collection_reads.lock().unwrap() >= 1);
+
+    let store = h.store.clone();
+    eventually("the complete read is persisted", || {
+        store
+            .cache
+            .lock()
+            .unwrap()
+            .account_library
+            .as_ref()
+            .is_some_and(|library| {
+                library
+                    .entries
+                    .get(&7)
+                    .is_some_and(|entry| entry.status == Some(EntryStatus::Finished))
+            })
+    })
+    .await;
+    let cache = h
+        .store
+        .cache
+        .lock()
+        .unwrap()
+        .account_library
+        .clone()
+        .unwrap();
+    assert_eq!(cache.collections, [backlog()]);
+    assert!(cache.read_at > 0);
+
+    // A rescan reads the whole library again.
+    let reads = *h.api.account_library_reads.lock().unwrap();
+    h.engine.rescan();
+    eventually("the rescan reads the account library again", || {
+        *h.api.account_library_reads.lock().unwrap() > reads
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_shows_the_cached_account_library_before_any_request() {
+    let api = FakeApi::new();
+    *api.session.lock().unwrap() = Some(Err(SessionError::Unreachable));
+    let mut h = harness(api, FakeCreds::with(Some("stored")));
+    *h.store.account.lock().unwrap() = Some(account("u1", "Ana"));
+    let mut cache = LibraryCache {
+        entries: vec![cached_portal_2()],
+        scans: vec![ProviderScanState {
+            provider: "steam".to_owned(),
+            last_success_at: Some(1),
+            last_error: None,
+            ..ProviderScanState::default()
+        }],
+        auto_matches: vec![AutoMatch {
+            category: 1,
+            uid: "620".to_owned(),
+            game_ids: vec![7],
+            checked_at: i64::MAX,
+        }],
+        games: vec![GameRecord {
+            game_id: 7,
+            name: "Portal 2".to_owned(),
+            release_year: Some(2011),
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+        }],
+        ..LibraryCache::default()
+    };
+    cache.account_library = Some(AccountLibrary {
+        entries: BTreeMap::from([(7, finished_entry())]),
+        collections: vec![backlog()],
+        read_at: 50,
+    });
+    *h.store.cache.lock().unwrap() = cache;
+    h.engine.start();
+
+    let snapshot = h
+        .until("the cached status without a request", |s| {
+            s.auth == AuthView::RestoreFailed
+                && view(s).is_some_and(|v| {
+                    v.rows.iter().any(|row| {
+                        row.gamenode
+                            .as_ref()
+                            .is_some_and(|entry| entry.status == Some(EntryStatus::Finished))
+                    })
+                })
+        })
+        .await;
+    assert_eq!(*h.api.account_library_reads.lock().unwrap(), 0);
+    assert_eq!(*h.api.collection_reads.lock().unwrap(), 0);
+    let library = view(&snapshot).unwrap();
+    assert!(library.filter_counts.gamenode_status.available);
+    assert_eq!(library.filter_counts.gamenode_status.finished, 1);
+
+    // The detail pane shows the cached membership even though no read can run offline.
+    h.engine
+        .library_input(gamenode_core::library::Input::Select {
+            key: "steam:620".to_owned(),
+            mode: gamenode_core::library::SelectMode::Replace,
+        });
+    let snapshot = h.engine.snapshot();
+    assert_eq!(
+        view(&snapshot).unwrap().detail.as_ref().unwrap().membership,
+        gamenode_core::library::Membership::InLibrary(Some(EntryStatus::Finished))
+    );
+    assert_eq!(*h.api.account_library_reads.lock().unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() {
     const COVERS: u64 = 64;
     let api = FakeApi::new();
@@ -966,4 +1228,271 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
         }
     }
     assert_eq!(covered, COVERS as usize, "the final snapshot lost a cover");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_view_and_a_hidden_entry_survive_a_restart_on_the_same_store() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("good").await;
+
+    // Wait until the startup scan produced rows, so the view has a real count and hiding has a
+    // real key.
+    let snapshot = h
+        .until("the library rows", |s| {
+            view(s).is_some_and(|v| !v.rows.is_empty())
+        })
+        .await;
+    let key = snapshot.library.as_ref().unwrap().rows[0].key.clone();
+
+    h.engine
+        .library_input(gamenode_core::library::Input::SetSort(Sort {
+            key: SortKey::Playtime,
+            direction: SortDirection::Descending,
+        }));
+    h.engine
+        .library_input(gamenode_core::library::Input::SaveView {
+            name: "  Playtime  ".to_owned(),
+        });
+    let snapshot = h
+        .until("the saved view", |s| {
+            s.library.as_ref().is_some_and(|v| {
+                v.saved_views.len() == 1
+                    && v.saved_views[0].name == "Playtime"
+                    && v.last_saved_view.is_some()
+            })
+        })
+        .await;
+    let saved = snapshot.library.as_ref().unwrap().saved_views[0].clone();
+    assert!(saved.id > 0, "the database id is not guessed");
+
+    h.engine
+        .library_input(gamenode_core::library::Input::SetHidden {
+            keys: vec![key.clone()],
+            hidden: true,
+        });
+    h.until("the hidden row", |s| {
+        s.library.as_ref().is_some_and(|v| {
+            v.rows.iter().all(|row| row.key != key)
+                && v.filter_counts.show_hidden == 1
+                && v.last_hidden.is_some()
+        })
+    })
+    .await;
+
+    // A fresh engine over the same store, with the same signed-in account, opens the view and
+    // the hidden key from disk.
+    let mut restarted = harness(FakeApi::new(), FakeCreds::with(Some("good")));
+    {
+        let shared = Arc::get_mut(&mut restarted.engine.shared).unwrap();
+        shared.ports.library = h.store.clone();
+    }
+    restarted.engine.start();
+    let snapshot = restarted
+        .until("the organization cache", |s| {
+            matches!(s.auth, AuthView::SignedIn { .. })
+                && s.library.as_ref().is_some_and(|v| {
+                    v.saved_views.len() == 1
+                        && v.saved_views[0].id == saved.id
+                        && v.rows.iter().all(|row| row.key != key)
+                        && v.filter_counts.show_hidden == 1
+                })
+        })
+        .await;
+    assert_eq!(
+        snapshot.library.as_ref().unwrap().saved_views[0].name,
+        "Playtime"
+    );
+
+    // Revealing it with Show hidden proves hiding is not deletion.
+    let mut show_hidden = LibraryFilters::default();
+    show_hidden.show_hidden = true;
+    restarted
+        .engine
+        .library_input(gamenode_core::library::Input::SetFilters(show_hidden));
+    restarted
+        .until("the revealed row", |s| {
+            view(s).is_some_and(|v| v.rows.iter().any(|row| row.key == key))
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_a_game_reads_back_its_id_and_undo_deletes_exactly_that_entry() {
+    use gamenode_core::library::{Input as LibInput, SelectMode, UndoState};
+
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("matched", |s| {
+        view(s).is_some_and(|v| {
+            v.rows
+                .first()
+                .is_some_and(|row| matches!(row.status, MatchStatus::Matched { .. }))
+        })
+    })
+    .await;
+    h.engine.library_input(LibInput::Select {
+        key: "steam:620".into(),
+        mode: SelectMode::Replace,
+    });
+    h.until("the standing is known", |s| {
+        view(s).is_some_and(|v| v.actions.add_to_gamenode.is_available())
+    })
+    .await;
+    h.engine.library_input(LibInput::OpenAdd);
+    h.until("the dialog can confirm", |s| {
+        view(s).is_some_and(|v| {
+            v.add_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.can_confirm)
+        })
+    })
+    .await;
+    h.engine.library_input(LibInput::ConfirmAdd);
+    let snapshot = h
+        .until("the add summary", |s| {
+            view(s).is_some_and(|v| {
+                v.add_summary
+                    .as_ref()
+                    .is_some_and(|summary| summary.undoable && summary.added == 1)
+            })
+        })
+        .await;
+    let run = view(&snapshot)
+        .unwrap()
+        .add_summary
+        .as_ref()
+        .unwrap()
+        .run_id;
+    assert_eq!(*h.api.created.lock().unwrap(), [7]);
+    assert_eq!(
+        view(&snapshot).unwrap().rows[0]
+            .gamenode
+            .as_ref()
+            .map(|entry| entry.entry_id.as_str()),
+        Some("entry-7"),
+        "the id read back from the create"
+    );
+
+    // The notification's data survives closing the dialog.
+    h.engine.library_input(LibInput::CloseAdd);
+    let snapshot = h.engine.snapshot();
+    let library = view(&snapshot).unwrap();
+    assert!(library.add_dialog.is_none());
+    assert_eq!(library.add_summary.as_ref().unwrap().run_id, run);
+
+    h.engine.library_input(LibInput::UndoAdd { run });
+    let snapshot = h
+        .until("the undo result", |s| {
+            view(s).is_some_and(|v| {
+                v.undo
+                    .as_ref()
+                    .is_some_and(|undo| undo.state == UndoState::Done)
+            })
+        })
+        .await;
+    assert_eq!(
+        *h.api.deleted.lock().unwrap(),
+        ["entry-7".to_owned()],
+        "only the id this add created is deleted"
+    );
+    let library = view(&snapshot).unwrap();
+    assert!(
+        library
+            .add_summary
+            .as_ref()
+            .is_some_and(|summary| !summary.undoable)
+    );
+    assert!(
+        library.rows[0].gamenode.is_none(),
+        "the deleted entry leaves the status column"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_status_and_collection_changes_reach_the_api_and_refresh_the_rows() {
+    use gamenode_core::library::Input as LibInput;
+
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    *api.account_entries.lock().unwrap() = Some(Ok(vec![finished_entry()]));
+    *api.collections_result.lock().unwrap() = Some(Ok(vec![
+        backlog(),
+        Collection {
+            id: "coop".to_owned(),
+            name: "Coop no sofá".to_owned(),
+            default_status: None,
+        },
+    ]));
+    let mut h = harness(api, FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("the cached status", |s| {
+        view(s).is_some_and(|v| {
+            v.rows.first().is_some_and(|row| {
+                row.gamenode
+                    .as_ref()
+                    .is_some_and(|entry| entry.status == Some(EntryStatus::Finished))
+            })
+        })
+    })
+    .await;
+
+    h.engine.library_input(LibInput::SetStatus {
+        keys: vec!["steam:620".into()],
+        status: EntryStatus::Dropped,
+    });
+    let snapshot = h
+        .until("the status run", |s| {
+            view(s).is_some_and(|v| {
+                v.status_run
+                    .as_ref()
+                    .is_some_and(|run| run.changed == 1 && run.status == EntryStatus::Dropped)
+            })
+        })
+        .await;
+    assert_eq!(*h.api.updated.lock().unwrap(), [7]);
+    let library = view(&snapshot).unwrap();
+    assert_eq!(
+        library.rows[0]
+            .gamenode
+            .as_ref()
+            .and_then(|entry| entry.status),
+        Some(EntryStatus::Dropped)
+    );
+    assert_eq!(
+        library.rows[0]
+            .gamenode
+            .as_ref()
+            .map(|entry| entry.collection_ids.clone()),
+        Some(vec!["backlog".to_owned()]),
+        "the status change preserved the collection"
+    );
+
+    h.engine.library_input(LibInput::AddToCollection {
+        keys: vec!["steam:620".into()],
+        collection_id: "coop".to_owned(),
+    });
+    let snapshot = h
+        .until("the collection run", |s| {
+            view(s).is_some_and(|v| {
+                v.collection_run
+                    .as_ref()
+                    .is_some_and(|run| run.changed == 1 && run.collection_name == "Coop no sofá")
+            })
+        })
+        .await;
+    assert_eq!(*h.api.updated.lock().unwrap(), [7, 7]);
+    let library = view(&snapshot).unwrap();
+    let entry = library.rows[0].gamenode.as_ref().unwrap();
+    assert_eq!(
+        entry.status,
+        Some(EntryStatus::Dropped),
+        "the collection change preserved the status"
+    );
+    assert!(entry.collection_ids.iter().any(|id| id == "backlog"));
+    assert!(entry.collection_ids.iter().any(|id| id == "coop"));
 }

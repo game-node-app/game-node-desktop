@@ -7,6 +7,8 @@ use gamenode_core::library::{
     DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource, MatchStatus,
     Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
 };
+use gamenode_core::library::{FilterCounts, RowGroup, ScopeCounts, TitleSource, TitleSourceKind};
+use gamenode_core::library::{GroupBy, LibraryScope, RowGameNode};
 use gamenode_core::notice::Notice;
 use gamenode_core::playtime::{PlaytimeSource, PlaytimeView};
 use gamenode_core::settings::{Settings, WindowGeometry};
@@ -30,6 +32,7 @@ fn test_snapshot_roundtrip_serialization() {
         title: "Test Game".into(),
         available: true,
         running: ["game_1".into()].into_iter().collect(),
+        session_started_at: [("game_1".into(), 1_700_000_000)].into_iter().collect(),
     };
     snapshot.notice = Some(Notice::SignInUnavailable);
 
@@ -45,6 +48,13 @@ fn test_snapshot_roundtrip_serialization() {
     assert!(value.get("storage").is_some());
     assert!(value.get("settings").is_some());
     assert!(value.get("tools").is_some());
+    assert_eq!(
+        value
+            .get("tracking")
+            .and_then(|tracking| tracking.get("sessionStartedAt"))
+            .and_then(|started| started.get("game_1")),
+        Some(&serde_json::json!(1_700_000_000))
+    );
 
     // Check settings.window camelCase
     let window = value.get("settings").unwrap().get("window").unwrap();
@@ -66,6 +76,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
             last_played_at: Some(1_700_000_000),
         },
         running: false,
+        session_started_at: None,
         key: "steam:1091500".into(),
         title: "Cyberpunk 2077".into(),
         detected_name: "Cyberpunk 2077".into(),
@@ -83,6 +94,8 @@ fn test_detail_view_serialization_and_artwork_omission() {
         release_year: Some(2020),
         added_at: 1_700_000_000,
         is_favorite: false,
+        hidden: false,
+        gamenode: None,
     });
 
     let raw_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -98,6 +111,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
         membership: Membership::InLibrary(Some(EntryStatus::Playing)),
         achievement_backend: false,
         achievements: None,
+        suggestions: Vec::new(),
     };
 
     let json_val = serde_json::to_value(&detail).expect("serialize DetailView");
@@ -109,6 +123,13 @@ fn test_detail_view_serialization_and_artwork_omission() {
     );
     assert_eq!(json_val.get("releaseYear"), Some(&serde_json::json!(2020)));
     assert_eq!(json_val.get("hasArtwork"), Some(&serde_json::json!(true)));
+    let row_json = json_val.get("row").unwrap();
+    assert_eq!(row_json.get("hidden"), Some(&serde_json::json!(false)));
+    assert_eq!(
+        row_json.get("sessionStartedAt"),
+        Some(&serde_json::Value::Null)
+    );
+    assert_eq!(row_json.get("gamenode"), Some(&serde_json::Value::Null));
 
     // CRITICAL: Verify that the raw artwork bytes are NOT serialized in JSON
     assert!(
@@ -190,7 +211,44 @@ fn test_library_input_serialization() {
         LibraryInput::ScanRequested,
         LibraryInput::RequestCatalog,
         LibraryInput::SetFilters(LibraryFilters::default()),
+        LibraryInput::SaveView {
+            name: "Steam 10 h+".into(),
+        },
+        LibraryInput::RenameView {
+            id: 3,
+            name: "New name".into(),
+        },
+        LibraryInput::DeleteView { id: 3 },
+        LibraryInput::ApplyView { id: 3 },
+        LibraryInput::SetHidden {
+            keys: vec!["steam:100".into()],
+            hidden: true,
+        },
+        LibraryInput::SetScope(LibraryScope::Recent),
+        LibraryInput::SetGroup(GroupBy::Store),
+        LibraryInput::ToggleGroup { id: "steam".into() },
+        LibraryInput::SetAllGroupsCollapsed(true),
+        LibraryInput::SelectAll,
+        LibraryInput::ClearSelection,
+        LibraryInput::MarkEntryNoGame {
+            key: "manual:7".into(),
+            now: 5,
+        },
         LibraryInput::SetSidebarCollapsed(true),
+        LibraryInput::SetFavorites {
+            keys: vec!["steam:100".into(), "steam:101".into()],
+            favorite: true,
+            now: 5,
+        },
+        LibraryInput::SetStatus {
+            keys: vec!["steam:100".into()],
+            status: EntryStatus::Finished,
+        },
+        LibraryInput::AddToCollection {
+            keys: vec!["steam:100".into()],
+            collection_id: "backlog".into(),
+        },
+        LibraryInput::UndoAdd { run: 9 },
     ];
 
     for input in &inputs {
@@ -212,24 +270,123 @@ fn test_library_input_serialization() {
         serde_json::to_value(LibraryInput::SetSidebarCollapsed(true)).unwrap(),
         serde_json::json!({ "setSidebarCollapsed": true })
     );
+    // The organization inputs carry the exact payload the mock host mirrors.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SaveView {
+            name: "Steam".into()
+        })
+        .unwrap(),
+        serde_json::json!({ "saveView": { "name": "Steam" } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::RenameView {
+            id: 3,
+            name: "New".into()
+        })
+        .unwrap(),
+        serde_json::json!({ "renameView": { "id": 3, "name": "New" } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::DeleteView { id: 3 }).unwrap(),
+        serde_json::json!({ "deleteView": { "id": 3 } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::ApplyView { id: 3 }).unwrap(),
+        serde_json::json!({ "applyView": { "id": 3 } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetHidden {
+            keys: vec!["steam:1".into()],
+            hidden: true
+        })
+        .unwrap(),
+        serde_json::json!({ "setHidden": { "keys": ["steam:1"], "hidden": true } })
+    );
+    // The detail pane's direct Not a game action names the entry it acts on.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::MarkEntryNoGame {
+            key: "manual:7".into(),
+            now: 5
+        })
+        .unwrap(),
+        serde_json::json!({ "markEntryNoGame": { "key": "manual:7", "now": 5 } })
+    );
+    // The batch GameNode writes carry the exact payload the mock host mirrors.
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetFavorites {
+            keys: vec!["steam:1".into()],
+            favorite: true,
+            now: 7
+        })
+        .unwrap(),
+        serde_json::json!({ "setFavorites": { "keys": ["steam:1"], "favorite": true, "now": 7 } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetStatus {
+            keys: vec!["steam:1".into()],
+            status: EntryStatus::Finished
+        })
+        .unwrap(),
+        serde_json::json!({ "setStatus": { "keys": ["steam:1"], "status": "finished" } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::AddToCollection {
+            keys: vec!["steam:1".into()],
+            collection_id: "backlog".into()
+        })
+        .unwrap(),
+        serde_json::json!({ "addToCollection": { "keys": ["steam:1"], "collectionId": "backlog" } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::UndoAdd { run: 4 }).unwrap(),
+        serde_json::json!({ "undoAdd": { "run": 4 } })
+    );
     let filters =
         serde_json::to_value(LibraryInput::SetFilters(LibraryFilters::default())).unwrap();
     assert_eq!(
         filters.get("setFilters"),
         Some(&serde_json::json!({
             "availability": { "installed": false, "owned": false, "shared": false },
-            "runningOnly": false,
-            "matchState": "any",
+            "stores": [],
+            "matchStates": [],
+            "gamenodeStatus": [],
             "playtime": "any",
+            "played": "any",
             "lastPlayed": "any",
             "release": "any",
             "added": "any",
-            "favoritesOnly": false
+            "favoritesOnly": false,
+            "runningOnly": false,
+            "showHidden": false
         }))
     );
     assert_eq!(
         serde_json::to_value(LibraryInput::RequestCatalog).unwrap(),
         serde_json::json!("requestCatalog")
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetScope(LibraryScope::Recent)).unwrap(),
+        serde_json::json!({ "setScope": "recent" })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetGroup(GroupBy::GameNodeStatus)).unwrap(),
+        serde_json::json!({ "setGroup": "gameNodeStatus" })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::ToggleGroup { id: "steam".into() }).unwrap(),
+        serde_json::json!({ "toggleGroup": { "id": "steam" } })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetAllGroupsCollapsed(true)).unwrap(),
+        serde_json::json!({ "setAllGroupsCollapsed": true })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SelectAll).unwrap(),
+        serde_json::json!("selectAll")
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::ClearSelection).unwrap(),
+        serde_json::json!("clearSelection")
     );
 }
 
@@ -294,15 +451,23 @@ fn catalog_errors_keep_their_stored_categories() {
 
     let layout: LibraryLayout =
         serde_json::from_str(r#"{"filter":{"provider":"steam"},"installedOnly":true}"#).unwrap();
-    assert_eq!(layout.sidebar, SidebarSelection::Provider("steam".into()));
-    assert!(layout.effective_filters().availability.installed);
-    let json = serde_json::to_value(layout.normalized()).unwrap();
     assert_eq!(
-        json.get("filter"),
-        Some(&serde_json::json!({ "provider": "steam" }))
+        layout.legacy_sidebar,
+        Some(SidebarSelection::Provider("steam".into()))
     );
+    assert!(layout.effective_filters().availability.installed);
+    let normalized = layout.normalized();
+    assert_eq!(normalized.scope, gamenode_core::library::LibraryScope::All);
+    assert_eq!(normalized.filters.stores, ["steam"]);
+    let json = serde_json::to_value(normalized).unwrap();
+    assert!(json.get("filter").is_none());
     assert!(json.get("sidebar").is_none());
     assert!(json.get("installedOnly").is_none());
+    assert_eq!(json.get("scope"), Some(&serde_json::json!("all")));
+    assert_eq!(
+        json.get("filters").and_then(|f| f.get("stores")),
+        Some(&serde_json::json!(["steam"]))
+    );
     assert_eq!(
         json.get("filters").and_then(|f| f.get("availability")),
         Some(&serde_json::json!({
@@ -310,6 +475,136 @@ fn catalog_errors_keep_their_stored_categories() {
             "owned": false,
             "shared": false
         }))
+    );
+}
+
+#[test]
+fn query_view_types_serialize_with_the_keys_the_ui_reads() {
+    let counts = FilterCounts {
+        gamenode_status: gamenode_core::library::GameNodeStatusCounts {
+            available: true,
+            playing: 2,
+            ..Default::default()
+        },
+        release: vec![gamenode_core::library::ReleaseCount {
+            value: gamenode_core::library::ReleaseFilter::Decade(2020),
+            count: 3,
+        }],
+        show_hidden: 1,
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&counts).unwrap();
+    assert_eq!(json.get("showHidden"), Some(&serde_json::json!(1)));
+    assert_eq!(
+        json.get("gamenodeStatus")
+            .and_then(|value| value.get("available")),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        json.get("release"),
+        Some(&serde_json::json!([{ "value": { "decade": 2020 }, "count": 3 }]))
+    );
+    assert!(json.get("matchStates").is_some());
+    assert_eq!(
+        serde_json::to_value(FilterCounts::default()).unwrap(),
+        serde_json::json!({
+            "stores": [],
+            "availability": { "installed": 0, "owned": 0, "shared": 0 },
+            "matchStates": {
+                "matched": 0,
+                "ambiguous": 0,
+                "unmatched": 0,
+                "noGame": 0
+            },
+            "gamenodeStatus": {
+                "playing": 0,
+                "finished": 0,
+                "planned": 0,
+                "ongoing": 0,
+                "dropped": 0,
+                "inLibrary": 0,
+                "notInLibrary": 0,
+                "available": false
+            },
+            "playtime": { "any": 0, "atLeast10h": 0, "atLeast100h": 0 },
+            "played": { "any": 0, "played": 0, "unplayed": 0 },
+            "lastPlayed": {
+                "any": 0,
+                "last7Days": 0,
+                "last30Days": 0,
+                "last90Days": 0,
+                "lastYear": 0,
+                "olderThanYear": 0
+            },
+            "release": [],
+            "added": {
+                "any": 0,
+                "last7Days": 0,
+                "last30Days": 0,
+                "last90Days": 0,
+                "lastYear": 0,
+                "olderThanYear": 0
+            },
+            "favoritesOnly": 0,
+            "runningOnly": 0,
+            "showHidden": 0
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(ScopeCounts {
+            all: 10,
+            installed: 4,
+            favorites: 2,
+            recent: 1,
+            running: 1,
+        })
+        .unwrap(),
+        serde_json::json!({
+            "all": 10,
+            "installed": 4,
+            "favorites": 2,
+            "recent": 1,
+            "running": 1
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(RowGroup {
+            id: "steam".into(),
+            label_key: "Steam".into(),
+            count: 3,
+            collapsed: true,
+            first_index: 2,
+        })
+        .unwrap(),
+        serde_json::json!({
+            "id": "steam",
+            "labelKey": "Steam",
+            "count": 3,
+            "collapsed": true,
+            "firstIndex": 2
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TitleSource {
+            kind: TitleSourceKind::Store,
+            id: "steam".into(),
+        })
+        .unwrap(),
+        serde_json::json!({ "kind": "store", "id": "steam" })
+    );
+    assert_eq!(
+        serde_json::to_value(RowGameNode {
+            status: Some(EntryStatus::Playing),
+            collection_ids: vec!["coop".into()],
+            entry_id: "entry-1".into(),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "status": "playing",
+            "collectionIds": ["coop"],
+            "entryId": "entry-1"
+        })
     );
 }
 

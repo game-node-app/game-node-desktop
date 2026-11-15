@@ -1,214 +1,312 @@
-import React from 'react';
-import { commands, useLibraryView, createDefaultFilters, filtersAreDefault } from '../../api';
-import { openContextMenu } from '../../store/uiStore';
+import React, { useMemo, useRef } from 'react';
+import {
+  commands,
+  useAuth,
+  useLibraryView,
+  useLocalGames,
+  useSnapshot,
+  createDefaultFilters,
+} from '../../api';
+import { openSettingsModal, setActiveDestination } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { LibraryHeader } from './LibraryHeader';
 import { LibraryToolbar } from './LibraryToolbar';
+import { FilterChipsRow } from './FilterChipsRow';
+import { LibraryBanners } from './LibraryBanners';
 import { GameGrid } from './GameGrid';
 import { GameList } from './GameList';
 import { DetailPane } from './DetailPane';
 import { ContextMenu } from './ContextMenu';
-import { formatI18n } from './formatters';
+import { BatchBar } from './BatchBar';
+import { buildFilterChips } from './libraryControlLabels';
+import { isShortcutBlockedByOverlay, isTextEntryTarget } from './libraryShortcuts';
+import { openContextMenuForElement } from './contextMenuAnchor';
+import {
+  FirstRunGuide,
+  NoGamesState,
+  NoInstalledState,
+  NoResultsState,
+  ScanningPanel,
+} from './states';
+
+/**
+ * Controls that own Enter, Space or printable characters. Library navigation
+ * must not steal them; the group header, row buttons and detail controls keep
+ * their native behavior.
+ */
+function isInteractiveTarget(target: HTMLElement): boolean {
+  return Boolean(
+    target.closest(
+      'button, a, input, textarea, select, [contenteditable="true"], [role="button"], [role="menuitem"], [role="menu"], [role="dialog"], [role="alertdialog"], [role="slider"], [role="checkbox"]',
+    ),
+  );
+}
 
 export const LibraryScreen: React.FC = () => {
   const library = useLibraryView();
   const { t } = useI18n();
+  const { auth } = useAuth();
+  const localGames = useLocalGames();
+  const storeAccounts = useSnapshot((snapshot) => snapshot.storeAccounts).data;
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const viewMode = library?.layout?.view ?? 'grid';
   const detailOpen = library?.layout?.detailOpen ?? false;
   const filters = library?.layout?.filters ?? createDefaultFilters();
-  const hasSearch = (library?.search ?? '').length > 0;
+  const search = library?.search ?? '';
+  const rows = library?.rows ?? [];
   const empty = library?.empty;
-  const onWindows =
-    typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+  const scanning = library?.scanning ?? false;
+  const activeFilterCount = useMemo(
+    () => buildFilterChips(library, t).length,
+    [library, t],
+  );
+
+  const signedIn =
+    typeof auth === 'object' && auth !== null && 'signedIn' in auth;
+  const username =
+    signedIn && 'signedIn' in auth
+      ? auth.signedIn.user.username ?? auth.signedIn.user.email ?? auth.signedIn.user.id
+      : null;
+  const storeConnected = storeAccounts.some(
+    (account) => account.state !== 'notConnected' || account.accountId != null,
+  );
+  const folderAdded = localGames.watches.length > 0;
 
   const handleClearFilters = () => {
     commands.libraryInput({ setFilters: createDefaultFilters() });
   };
 
   const handleClearInstalled = () => {
-    commands.libraryInput({
-      setFilters: {
-        ...filters,
-        availability: { ...filters.availability, installed: false },
-      },
-    });
+    // "Show all games" leaves the Installed scope and its availability fact, so
+    // owned or family-shared rows become visible again. Every other facet, the
+    // search text, the sort and the grouping stay exactly as they are.
+    if (library?.layout.scope !== 'all') {
+      commands.libraryInput({ setScope: 'all' });
+    }
+    if (filters.availability.installed) {
+      commands.libraryInput({
+        setFilters: {
+          ...filters,
+          availability: { ...filters.availability, installed: false },
+        },
+      });
+    }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
-    if (targetTag === 'input' || targetTag === 'textarea' || targetTag === 'select') {
-      if (e.key === 'Escape') {
-        (e.target as HTMLElement).blur();
+  const handleSearchGameNode = () => {
+    setActiveDestination('catalog');
+    void commands.libraryInput({ catalogSearch: search });
+  };
+
+  const focusedRow = library?.focused
+    ? rows.find((row) => row.key === library.focused)
+    : undefined;
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+
+    const key = event.key;
+    const command = event.ctrlKey || event.metaKey;
+    const target = event.target as HTMLElement;
+
+    if (key === 'Escape' && !command && !event.altKey) {
+      if (isShortcutBlockedByOverlay(library)) return;
+      if (isTextEntryTarget(target)) target.blur();
+      commands.libraryInput('clearSelection');
+      event.preventDefault();
+      return;
+    }
+
+    if (isShortcutBlockedByOverlay(library)) return;
+    if (isTextEntryTarget(target)) return;
+    if (event.altKey) return;
+
+    // Native buttons (group headers, row actions, toolbar, detail and batch
+    // controls) keep their own Enter/Space behavior. Group headers still take
+    // the arrow keys so a collapsed group can be skipped without a pointer.
+    const groupHeader = Boolean(target.closest('[data-group-header]'));
+    if (isInteractiveTarget(target) && !groupHeader) return;
+
+    const move = (direction: 'up' | 'down' | 'left' | 'right' | 'home' | 'end') => {
+      commands.libraryInput({ move: { direction, extend: event.shiftKey } });
+      event.preventDefault();
+    };
+
+    if (groupHeader) {
+      if (!command) {
+        if (key === 'ArrowUp') return move('up');
+        if (key === 'ArrowDown') return move('down');
+        if (key === 'ArrowLeft') return move('left');
+        if (key === 'ArrowRight') return move('right');
+        if (key === 'Home') return move('home');
+        if (key === 'End') return move('end');
       }
       return;
     }
 
-    if (e.key === 'ArrowUp') {
-      commands.libraryInput({ move: { direction: 'up', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'ArrowDown') {
-      commands.libraryInput({ move: { direction: 'down', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'ArrowLeft') {
-      commands.libraryInput({ move: { direction: 'left', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'ArrowRight') {
-      commands.libraryInput({ move: { direction: 'right', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'Home') {
-      commands.libraryInput({ move: { direction: 'home', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'End') {
-      commands.libraryInput({ move: { direction: 'end', extend: e.shiftKey } });
-      e.preventDefault();
-    } else if (e.key === 'Enter') {
-      if (e.ctrlKey || e.metaKey) {
-        commands.libraryInput('openDetails');
-      } else {
+    if (!command) {
+      if (key === 'ArrowUp') return move('up');
+      if (key === 'ArrowDown') return move('down');
+      if (key === 'ArrowLeft') return move('left');
+      if (key === 'ArrowRight') return move('right');
+      if (key === 'Home') return move('home');
+      if (key === 'End') return move('end');
+
+      if (key === 'Enter' && library?.focused) {
         commands.activateEntry();
+        event.preventDefault();
+        return;
       }
-      e.preventDefault();
-    } else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
-      if (library?.focused) {
-        const x = typeof window !== 'undefined' ? window.innerWidth / 2 : 400;
-        const y = typeof window !== 'undefined' ? window.innerHeight / 2 : 300;
-        openContextMenu(x, y, library.focused);
+
+      if ((key === 'f' || key === 'F') && !event.shiftKey && focusedRow) {
+        if (event.repeat) return;
+        commands.libraryInput({
+          setFavorite: {
+            key: focusedRow.key,
+            favorite: !focusedRow.isFavorite,
+            now: Math.floor(Date.now() / 1000),
+          },
+        });
+        event.preventDefault();
+        return;
       }
-      e.preventDefault();
-    } else if (e.key === 'F5') {
-      commands.rescanLibrary();
-      e.preventDefault();
+
+      if ((key === 's' || key === 'S') && event.shiftKey && library) {
+        if (event.repeat) return;
+        const sort = library.layout.sort;
+        commands.libraryInput({
+          setSort: {
+            key: sort.key,
+            direction:
+              sort.direction === 'descending' ? 'ascending' : 'descending',
+          },
+        });
+        event.preventDefault();
+        return;
+      }
+
+      if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey)) {
+        if (!library?.focused) return;
+        const elements = rootRef.current?.querySelectorAll<HTMLElement>(
+          '[data-row-key]',
+        );
+        const rowElement = elements
+          ? Array.from(elements).find(
+              (element) => element.dataset.rowKey === library.focused,
+            )
+          : undefined;
+        openContextMenuForElement(
+          rowElement ?? rootRef.current ?? null,
+          library.focused,
+        );
+        event.preventDefault();
+        return;
+      }
+
+      return;
+    }
+
+    // Ctrl/Cmd combinations. Ctrl+F, Ctrl+Shift+F, Ctrl+L, Ctrl+I, Ctrl+K and
+    // Ctrl+, belong to `useGlobalShortcuts`; only Select all is library-only.
+    if (key === 'a' || key === 'A') {
+      if (event.shiftKey) return;
+      commands.libraryInput('selectAll');
+      event.preventDefault();
+      return;
+    }
+
+    if (key === 'Enter' && library?.focused) {
+      commands.libraryInput('openDetails');
+      event.preventDefault();
     }
   };
 
+  let content: React.ReactNode;
+  if (empty) {
+    if (typeof empty === 'object' && 'noGames' in empty) {
+      content =
+        !storeConnected && !folderAdded ? (
+          <FirstRunGuide
+            signedIn={signedIn}
+            username={username}
+            storeConnected={storeConnected}
+            folderAdded={folderAdded}
+            onConnect={() => {
+              // Settings > Stores owns the store connection flow.
+              openSettingsModal('stores');
+            }}
+            onChooseFolder={() => void commands.pickLocalWatchFolder()}
+            onRescan={() => void commands.rescanLibrary()}
+          />
+        ) : (
+          <NoGamesState
+            stores={empty.noGames.stores}
+            onRescan={() => void commands.rescanLibrary()}
+          />
+        );
+    } else if (typeof empty === 'object' && 'noInstalled' in empty) {
+      content = <NoInstalledState onShowAll={handleClearInstalled} />;
+    } else {
+      content = (
+        <NoResultsState
+          search={search}
+          activeFilterCount={activeFilterCount}
+          onClearFilters={handleClearFilters}
+          onSearchGameNode={handleSearchGameNode}
+        />
+      );
+    }
+  } else {
+    content = (
+      <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+        {viewMode === 'grid' ? <GameGrid /> : <GameList />}
+      </div>
+    );
+  }
+
+  const showScanSkeletons = scanning && rows.length === 0;
+  // The pane is a full-height sibling of the whole left column, so it starts
+  // below the top bar instead of below the header, banners, toolbar and chips.
+  const showDetailPane = detailOpen && !empty;
+
   return (
     <div
+      ref={rootRef}
       data-testid="library-screen"
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      className="relative flex h-full w-full flex-col overflow-hidden bg-body outline-none"
+      className="relative flex h-full min-h-0 w-full overflow-hidden bg-body outline-none"
     >
-      <LibraryToolbar />
+      <div
+        data-testid="library-content-column"
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      >
+        <LibraryHeader />
+        <LibraryBanners
+          access={library?.access ?? 'unverified'}
+          storeAccounts={storeAccounts}
+          recentlyAdded={localGames.recentlyAdded}
+          providers={library?.providers}
+        />
+        <LibraryToolbar />
+        <FilterChipsRow />
 
-      <div className="relative flex min-h-0 w-full flex-1 overflow-hidden">
-        {/* Empty States */}
-        {empty && (
-          <div
-            data-testid="library-empty-state"
-            className="flex flex-1 flex-col items-center justify-center gap-sm p-xl text-center"
-          >
-            {typeof empty === 'object' && 'noGames' in empty && (
-              <>
-                <h2 className="text-xl text-text-default">
-                  {t('Library::No games found.')}
-                </h2>
-                <div className="text-text-dimmed">
-                  {formatI18n(
-                    t('Library::Looked in: {}'),
-                    empty.noGames.stores.join(', '),
-                  )}
-                </div>
-                <div className="text-text-dimmed">
-                  {t('Library::Install a game, then choose Rescan.')}
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-compact">
-                  <button
-                    type="button"
-                    data-testid="library-empty-rescan-btn"
-                    onClick={() => commands.rescanLibrary()}
-                    className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
-                  >
-                    {t('Library::Rescan')}
-                  </button>
-                  {onWindows && (
-                    <button
-                      type="button"
-                      data-testid="library-empty-add-game-btn"
-                      onClick={() => commands.pickLocalExecutable(null)}
-                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
-                    >
-                      {t('Add a game')}
-                    </button>
-                  )}
-                </div>
-                {onWindows && (
-                  <div className="max-w-[520px] text-text-dimmed">
-                    {t(
-                      'Library::Add a DRM-free game from its executable without choosing a GameNode match first.',
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            {typeof empty === 'object' && 'noInstalled' in empty && (
-              <>
-                <h2 className="text-xl text-text-default">
-                  {t('Library::Nothing is installed on this PC.')}
-                </h2>
-                <div className="max-w-[520px] text-text-dimmed">
-                  {t(
-                    'Library::Games you own or share are hidden by the Installed filter.',
-                  )}
-                </div>
-                <button
-                  type="button"
-                  data-testid="library-empty-show-all-btn"
-                  onClick={handleClearInstalled}
-                  className="rounded-sm border border-brand bg-transparent px-md py-compact font-medium text-brand transition-colors hover:bg-accent-subtle"
-                >
-                  {t('Library::Show all games')}
-                </button>
-              </>
-            )}
-
-            {empty === 'nothingMatches' && (
-              <>
-                <h2 className="text-xl text-text-default">
-                  {t('Library::No games match.')}
-                </h2>
-                <div className="text-text-dimmed">
-                  {t('Library::Nothing in this view matches your search or filters.')}
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-compact">
-                  {hasSearch && (
-                    <button
-                      type="button"
-                      data-testid="library-empty-clear-search-btn"
-                      onClick={() => commands.libraryInput({ setSearch: '' })}
-                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
-                    >
-                      {t('Library::Clear search')}
-                    </button>
-                  )}
-                  {!filtersAreDefault(filters) && (
-                    <button
-                      type="button"
-                      data-testid="library-empty-clear-filters-btn"
-                      onClick={handleClearFilters}
-                      className="rounded-sm border border-border-subtle bg-transparent px-md py-compact text-text-default transition-colors hover:bg-surface"
-                    >
-                      {t('Library::Clear all filters')}
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+        {scanning && (
+          <ScanningPanel
+            progress={library?.scanProgress ?? []}
+            showSkeletons={showScanSkeletons}
+          />
         )}
 
-        {/* View Grid or List */}
-        {!empty && (
-          <div className="flex h-full flex-1 overflow-hidden">
-            {viewMode === 'grid' ? <GameGrid /> : <GameList />}
-          </div>
-        )}
+        {!showScanSkeletons && content}
 
-        {/* Detail Pane */}
-        {detailOpen && <DetailPane />}
+        {/* One instance, anchored to the content column it acts on. */}
+        <BatchBar />
       </div>
 
-      {/* Context Menu */}
+      {showDetailPane && <DetailPane />}
+
       <ContextMenu />
     </div>
   );

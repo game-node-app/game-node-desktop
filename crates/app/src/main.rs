@@ -360,6 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::launch_selected,
         commands::dismiss_launch,
         commands::rescan_library,
+        commands::open_gamenode_page,
         commands::remove_entry,
         commands::pick_local_executable,
         commands::add_local_executable,
@@ -445,6 +446,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .title("GameNode")
                 .inner_size(setup_plan.size.0 as f64, setup_plan.size.1 as f64)
                 .min_inner_size(960.0, 600.0)
+                .decorations(false)
                 .maximized(setup_plan.maximized)
                 .visible(!setup_startup.background)
                 .additional_browser_args(

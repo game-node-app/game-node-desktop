@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -64,6 +64,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "achievements",
         sql: include_str!("../migrations/0009_achievements.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "library_organization",
+        sql: include_str!("../migrations/0010_library_organization.sql"),
     },
 ];
 
@@ -168,9 +173,10 @@ const KEY_Y: &str = "window.y";
 const KEY_WIDTH: &str = "window.width";
 const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
+pub(crate) const KEY_DISCOVERY_LAST_CHECKED: &str = "discovery.lastCheckedAt";
 
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 14] = [
+pub const SETTING_KEYS: [&str; 15] = [
     "backup_settings",
     crate::playtime_db::KEY_PLAYTIME_SOURCE,
     crate::playtime_db::KEY_SYNC_ENABLED,
@@ -181,6 +187,7 @@ pub const SETTING_KEYS: [&str; 14] = [
     KEY_WIDTH,
     KEY_HEIGHT,
     KEY_MAXIMIZED,
+    KEY_DISCOVERY_LAST_CHECKED,
     crate::library_db::KEY_LAYOUT,
     crate::library_db::KEY_EXCLUDED,
     crate::library_db::KEY_ACCOUNT_ID,
@@ -306,6 +313,24 @@ impl SettingsStore for SqliteSettingsStore {
         }
         tx.commit().map_err(failed)
     }
+
+    fn load_discovery_last_checked_at(&self) -> Result<Option<i64>, StorageError> {
+        let conn = self.conn();
+        Ok(read(&conn, KEY_DISCOVERY_LAST_CHECKED)
+            .map_err(failed)?
+            .and_then(|value| value.parse().ok()))
+    }
+
+    fn save_discovery_last_checked_at(&self, at: i64) -> Result<(), StorageError> {
+        self.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![KEY_DISCOVERY_LAST_CHECKED, at.to_string()],
+            )
+            .map(drop)
+            .map_err(failed)
+    }
 }
 
 #[cfg(test)]
@@ -353,7 +378,8 @@ mod tests {
                 (6, "store_accounts_and_catalog".to_string()),
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
-                (9, "achievements".to_string())
+                (9, "achievements".to_string()),
+                (10, "library_organization".to_string())
             ]
         );
     }
@@ -450,13 +476,13 @@ mod tests {
         }
     }
 
-    const V10_OK: Migration = Migration {
-        version: 10,
+    const V11_OK: Migration = Migration {
+        version: 11,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V10_BAD: Migration = Migration {
-        version: 10,
+    const V11_BAD: Migration = Migration {
+        version: 11,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -482,7 +508,8 @@ mod tests {
             MIGRATIONS[6],
             MIGRATIONS[7],
             MIGRATIONS[8],
-            V10_OK,
+            MIGRATIONS[9],
+            V11_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -497,7 +524,8 @@ mod tests {
                 (7, "favorites".into()),
                 (8, "ports".into()),
                 (9, "achievements".into()),
-                (10, "add_notes".into())
+                (10, "library_organization".into()),
+                (11, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -538,11 +566,12 @@ mod tests {
                 MIGRATIONS[6],
                 MIGRATIONS[7],
                 MIGRATIONS[8],
-                V10_BAD,
+                MIGRATIONS[9],
+                V11_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 10 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 11 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -557,6 +586,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_organization".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -587,19 +617,20 @@ mod tests {
                     MIGRATIONS[6],
                     MIGRATIONS[7],
                     MIGRATIONS[8],
-                    V10_OK,
+                    MIGRATIONS[9],
+                    V11_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 9
+        let err = open(&path).unwrap_err(); // this build only knows schema 10
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 10,
-                supported: 9
+                found: 11,
+                supported: 10
             }
         );
         assert_eq!(
@@ -621,7 +652,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 9,
+                found: 10,
                 supported: 7
             }
         );
@@ -662,6 +693,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_organization".to_string()),
             ]
         );
         for table in [
@@ -677,6 +709,11 @@ mod tests {
             "port_install_jobs",
             "port_installations",
             "port_preferences",
+            "saved_views",
+            "hidden_entries",
+            "account_library_entries",
+            "account_collections",
+            "account_library_reads",
         ] {
             let rows: i64 = store
                 .conn()
@@ -697,7 +734,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 9,
+                found: 10,
                 supported: 1
             }
         );
@@ -722,7 +759,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V10_OK
+            ..V11_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -764,6 +801,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_organization".to_string()),
             ]
         );
 
@@ -894,6 +932,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_organization".to_string()),
             ]
         );
 
@@ -1091,6 +1130,7 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
+                (10, "library_organization".to_string()),
             ]
         );
 
@@ -1337,10 +1377,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(9, "achievements".to_owned()))
+            Some(&(10, "library_organization".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1440,10 +1480,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(9, "achievements".to_owned()))
+            Some(&(10, "library_organization".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1512,6 +1552,316 @@ mod tests {
     }
 
     #[test]
+    fn a_populated_schema9_profile_upgrades_to_schema10_keeping_every_row() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..9]).unwrap();
+            conn.execute_batch(
+                r#"
+                INSERT INTO settings (key, value) VALUES ('window.width', '1920');
+                INSERT INTO library_entries
+                    (key, provider, store_id, name, install_dir, fields_json, installed,
+                     first_seen, last_seen, owned, family_shared)
+                VALUES ('steam:620', 'steam', '620', 'Portal 2', 'C:/Games/Portal 2',
+                        '{"state_flags":"4"}', 1, 100, 150, 1, 0);
+                INSERT INTO provider_scans
+                    (provider, last_success_at, last_error, last_catalog_at, catalog_error,
+                     last_family_at, family_error)
+                VALUES ('steam', 150, NULL, 140, NULL, 145, NULL);
+                INSERT INTO auto_matches (category, uid, game_ids_json, checked_at)
+                VALUES (1, '620', '[72]', 120);
+                INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+                VALUES ('acct', 'steam:620', 72, 130);
+                INSERT INTO games
+                    (game_id, name, release_year, cover_url, cover_file, cover_failed_at)
+                VALUES (72, 'Portal 2', 2011, 'https://images.example/co1.jpg', '72.jpg', NULL);
+                INSERT INTO playtime_sessions
+                    (id, account_id, entry_key, game_id, source, platform_id, started_at,
+                     checkpoint_at, ended_at)
+                VALUES ('s1', 'acct', 'steam:620', 72, 'steam', 6, 100, 200, 300);
+                INSERT INTO playtime_totals
+                    (account_id, entry_key, total_seconds, last_played_at, accepted_game_id,
+                     accepted_seconds, rejected_seconds)
+                VALUES ('acct', 'steam:620', 3600, 300, 72, 3600, NULL);
+                INSERT INTO manual_registrations (id, file_identity, removed, payload)
+                VALUES ('reg1', 'exe_hash_1', 0, '{"title":"Game 1"}');
+                INSERT INTO discovery_watches (id, payload) VALUES ('w1', '{"path":"D:/Games"}');
+                INSERT INTO discovery_candidates (fingerprint, payload)
+                VALUES ('fp1', '{"title":"Found"}');
+                INSERT INTO local_inferences (account_id, installation_id, payload)
+                VALUES ('acct', 'reg1', '{"game_id":72}');
+                INSERT INTO save_profiles (id, installation_id, revision, payload)
+                VALUES ('p1', 'reg1', 1, '{"label":"Save"}');
+                INSERT INTO backup_jobs
+                    (id, installation_id, profile_id, revision, play_period, destination,
+                     state, payload)
+                VALUES ('j1', 'reg1', 'p1', 1, NULL, 'D:/Backups', 'Completed', '{"ok":true}');
+                INSERT INTO backup_destinations (path) VALUES ('D:/Backups');
+                INSERT INTO store_accounts (provider, account_id, account_name, last_verified_at)
+                VALUES ('steam', '76561198000000000', 'Ana', 160);
+                INSERT INTO tool_installations
+                    (entry_key, tool_id, channel, version, target_exe, proxy_dll, state,
+                     installed_at, updated_at)
+                VALUES ('steam:620', 'optiscaler', 'stable', '0.7.9', 'bin/game.exe', 'dxgi.dll',
+                        'installed', 1000, 1000);
+                INSERT INTO tool_files
+                    (entry_key, tool_id, relative_path, installed_sha256, backup_path,
+                     original_sha256, prior_owner_tool_id, created_dirs_json, ini_patches_json,
+                     ini_section, ini_key, ini_value, ini_prior_value)
+                VALUES ('steam:620', 'optiscaler', 'dxgi.dll', 'sha256_mock', NULL, NULL, NULL,
+                        '[]', '[]', NULL, NULL, NULL, NULL);
+                INSERT INTO tool_releases_cache
+                    (tool_id, channel, version, tag_name, name, published_at, download_url,
+                     asset_name, size_bytes, sha256, cached_path, fetched_at)
+                VALUES ('optiscaler', 'stable', '0.7.9', 'v0.7.9', 'OptiScaler 0.7.9',
+                        '2026-01-01', 'https://github.com/example/asset.7z', 'asset.7z', 1024,
+                        'sha', NULL, 1000);
+                INSERT INTO favorites (account_id, game_id, is_favorite, pending, updated_at)
+                VALUES ('acct', 72, 1, 0, 170);
+                INSERT INTO port_catalog_snapshot (id, payload, fetched_at, entry_count)
+                VALUES (1, '{"apps":["qcat_1"]}', 420, 1);
+                INSERT INTO port_overlay (id, version, etag, payload)
+                VALUES (1, 1, 'etag-v1', 'schema_version = 1');
+                INSERT INTO port_install_jobs
+                    (id, catalog_id, slug, port_name, release_version, state, phase,
+                     install_folder, created_paths, registration_id, result_seen,
+                     plan_json, release_json, created_at, updated_at, finished_at)
+                VALUES ('job-v9', 'qcat_1', 'elden-ring', 'Elden Ring', 'v1', 'completed',
+                        '"completed"', 'E:/Ports/Elden Ring', '["E:/Ports/Elden Ring"]',
+                        'port-reg-1', 1, '{}', '{}', 430, 440, 440);
+                INSERT INTO port_installations
+                    (registration_id, catalog_id, slug, port_name, installed_version,
+                     install_folder, environment_json, job_id)
+                VALUES ('port-reg-1', 'qcat_1', 'elden-ring', 'Elden Ring PC', 'v1',
+                        'E:/Ports/Elden Ring', '{"ROLE":"gameplay"}', 'job-v9');
+                INSERT INTO port_preferences (id, view_mode, filters_json, install_parent)
+                VALUES (1, 'list', '{"installed":true}', 'E:/Ports');
+                INSERT INTO achievement_games
+                    (provider, store_account_id, entry_id, state, language, last_success_at,
+                     last_attempt_at, failure)
+                VALUES ('steam', '76561198000000000', '620', 'ready', 'english', 500, 500, NULL);
+                INSERT INTO achievements
+                    (provider, store_account_id, entry_id, achievement_id, name, description,
+                     hidden, icon_url, icon_gray_url, unlocked, unlocked_at, position)
+                VALUES ('steam', '76561198000000000', '620', 'ach1', 'First', 'Do it', 0,
+                        'https://images.example/icon.png', 'https://images.example/gray.png',
+                        1, 510, 0);
+                "#,
+            )
+            .unwrap();
+            assert_eq!(
+                versions(&conn).last(),
+                Some(&(9, "achievements".to_owned()))
+            );
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(10, "library_organization".to_owned()))
+        );
+
+        // Every table that existed at schema 9 keeps its row.
+        for table in [
+            "achievement_games",
+            "achievements",
+            "auto_matches",
+            "backup_destinations",
+            "backup_jobs",
+            "chosen_matches",
+            "discovery_candidates",
+            "discovery_watches",
+            "favorites",
+            "games",
+            "library_entries",
+            "local_inferences",
+            "manual_registrations",
+            "playtime_sessions",
+            "playtime_totals",
+            "port_catalog_snapshot",
+            "port_install_jobs",
+            "port_installations",
+            "port_overlay",
+            "port_preferences",
+            "provider_scans",
+            "save_profiles",
+            "settings",
+            "store_accounts",
+            "tool_files",
+            "tool_installations",
+            "tool_releases_cache",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            let expected = if table == "settings" { 2 } else { 1 };
+            assert_eq!(rows, expected, "{table} keeps its row");
+        }
+
+        let checks = [
+            (
+                "SELECT value FROM settings WHERE key = 'window.width'",
+                "1920",
+            ),
+            (
+                "SELECT name FROM library_entries WHERE key = 'steam:620'",
+                "Portal 2",
+            ),
+            (
+                "SELECT CAST(last_catalog_at AS TEXT) FROM provider_scans WHERE provider = 'steam'",
+                "140",
+            ),
+            (
+                "SELECT game_ids_json FROM auto_matches WHERE uid = '620'",
+                "[72]",
+            ),
+            (
+                "SELECT CAST(game_id AS TEXT) FROM chosen_matches WHERE account_id = 'acct'",
+                "72",
+            ),
+            ("SELECT cover_file FROM games WHERE game_id = 72", "72.jpg"),
+            (
+                "SELECT CAST(ended_at AS TEXT) FROM playtime_sessions WHERE id = 's1'",
+                "300",
+            ),
+            (
+                "SELECT CAST(total_seconds AS TEXT) FROM playtime_totals",
+                "3600",
+            ),
+            (
+                "SELECT payload FROM manual_registrations WHERE id = 'reg1'",
+                "{\"title\":\"Game 1\"}",
+            ),
+            (
+                "SELECT payload FROM discovery_watches WHERE id = 'w1'",
+                "{\"path\":\"D:/Games\"}",
+            ),
+            (
+                "SELECT payload FROM discovery_candidates WHERE fingerprint = 'fp1'",
+                "{\"title\":\"Found\"}",
+            ),
+            (
+                "SELECT payload FROM local_inferences WHERE installation_id = 'reg1'",
+                "{\"game_id\":72}",
+            ),
+            (
+                "SELECT CAST(revision AS TEXT) FROM save_profiles WHERE id = 'p1'",
+                "1",
+            ),
+            ("SELECT state FROM backup_jobs WHERE id = 'j1'", "Completed"),
+            ("SELECT path FROM backup_destinations", "D:/Backups"),
+            (
+                "SELECT account_name FROM store_accounts WHERE provider = 'steam'",
+                "Ana",
+            ),
+            (
+                "SELECT version FROM tool_installations WHERE entry_key = 'steam:620'",
+                "0.7.9",
+            ),
+            (
+                "SELECT installed_sha256 FROM tool_files WHERE relative_path = 'dxgi.dll'",
+                "sha256_mock",
+            ),
+            (
+                "SELECT name FROM tool_releases_cache WHERE tool_id = 'optiscaler'",
+                "OptiScaler 0.7.9",
+            ),
+            (
+                "SELECT CAST(pending AS TEXT) FROM favorites WHERE account_id = 'acct'",
+                "0",
+            ),
+            (
+                "SELECT payload FROM port_catalog_snapshot WHERE id = 1",
+                "{\"apps\":[\"qcat_1\"]}",
+            ),
+            (
+                "SELECT created_paths FROM port_install_jobs WHERE id = 'job-v9'",
+                "[\"E:/Ports/Elden Ring\"]",
+            ),
+            (
+                "SELECT environment_json FROM port_installations WHERE registration_id = 'port-reg-1'",
+                "{\"ROLE\":\"gameplay\"}",
+            ),
+            (
+                "SELECT view_mode FROM port_preferences WHERE id = 1",
+                "list",
+            ),
+            (
+                "SELECT name FROM achievements WHERE achievement_id = 'ach1'",
+                "First",
+            ),
+        ];
+        for (sql, expected) in checks {
+            let found: String = conn.query_row(sql, [], |r| r.get(0)).unwrap();
+            assert_eq!(found, expected, "{sql}");
+        }
+
+        // The organization and account-library tables exist and start empty. They accept the
+        // shapes the store writes: per-account view names and a complete-read marker.
+        for table in [
+            "saved_views",
+            "hidden_entries",
+            "account_library_entries",
+            "account_collections",
+            "account_library_reads",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "{table} starts empty");
+        }
+        conn.execute(
+            "INSERT INTO saved_views (account_id, name, payload, position, created_at)
+             VALUES ('acct', 'Steam 10 h+', '{}', 0, 100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO saved_views (account_id, name, payload, position, created_at)
+             VALUES ('other', 'Steam 10 h+', '{}', 0, 100)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO saved_views (account_id, name, payload, position, created_at)
+                 VALUES ('acct', 'Steam 10 h+', '{}', 1, 100)",
+                [],
+            )
+            .is_err(),
+            "view names are unique per account"
+        );
+        conn.execute(
+            "INSERT INTO account_library_reads (account_id, read_at) VALUES ('acct', 300)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO account_library_entries
+                (account_id, game_id, entry_id, status, collection_ids)
+             VALUES ('acct', 72, 'entry-1', 'playing', '[\"coop\"]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO account_collections
+                (account_id, collection_id, name, default_status, position)
+             VALUES ('acct', 'coop', 'Coop', NULL, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hidden_entries (account_id, entry_key, hidden_at)
+             VALUES ('acct', 'steam:620', 300)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn database_never_holds_credentials_or_callback_urls() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -1534,6 +1884,9 @@ mod tests {
         assert_eq!(
             sorted,
             [
+                "account_collections",
+                "account_library_entries",
+                "account_library_reads",
                 "achievement_games",
                 "achievements",
                 "auto_matches",
@@ -1544,6 +1897,7 @@ mod tests {
                 "discovery_watches",
                 "favorites",
                 "games",
+                "hidden_entries",
                 "library_entries",
                 "local_inferences",
                 "manual_registrations",
@@ -1556,8 +1910,10 @@ mod tests {
                 "port_preferences",
                 "provider_scans",
                 "save_profiles",
+                "saved_views",
                 "schema_migrations",
                 "settings",
+                "sqlite_sequence",
                 "store_accounts",
                 "tool_files",
                 "tool_installations",

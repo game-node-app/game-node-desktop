@@ -65,6 +65,10 @@ pub enum Effect {
 
 type Identity = (u32, std::time::SystemTime);
 struct Running {
+    /// When this execution began: the earliest process start, clamped by the observation time and
+    /// the tracker's floor. It survives daily session splits and is the authority for the live
+    /// session clock, including counter-backed entries whose sessions are not recorded here.
+    started_at: i64,
     play_period: String,
     processes: BTreeMap<Identity, ProcessInfo>,
     session: Option<Session>,
@@ -99,6 +103,16 @@ impl Tracker {
 
     pub fn running(&self) -> BTreeSet<String> {
         self.active.keys().cloned().collect()
+    }
+
+    /// The Unix second each running game's current execution began, by library key. This is the
+    /// authoritative session clock source: it is known for counter-backed entries too, where no
+    /// durable [`Session`] exists, and it keeps the original start across daily session splits.
+    pub fn running_started_at(&self) -> BTreeMap<String, i64> {
+        self.active
+            .iter()
+            .map(|(key, running)| (key.clone(), running.started_at))
+            .collect()
     }
 
     pub fn update(&mut self, input: Input, mut next_id: impl FnMut() -> String) -> Vec<Effect> {
@@ -200,6 +214,7 @@ impl Tracker {
                         self.active.insert(
                             key.clone(),
                             Running {
+                                started_at,
                                 play_period: if self.entries[&key].source == "manual" {
                                     next_id()
                                 } else {

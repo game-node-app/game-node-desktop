@@ -79,13 +79,49 @@ impl LibraryMachine {
     }
 
     pub(super) fn on_set_favorite(&mut self, key: String, favorite: bool, now: i64) -> Vec<Effect> {
-        let Some(entry) = self.entries.get(&key) else {
+        let Some(game_id) = self.favorite_game(&key) else {
             return vec![];
         };
-        let Some(game_id) = self.match_status(entry).game_id() else {
-            // Unmatched entries have no server game to favorite.
+        let mut effects = self.apply_favorite(game_id, favorite, now);
+        effects.extend(self.plan_favorites());
+        effects
+    }
+
+    /// Applies the same local-first change to every matched entry of a multi-selection. Unmatched
+    /// keys are ignored, and entries matched to the same game change once.
+    pub(super) fn on_set_favorites(
+        &mut self,
+        keys: Vec<String>,
+        favorite: bool,
+        now: i64,
+    ) -> Vec<Effect> {
+        let mut seen = BTreeSet::new();
+        let mut effects = Vec::new();
+        for key in keys {
+            let Some(game_id) = self.favorite_game(&key) else {
+                continue;
+            };
+            if !seen.insert(game_id) {
+                continue;
+            }
+            effects.extend(self.apply_favorite(game_id, favorite, now));
+        }
+        if effects.is_empty() {
             return vec![];
-        };
+        }
+        effects.extend(self.plan_favorites());
+        effects
+    }
+
+    /// The GameNode game of one library key. Unmatched entries have no server game to favorite.
+    fn favorite_game(&self, key: &str) -> Option<u64> {
+        let entry = self.entries.get(key)?;
+        self.match_status(entry).game_id()
+    }
+
+    /// Stores one game's pending local favorite. The returned persist is the only effect; callers
+    /// plan the network work once for the whole input.
+    fn apply_favorite(&mut self, game_id: u64, favorite: bool, now: i64) -> Vec<Effect> {
         let Some(account_id) = self.account.as_ref().map(|account| account.id.clone()) else {
             return vec![];
         };
@@ -96,15 +132,13 @@ impl LibraryMachine {
                 pending: true,
             },
         );
-        let mut effects = vec![Effect::PersistFavorite(FavoriteRecord {
+        vec![Effect::PersistFavorite(FavoriteRecord {
             account_id,
             game_id,
             is_favorite: favorite,
             pending: true,
             updated_at: now,
-        })];
-        effects.extend(self.plan_favorites());
-        effects
+        })]
     }
 
     pub(super) fn on_favorites_synced(

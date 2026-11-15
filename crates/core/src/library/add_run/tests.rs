@@ -2,7 +2,7 @@ use super::*;
 use crate::library::add_dialog::tests::{
     NOW, answer_read, collection, creates, dialog, entry, library, open_with, reads, select,
 };
-use crate::library::{Access, CollectionsView, Input, Reason};
+use crate::library::{Access, AddMode, AddTarget, CollectionsView, Input, Reason};
 
 fn confirm(machine: &mut LibraryMachine) -> Vec<Effect> {
     machine.handle(Input::ConfirmAdd)
@@ -30,6 +30,34 @@ fn created(
         op: *op,
         game_id: *game_id,
         result,
+    })
+}
+
+/// The entry a create's read-back returns.
+fn created_entry(game_id: u64, status: EntryStatus) -> LibraryEntry {
+    LibraryEntry {
+        id: format!("entry-{game_id}"),
+        status: Some(status),
+        collection_ids: Vec::new(),
+        platform_ids: vec![6],
+        finished_at: None,
+    }
+}
+
+/// Answers the create and the read-back that follows it.
+fn create_and_read_back(
+    machine: &mut LibraryMachine,
+    effects: &[Effect],
+    status: EntryStatus,
+) -> Vec<Effect> {
+    let next = created(machine, effects, Ok(()));
+    let [(op, game_id)] = reads(&next)[..] else {
+        panic!("the create is read back: {next:?}");
+    };
+    machine.handle(Input::EntryRead {
+        op,
+        game_id,
+        result: Ok(Some(created_entry(game_id, status))),
     })
 }
 
@@ -68,6 +96,13 @@ fn a_game_added_elsewhere_before_confirm_is_not_sent_again() {
         [AddOutcomeKind::AlreadyPresent]
     );
     assert_eq!(summary.items[0].status, Some(EntryStatus::Finished));
+    assert!(!summary.undoable, "an existing entry is never undoable");
+    assert!(
+        machine
+            .last_add
+            .as_ref()
+            .is_some_and(|summary| summary.created.is_empty())
+    );
     assert_eq!(
         machine.membership(7),
         Membership::InLibrary(Some(EntryStatus::Finished)),
@@ -123,7 +158,7 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
         );
         assert_eq!(collection_ids, &["backlog".to_owned()]);
         sent_creates.push(*game_id);
-        effects = created(&mut machine, &next, Ok(()));
+        effects = create_and_read_back(&mut machine, &next, EntryStatus::Planned);
     }
     // Portal 2 is checked and found; Dota 2 was skipped without any request.
     assert_eq!(reads(&effects)[0].1, 7);
@@ -154,6 +189,16 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
         titles,
         ["Celeste", "Dota 2", "Hades", "Left 4 Dead", "Portal 2"]
     );
+    assert!(summary.undoable);
+    let created = &machine.last_add.as_ref().unwrap().created;
+    assert_eq!(
+        created
+            .iter()
+            .map(|entry| (entry.game_id, entry.entry_id.as_str()))
+            .collect::<Vec<_>>(),
+        [(10, "entry-10"), (9, "entry-9"), (8, "entry-8")],
+        "only the entries this add created carry an id"
+    );
     assert_eq!(
         machine.membership(9),
         Membership::InLibrary(Some(EntryStatus::Planned))
@@ -162,35 +207,46 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
     let view = dialog(&mut machine);
     assert!(view.progress.is_none() && !view.can_confirm);
     machine.handle(Input::CloseAdd);
-    assert!(machine.view().unwrap().add_dialog.is_none());
+    let view = machine.view().unwrap();
+    assert!(view.add_dialog.is_none());
+    assert_eq!(
+        view.add_summary.expect("kept after close").run_id,
+        summary.run_id,
+        "the notification still has its result"
+    );
 }
 
-/// The window reads flat outcome names and the four counts; the summary must serialize exactly
-/// that shape (an externally tagged `AddOutcome` object would render every item as failed).
+/// The window reads flat outcome names and the counts; the summary must serialize exactly that
+/// shape (an externally tagged `AddOutcome` object would render every item as failed).
 #[test]
 fn the_summary_serializes_flat_outcomes_and_their_counts() {
     let mut machine = library();
     open_with(&mut machine, &["620", "570"], vec![]);
     let effects = confirm(&mut machine);
     let next = read_says(&mut machine, &effects, Ok(None));
-    created(&mut machine, &next, Ok(()));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
 
     let summary = summary(&mut machine);
+    let run = summary.run_id;
     assert_eq!(
         serde_json::to_value(&summary).unwrap(),
         serde_json::json!({
+            "runId": run,
+            "undoable": true,
             "added": 1,
             "alreadyPresent": 0,
             "skipped": 1,
             "failed": 0,
             "items": [
                 {
+                    "target": { "row": "steam:570" },
                     "entryKey": "steam:570",
                     "title": "Dota 2",
                     "outcome": "skipped",
                     "status": null
                 },
                 {
+                    "target": { "row": "steam:620" },
                     "entryKey": "steam:620",
                     "title": "Portal 2",
                     "outcome": "added",
@@ -198,6 +254,46 @@ fn the_summary_serializes_flat_outcomes_and_their_counts() {
                 }
             ]
         })
+    );
+}
+
+#[test]
+fn a_catalog_game_target_is_added_by_game_id_and_kept_for_undo() {
+    let mut machine = library();
+    let effects = machine.open_add_for_game(7);
+    let (op, _) = match &effects[0] {
+        Effect::ListCollections { op, user_id } => (*op, user_id.clone()),
+        other => panic!("{other:?}"),
+    };
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(vec![]),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(view.mode, AddMode::Catalog);
+    assert_eq!(view.targets.len(), 1);
+    assert_eq!(view.targets[0].target, AddTarget::Game(7));
+    assert!(view.targets[0].entry_key.is_none());
+    assert!(view.targets[0].matched);
+    assert_eq!(view.targets[0].title, "Portal 2");
+
+    let effects = confirm(&mut machine);
+    assert_eq!(reads(&effects), [(reads(&effects)[0].0, 7)]);
+    let next = read_says(&mut machine, &effects, Ok(None));
+    let effects = create_and_read_back(&mut machine, &next, EntryStatus::Playing);
+    assert!(effects.is_empty(), "{effects:?}");
+
+    let summary = summary(&mut machine);
+    assert_eq!(
+        (summary.added, summary.items[0].target.clone()),
+        (1, AddTarget::Game(7))
+    );
+    assert_eq!(
+        machine.last_add.as_ref().unwrap().created,
+        [CreatedEntry {
+            game_id: 7,
+            entry_id: "entry-7".to_owned()
+        }]
     );
 }
 
@@ -211,11 +307,18 @@ fn a_failed_game_does_not_stop_the_others() {
     let effects = created(&mut machine, &next, Err(ApiError::Failed));
     assert_eq!(reads(&effects)[0].1, 7, "the next game is still handled");
     let next = read_says(&mut machine, &effects, Ok(None));
-    created(&mut machine, &next, Ok(()));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
 
     let summary = summary(&mut machine);
     assert_eq!((summary.added, summary.failed), (1, 1));
     assert_eq!(summary.items[0].outcome, AddOutcomeKind::Failed);
+    assert_eq!(
+        machine.last_add.as_ref().unwrap().created,
+        [CreatedEntry {
+            game_id: 7,
+            entry_id: "entry-7".to_owned()
+        }]
+    );
 }
 
 #[test]
@@ -226,8 +329,34 @@ fn a_read_that_fails_sends_no_create() {
     let effects = read_says(&mut machine, &effects, Err(ApiError::Failed));
     assert!(creates(&effects).is_empty());
     let next = read_says(&mut machine, &effects, Ok(None));
-    created(&mut machine, &next, Ok(()));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
     assert_eq!(summary(&mut machine).failed, 1);
+}
+
+#[test]
+fn an_unreadable_read_back_keeps_the_add_but_offers_no_undo() {
+    let mut machine = library();
+    open_with(&mut machine, &["620"], vec![]);
+    let effects = confirm(&mut machine);
+    let next = read_says(&mut machine, &effects, Ok(None));
+    let next = created(&mut machine, &next, Ok(()));
+    let [(op, game_id)] = reads(&next)[..] else {
+        panic!("the create is read back: {next:?}");
+    };
+    machine.handle(Input::EntryRead {
+        op,
+        game_id,
+        result: Err(ApiError::Failed),
+    });
+
+    let summary = summary(&mut machine);
+    assert_eq!(summary.added, 1);
+    assert!(!summary.undoable);
+    assert_eq!(
+        machine.membership(7),
+        Membership::InLibrary(Some(EntryStatus::Playing)),
+        "the create succeeded even though its id could not be read"
+    );
 }
 
 #[test]
@@ -278,9 +407,55 @@ fn a_failed_single_add_keeps_the_dialog_and_choices_for_a_retry() {
         (*status, collection_ids.as_slice()),
         (EntryStatus::Finished, ["d".to_owned()].as_slice())
     );
-    created(&mut machine, &next, Ok(()));
+    create_and_read_back(&mut machine, &next, EntryStatus::Finished);
     assert_eq!(summary(&mut machine).added, 1);
     assert_eq!(dialog(&mut machine).error, None);
+}
+
+#[test]
+fn an_edit_success_never_enters_the_undo_list() {
+    let mut machine = library();
+    let selected = select(&mut machine, "620");
+    let existing = LibraryEntry {
+        id: "entry-7".into(),
+        status: Some(EntryStatus::Finished),
+        collection_ids: vec!["backlog".into()],
+        platform_ids: vec![6],
+        finished_at: Some("2026-01-01T00:00:00Z".into()),
+    };
+    answer_read(&mut machine, &selected, Ok(Some(existing.clone())));
+    let effects = machine.handle(Input::OpenAdd);
+    let (op, _) = match &effects[0] {
+        Effect::ListCollections { op, user_id } => (*op, user_id.clone()),
+        other => panic!("{other:?}"),
+    };
+    machine.handle(Input::CollectionsListed {
+        op,
+        result: Ok(vec![collection("backlog", "Backlog", None)]),
+    });
+    let effects = confirm(&mut machine);
+    let [(read_op, game_id)] = reads(&effects)[..] else {
+        panic!("{effects:?}");
+    };
+    let effects = machine.handle(Input::EntryRead {
+        op: read_op,
+        game_id,
+        result: Ok(Some(existing)),
+    });
+    let [Effect::UpdateEntry { op, game_id, .. }] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    machine.handle(Input::EntryUpdated {
+        op: *op,
+        game_id: *game_id,
+        result: Ok(()),
+    });
+
+    let view = machine.view().unwrap();
+    let summary = view.add_summary.expect("the edit completed");
+    assert_eq!(summary.added, 1);
+    assert!(!summary.undoable, "an edit is never undone by Undo add");
+    assert!(machine.last_add.as_ref().unwrap().created.is_empty());
 }
 
 #[test]
@@ -342,7 +517,7 @@ fn a_late_standing_read_does_not_undo_a_successful_add() {
     });
     let effects = confirm(&mut machine);
     let next = read_says(&mut machine, &effects, Ok(None));
-    created(&mut machine, &next, Ok(()));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
 
     machine.handle(Input::EntryRead {
         op: stale.0,

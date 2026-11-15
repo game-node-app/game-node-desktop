@@ -836,6 +836,10 @@ reads nothing.
   profile says where saves are; it does not make them readable: reading needs `files.read` and the
   approval.
 
+The [future save-descriptor roadmap](plugin-save-descriptors.md) documents optional artifact,
+format, content-binding, compatibility, slot/container, load/image and conversion provenance
+metadata with illustrative fixtures. It introduces no save-loading or conversion endpoint.
+
 ## Inspecting approved places
 
 `Locations.GetSize`, `GetAccess` and `GetLastModified` describe an approved place from its **metadata

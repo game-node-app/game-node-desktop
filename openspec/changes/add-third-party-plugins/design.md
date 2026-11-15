@@ -277,6 +277,8 @@ When supported in a later negotiated capability, the user may select a save per 
 
 This is a future-design reservation: document extensible optional descriptors now, but no save browser, thumbnail collector, memory-card parser, slot editor, converter, migration job or universal save-loading endpoint is required for this delivery. Unsupported operations remain explicitly unavailable; no successful placeholder endpoints. Existing save-profile/location/backup contracts remain the implemented API scope.
 
+Task 13.7 documents this reservation in `docs/plugin-save-descriptors.md`, linked from the API guide, with five illustrative records in `docs/fixtures/save-descriptor-roadmap.json`. The examples are fictional documentary metadata, not a wire schema or implemented capability; unknown fields, save states versus in-game saves, container scope and lineage retain their separate meanings. No endpoint, parser, collector or mandatory emulator/converter tooling is added.
+
 ### 13. Multiple libraries and runtime/content identity
 
 Libraries are named logical collections with a set of individually approved roots and watch flags, each with its own location/volume metadata and availability. Create/update/root mutation calls use expected revisions and user-approved directory handles. Deduplicate overlapping roots and aliases by canonical identity to avoid repeated observations; removing a root disables monitoring rather than deleting games or archives. Removing a library never recursively deletes its directories. Map existing multi-root watches into the API without resetting them or changing official provider implementations.

@@ -1,0 +1,55 @@
+{
+  "documentary_only": true,
+  "example_schema_version": 1,
+  "records": [
+    {
+      "id": "unclassified",
+      "artifact_kind": "unknown",
+      "format": null,
+      "logical_size_bytes": 131072,
+      "content_binding": null,
+      "last_loaded": null,
+      "image": {"kind": "illustrative_artwork", "producer": "fictional-art-plugin", "captured_at": null, "logical_reference": "example-art"},
+      "extensions": {"example.future": {"schema_version": 7, "unrecognized_field": {"retain": true}}}
+    },
+    {
+      "id": "battery-save",
+      "artifact_kind": "in_game_save",
+      "profile_id": "example-battery-profile",
+      "format": {"id": "example.battery", "version": "1", "size_constraints": {"minimum_bytes": 8192, "maximum_bytes": 32768, "source": "fictional-producer-format-description"}},
+      "logical_size_bytes": 8192,
+      "content_binding": {"game_id": "example-game-a", "variant": "fictional-region-r1", "content_fingerprint": null},
+      "compatibility": {"outcome": "compatible", "producer": "fictional-runtime-plugin", "observed_at": "2026-11-14T12:00:00Z", "basis": "fictional-format-description", "source_runtime": "example-runtime-a@1", "target_runtime": "example-runtime-b@2", "limitations": ["Only the stated in-game format and content variant; no save-state claim"]},
+      "last_loaded": null
+    },
+    {
+      "id": "runtime-state",
+      "artifact_kind": "save_state",
+      "profile_id": "example-state-profile",
+      "format": {"id": "example.runtime-state", "version": "4", "size_constraints": null},
+      "source_runtime": {"id": "example-runtime-a", "version": "1", "core": "example-core@4"},
+      "content_binding": {"game_id": "example-game-a", "variant": "fictional-region-r1", "content_fingerprint": {"algorithm": "sha256", "digest": "1111111111111111111111111111111111111111111111111111111111111111", "producer": "fictional-runtime-plugin"}},
+      "slot": {"namespace": "example.runtime-a", "name": "quick-slot"},
+      "compatibility": {"outcome": "unknown", "producer": "fictional-runtime-plugin", "target_runtime": "example-runtime-b@2", "basis": "No evidence for another runtime's state format"},
+      "last_loaded": {"producer": "fictional-runtime-plugin", "observed_at": "2026-11-14T12:05:00Z", "basis": "reported-successful-load", "runtime": "example-runtime-a@1", "artifact_id": "runtime-state", "game_id": "example-game-a"},
+      "image": {"kind": "save_associated_capture", "producer": "fictional-runtime-plugin", "captured_at": "2026-11-14T12:05:01Z", "association_basis": "producer-reported-artifact-association", "logical_reference": "example-capture"}
+    },
+    {
+      "id": "shared-card",
+      "artifact_kind": "shared_container",
+      "format": {"id": "example.virtual-card", "version": null, "size_constraints": null},
+      "backing_resource": "example-card-resource",
+      "affected_games": ["example-game-a", "example-game-b"],
+      "entries": [{"artifact_id": "battery-save", "slot": {"namespace": "example.card", "name": "slot-a"}}, {"artifact_id": null, "slot": {"namespace": "example.card", "name": "slot-b"}}],
+      "whole_container_restore_authorized": false
+    },
+    {
+      "id": "converted-save",
+      "artifact_kind": "in_game_save",
+      "format": {"id": "example.destination-battery", "version": "2", "size_constraints": null},
+      "import": {"source_artifact_id": "battery-save", "original_producer": "fictional-runtime-plugin", "importer": "fictional-import-plugin"},
+      "conversion": {"input_artifact_id": "battery-save", "input_fingerprint": null, "converter": "fictional-converter", "converter_version": "0.1", "source_format": "example.battery@1", "target_format": "example.destination-battery@2", "source_runtime": "example-runtime-a@1", "target_runtime": "example-runtime-b@2", "observed_at": "2026-11-14T12:10:00Z", "parameters": {"example_mode": "preserve-original"}, "validation": "unknown", "known_losses": null, "original_preserved": true},
+      "last_loaded": null
+    }
+  ]
+}

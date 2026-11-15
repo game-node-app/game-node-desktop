@@ -592,7 +592,9 @@ message LocationAccessReply { repeated LocationAccessEntry entries = 1; Inspecti
 message LocationLastModifiedRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
 message LocationLastModifiedReply { repeated LocationTimestamp entries = 1; optional int64 aggregate_latest_at = 2; InspectionAvailability availability = 3; }
 message LocationFingerprintRequest { ServiceContext context = 1; string approved_resource_handle = 2; string algorithm = 3; bool require_fresh = 4; uint32 max_entries = 5; string idempotency_key = 6; }
-message LocationFingerprintReply { string snapshot_id = 1; string algorithm = 2; bytes digest = 3; uint64 revision = 4; bool complete = 5; string consistency = 6; string job_id = 7; InspectionAvailability availability = 8; }
+// `digest` is present only when `complete`. `observed_start_at` and `observed_end_at` are Unix
+// seconds; the observation is best effort, not an atomic snapshot of the files.
+message LocationFingerprintReply { string snapshot_id = 1; string algorithm = 2; bytes digest = 3; uint64 revision = 4; bool complete = 5; string consistency = 6; string job_id = 7; InspectionAvailability availability = 8; int64 observed_start_at = 9; int64 observed_end_at = 10; }
 message LocationCompareRequest { ServiceContext context = 1; string before_snapshot_id = 2; string after_snapshot_id = 3; uint64 expected_revision = 4; uint32 page_size = 5; string cursor = 6; }
 message LocationCompareReply { repeated LocationChange changes = 1; string next_cursor = 2; string status = 3; uint64 revision = 4; }
 message LocationAvailabilityWatchRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint64 after_sequence = 3; }
@@ -601,7 +603,9 @@ message LocationDescription { string resource_id = 1; InspectionAvailability ava
 message LocationObservation { string entry_handle = 1; string kind = 2; uint64 logical_bytes = 3; InspectionAvailability availability = 4; }
 message LocationAccessEntry { string entry_handle = 1; string read_only_state = 2; string effective_access = 3; InspectionAvailability availability = 4; }
 message LocationTimestamp { string entry_handle = 1; int64 modified_at = 2; string precision = 3; }
-message LocationChange { string entry_handle = 1; string change_kind = 2; uint64 previous_size_bytes = 3; uint64 current_size_bytes = 4; }
+// `relative_path` is the entry's path below the compared place (for a save profile, `d<n>/` for
+// its n-th folder comes first); `entry_handle` is empty for an entry that no longer exists.
+message LocationChange { string entry_handle = 1; string change_kind = 2; uint64 previous_size_bytes = 3; uint64 current_size_bytes = 4; string relative_path = 5; }
 
 message DiagnosticListRequest { PageRequest page = 1; string owner_plugin_id = 2; string volume_identity_token = 3; string projection_id = 4; }
 message DiagnosticGetRequest { ServiceContext context = 1; string report_id = 2; string projection_id = 3; }

@@ -607,7 +607,9 @@ async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
         [
             ("GetSize", either.clone()),
             ("GetAccess", either.clone()),
-            ("GetLastModified", either),
+            ("GetLastModified", either.clone()),
+            ("GetFingerprint", either.clone()),
+            ("Compare", either),
         ]
     );
     let mut client = fixture.locations();
@@ -615,28 +617,6 @@ async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
     assert_eq!(
         client
             .inspect(LocationInspectRequest {
-                context: context.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err()
-            .code(),
-        Code::Unimplemented
-    );
-    assert_eq!(
-        client
-            .get_fingerprint(LocationFingerprintRequest {
-                context: context.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err()
-            .code(),
-        Code::Unimplemented
-    );
-    assert_eq!(
-        client
-            .compare(LocationCompareRequest {
                 context: context.clone(),
                 ..Default::default()
             })

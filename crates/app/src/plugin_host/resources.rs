@@ -30,6 +30,7 @@ mod saves;
 mod storage;
 
 use super::files::FileAccess;
+use super::fingerprints;
 use super::intents::Intents;
 use super::jobs::Jobs;
 use super::library::{
@@ -173,6 +174,8 @@ pub struct ResourceApi {
     intents: Arc<Intents>,
     /// The grants for other plugins' save profiles.
     saves: Arc<SaveAccess>,
+    /// The content fingerprints of approved places.
+    snapshots: Arc<fingerprints::Snapshots>,
 }
 
 impl ResourceApi {
@@ -187,12 +190,14 @@ impl ResourceApi {
         jobs: Jobs,
         intents: Arc<Intents>,
         saves: Arc<SaveAccess>,
+        snapshots: Arc<fingerprints::Snapshots>,
     ) -> Self {
         Self {
             providers,
             jobs,
             intents,
             saves,
+            snapshots,
             library,
             storage,
             files,

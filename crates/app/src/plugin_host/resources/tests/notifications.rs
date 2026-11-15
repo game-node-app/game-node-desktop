@@ -397,6 +397,7 @@ async fn publishing_is_unavailable_without_a_sink_and_revisions_are_not_used() {
         Jobs::default(),
         Arc::default(),
         Arc::default(),
+        Arc::default(),
     );
     let status = service
         .notifications_publish(Request::new(NotificationPublishRequest {

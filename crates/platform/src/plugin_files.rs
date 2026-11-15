@@ -222,6 +222,17 @@ pub struct Budget<'a> {
     pub cancel: &'a AtomicBool,
 }
 
+/// The content digest of one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileDigest {
+    pub sha256: [u8; 32],
+    /// The bytes that were read and hashed.
+    pub bytes: u64,
+}
+
+/// Bytes read at a time when hashing.
+pub const HASH_CHUNK_BYTES: usize = 1024 * 1024;
+
 /// How a walk ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Walk {
@@ -445,6 +456,38 @@ impl Confined {
             }
         }
         Ok(())
+    }
+
+    /// The SHA-256 of the file's content, read in chunks from the start so a large file is never
+    /// held in memory. Every chunk re-walks the path from the root, like any read. `None` when
+    /// `cancel` was set or `deadline` passed first; nothing is written or changed.
+    pub fn hash_file(
+        &self,
+        file: &[String],
+        cancel: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<Option<FileDigest>, FileError> {
+        use sha2::{Digest, Sha256};
+        check_path(file)?;
+        if file.is_empty() {
+            return Err(FileError::NotAFile);
+        }
+        let mut hash = Sha256::new();
+        let mut offset = 0_u64;
+        loop {
+            if cancel.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                return Ok(None);
+            }
+            let (chunk, eof) = sys::read(self, file, offset, HASH_CHUNK_BYTES)?;
+            hash.update(&chunk);
+            offset += chunk.len() as u64;
+            if eof || chunk.is_empty() {
+                return Ok(Some(FileDigest {
+                    sha256: hash.finalize().into(),
+                    bytes: offset,
+                }));
+            }
+        }
     }
 
     /// Deletes one regular file. Directories are never deleted.

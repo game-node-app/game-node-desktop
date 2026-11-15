@@ -11904,18 +11904,22 @@ func (x *LocationFingerprintRequest) GetIdempotencyKey() string {
 	return ""
 }
 
+// `digest` is present only when `complete`. `observed_start_at` and `observed_end_at` are Unix
+// seconds; the observation is best effort, not an atomic snapshot of the files.
 type LocationFingerprintReply struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SnapshotId    string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	Algorithm     string                 `protobuf:"bytes,2,opt,name=algorithm,proto3" json:"algorithm,omitempty"`
-	Digest        []byte                 `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`
-	Revision      uint64                 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
-	Complete      bool                   `protobuf:"varint,5,opt,name=complete,proto3" json:"complete,omitempty"`
-	Consistency   string                 `protobuf:"bytes,6,opt,name=consistency,proto3" json:"consistency,omitempty"`
-	JobId         string                 `protobuf:"bytes,7,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Availability  InspectionAvailability `protobuf:"varint,8,opt,name=availability,proto3,enum=gamenode.plugin.v1.InspectionAvailability" json:"availability,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SnapshotId      string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
+	Algorithm       string                 `protobuf:"bytes,2,opt,name=algorithm,proto3" json:"algorithm,omitempty"`
+	Digest          []byte                 `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`
+	Revision        uint64                 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	Complete        bool                   `protobuf:"varint,5,opt,name=complete,proto3" json:"complete,omitempty"`
+	Consistency     string                 `protobuf:"bytes,6,opt,name=consistency,proto3" json:"consistency,omitempty"`
+	JobId           string                 `protobuf:"bytes,7,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Availability    InspectionAvailability `protobuf:"varint,8,opt,name=availability,proto3,enum=gamenode.plugin.v1.InspectionAvailability" json:"availability,omitempty"`
+	ObservedStartAt int64                  `protobuf:"varint,9,opt,name=observed_start_at,json=observedStartAt,proto3" json:"observed_start_at,omitempty"`
+	ObservedEndAt   int64                  `protobuf:"varint,10,opt,name=observed_end_at,json=observedEndAt,proto3" json:"observed_end_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *LocationFingerprintReply) Reset() {
@@ -12002,6 +12006,20 @@ func (x *LocationFingerprintReply) GetAvailability() InspectionAvailability {
 		return x.Availability
 	}
 	return InspectionAvailability_INSPECTION_AVAILABILITY_UNSPECIFIED
+}
+
+func (x *LocationFingerprintReply) GetObservedStartAt() int64 {
+	if x != nil {
+		return x.ObservedStartAt
+	}
+	return 0
+}
+
+func (x *LocationFingerprintReply) GetObservedEndAt() int64 {
+	if x != nil {
+		return x.ObservedEndAt
+	}
+	return 0
 }
 
 type LocationCompareRequest struct {
@@ -12596,12 +12614,15 @@ func (x *LocationTimestamp) GetPrecision() string {
 	return ""
 }
 
+// `relative_path` is the entry's path below the compared place (for a save profile, `d<n>/` for
+// its n-th folder comes first); `entry_handle` is empty for an entry that no longer exists.
 type LocationChange struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	EntryHandle       string                 `protobuf:"bytes,1,opt,name=entry_handle,json=entryHandle,proto3" json:"entry_handle,omitempty"`
 	ChangeKind        string                 `protobuf:"bytes,2,opt,name=change_kind,json=changeKind,proto3" json:"change_kind,omitempty"`
 	PreviousSizeBytes uint64                 `protobuf:"varint,3,opt,name=previous_size_bytes,json=previousSizeBytes,proto3" json:"previous_size_bytes,omitempty"`
 	CurrentSizeBytes  uint64                 `protobuf:"varint,4,opt,name=current_size_bytes,json=currentSizeBytes,proto3" json:"current_size_bytes,omitempty"`
+	RelativePath      string                 `protobuf:"bytes,5,opt,name=relative_path,json=relativePath,proto3" json:"relative_path,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -12662,6 +12683,13 @@ func (x *LocationChange) GetCurrentSizeBytes() uint64 {
 		return x.CurrentSizeBytes
 	}
 	return 0
+}
+
+func (x *LocationChange) GetRelativePath() string {
+	if x != nil {
+		return x.RelativePath
+	}
+	return ""
 }
 
 type DiagnosticListRequest struct {
@@ -20267,7 +20295,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\rrequire_fresh\x18\x04 \x01(\bR\frequireFresh\x12\x1f\n" +
 	"\vmax_entries\x18\x05 \x01(\rR\n" +
 	"maxEntries\x12'\n" +
-	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\"\xb2\x02\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\"\x86\x03\n" +
 	"\x18LocationFingerprintReply\x12\x1f\n" +
 	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
 	"snapshotId\x12\x1c\n" +
@@ -20277,7 +20305,10 @@ const file_plugin_proto_rawDesc = "" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12 \n" +
 	"\vconsistency\x18\x06 \x01(\tR\vconsistency\x12\x15\n" +
 	"\x06job_id\x18\a \x01(\tR\x05jobId\x12N\n" +
-	"\favailability\x18\b \x01(\x0e2*.gamenode.plugin.v1.InspectionAvailabilityR\favailability\"\x92\x02\n" +
+	"\favailability\x18\b \x01(\x0e2*.gamenode.plugin.v1.InspectionAvailabilityR\favailability\x12*\n" +
+	"\x11observed_start_at\x18\t \x01(\x03R\x0fobservedStartAt\x12&\n" +
+	"\x0fobserved_end_at\x18\n" +
+	" \x01(\x03R\robservedEndAt\"\x92\x02\n" +
 	"\x16LocationCompareRequest\x12<\n" +
 	"\acontext\x18\x01 \x01(\v2\".gamenode.plugin.v1.ServiceContextR\acontext\x12,\n" +
 	"\x12before_snapshot_id\x18\x02 \x01(\tR\x10beforeSnapshotId\x12*\n" +
@@ -20332,13 +20363,14 @@ const file_plugin_proto_rawDesc = "" +
 	"\fentry_handle\x18\x01 \x01(\tR\ventryHandle\x12\x1f\n" +
 	"\vmodified_at\x18\x02 \x01(\x03R\n" +
 	"modifiedAt\x12\x1c\n" +
-	"\tprecision\x18\x03 \x01(\tR\tprecision\"\xb2\x01\n" +
+	"\tprecision\x18\x03 \x01(\tR\tprecision\"\xd7\x01\n" +
 	"\x0eLocationChange\x12!\n" +
 	"\fentry_handle\x18\x01 \x01(\tR\ventryHandle\x12\x1f\n" +
 	"\vchange_kind\x18\x02 \x01(\tR\n" +
 	"changeKind\x12.\n" +
 	"\x13previous_size_bytes\x18\x03 \x01(\x04R\x11previousSizeBytes\x12,\n" +
-	"\x12current_size_bytes\x18\x04 \x01(\x04R\x10currentSizeBytes\"\xcd\x01\n" +
+	"\x12current_size_bytes\x18\x04 \x01(\x04R\x10currentSizeBytes\x12#\n" +
+	"\rrelative_path\x18\x05 \x01(\tR\frelativePath\"\xcd\x01\n" +
 	"\x15DiagnosticListRequest\x123\n" +
 	"\x04page\x18\x01 \x01(\v2\x1f.gamenode.plugin.v1.PageRequestR\x04page\x12&\n" +
 	"\x0fowner_plugin_id\x18\x02 \x01(\tR\rownerPluginId\x122\n" +

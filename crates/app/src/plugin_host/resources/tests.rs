@@ -24,6 +24,7 @@ use tonic::transport::Channel;
 mod artwork_handles;
 mod declared_locations;
 mod files;
+mod fingerprints;
 mod games;
 mod jobs;
 mod locations;
@@ -69,6 +70,8 @@ struct Fixture {
     intents: Arc<Intents>,
     /// The grants for other plugins' save profiles.
     saves: Arc<crate::plugin_host::saves::SaveAccess>,
+    /// The fingerprints of approved places.
+    snapshots: Arc<crate::plugin_host::fingerprints::Snapshots>,
     /// The time the notification rate limit sees; tests move it.
     notice_clock: Arc<std::sync::atomic::AtomicU64>,
     notices: Arc<notifications::Collected>,
@@ -143,6 +146,7 @@ impl Fixture {
         let jobs = root.jobs.clone();
         let intents = root.intents.clone();
         let saves = root.saves.clone();
+        let snapshots = root.fingerprints.clone();
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
@@ -212,6 +216,7 @@ impl Fixture {
             jobs,
             intents,
             saves,
+            snapshots,
             notice_clock,
             notices,
             clock,
@@ -600,6 +605,7 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
         fixture.jobs.clone(),
         fixture.intents.clone(),
         fixture.saves.clone(),
+        fixture.snapshots.clone(),
     );
     let request = || {
         Request::new(LibraryWatchRequest {

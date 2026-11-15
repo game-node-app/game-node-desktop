@@ -68,7 +68,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn profile(&self, id: &str) -> Result<SaveProfileReply, Status> {
+    pub(super) async fn profile(&self, id: &str) -> Result<SaveProfileReply, Status> {
         self.saves()
             .get_profile(SaveProfileGetRequest {
                 context: Some(self.context()),
@@ -100,7 +100,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn patch(
+    pub(super) async fn patch(
         &self,
         key: &str,
         id: &str,
@@ -121,7 +121,7 @@ impl Fixture {
             .map(Response::into_inner)
     }
 
-    async fn drop_profile(
+    pub(super) async fn drop_profile(
         &self,
         key: &str,
         id: &str,

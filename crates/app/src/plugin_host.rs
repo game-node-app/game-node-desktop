@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, transport::Server};
 pub mod compatibility;
 pub mod confirmations;
 pub mod files;
+pub mod fingerprints;
 pub mod grants;
 pub mod intents;
 pub mod jobs;
@@ -502,6 +503,8 @@ pub struct PluginApi {
     pub intents: Arc<intents::Intents>,
     /// The grants that let a plugin use another plugin's save profiles (provisional).
     pub saves: Arc<saves::SaveAccess>,
+    /// The content fingerprints of approved places.
+    pub fingerprints: Arc<fingerprints::Snapshots>,
 }
 
 const MAX_CONNECTIONS: usize = 16;
@@ -750,6 +753,7 @@ impl PluginApiServer {
                 api.jobs.clone(),
                 api.intents.clone(),
                 api.saves.clone(),
+                api.fingerprints.clone(),
             );
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
@@ -844,6 +848,7 @@ impl PluginApiServer {
                 api.jobs.clone(),
                 api.intents.clone(),
                 api.saves.clone(),
+                api.fingerprints.clone(),
             );
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)

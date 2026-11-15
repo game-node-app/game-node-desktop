@@ -686,6 +686,32 @@ impl Jobs {
         })?
     }
 
+    /// Waits up to `limit` for the job to end and answers with how it stands: its outcome if it
+    /// ended, its state then if it did not.
+    pub async fn wait_over(
+        &self,
+        owner: &JobOwner,
+        id: &str,
+        limit: Duration,
+    ) -> Result<JobReply, Status> {
+        let mut changed = self.with(owner, id, |job| job.changed.subscribe())?;
+        let wait = async {
+            loop {
+                let reply = self.get(owner, id)?;
+                if is_over(reply.state()) {
+                    return Ok(reply);
+                }
+                if changed.changed().await.is_err() {
+                    return self.get(owner, id);
+                }
+            }
+        };
+        match tokio::time::timeout(limit, wait).await {
+            Ok(reply) => reply,
+            Err(_) => self.get(owner, id),
+        }
+    }
+
     /// Asks the job to stop and waits a short while for it to. Cancelling a finished job answers
     /// with how it finished, unchanged. A job whose work ignores the request keeps running and
     /// the reply says so (`Running`); the work decides, because stopping it halfway could leave

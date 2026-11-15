@@ -27,8 +27,14 @@ use tonic::{Request, Response, Status};
 use super::files::{
     Opened, approval_of_handle, file_status, open_approval_inspect, open_handle_inspect,
 };
+use super::mutations::request_hash;
 use super::{BoxStream, ResourceApi, Served};
 use crate::plugin_host::files::FileAccess;
+use crate::plugin_host::fingerprints::{
+    self as fingerprints, ALGORITHM, CODE_READY, DEFAULT_ENTRIES as DEFAULT_FINGERPRINT_ENTRIES,
+    MAX_BYTES, MAX_ENTRIES as MAX_FINGERPRINT_ENTRIES, MAX_TIME, Record, Snapshot,
+};
+use crate::plugin_host::jobs::{JobOwner, Outcome, work};
 use crate::plugin_host::library::LibraryFeed;
 use crate::plugin_host::saves::{self as saves, Directory};
 use crate::plugin_host::storage::Namespace;
@@ -54,7 +60,11 @@ pub const SERVED: &[Served] = &[
     Served::new("GetSize", INSPECT_PERMISSIONS, false, SCOPE),
     Served::new("GetAccess", INSPECT_PERMISSIONS, false, SCOPE),
     Served::new("GetLastModified", INSPECT_PERMISSIONS, false, SCOPE),
+    Served::new("GetFingerprint", INSPECT_PERMISSIONS, false, SCOPE),
+    Served::new("Compare", INSPECT_PERMISSIONS, true, SNAPSHOT_SCOPE),
 ];
+
+const SNAPSHOT_SCOPE: &str = "this plugin's own fingerprints, of places it may inspect";
 
 /// Stops a walk that is still running on a worker when the call that wanted it is dropped.
 struct StopOnDrop(Arc<AtomicBool>);
@@ -619,6 +629,482 @@ impl ResourceApi {
     }
 }
 
+/// One folder of a fingerprint, opened on the namespace worker and then walked away from it.
+struct Folder {
+    /// The profile's folder number, which starts its labels (`d<n>/`); `None` for a plain handle.
+    index: Option<usize>,
+    approval_id: String,
+    start: Vec<String>,
+    patterns: Vec<String>,
+    opened: Opened,
+}
+
+/// What a fingerprint covers, ready to be read without the plugin's namespace lock.
+struct Plan {
+    scope: String,
+    revision: u64,
+    folders: Vec<Folder>,
+    /// A folder of a profile whose approval is gone.
+    partial: bool,
+    unavailable: Option<InspectionAvailability>,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+fn label_of(folder: &Folder, path: &[String]) -> String {
+    match folder.index {
+        Some(index) => format!("d{index}/{}", path.join("/")),
+        None => {
+            // Below the place's own folder; a single file is named by its own name.
+            let below = path.get(folder.start.len()..).unwrap_or(&[]);
+            if below.is_empty() {
+                path.last().cloned().unwrap_or_default()
+            } else {
+                below.join("/")
+            }
+        }
+    }
+}
+
+/// Reads the plan's folders and hashes their files. Blocking. `None` when cancelled.
+fn build_snapshot(
+    plan: &Plan,
+    id: String,
+    permission: &'static str,
+    max_entries: usize,
+    cancel: &AtomicBool,
+    after_hash: Option<fingerprints::Hook>,
+) -> Option<Snapshot> {
+    let started_at = unix_now();
+    let deadline = Instant::now() + MAX_TIME;
+    let mut complete = !plan.partial;
+    let mut unstable = false;
+    let mut bytes_read = 0_u64;
+    let mut records: Vec<Record> = Vec::new();
+    let mut counted: HashSet<(String, String)> = HashSet::new();
+    'folders: for folder in &plan.folders {
+        let confined = &folder.opened.confined;
+        let budget = Budget {
+            max_entries: max_entries.saturating_sub(records.len()),
+            deadline,
+            cancel,
+        };
+        // What is below the start (the start itself when it is a file), as the walk saw it.
+        let mut found: Vec<(Vec<String>, Entry)> = Vec::new();
+        match confined.stat(&folder.start) {
+            Ok(root) if !root.directory => found.push((folder.start.clone(), root)),
+            Ok(_) => match confined.walk_tree(&folder.start, &budget, &mut |path, entry| {
+                found.push((path.to_vec(), entry.clone()));
+            }) {
+                Ok(walk) => complete &= walk.complete,
+                Err(_) => {
+                    complete = false;
+                    continue;
+                }
+            },
+            Err(_) => {
+                complete = false;
+                continue;
+            }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        for (path, entry) in found {
+            let relative = path.get(folder.start.len()..).unwrap_or(&[]);
+            if !entry.directory
+                && !saves::selected(&folder.patterns, relative)
+                && !relative.is_empty()
+            {
+                continue;
+            }
+            if !counted.insert((folder.approval_id.clone(), path.join("/"))) {
+                continue;
+            }
+            let mut record = Record {
+                label: label_of(folder, &path),
+                approval_id: folder.approval_id.clone(),
+                path: path.clone(),
+                directory: entry.directory,
+                size: entry.size,
+                digest: None,
+                unreadable: false,
+                unstable: false,
+            };
+            if !entry.directory {
+                match confined.hash_file(&path, cancel, deadline) {
+                    Ok(Some(digest)) => {
+                        if let Some(hook) = &after_hash {
+                            hook(&path);
+                        }
+                        // The same file, as long as it still has the size and time it had.
+                        let steady = confined.stat(&path).is_ok_and(|after| {
+                            after.size == entry.size
+                                && after.modified == entry.modified
+                                && after.modified_nanos == entry.modified_nanos
+                        }) && digest.bytes == entry.size;
+                        record.digest = Some(digest.sha256);
+                        record.size = digest.bytes;
+                        if !steady {
+                            record.unstable = true;
+                            unstable = true;
+                        }
+                        bytes_read += digest.bytes;
+                    }
+                    Ok(None) => {
+                        if cancel.load(Ordering::Relaxed) {
+                            return None;
+                        }
+                        // The time ran out.
+                        complete = false;
+                        break 'folders;
+                    }
+                    Err(_) => {
+                        record.unreadable = true;
+                        complete = false;
+                    }
+                }
+            }
+            records.push(record);
+            if bytes_read > MAX_BYTES {
+                complete = false;
+                break 'folders;
+            }
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    records.sort_by(|a, b| a.label.as_bytes().cmp(b.label.as_bytes()));
+    let whole = complete && !unstable;
+    Some(Snapshot {
+        id,
+        permission,
+        scope: plan.scope.clone(),
+        revision: plan.revision,
+        digest: whole.then(|| fingerprints::tree_digest(&records)),
+        entries: records,
+        complete: whole,
+        unstable,
+        started_at,
+        finished_at: unix_now(),
+    })
+}
+
+fn pending(job: &gamenode_plugin_protocol::proto::JobReply) -> LocationFingerprintReply {
+    LocationFingerprintReply {
+        job_id: job.job_id.clone(),
+        consistency: "pending".into(),
+        availability: InspectionAvailability::Available as i32,
+        algorithm: ALGORITHM.into(),
+        ..LocationFingerprintReply::default()
+    }
+}
+
+impl ResourceApi {
+    /// What the job's reply stands for: the stored fingerprint if it finished, or how it stands.
+    fn fingerprint_reply(
+        &self,
+        owner: &JobOwner,
+        job: &JobReply,
+    ) -> Result<LocationFingerprintReply, Status> {
+        match job.state() {
+            JobState::Queued | JobState::Running => Ok(pending(job)),
+            JobState::Succeeded if job.result_code == CODE_READY => {
+                let snapshot = self.snapshots.get(owner, &job.message).ok_or_else(|| {
+                    Status::failed_precondition(
+                        "that fingerprint is no longer kept; ask again with a new idempotency key",
+                    )
+                })?;
+                Ok(LocationFingerprintReply {
+                    snapshot_id: snapshot.id.clone(),
+                    algorithm: ALGORITHM.into(),
+                    digest: snapshot.digest.map(|d| d.to_vec()).unwrap_or_default(),
+                    revision: snapshot.revision,
+                    complete: snapshot.complete,
+                    consistency: if snapshot.unstable {
+                        "unstable"
+                    } else {
+                        "best_effort"
+                    }
+                    .into(),
+                    job_id: job.job_id.clone(),
+                    availability: InspectionAvailability::Available as i32,
+                    observed_start_at: snapshot.started_at,
+                    observed_end_at: snapshot.finished_at,
+                })
+            }
+            JobState::Cancelled => Ok(LocationFingerprintReply {
+                job_id: job.job_id.clone(),
+                consistency: "cancelled".into(),
+                availability: InspectionAvailability::Unknown as i32,
+                algorithm: ALGORITHM.into(),
+                ..LocationFingerprintReply::default()
+            }),
+            _ => Ok(LocationFingerprintReply {
+                job_id: job.job_id.clone(),
+                consistency: "failed".into(),
+                availability: InspectionAvailability::Unknown as i32,
+                algorithm: ALGORITHM.into(),
+                ..LocationFingerprintReply::default()
+            }),
+        }
+    }
+
+    pub(super) async fn get_location_fingerprint(
+        &self,
+        request: Request<LocationFingerprintRequest>,
+    ) -> Result<Response<LocationFingerprintReply>, Status> {
+        let request = request.into_inner();
+        let context = request.context.clone();
+        if !matches!(request.algorithm.as_str(), "" | "sha256" | ALGORITHM) {
+            return Err(Status::invalid_argument(
+                "algorithm must be \"sha256\" (or empty)",
+            ));
+        }
+        let key = request.idempotency_key.as_str();
+        if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+            return Err(Status::invalid_argument(
+                "idempotency_key is required: 1 to 128 bytes without control characters",
+            ));
+        }
+        let max_entries = match request.max_entries as usize {
+            0 => DEFAULT_FINGERPRINT_ENTRIES,
+            max => max.min(MAX_FINGERPRINT_ENTRIES),
+        };
+        let (caller, place, permission) = self
+            .inspect_place(context.as_ref(), &request.approved_resource_handle)
+            .await?;
+        let owner = JobOwner::of(&caller)?;
+        // Every fingerprint reads the content again: there is no cache to ask for, so
+        // `require_fresh` changes nothing.
+        let hash = request_hash(&[
+            "location-fingerprint",
+            &request.approved_resource_handle,
+            &max_entries.to_string(),
+        ]);
+
+        let _serial = self.mutations.lock.lock().await;
+        if let Some(job) = self.jobs.replay(&owner, key, hash)? {
+            self.providers
+                .authorize_resource(context.as_ref(), permission)?;
+            return self.fingerprint_reply(&owner, &job).map(Response::new);
+        }
+        let running = self.snapshots.begin(&owner)?;
+
+        // The folders are opened under the plugin's namespace lock, which is then let go: the
+        // reading takes as long as it takes and must not hold up the plugin's other calls.
+        let (files, feed, session) = (
+            self.files.clone(),
+            self.library.clone(),
+            caller.session_id.clone(),
+        );
+        let handle = request.approved_resource_handle.clone();
+        let plan = self
+            .in_namespace(&caller, move |namespace| {
+                let mut plan = Plan {
+                    scope: String::new(),
+                    revision: 0,
+                    folders: Vec::new(),
+                    partial: false,
+                    unavailable: None,
+                };
+                match place {
+                    Place::Handle { .. } => {
+                        match open_handle_inspect(&files, &feed, namespace, &session, &handle)? {
+                            Ok(opened) => {
+                                plan.scope = format!(
+                                    "handle:{}:{}",
+                                    opened.approval.id,
+                                    opened.path.join("/")
+                                );
+                                plan.folders.push(Folder {
+                                    index: None,
+                                    approval_id: opened.approval.id.clone(),
+                                    start: opened.path.clone(),
+                                    patterns: Vec::new(),
+                                    opened,
+                                });
+                            }
+                            Err(error) => {
+                                plan.unavailable =
+                                    Some(availability_of(error).ok_or_else(|| file_status(error))?);
+                            }
+                        }
+                    }
+                    Place::Profile { row } => {
+                        plan.scope = format!("profile:{}", row.id);
+                        plan.revision = row.revision;
+                        for (index, directory) in saves::directories_from_json(&row.directories)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            match open_approval_inspect(
+                                &files,
+                                &feed,
+                                namespace,
+                                &directory.approval_id,
+                                directory.path.clone(),
+                            ) {
+                                Ok(Ok(opened))
+                                    if opened.approval.installation_id == row.installation_id =>
+                                {
+                                    plan.folders.push(Folder {
+                                        index: Some(index),
+                                        approval_id: directory.approval_id,
+                                        start: directory.path,
+                                        patterns: directory.naming_patterns,
+                                        opened,
+                                    });
+                                }
+                                _ => plan.partial = true,
+                            }
+                        }
+                    }
+                }
+                Ok(plan)
+            })
+            .await?;
+        if let Some(availability) = plan.unavailable {
+            // There is nothing to read: say why, with no digest and no job.
+            return Ok(Response::new(LocationFingerprintReply {
+                algorithm: ALGORITHM.into(),
+                consistency: "unavailable".into(),
+                availability: availability as i32,
+                ..LocationFingerprintReply::default()
+            }));
+        }
+
+        let snapshots = self.snapshots.clone();
+        let (job_owner, id) = (owner.clone(), fingerprints::new_snapshot_id()?);
+        let run = work(move |mut ctx| async move {
+            // The slot stays taken until the job ends, however it ends.
+            let _running = running;
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let flag = cancel.clone();
+            let hook = snapshots.after_hash();
+            let mut blocking = tokio::task::spawn_blocking(move || {
+                build_snapshot(&plan, id, permission, max_entries, &flag, hook)
+            });
+            let built = tokio::select! {
+                built = &mut blocking => built,
+                () = ctx.cancelled() => {
+                    // The walk and the hashing stop at the next entry or chunk.
+                    cancel.store(true, Ordering::Relaxed);
+                    blocking.await
+                }
+            };
+            match built {
+                Ok(Some(snapshot)) => {
+                    // Whatever happened to the permission while it ran, nothing is kept for a
+                    // plugin that no longer may inspect.
+                    if let Err(status) = ctx.check() {
+                        return Outcome::stopped(&status);
+                    }
+                    let kept = snapshots.keep(&job_owner, snapshot);
+                    Outcome::succeeded(CODE_READY, &kept.id)
+                }
+                Ok(None) => Outcome::cancelled("stopped before it finished"),
+                Err(_) => Outcome::failed("internal", "the fingerprint could not be made"),
+            }
+        });
+        let (job, _) = self.start_job(
+            &caller,
+            context.clone().unwrap_or_default(),
+            permission,
+            key,
+            hash,
+            None,
+            run,
+        )?;
+        // A small place is done at once; a large one answers with its job.
+        let job = self
+            .jobs
+            .wait_over(&owner, &job.job_id, self.snapshots.fast_wait())
+            .await?;
+        self.providers
+            .authorize_resource(context.as_ref(), permission)?;
+        self.fingerprint_reply(&owner, &job).map(Response::new)
+    }
+
+    pub(super) async fn compare_location_snapshots(
+        &self,
+        request: Request<LocationCompareRequest>,
+    ) -> Result<Response<LocationCompareReply>, Status> {
+        let request = request.into_inner();
+        let context = request.context.clone();
+        let caller = self
+            .providers
+            .authorize_resource_session(context.as_ref())?;
+        let owner = JobOwner::of(&caller)?;
+        let get = |id: &str| {
+            self.snapshots
+                .get(&owner, id)
+                .ok_or_else(|| Status::not_found("fingerprint not found"))
+        };
+        let before = get(&request.before_snapshot_id)?;
+        let after = get(&request.after_snapshot_id)?;
+        // Comparing needs what taking them needed, for both.
+        for snapshot in [&before, &after] {
+            self.providers
+                .authorize_resource(context.as_ref(), snapshot.permission)?;
+        }
+        if request.expected_revision != 0 && request.expected_revision != before.revision {
+            return Err(Status::failed_precondition(
+                "the place changed since that revision; take new fingerprints",
+            ));
+        }
+        let size = match request.page_size as usize {
+            0 => 100,
+            size => size.min(500),
+        };
+        let start = if request.cursor.is_empty() {
+            0
+        } else {
+            request
+                .cursor
+                .parse::<usize>()
+                .map_err(|_| Status::invalid_argument("the cursor is not one this host gave"))?
+        };
+        let comparison = fingerprints::compare(&before, &after);
+        let files = self.files.clone();
+        let session = caller.session_id.clone();
+        let page: Vec<LocationChange> = comparison
+            .changes
+            .iter()
+            .skip(start)
+            .take(size)
+            .map(|change| LocationChange {
+                entry_handle: match &change.current {
+                    Some(now) if FileAccess::fits_handle(&now.path) => {
+                        files.seal_handle(&session, &now.approval_id, &now.path)
+                    }
+                    _ => String::new(),
+                },
+                change_kind: change.kind.as_str().into(),
+                previous_size_bytes: change.previous_size,
+                current_size_bytes: change.current_size,
+                relative_path: change.label.clone(),
+            })
+            .collect();
+        let end = start + page.len();
+        Ok(Response::new(LocationCompareReply {
+            changes: page,
+            next_cursor: if end < comparison.changes.len() {
+                end.to_string()
+            } else {
+                String::new()
+            },
+            status: comparison.status.as_str().into(),
+            revision: before.revision,
+        }))
+    }
+}
+
 fn word(answer: Tri) -> &'static str {
     match answer {
         Tri::Allowed => "allowed",
@@ -691,16 +1177,16 @@ impl locations_server::Locations for ResourceApi {
 
     async fn get_fingerprint(
         &self,
-        _request: Request<LocationFingerprintRequest>,
+        request: Request<LocationFingerprintRequest>,
     ) -> Result<Response<LocationFingerprintReply>, Status> {
-        Err(not_served("GetFingerprint"))
+        self.get_location_fingerprint(request).await
     }
 
     async fn compare(
         &self,
-        _request: Request<LocationCompareRequest>,
+        request: Request<LocationCompareRequest>,
     ) -> Result<Response<LocationCompareReply>, Status> {
-        Err(not_served("Compare"))
+        self.compare_location_snapshots(request).await
     }
 
     async fn watch_availability(

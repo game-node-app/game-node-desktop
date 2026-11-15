@@ -872,3 +872,99 @@ fn inspecting_changes_nothing_not_even_a_modification_time() {
         "no file was created"
     );
 }
+
+// ---- Hashing (task 13.4) ----
+
+fn sha(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
+fn hash(files: &Confined, file: &[&str]) -> Result<Option<FileDigest>, FileError> {
+    files.hash_file(
+        &path(file),
+        &AtomicBool::new(false),
+        Instant::now() + Duration::from_secs(30),
+    )
+}
+
+#[test]
+fn a_file_is_hashed_from_its_content_in_chunks_without_changing_it() {
+    let area = Area::new();
+    let files = area.confined();
+    let known = hash(&files, &["a.txt"]).unwrap().unwrap();
+    assert_eq!(known.sha256, sha(b"hello world"));
+    assert_eq!(known.bytes, 11);
+    // An empty file has the digest of nothing.
+    fs::write(area.root.join("empty"), b"").unwrap();
+    assert_eq!(hash(&files, &["empty"]).unwrap().unwrap().sha256, sha(b""));
+    // A file larger than a chunk is hashed whole.
+    let big: Vec<u8> = (0..HASH_CHUNK_BYTES * 2 + 17)
+        .map(|n| (n % 251) as u8)
+        .collect();
+    fs::write(area.root.join("big.bin"), &big).unwrap();
+    let digest = hash(&files, &["big.bin"]).unwrap().unwrap();
+    assert_eq!((digest.sha256, digest.bytes), (sha(&big), big.len() as u64));
+    assert_eq!(fs::read(area.root.join("a.txt")).unwrap(), b"hello world");
+}
+
+#[test]
+fn hashing_sees_a_change_that_keeps_the_size_and_the_modification_time() {
+    let area = Area::new();
+    let files = area.confined();
+    let file = area.root.join("a.txt");
+    let stamp = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 0);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let before = hash(&files, &["a.txt"]).unwrap().unwrap();
+    fs::write(&file, b"HELLO WORLD").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let after = hash(&files, &["a.txt"]).unwrap().unwrap();
+    assert_eq!(files.stat(&path(&["a.txt"])).unwrap().size, 11);
+    assert_ne!(before.sha256, after.sha256);
+}
+
+#[test]
+fn hashing_stops_when_cancelled_or_late_and_refuses_what_is_not_a_plain_file() {
+    let area = Area::new();
+    symlink(area.outside().join("secret.txt"), area.root.join("link")).unwrap();
+    let files = area.confined();
+    assert_eq!(
+        files
+            .hash_file(
+                &path(&["a.txt"]),
+                &AtomicBool::new(true),
+                Instant::now() + Duration::from_secs(30)
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        files
+            .hash_file(&path(&["a.txt"]), &AtomicBool::new(false), Instant::now())
+            .unwrap(),
+        None
+    );
+    assert_eq!(hash(&files, &["saves"]).unwrap_err(), FileError::NotAFile);
+    assert_eq!(hash(&files, &["link"]).unwrap_err(), FileError::Denied);
+    assert_eq!(hash(&files, &["missing"]).unwrap_err(), FileError::NotFound);
+    assert_eq!(
+        files
+            .hash_file(
+                &[],
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(1)
+            )
+            .unwrap_err(),
+        FileError::NotAFile
+    );
+}

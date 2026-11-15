@@ -771,3 +771,100 @@ async fn replaced_volume_identity_cannot_inherit_scope_and_watch_reports_the_cha
         Code::PermissionDenied
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_save_is_missing_while_its_approved_storage_remains_available() {
+    let (fixture, saves) = Fixture::emulator(INSPECT).await;
+    let root = fixture.approve(INSTALLATION, "save", &saves).await;
+    let states = fixture.child(&root, "states").await;
+    let file = fixture.child(&states, "s1.sav").await;
+    std::fs::remove_file(saves.join("states/s1.sav")).unwrap();
+    assert_eq!(
+        fixture
+            .inspect_volume(&root)
+            .await
+            .unwrap()
+            .location
+            .unwrap()
+            .availability,
+        InspectionAvailability::Available as i32
+    );
+    assert_eq!(
+        fixture
+            .inspect_volume(&file)
+            .await
+            .unwrap()
+            .location
+            .unwrap()
+            .availability,
+        InspectionAvailability::Missing as i32
+    );
+    let total = fixture.size(&root, 0).await.unwrap();
+    assert!(total.complete);
+    assert_eq!(total.file_count, 1);
+    assert!(!saves.join("states/s1.sav").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_storage_never_creates_a_source_folder_or_erases_its_profile() {
+    let (fixture, saves) = Fixture::emulator(INSPECT).await;
+    let root = fixture.approve(INSTALLATION, "save", &saves).await;
+    let created = fixture
+        .make(
+            "unavailable",
+            profile("Keep", "rt", vec![directory(&root, "", &[])]),
+        )
+        .await
+        .unwrap();
+    let away = saves.with_extension("away");
+    std::fs::rename(&saves, &away).unwrap();
+    let caller = fixture.caller();
+    // Model a mount whose approved identity is no longer visible, independently
+    // of the existing ancestor's storage. No privileged native unmount is needed.
+    fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            |namespace| {
+                let mut approval = namespace.approval_for(INSTALLATION, "save")?.unwrap();
+                approval.volume_token = "unavailable-volume".into();
+                let guard: crate::plugin_host::library::CommitGuard = Box::new(|| Ok(()));
+                namespace.save_approval(&approval, &guard)
+            },
+        )
+        .await
+        .unwrap();
+    for handle in [&root, &created.profile_id] {
+        let description = fixture
+            .inspect_volume(handle)
+            .await
+            .unwrap()
+            .location
+            .unwrap();
+        assert_eq!(
+            description.availability,
+            InspectionAvailability::Disconnected as i32
+        );
+        assert_eq!(description.capacity_bytes, 0);
+        assert!(!fixture.size(handle, 0).await.unwrap().complete);
+        assert!(
+            !saves.exists(),
+            "inspection must never recreate an absent mount source"
+        );
+    }
+    fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            move |namespace| {
+                let row = namespace.save_profile(&created.profile_id)?.unwrap();
+                assert_eq!(row.revision, created.revision);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(away.join("states/s1.sav")).unwrap(), b"state");
+}

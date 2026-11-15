@@ -913,8 +913,65 @@ observations, not a record of every transient mount change.
   type-checked, never run on Windows.**
 - **A profile's lost folder** (its approval revoked or changed) is reported as `MISSING` in
   `GetAccess`, as a partial total in `GetSize`, and is left out of `GetLastModified`.
-- **Not covered.** Volume identity, local-versus-network and media hints, and availability events
-  (task 13.5), and runtime resources (there are none yet).
+- **Not covered.** Runtime resources (section 14) do not exist yet. An approved installation,
+  save or prefix folder and a save profile are the currently supported places.
+
+### Consistency, availability and interpretation
+
+Inspection is a best-effort observation, not an atomic filesystem snapshot. Size, dates, access
+and volume queries can describe different instants; do not combine them into a guaranteed restore
+point. Timestamps and `observed_at` describe observations, not the last successful in-game save.
+A running game/emulator may still be writing; neither a successful inspection nor an unchanged
+fingerprint certifies that its save is quiescent or safe to restore. Only complete, compatible
+fingerprints can establish unchanged bytes for their observed scope. Missing permissions,
+unreadable entries, interrupted walks and unstable reads must retain their unknown/incomplete
+meaning. A hash difference establishes different bytes, not corruption or a format diagnosis.
+
+The global inspection grant and the standing approval for this plugin, account and selected game
+entry are both required. An installation approval needs `game.storage.inspect`; save/prefix
+approvals and profiles need `game.saves.inspect`. Knowing a game id, profile id or mount point
+never grants access to sibling games, foreign profiles or arbitrary paths. Shared folders retain
+the affected-game consent checks. Inspection grants neither raw-file access nor backup/restore,
+launch or execution authority; each action keeps its independent permission and confirmation.
+
+| Observation | Interpretation | Consumer behavior |
+| --- | --- | --- |
+| `Inspect=AVAILABLE`, file handle `MISSING` | The approved volume/root is reachable but that entry is absent | Report a missing file; do not infer why it disappeared or delete its profile/history |
+| `Inspect=MISSING` for a root, same identified volume | The approved folder is absent, moved or replaced | Keep its registration and request repair; create no replacement source folder |
+| `Inspect=DISCONNECTED`, zero capacity, empty token | The approved identity is not reachable or differs from the current volume | Pause file work; preserve last observations, games, profiles and history; do not reconcile an empty scan |
+| `INACCESSIBLE` or `UNKNOWN`, incomplete size/hash | The host lacks access or sufficient evidence | Report unavailable/unknown; do not interpret zeros or absent entries as deleted saves |
+| Complete profile size of zero on available storage | Its naming rules selected no files in this observation | Report an observed empty selection, without claiming an in-game save was deleted |
+
+`MISSING` describes absence, not proof of deletion. `DISCONNECTED` is also used when a reliable
+identity cannot be recovered; it does not diagnose a physically unplugged disk. The wire enum
+reserves `UNMOUNTED`, but the current host does not distinguish it from `DISCONNECTED`.
+`GetSize`, `GetAccess`, `GetLastModified` and fingerprint operations retain their conservative
+unavailable answers described above. Use `Inspect` for volume evidence rather than inferring
+mount state from those methods. Recheck scope after reconnecting: matching identity does not
+bypass root identity, affected-game or permission validation. Never create a replacement source
+folder on the underlying mount point, including while waiting for storage to return.
+
+Profile configuration and inspection are independent of the backup engine. The third-party
+profile-based backup create/restore route is not yet served (task 7.3); configuring or inspecting
+a profile does not establish Linux backup support. Existing packaged backup execution has its
+own engine/platform restrictions. Runtime inspection waits for runtime resources. Linux fixtures
+exercise the local-socket API; Windows metadata/access code has been cross-checked, with native
+Windows access, disconnect/reconnect and real-device acceptance still pending. No fixture result
+should be presented as native Windows acceptance.
+
+Media and interface fields are platform hints with source evidence, not health or performance
+measurements. USB may carry an HDD or SSD, a non-removable device need not be internal, and a
+network share gives no evidence of its remote physical medium. Unknown remains unknown; neither
+an NVMe/SSD label nor `queue/rotational` proves speed, health, remaining lifetime or the cause of a
+slow game. Core runs no benchmark or SMART collector during inspection. Diagnostic report
+publication belongs to task 15.1 and requires its own contract and consent.
+
+Regression evidence lives in `crates/app/src/plugin_host/resources/tests/locations.rs`: the
+missing-file fixture keeps its volume available, the unavailable-storage fixture changes the
+approved identity and removes the source path without creating a replacement, and the existing
+profile/inspection fixtures cover permission denial, incomplete totals and preservation across
+absence. These deterministic fixtures model unavailable storage; they do not perform a native
+unmount or certify physical disk detection.
 
 ### Fingerprints
 

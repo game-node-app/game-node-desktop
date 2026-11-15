@@ -8,6 +8,7 @@ fn third_party_registration(provider_id: &str) -> Registration {
     Registration {
         provider_id: provider_id.into(),
         plugin_id: format!("{provider_id}.plugin"),
+        kind: super::RegistrationKind::Provider,
         origin: RegistrationOrigin::ThirdParty {
             publisher_fingerprint: "cd".repeat(32),
         },

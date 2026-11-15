@@ -115,6 +115,7 @@ impl Harness {
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
+            kind: RegistrationKind::Provider,
             origin,
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog,
@@ -768,4 +769,86 @@ async fn achievement_text_with_raw_control_characters_is_still_rejected_by_the_h
         tonic::Code::InvalidArgument,
         "the host keeps its control-character rejection as defense"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
+    use gamenode_plugin_protocol::proto::TargetGameContext;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let endpoint = temp.path().join("extension.sock");
+    let root = super::super::PluginApi::default();
+    let api = root.providers.clone();
+    api.profiles().update(Some("account-a"), true);
+    let plugin_id = "org.example.launch-helper";
+    let internal_id = super::extension_registration_id(plugin_id);
+    api.register(Registration {
+        provider_id: internal_id.clone(),
+        plugin_id: plugin_id.into(),
+        kind: RegistrationKind::Extension,
+        origin: RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "ef".repeat(32),
+        },
+        capabilities: vec![cap::GAME_CUSTOM_LAUNCH.into()],
+        shared_catalog: false,
+        services: Arc::new(Services::default()),
+    })
+    .unwrap();
+
+    let launch = api.begin_launch(&internal_id).unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
+        .collect();
+    let server =
+        super::super::PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, root)
+            .unwrap();
+    let session = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential,
+            operation_id: "extension-launch".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        TargetGameContext {
+            game_id: "42".into(),
+            installation_id: "steam:123".into(),
+            profile_id: "account-a".into(),
+            revision: "target-rev-1".into(),
+        },
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    assert!(session.host.context().provider_id.is_empty());
+    let resource_context = session.host.resource_context().unwrap();
+    assert!(resource_context.provider_id.is_empty());
+    assert_eq!(resource_context.target_game.as_ref().unwrap().game_id, "42");
+
+    drop(session);
+    api.disconnect(&internal_id).await;
+    let launch = api.begin_launch(&internal_id).unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
+        .collect();
+    let provider_session = gamenode_plugin_sdk::Session::open(
+        gamenode_plugin_sdk::Launch {
+            endpoint,
+            credential,
+            operation_id: "provider-impersonation".into(),
+        },
+        plugin_id,
+        "steam",
+        "1.0.0",
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await;
+    assert!(provider_session.is_err());
+    drop(server);
 }

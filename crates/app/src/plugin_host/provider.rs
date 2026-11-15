@@ -126,14 +126,37 @@ pub enum RegistrationOrigin {
     ThirdParty { publisher_fingerprint: String },
 }
 
+/// A provider owns a library namespace; an extension is launched for a host-selected game and
+/// must never claim the target game's provider identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistrationKind {
+    Provider,
+    Extension,
+}
+
 pub struct Registration {
+    /// Provider id for provider registrations or a host-generated internal key for extensions.
     pub provider_id: String,
     pub plugin_id: String,
+    pub kind: RegistrationKind,
     pub origin: RegistrationOrigin,
     pub capabilities: Vec<String>,
     /// Whether this provider's trusted manifest declares shared catalog access.
     pub shared_catalog: bool,
     pub services: Arc<dyn HostServices>,
+}
+
+/// Internal lookup key for one provider-free extension. It is not a provider id and is never
+/// placed into the extension's authenticated `ServiceContext`.
+pub(crate) fn extension_registration_id(plugin_id: &str) -> String {
+    format!("extension:{plugin_id}")
+}
+
+fn context_provider_id(registration: &Registration) -> &str {
+    match registration.kind {
+        RegistrationKind::Provider => &registration.provider_id,
+        RegistrationKind::Extension => "",
+    }
 }
 
 struct Provider {
@@ -782,7 +805,7 @@ impl ProviderApi {
                         context: Some(ServiceContext {
                             session_id: id.clone(),
                             session_credential: session.credential.to_vec(),
-                            provider_id: provider_id.into(),
+                            provider_id: context_provider_id(&session.provider.registration).into(),
                             operation_id,
                             account_epoch,
                             profile_epoch,
@@ -803,11 +826,27 @@ impl ProviderApi {
     /// Registration is host-owned composition, never a plugin RPC.
     pub fn register(&self, registration: Registration) -> Result<(), Status> {
         if registration.provider_id.is_empty()
-            || registration.provider_id.len() > 128
+            || registration.provider_id.len() > 256
             || registration.plugin_id.is_empty()
             || registration.plugin_id.len() > 256
         {
             return Err(Status::invalid_argument("invalid provider registration"));
+        }
+        match registration.kind {
+            RegistrationKind::Provider if registration.provider_id.contains(':') => {
+                return Err(Status::invalid_argument("invalid provider registration"));
+            }
+            RegistrationKind::Extension
+                if !matches!(&registration.origin, RegistrationOrigin::ThirdParty { .. })
+                    || registration.provider_id
+                        != extension_registration_id(&registration.plugin_id)
+                    || registration.shared_catalog =>
+            {
+                return Err(Status::invalid_argument(
+                    "invalid provider-free extension registration",
+                ));
+            }
+            _ => {}
         }
         cap::negotiate(
             gamenode_plugin_protocol::API_MAJOR,
@@ -816,14 +855,28 @@ impl ProviderApi {
             cap::KNOWN,
         )
         .map_err(|_| Status::invalid_argument("invalid provider grants"))?;
-        if !registration
-            .capabilities
-            .iter()
-            .any(|s| s == cap::CONTEXT || s == cap::SETTINGS || s == cap::CONFIGURE)
-        {
-            return Err(Status::invalid_argument(
-                "full provider requires context access",
-            ));
+        match registration.kind {
+            RegistrationKind::Provider
+                if !registration
+                    .capabilities
+                    .iter()
+                    .any(|s| s == cap::CONTEXT || s == cap::SETTINGS || s == cap::CONFIGURE) =>
+            {
+                return Err(Status::invalid_argument(
+                    "full provider requires context access",
+                ));
+            }
+            RegistrationKind::Extension
+                if !registration
+                    .capabilities
+                    .iter()
+                    .any(|s| s == cap::GAME_LAUNCH || s == cap::GAME_CUSTOM_LAUNCH) =>
+            {
+                return Err(Status::invalid_argument(
+                    "extension requires an approved game action",
+                ));
+            }
+            _ => {}
         }
         let mut state = lock(&self.state);
         if state.providers.contains_key(&registration.provider_id)
@@ -930,6 +983,13 @@ impl ProviderApi {
             hello.target_game.is_some(),
         )
         .map_err(|_| Status::invalid_argument("invalid session scope"))?;
+        let extension_session = hello.session_kind == SessionKind::Extension as i32;
+        if extension_session != (pending.provider.registration.kind == RegistrationKind::Extension)
+        {
+            return Err(Status::permission_denied(
+                "session kind does not match the registered plugin kind",
+            ));
+        }
         if let Some(target) = hello.target_game.as_ref() {
             cap::validate_target(target)
                 .map_err(|_| Status::invalid_argument("invalid target game context"))?;
@@ -954,6 +1014,11 @@ impl ProviderApi {
             cap::RangeNegotiationError::Session => Status::invalid_argument(error.to_string()),
             _ => Status::failed_precondition(error.to_string()),
         })?;
+        if extension_session && selection.api_minor < cap::THIRD_PARTY_API_MINOR {
+            return Err(Status::failed_precondition(
+                "extension sessions require API 1.6",
+            ));
+        }
         let mut seen_capabilities = BTreeSet::new();
         if hello.requested_capabilities.is_empty()
             || hello
@@ -1014,7 +1079,7 @@ impl ProviderApi {
             Some(ServiceContext {
                 session_id: session_id.clone(),
                 session_credential: pending.credential.to_vec(),
-                provider_id: pending.provider.registration.provider_id.clone(),
+                provider_id: context_provider_id(&pending.provider.registration).into(),
                 operation_id: super::random_session_id()?,
                 account_epoch,
                 profile_epoch,
@@ -1200,6 +1265,11 @@ impl ProviderApi {
             self.record_authorization_denial(event);
             return Err(denial(DenialReason::ScopeDenied, permission, revision));
         }
+        if session.provider.registration.kind == RegistrationKind::Extension {
+            return Err(Status::permission_denied(
+                "provider operations are unavailable to extensions",
+            ));
+        }
         // Without an account profile, profile-scoped services are unavailable, not denied.
         if session
             .provider
@@ -1302,7 +1372,7 @@ impl ProviderApi {
         if !super::constant_time_eq(&session.credential, &context.session_credential)
             || context.session_kind != session.kind
             || context.target_game != session.target_game
-            || context.provider_id != session.provider.registration.provider_id
+            || context.provider_id != context_provider_id(&session.provider.registration)
         {
             let (event, status) = scope_denied(session);
             drop(state);
@@ -1350,7 +1420,8 @@ impl ProviderApi {
                 .resolver(
                     &session.provider.registration.plugin_id,
                     publisher_fingerprint,
-                    Some(&session.provider.registration.provider_id),
+                    (session.provider.registration.kind == RegistrationKind::Provider)
+                        .then_some(session.provider.registration.provider_id.as_str()),
                 )
                 .ok(),
             _ => None,
@@ -2025,7 +2096,7 @@ impl provider_host_server::ProviderHost for ProviderApi {
             if !super::constant_time_eq(&session.credential, &context.session_credential) {
                 return Err(Status::unauthenticated("invalid stream credential"));
             }
-            if session.provider.registration.provider_id != context.provider_id {
+            if context_provider_id(&session.provider.registration) != context.provider_id {
                 let permission = cap::CONTEXT;
                 let detail = denial(
                     DenialReason::ScopeDenied,

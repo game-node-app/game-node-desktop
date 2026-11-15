@@ -109,6 +109,38 @@ launch = { uri = "example://run/{id}" }
 }
 
 #[test]
+fn rejects_colliding_backend_registrations_instead_of_using_registration_order() {
+    let text = r#"
+id = "example"
+name = "Example store"
+platforms = ["windows", "linux"]
+source = "example"
+scan = { plugin = "org.example.provider" }
+"#;
+    let approved = PluginBackend {
+        plugin_id: "org.example.provider".into(),
+        provider_id: "example".into(),
+        discovery: true,
+        catalog: false,
+        counter: false,
+        actions: false,
+        achievements: false,
+    };
+    let conflicting = PluginBackend {
+        discovery: false,
+        ..approved.clone()
+    };
+    let loaded = load_with_plugins(
+        &[("example.toml", text)],
+        Platform::Windows,
+        &[approved, conflicting],
+    );
+    assert!(loaded.providers.is_empty());
+    assert_eq!(loaded.diagnostics.len(), 1);
+    assert!(loaded.diagnostics[0].problem.contains("ambiguous"));
+}
+
+#[test]
 fn loads_the_bundled_steam_manifest() {
     let loaded = load(&[("steam.toml", STEAM_MANIFEST)], Platform::Windows);
     assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);

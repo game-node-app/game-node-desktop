@@ -110,6 +110,7 @@ async fn manager(
         .register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Provider,
             origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: vec![capability::CONTEXT.into()],
             shared_catalog: false,

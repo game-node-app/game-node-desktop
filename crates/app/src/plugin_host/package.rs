@@ -249,19 +249,28 @@ impl Manifest {
         if !reverse_domain_id(&self.id) {
             return invalid("plugin id must be a reverse-domain identifier");
         }
+        if reserved_plugin_id(&self.id) {
+            return invalid("plugin id uses the reserved GameNode namespace");
+        }
         match self.kind {
-            PluginKind::Provider
-                if self
-                    .provider_id
-                    .as_deref()
-                    .is_none_or(|id| !provider_id(id)) =>
-            {
-                return invalid("provider packages require a valid provider_id");
+            PluginKind::Provider => {
+                let Some(id) = self.provider_id.as_deref() else {
+                    return invalid("provider packages require a valid provider_id");
+                };
+                if !provider_id(id) {
+                    return invalid("provider packages require a valid provider_id");
+                }
+                if reserved_provider_id(id) {
+                    return invalid("provider_id is reserved by an official provider");
+                }
             }
             PluginKind::Extension if self.provider_id.is_some() => {
                 return invalid("extension packages must not declare provider_id");
             }
             _ => {}
+        }
+        if self.kind == PluginKind::Extension && self.resources.contains_key("provider") {
+            return invalid("extension packages must not declare a provider resource");
         }
         if self.name.trim().is_empty() || self.name.len() > 128 {
             return invalid("name must contain 1 to 128 characters");
@@ -472,11 +481,17 @@ fn reverse_domain_id(s: &str) -> bool {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
 }
+fn reserved_plugin_id(s: &str) -> bool {
+    s == "org.gamenode" || s.starts_with("org.gamenode.")
+}
 fn provider_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+fn reserved_provider_id(s: &str) -> bool {
+    matches!(s, "epic" | "manual" | "packagekit" | "steam")
 }
 fn identifier(s: &str) -> bool {
     !s.is_empty()
@@ -1068,7 +1083,43 @@ mod tests {
             "\"kind\":\"provider\",\"provider_id\":\"example-reader\",",
             "\"kind\":\"extension\",",
         );
+        let extension = extension.replace(
+            ",\"resources\":{\"provider\":\"provider.toml\"}",
+            ",\"resources\":{}",
+        );
         assert!(Manifest::parse_json(extension.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn rejects_reserved_official_ids_and_provider_resources_on_extensions() {
+        for reserved in ["org.gamenode", "org.gamenode.plugin.steam-discovery"] {
+            let manifest = VALID.replace("org.example.reader", reserved);
+            assert!(
+                Manifest::parse_json(manifest.as_bytes()).is_err(),
+                "{reserved}"
+            );
+        }
+        for reserved in ["epic", "manual", "packagekit", "steam"] {
+            let manifest = VALID.replace("example-reader", reserved);
+            assert!(
+                Manifest::parse_json(manifest.as_bytes()).is_err(),
+                "{reserved}"
+            );
+        }
+        let extension = VALID
+            .replace(
+                "\"kind\":\"provider\",\"provider_id\":\"example-reader\",",
+                "\"kind\":\"extension\",",
+            )
+            .replace(
+                ",\"resources\":{\"provider\":\"provider.toml\"}",
+                ",\"resources\":{}",
+            );
+        let extension_with_provider = extension.replace(
+            "\"resources\":{}",
+            "\"resources\":{\"provider\":\"provider.toml\"}",
+        );
+        assert!(Manifest::parse_json(extension_with_provider.as_bytes()).is_err());
     }
 
     #[test]

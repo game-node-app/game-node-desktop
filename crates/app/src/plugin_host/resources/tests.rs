@@ -172,6 +172,7 @@ impl Fixture {
         api.register(Registration {
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Provider,
             origin: RegistrationOrigin::ThirdParty {
                 publisher_fingerprint: "ab".repeat(32),
             },

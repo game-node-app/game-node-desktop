@@ -1,6 +1,22 @@
 # Estimativa de esforço — add-third-party-plugins
 
-Estimativa de planejamento para as **73 tarefas pendentes do programa**, agora distribuídas entre um MVP (22 tarefas abertas) e três follow-ups (51 tarefas abertas). A tabela conserva as faixas originais por tarefa; [`delivery-split.md`](delivery-split.md) define a ordem, o escopo e a propriedade atual.
+Estimativa original para as **73 tarefas que estavam pendentes no momento da divisão**, agora distribuídas entre um MVP e três follow-ups. Após concluir 8.1, restam 21 tarefas no MVP e 51 nos follow-ups. A tabela conserva as faixas originais por tarefa; [`delivery-split.md`](delivery-split.md) define a ordem, o escopo e a propriedade atual.
+
+## Reestimativa do MVP — 2026-11-15
+
+Antes desta execução, as 22 tarefas abertas do MVP somavam **58,5–121,5 horas** na estimativa original por tarefa. A tarefa 8.1 aproveitou o suporte a sessões de extensão já existente no protocolo/SDK e foi concluída com a ponte de registro do host, sem recriar o fluxo de launch. A estimativa de 1–3 horas restantes para 8.1 foi consumida nesta execução.
+
+Com 8.1 concluída, o esforço restante estimado para as 21 tarefas do MVP é **55,5–115,5 horas de foco** (aproximadamente **7–15 dias de 8 horas**). A decomposição é:
+
+| Frente do MVP | Tarefas | Esforço restante |
+|---|---|---:|
+| Composição e ciclo de vida | 8.2, 8.3, 8.7 | 7,5–15,5 h |
+| Recuperação de atualização | 9.3 | 3–6 h |
+| Interface de gestão e compatibilidade | 10.1, 10.2, 10.4, 10.5, 10.8 | 10–22 h |
+| SDK, exemplos e conformidade | 11.1, 11.2, 11.3, 11.5, 11.6, 11.7, 11.9 | 17–36 h |
+| Verificação focada e aceitação | 18.1, 18.2, 18.3, 18.4, 18.10 | 18–36 h |
+
+As tarefas 18.2 e 18.3 representam **10–20 horas de aceitação nativa** no Linux e Windows, já incluídas no total. A estimativa conta o tempo de execução e registro dos cenários; disponibilidade de máquinas, contas, builds e correção de falhas pode aumentar o prazo de calendário. O intervalo também é de horas de foco, não de execução contínua. A revisão de escopo reduziu 8.1; as outras faixas continuam como antes porque a conversa não identificou mudanças que justifiquem reduzi-las.
 
 ## Como interpretar
 

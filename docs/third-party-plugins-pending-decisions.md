@@ -478,3 +478,17 @@ As duas primeiras linhas foram decididas com o usuário; o resto é detalhe de e
 | `Entry` da camada de arquivos ganhou a fração de segundo e o atributo somente leitura; `precision` é `subsecond` ou `whole_second` e descreve só o que foi observado. Uma data que o sistema não deu é omitida, nunca 1970. | 13.3. |
 | Abrir uma pasta sem permissão de entrada passou a ser `Access` (antes `RootChanged`), para o sistema dizer `INACCESSIBLE` e não `MISSING`. | 13.3. |
 
+## U. Decisões adotadas na implementação da tarefa 13.4 (2026-11-14)
+
+A primeira linha foi decidida com o usuário; o resto é detalhe de engenharia.
+
+| Decisão | Alcance |
+| --- | --- |
+| **Entrega do resultado**: a chamada sempre cria (ou reaproveita, pela chave) um job; se ele termina em cerca de 2 s, a resposta já traz digest, `snapshot_id` e `complete`; senão traz só o `job_id`, e quando o job termina com o código `fingerprint_ready` (mensagem = id do snapshot) o plugin repete a chamada com a mesma chave e recebe o resultado guardado. | 13.4. |
+| O digest da árvore é `sha256-tree-v1` (tag de domínio, caminhos ordenados pelos bytes UTF-8, comprimento, tipo, tamanho lógico, SHA-256 do arquivo; pastas vazias incluídas). Um teste fixa o valor; qualquer mudança no formato é outro id de algoritmo. O rótulo de um perfil começa com `d<n>/` da n-ésima pasta, e o que se alcança por duas pastas conta uma vez. | 13.4. |
+| Um arquivo ilegível, um arquivo que mudou de tamanho ou de data enquanto era lido, uma varredura cortada (entradas, 4 GiB, 10 min) ou uma pasta de perfil sem aprovação tornam o snapshot incompleto ou instável, **não devolvem digest** e deixam a comparação `indeterminate`; um arquivo ilegível nunca é listado como modificado. | 13.4. |
+| Campos aditivos no protocolo: `LocationChange.relative_path = 5` (sem ele um item removido não teria identidade) e `LocationFingerprintReply.observed_start_at = 9` / `observed_end_at = 10` (o design manda o resultado trazer o início e o fim observados). Bindings Go regenerados. | 13.4, 2.2. |
+| Snapshots só em memória (8 por plugin, 1 hora), do próprio plugin; um perfil em outra revisão é outro lugar (`incomparable`); `expected_revision` diferente de 0 e fora da revisão do snapshot é `FAILED_PRECONDITION`. Um fingerprint por plugin e dois no total rodam ao mesmo tempo (`RESOURCE_EXHAUSTED`). Limites sem medir. | 13.4. |
+| A leitura roda sem segurar a trava do namespace do plugin (as pastas são abertas sob a trava e a trava é solta), para uma varredura longa não bloquear as outras chamadas do plugin. Cancelar o job para a varredura e a leitura no próximo arquivo ou bloco e não guarda nada. | 13.4. |
+| `require_fresh` não muda nada: toda chamada relê o conteúdo e não há cache. Um fingerprint de handle de runtime espera os recursos de runtime (14.x). | 13.4, 14.x. |
+

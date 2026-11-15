@@ -380,10 +380,11 @@ message DomainWatchRequest { ServiceContext context = 1; uint64 after_revision =
 message DomainRemoveRequest { MutationContext mutation = 1; string resource_id = 2; }
 message LibraryCreateRequest { MutationContext mutation = 1; string name = 2; string description = 3; }
 message LibraryUpdateRequest { MutationContext mutation = 1; string library_id = 2; string name = 3; string description = 4; repeated string field_mask = 5; }
-message LibraryRootAddRequest { MutationContext mutation = 1; string library_id = 2; string approved_root_handle = 3; string display_name = 4; }
-message LibraryRootUpdateRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; string approved_root_handle = 4; string display_name = 5; }
+message LibraryRootAddRequest { MutationContext mutation = 1; string library_id = 2; string approved_root_handle = 3; string display_name = 4; repeated DeclaredLocation declared_locations = 5; }
+message LibraryRootUpdateRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; string approved_root_handle = 4; string display_name = 5; repeated DeclaredLocation declared_locations = 6; repeated string field_mask = 7; bool watching = 8; }
 message LibraryRootRemoveRequest { MutationContext mutation = 1; string library_id = 2; string root_id = 3; }
-message LibraryRecord { string id = 1; string name = 2; string creator_plugin_id = 3; repeated string root_ids = 4; uint64 revision = 5; }
+message LibraryRecord { string id = 1; string name = 2; string creator_plugin_id = 3; repeated string root_ids = 4; uint64 revision = 5; string description = 6; repeated LibraryRootRecord roots = 7; }
+message LibraryRootRecord { string id = 1; string display_name = 2; bool watching = 3; InspectionAvailability availability = 4; reserved 5; string approved_root_handle = 6; string discovery_state = 7; }
 message LibrariesListReply { repeated LibraryRecord libraries = 1; string next_cursor = 2; uint64 revision = 3; }
 message LibraryRecordReply { LibraryRecord library = 1; uint64 revision = 2; }
 message LibraryRecordEvent { uint64 revision = 1; string event_type = 2; LibraryRecord library = 3; }

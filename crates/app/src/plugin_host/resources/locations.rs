@@ -94,7 +94,9 @@ impl Place {
     /// The permission the place needs.
     fn permission(&self) -> &'static str {
         match self {
-            Self::Handle { kind } if kind == "installation" => cap::GAME_STORAGE_INSPECT,
+            Self::Handle { kind } if matches!(kind.as_str(), "installation" | "library") => {
+                cap::GAME_STORAGE_INSPECT
+            }
             _ => cap::GAME_SAVES_INSPECT,
         }
     }

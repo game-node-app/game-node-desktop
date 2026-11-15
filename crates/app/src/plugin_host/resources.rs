@@ -21,6 +21,7 @@ mod artwork;
 mod files;
 mod games;
 mod jobs;
+mod libraries;
 mod locations;
 mod matching;
 mod mutations;
@@ -52,6 +53,60 @@ const MAX_PROVIDER_ID_BYTES: usize = 128;
 
 /// The ResourceHost methods this build serves, for `DescribeApi`.
 pub const SERVED: &[Served] = &[
+    Served::new(
+        "LibrariesList",
+        cap::LIBRARY_ROOTS_READ,
+        true,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesGet",
+        cap::LIBRARY_ROOTS_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesWatch",
+        cap::LIBRARY_ROOTS_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesCreate",
+        cap::LIBRARY_ROOTS_CREATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesUpdate",
+        cap::LIBRARY_ROOTS_UPDATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesRemove",
+        cap::LIBRARY_ROOTS_DELETE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesAddRoot",
+        cap::LIBRARY_ROOTS_CREATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesUpdateRoot",
+        cap::LIBRARY_ROOTS_UPDATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "LibrariesRemoveRoot",
+        cap::LIBRARY_ROOTS_DELETE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
     Served::new("LibraryList", cap::LIBRARY_READ, true, READ_SCOPE),
     Served::new("LibraryGet", cap::LIBRARY_READ, false, READ_SCOPE),
     Served::new("LibraryWatch", cap::LIBRARY_READ, false, READ_SCOPE),
@@ -176,6 +231,7 @@ pub struct ResourceApi {
     saves: Arc<SaveAccess>,
     /// The content fingerprints of approved places.
     snapshots: Arc<fingerprints::Snapshots>,
+    libraries: Arc<libraries::Libraries>,
 }
 
 impl ResourceApi {
@@ -194,6 +250,7 @@ impl ResourceApi {
     ) -> Self {
         Self {
             providers,
+            libraries: Arc::default(),
             jobs,
             intents,
             saves,
@@ -679,6 +736,134 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.cancel_job(request).await
     }
 
+    async fn libraries_list(
+        &self,
+        request: Request<DomainListRequest>,
+    ) -> Result<Response<LibrariesListReply>, Status> {
+        self.list_libraries(request).await
+    }
+
+    async fn libraries_get(
+        &self,
+        request: Request<DomainGetRequest>,
+    ) -> Result<Response<LibraryRecordReply>, Status> {
+        self.get_library(request).await
+    }
+
+    async fn libraries_watch(
+        &self,
+        request: Request<DomainWatchRequest>,
+    ) -> Result<Response<Self::LibrariesWatchStream>, Status> {
+        self.watch_libraries(request).await
+    }
+
+    async fn libraries_create(
+        &self,
+        request: Request<LibraryCreateRequest>,
+    ) -> Result<Response<LibraryMutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(r.mutation, libraries::Edit::Create(r.name, r.description))
+            .await?;
+        Ok(Response::new(LibraryMutationReply {
+            resource_id: reply.resource_id,
+            revision: reply.revision,
+            outcome: reply.outcome,
+        }))
+    }
+
+    async fn libraries_update(
+        &self,
+        request: Request<LibraryUpdateRequest>,
+    ) -> Result<Response<LibraryMutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(
+                r.mutation,
+                libraries::Edit::Update(r.library_id, r.name, r.description, r.field_mask),
+            )
+            .await?;
+        Ok(Response::new(LibraryMutationReply {
+            resource_id: reply.resource_id,
+            revision: reply.revision,
+            outcome: reply.outcome,
+        }))
+    }
+
+    async fn libraries_remove(
+        &self,
+        request: Request<DomainRemoveRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(r.mutation, libraries::Edit::Remove(r.resource_id))
+            .await?;
+        Ok(Response::new(reply))
+    }
+
+    async fn libraries_add_root(
+        &self,
+        request: Request<LibraryRootAddRequest>,
+    ) -> Result<Response<LibraryMutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(
+                r.mutation,
+                libraries::Edit::Add(
+                    r.library_id,
+                    r.approved_root_handle,
+                    r.display_name,
+                    r.declared_locations,
+                ),
+            )
+            .await?;
+        Ok(Response::new(LibraryMutationReply {
+            resource_id: reply.resource_id,
+            revision: reply.revision,
+            outcome: reply.outcome,
+        }))
+    }
+
+    async fn libraries_update_root(
+        &self,
+        request: Request<LibraryRootUpdateRequest>,
+    ) -> Result<Response<LibraryMutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(
+                r.mutation,
+                libraries::Edit::Root(
+                    r.library_id,
+                    r.root_id,
+                    r.approved_root_handle,
+                    r.display_name,
+                    r.declared_locations,
+                    r.field_mask,
+                    r.watching,
+                ),
+            )
+            .await?;
+        Ok(Response::new(LibraryMutationReply {
+            resource_id: reply.resource_id,
+            revision: reply.revision,
+            outcome: reply.outcome,
+        }))
+    }
+
+    async fn libraries_remove_root(
+        &self,
+        request: Request<LibraryRootRemoveRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        let r = request.into_inner();
+        let reply = self
+            .edit_library(
+                r.mutation,
+                libraries::Edit::RemoveRoot(r.library_id, r.root_id),
+            )
+            .await?;
+        Ok(Response::new(reply))
+    }
+
     not_served! {
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
@@ -686,15 +871,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
         backups_list(BackupsListRequest) -> BackupsListReply;
         backups_request_create(BackupCreateRequest) -> JobReply;
         backups_request_restore(BackupRestoreRequest) -> JobReply;
-        libraries_list(DomainListRequest) -> LibrariesListReply;
-        libraries_get(DomainGetRequest) -> LibraryRecordReply;
-        libraries_watch(DomainWatchRequest) -> Self::LibrariesWatchStream;
-        libraries_create(LibraryCreateRequest) -> LibraryMutationReply;
-        libraries_update(LibraryUpdateRequest) -> LibraryMutationReply;
-        libraries_remove(DomainRemoveRequest) -> MutationReply;
-        libraries_add_root(LibraryRootAddRequest) -> LibraryMutationReply;
-        libraries_update_root(LibraryRootUpdateRequest) -> LibraryMutationReply;
-        libraries_remove_root(LibraryRootRemoveRequest) -> MutationReply;
         runtimes_list(DomainListRequest) -> RuntimesListReply;
         runtimes_get(DomainGetRequest) -> RuntimeRecordReply;
         runtimes_watch(DomainWatchRequest) -> Self::RuntimesWatchStream;

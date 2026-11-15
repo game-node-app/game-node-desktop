@@ -579,10 +579,26 @@ pub struct StoredArtwork {
     pub revision: u64,
 }
 
+/// One approved contribution to Core executable discovery. Physical paths stay host-only.
+#[derive(Clone)]
+pub struct PluginScanRoot {
+    pub root: gamenode_platform::plugin_storage::PluginLibraryRoot,
+    pub valid: Arc<dyn Fn() -> Result<(), Status> + Send + Sync>,
+}
+
 /// The engine's side of plugin library services: everything that reads or changes state the
 /// library machine owns. Implementations take the engine's own locks; callers never hold one.
 #[async_trait::async_trait]
 pub trait LibraryHost: Send + Sync {
+    fn plugin_roots_supported(&self) -> bool {
+        false
+    }
+    fn set_plugin_roots(&self, _owner: String, _roots: Vec<PluginScanRoot>) -> Result<(), Status> {
+        Err(Status::unimplemented(
+            "Core library-root discovery is unavailable",
+        ))
+    }
+
     /// The favorite state of every GameNode game matched by an entry of `provider_id`, by game
     /// id. Games with no entry of that provider are not disclosed.
     fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)>;

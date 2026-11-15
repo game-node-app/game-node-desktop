@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -222,6 +222,9 @@ impl DurableStore {
         }
         if version < 6 {
             conn.execute_batch("BEGIN IMMEDIATE; ALTER TABLE file_roots ADD COLUMN volume_token TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 6; COMMIT;")?;
+        }
+        if version < 7 {
+            conn.execute_batch("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS plugin_libraries (id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; PRAGMA user_version = 7; COMMIT;")?;
         }
         Ok(Self { conn })
     }
@@ -714,3 +717,79 @@ fn usage_of(conn: &Connection, now: i64, except: Option<&str>) -> Result<u64, Pl
 
 #[cfg(test)]
 mod tests;
+
+pub const MAX_PLUGIN_LIBRARIES: usize = 128;
+pub const MAX_PLUGIN_LIBRARY_ROOTS: usize = 128;
+
+/// Host-owned logical library data. Kept outside the plugin's private key/value API.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PluginLibraryRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub revision: u64,
+    pub removed: bool,
+    pub roots: Vec<PluginLibraryRoot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PluginLibraryRoot {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub volume: u64,
+    pub node: u64,
+    pub volume_token: String,
+    pub declared: bool,
+    pub watching: bool,
+}
+
+impl DurableStore {
+    pub fn plugin_libraries(&self) -> Result<Vec<PluginLibraryRow>, PluginStorageError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT payload FROM plugin_libraries ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let text = row?;
+            serde_json::from_str(&text).map_err(|error| {
+                PluginStorageError::Database(rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                ))
+            })
+        })
+        .collect()
+    }
+
+    pub fn put_plugin_library(&mut self, row: &PluginLibraryRow) -> Result<(), PluginStorageError> {
+        let payload = serde_json::to_string(row).expect("library records serialize");
+        let tx = self.conn.transaction()?;
+        tx.execute("INSERT INTO plugin_libraries(id,payload) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![row.id,payload])?;
+        tx.execute(
+            "UPDATE meta SET revision=MAX(revision,?1) WHERE id=1",
+            [row.revision as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+impl PluginLibraryRoot {
+    /// Session handles bind to the approved folder revision, not just the logical root id.
+    pub fn handle_id(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for part in [
+            &self.path,
+            &self.volume_token,
+            &self.volume.to_string(),
+            &self.node.to_string(),
+        ] {
+            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(part.as_bytes());
+        }
+        format!("{}:{:x}", self.id, hash.finalize())
+    }
+}

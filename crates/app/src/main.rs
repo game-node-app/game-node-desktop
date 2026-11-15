@@ -332,6 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let achievement_store = store.achievement_store();
     let engine = Engine::new(
         Ports {
+            discovery: None,
             achievements: Arc::new(achievement_store),
             backups: Some(Arc::new(gamenode_platform::backups::Ludusavi::bundled(
                 paths.data_dir(),

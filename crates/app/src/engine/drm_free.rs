@@ -295,13 +295,24 @@ impl Engine {
         let result = (|| {
             let watches = store.watches()?;
             let registrations = store.registrations()?;
+            let plugin_watch_ids: Vec<_> = self
+                .shared
+                .plugin_scan_roots
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .flatten()
+                .filter(|r| r.root.watching && (r.valid)().is_ok())
+                .map(|r| r.root.id.clone())
+                .collect();
             let candidates = store
                 .candidates()?
                 .into_iter()
                 .filter(|candidate| {
-                    watches
+                    (watches
                         .iter()
                         .any(|watch| watch.enabled && watch.id == candidate.watch)
+                        || plugin_watch_ids.contains(&candidate.watch))
                         && !registrations.iter().any(|r| {
                             candidate_matches_registration(candidate, r)
                                 && r.removed
@@ -1060,6 +1071,15 @@ impl Engine {
         &self,
         candidates: Vec<gamenode_core::drm_free::Candidate>,
     ) -> Result<Vec<String>, LocalError> {
+        self.auto_register_candidates_checked(candidates, &|| Ok(()))
+    }
+
+    fn auto_register_candidates_checked(
+        &self,
+        candidates: Vec<gamenode_core::drm_free::Candidate>,
+        valid: &dyn Fn() -> Result<(), LocalError>,
+    ) -> Result<Vec<String>, LocalError> {
+        valid()?;
         let store = self
             .shared
             .ports
@@ -1081,6 +1101,7 @@ impl Engine {
         };
         let mut added_titles = Vec::new();
         for mut candidate in candidates {
+            valid()?;
             if candidate.ignored
                 || prior
                     .iter()
@@ -1113,12 +1134,14 @@ impl Engine {
                     &[],
                 );
             }
+            valid()?;
             store.save_candidate(&candidate).map_err(local_storage)?;
             if let (Some(host), Some(target)) = (
                 self.shared.ports.installations.as_ref(),
                 candidate.selected_target.as_deref(),
             ) {
                 let mut registration = host.inspect(target)?;
+                valid()?;
                 registration.root = candidate.root.clone();
                 registration.title = candidate.title.clone();
                 if let Some(pos) = registrations.iter().position(|r| {
@@ -1201,11 +1224,79 @@ impl Engine {
                         added_titles.extend(engine.auto_register_candidates(pending)?);
                     }
                 }
+                let contributions: Vec<_> = engine
+                    .shared
+                    .plugin_scan_roots
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                let mut all: Vec<_> = enabled_watches.into_iter().map(|w| (w, None)).collect();
+                all.extend(
+                    contributions
+                        .into_iter()
+                        .filter(|r| r.root.watching)
+                        .map(|r| {
+                            (
+                                WatchRoot {
+                                    id: r.root.id.clone(),
+                                    path: r.root.path.clone(),
+                                    enabled: true,
+                                },
+                                Some(r),
+                            )
+                        }),
+                );
+                for (watch, _) in &mut all {
+                    if let Ok(path) = std::fs::canonicalize(&watch.path) {
+                        watch.path = gamenode_platform::host::strip_verbatim_prefix(
+                            path.to_string_lossy().into_owned(),
+                        );
+                    }
+                }
+                all.sort_by_key(|(w, _)| w.path.len());
                 let mut scanned_roots = Vec::<String>::new();
                 let mut incomplete = Vec::new();
-                for watch in enabled_watches {
-                    let normalized =
-                        gamenode_core::provider::path::normalize(&watch.path).to_lowercase();
+                let mut failure = None;
+                for (watch, contribution) in all {
+                    let valid = || -> Result<(), LocalError> {
+                        if let Some(r) = &contribution {
+                            (r.valid)().map_err(|_| LocalError::Cancelled)?;
+                            let root = gamenode_platform::plugin_files::ApprovedRoot {
+                                path: std::path::PathBuf::from(&r.root.path),
+                                identity: gamenode_platform::plugin_files::Identity {
+                                    volume: r.root.volume,
+                                    node: r.root.node,
+                                },
+                            };
+                            gamenode_platform::plugin_files::Confined::open(
+                                &root,
+                                &Default::default(),
+                            )
+                            .map_err(|_| LocalError::InvalidTarget)?;
+                            if gamenode_platform::volume::volume_info(&root.path).is_none_or(|v| {
+                                v.volume_identity_token.is_empty()
+                                    || v.volume_identity_token != r.root.volume_token
+                            }) {
+                                return Err(LocalError::InvalidTarget);
+                            }
+                        }
+                        Ok(())
+                    };
+                    if valid().is_err() {
+                        incomplete.push(watch.path.clone());
+                        continue;
+                    }
+                    let normalized = gamenode_core::provider::path::normalize(&watch.path);
+                    let normalized = if cfg!(windows)
+                        || gamenode_core::provider::path::is_windows_style(&normalized)
+                    {
+                        normalized.to_lowercase()
+                    } else {
+                        normalized
+                    };
                     if scanned_roots.iter().any(|root| {
                         let sep = if gamenode_core::provider::path::is_windows_style(root) {
                             '\\'
@@ -1220,29 +1311,50 @@ impl Engine {
                     }) {
                         continue;
                     }
-                    scanned_roots.push(normalized);
-                    let found = match gamenode_platform::discovery::WindowsDiscovery
-                        .discover(&watch, &engine.shared.local_cancel)
-                    {
+                    let scanner = engine
+                        .shared
+                        .ports
+                        .discovery
+                        .as_deref()
+                        .unwrap_or(&gamenode_platform::discovery::WindowsDiscovery);
+                    let found = match scanner.discover(&watch, &engine.shared.local_cancel) {
                         Ok(found) => found,
                         Err(LocalError::Unsupported)
                             if engine.shared.ports.installations.is_some() =>
                         {
                             DiscoveryReport::default()
                         }
-                        Err(error) => return Err(error),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                            incomplete.push(watch.path.clone());
+                            continue;
+                        }
                     };
+                    if valid().is_err() {
+                        incomplete.push(watch.path.clone());
+                        continue;
+                    }
                     if found.incomplete {
                         incomplete.push(watch.path.clone());
+                    } else {
+                        scanned_roots.push(normalized);
                     }
-                    for title in engine.auto_register_candidates(found.candidates)? {
+                    let titles =
+                        match engine.auto_register_candidates_checked(found.candidates, &valid) {
+                            Ok(titles) => titles,
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                                continue;
+                            }
+                        };
+                    for title in titles {
                         if !added_titles.contains(&title) {
                             added_titles.push(title);
                         }
                     }
                 }
                 engine.lock().local.discovery_incomplete = incomplete;
-                Ok::<_, LocalError>(())
+                failure.map_or(Ok(()), Err)
             })();
             {
                 let mut state = engine.lock();

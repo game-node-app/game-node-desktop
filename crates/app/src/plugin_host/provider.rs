@@ -166,6 +166,7 @@ struct Session {
     /// The operation id of the session's resource context (API 1.6+); `None` for sessions that
     /// negotiated an earlier minor, which cannot call resource services.
     resource_operation: Option<String>,
+    resource_context: Option<ServiceContext>,
 }
 
 /// An authorized plugin-initiated resource call. It snapshots the session's scope at check time;
@@ -1036,6 +1037,7 @@ impl ProviderApi {
                 commands: None,
                 ready: Some(pending.ready),
                 completed: VecDeque::new(),
+                resource_context: resource_context.clone(),
                 resource_operation: resource_context
                     .as_ref()
                     .map(|context| context.operation_id.clone()),
@@ -1380,6 +1382,22 @@ impl ProviderApi {
         let revision = event.grant_revision;
         self.record_authorization_denial(event);
         denial(DenialReason::ScopeDenied, permission, revision)
+    }
+
+    /// Host-only original contexts for lifecycle consumers. Never refresh an old
+    /// session's profile epoch, and never return these credentials through a public RPC.
+    pub(crate) fn resource_session_contexts(&self) -> Vec<ServiceContext> {
+        lock(&self.state)
+            .sessions
+            .values()
+            .filter(|session| {
+                matches!(
+                    session.provider.registration.origin,
+                    RegistrationOrigin::ThirdParty { .. }
+                )
+            })
+            .filter_map(|session| session.resource_context.clone())
+            .collect()
     }
 
     /// Whether the plugin session `session_id` is still open.

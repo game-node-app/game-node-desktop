@@ -658,3 +658,56 @@ impl Namespace<'_> {
 
 #[cfg(all(test, unix))]
 mod tests;
+
+impl Namespace<'_> {
+    pub fn plugin_libraries(
+        &mut self,
+    ) -> Result<Vec<gamenode_platform::plugin_storage::PluginLibraryRow>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.plugin_libraries().map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn put_plugin_library(
+        &mut self,
+        mut row: gamenode_platform::plugin_storage::PluginLibraryRow,
+        expected: u64,
+        guard: &CommitGuard,
+    ) -> Result<u64, Status> {
+        guard()?;
+        self.durable(true)?;
+        let rows = self.plugin_libraries()?;
+        let existing = rows.iter().find(|r| r.id == row.id);
+        if existing.is_none()
+            && rows.len() >= gamenode_platform::plugin_storage::MAX_PLUGIN_LIBRARIES
+        {
+            return Err(Status::resource_exhausted("library record limit reached"));
+        }
+        let root_count = rows
+            .iter()
+            .filter(|r| r.id != row.id)
+            .map(|r| r.roots.len())
+            .sum::<usize>()
+            + row.roots.len();
+        if root_count > gamenode_platform::plugin_storage::MAX_PLUGIN_LIBRARY_ROOTS {
+            return Err(Status::resource_exhausted("root limit reached"));
+        }
+        if existing.as_ref().map_or(0, |r| r.revision) != expected {
+            return Err(Status::aborted("library revision changed; get it again"));
+        }
+        let revision = self
+            .inner
+            .counter
+            .checked_add(1)
+            .ok_or_else(|| Status::resource_exhausted("revision limit reached"))?;
+        row.revision = revision;
+        guard()?;
+        self.durable(true)?
+            .ok_or_else(|| Status::unavailable("library storage unavailable"))?
+            .put_plugin_library(&row)
+            .map_err(unavailable)?;
+        self.inner.counter = revision;
+        Ok(revision)
+    }
+}

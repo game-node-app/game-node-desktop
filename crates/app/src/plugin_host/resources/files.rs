@@ -250,6 +250,40 @@ fn standing_approval(
     approval_id: &str,
     op: u8,
 ) -> Result<FileApproval, Status> {
+    if approval_id.starts_with("lroot-") {
+        if op != 0 && op != operation::READ {
+            return Err(Status::permission_denied(
+                "library roots approve discovery reads only",
+            ));
+        }
+        let root = namespace
+            .plugin_libraries()?
+            .into_iter()
+            .filter(|r| !r.removed)
+            .flat_map(|r| r.roots)
+            .find(|r| r.handle_id() == approval_id)
+            .ok_or_else(|| Status::not_found("library-root handle not found"))?;
+        return Ok(FileApproval {
+            id: approval_id.into(),
+            installation_id: String::new(),
+            game_id: String::new(),
+            kind: "library".into(),
+            root: root.path,
+            root_volume: root.volume,
+            root_node: root.node,
+            volume_token: root.volume_token,
+            operations: operation::READ,
+            affected: vec![],
+            approved_at: 0,
+            revoked_at: None,
+            origin: if root.declared {
+                ORIGIN_DECLARED
+            } else {
+                ORIGIN_USER
+            }
+            .into(),
+        });
+    }
     let approval = namespace
         .approval(approval_id)?
         .filter(|approval| approval.revoked_at.is_none())

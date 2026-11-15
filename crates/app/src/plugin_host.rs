@@ -755,6 +755,7 @@ impl PluginApiServer {
                 api.saves.clone(),
                 api.fingerprints.clone(),
             );
+            let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -850,6 +851,7 @@ impl PluginApiServer {
                 api.saves.clone(),
                 api.fingerprints.clone(),
             );
+            let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);

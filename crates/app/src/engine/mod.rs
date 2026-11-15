@@ -48,6 +48,7 @@ const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 /// The adapters the engine drives.
 #[derive(Clone)]
 pub struct Ports {
+    pub discovery: Option<Arc<dyn gamenode_core::drm_free::DiscoveryHost>>,
     pub backups: Option<Arc<dyn gamenode_core::drm_free::BackupEngine>>,
     pub local_games: Option<Arc<dyn gamenode_core::drm_free::LocalGameStore>>,
     pub installations: Option<Arc<dyn gamenode_core::drm_free::InstallationHost>>,
@@ -169,6 +170,8 @@ struct Shared {
     /// Without it, a refresh that read the store before a write can apply after a newer
     /// view and temporarily hide registrations or inferences from the snapshot.
     local_views: Mutex<()>,
+    plugin_scan_roots:
+        Mutex<std::collections::HashMap<String, Vec<crate::plugin_host::library::PluginScanRoot>>>,
     ports: Ports,
     runtime: Handle,
     storage: StorageWorker,
@@ -266,6 +269,7 @@ impl Engine {
                 .to_owned(),
             }),
             local_views: Mutex::new(()),
+            plugin_scan_roots: Mutex::default(),
             ports,
             runtime,
             storage: StorageWorker::new(),
@@ -1580,6 +1584,37 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    fn plugin_roots_supported(&self) -> bool {
+        true
+    }
+    fn set_plugin_roots(
+        &self,
+        owner: String,
+        roots: Vec<crate::plugin_host::library::PluginScanRoot>,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        let mut active = engine
+            .shared
+            .plugin_scan_roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let previous = active
+            .get(&owner)
+            .map(|roots| roots.iter().map(|r| r.root.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let changed = previous != roots.iter().map(|r| r.root.clone()).collect::<Vec<_>>();
+        if roots.is_empty() {
+            active.remove(&owner);
+        } else {
+            active.insert(owner, roots);
+        }
+        drop(active);
+        if changed || !previous.is_empty() {
+            engine.rescan_local_folders();
+        }
+        Ok(())
+    }
+
     fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {
         let Ok(engine) = self.engine() else {
             return Vec::new();

@@ -37,7 +37,7 @@ struct Seen {
 }
 
 /// Serializes mutating calls and remembers their committed outcomes by
-/// `(provider, profile epoch, idempotency key)`; a new profile starts with no keys.
+/// `(authenticated namespace, profile epoch, idempotency key)`; a new profile starts with no keys.
 #[derive(Default)]
 pub(super) struct Mutations {
     pub(super) lock: tokio::sync::Mutex<()>,
@@ -62,11 +62,7 @@ impl Mutations {
         hash: [u8; 32],
     ) -> Result<Option<(MutationReply, i64)>, Status> {
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
-        let id = (
-            caller.provider_id.clone(),
-            caller.profile_epoch,
-            key.to_owned(),
-        );
+        let id = (mutation_owner(caller), caller.profile_epoch, key.to_owned());
         match seen.get(&id) {
             Some(entry) if entry.at.elapsed() >= IDEMPOTENCY_TTL => {
                 seen.remove(&id);
@@ -102,7 +98,7 @@ impl Mutations {
         let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, entry| entry.at.elapsed() < IDEMPOTENCY_TTL);
         let own = |(provider, epoch, _): &(String, u64, String)| {
-            *provider == caller.provider_id && *epoch == caller.profile_epoch
+            *provider == mutation_owner(caller) && *epoch == caller.profile_epoch
         };
         if seen.keys().filter(|id| own(id)).count() >= IDEMPOTENCY_PER_PLUGIN
             && let Some(oldest) = seen
@@ -114,11 +110,7 @@ impl Mutations {
             seen.remove(&oldest);
         }
         seen.insert(
-            (
-                caller.provider_id.clone(),
-                caller.profile_epoch,
-                key.to_owned(),
-            ),
+            (mutation_owner(caller), caller.profile_epoch, key.to_owned()),
             Seen {
                 hash,
                 reply: reply.clone(),
@@ -127,6 +119,16 @@ impl Mutations {
             },
         );
     }
+}
+
+// Provider-free extensions share an empty provider id; their authenticated namespace,
+// not that alias, owns mutation receipts.
+fn mutation_owner(caller: &ResourceCaller) -> String {
+    caller
+        .namespace
+        .as_ref()
+        .map(|resolver| format!("namespace:{:?}", resolver.storage_owner().key()))
+        .unwrap_or_else(|| format!("provider:{}", caller.provider_id))
 }
 
 /// A digest of a request's meaningful fields, length-prefixed so parts cannot run together.

@@ -27,6 +27,7 @@ mod files;
 mod fingerprints;
 mod games;
 mod jobs;
+mod libraries;
 mod locations;
 mod network;
 mod notifications;
@@ -654,6 +655,15 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     assert_eq!(
         resource,
         [
+            ("LibrariesList", MAX_PAGE_SIZE as u32),
+            ("LibrariesGet", 0),
+            ("LibrariesWatch", 0),
+            ("LibrariesCreate", 0),
+            ("LibrariesUpdate", 0),
+            ("LibrariesRemove", 0),
+            ("LibrariesAddRoot", 0),
+            ("LibrariesUpdateRoot", 0),
+            ("LibrariesRemoveRoot", 0),
             ("LibraryList", MAX_PAGE_SIZE as u32),
             ("LibraryGet", 0),
             ("LibraryWatch", 0),
@@ -700,6 +710,7 @@ type FakeMatch = (Option<u64>, bool, u64);
 /// `(provider, game)`. A game is "matched" for a provider when it has a row here.
 #[derive(Default)]
 struct FakeHost {
+    scan_roots: Mutex<HashMap<String, Vec<crate::plugin_host::library::PluginScanRoot>>>,
     names: Mutex<HashMap<String, (Option<String>, u64)>>,
     games: Mutex<BTreeMap<(String, u64), bool>>,
     /// State-changing writes that reached the host.
@@ -742,6 +753,18 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl LibraryHost for FakeHost {
+    fn plugin_roots_supported(&self) -> bool {
+        true
+    }
+    fn set_plugin_roots(
+        &self,
+        owner: String,
+        roots: Vec<crate::plugin_host::library::PluginScanRoot>,
+    ) -> Result<(), Status> {
+        self.scan_roots.lock().unwrap().insert(owner, roots);
+        Ok(())
+    }
+
     async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), Status> {
         if let Some(code) = *self.open_fails.lock().unwrap() {
             return Err(Status::new(code, "the provider could not do that"));

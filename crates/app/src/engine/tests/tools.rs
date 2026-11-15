@@ -79,6 +79,7 @@ fn tools_harness() -> ToolsHarness {
     }];
 
     let ports = Ports {
+        discovery: None,
         achievements: super::test_achievement_store(),
         backups: None,
         local_games: None,

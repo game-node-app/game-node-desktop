@@ -988,3 +988,130 @@ async fn windows_watched_folder_produces_review_candidates() {
     .await
     .unwrap();
 }
+
+#[derive(Default)]
+struct LibraryRootScanner {
+    calls: Mutex<Vec<String>>,
+}
+impl gamenode_core::drm_free::DiscoveryHost for LibraryRootScanner {
+    fn discover(
+        &self,
+        root: &WatchRoot,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<gamenode_core::drm_free::DiscoveryReport, LocalError> {
+        self.calls.lock().unwrap().push(root.path.clone());
+        Ok(Default::default())
+    }
+}
+fn plugin_scan_root(
+    path: &std::path::Path,
+    id: &str,
+) -> crate::plugin_host::library::PluginScanRoot {
+    let approved =
+        gamenode_platform::plugin_files::approve_root(path, &Default::default()).unwrap();
+    let volume = gamenode_platform::volume::volume_info(&approved.path).unwrap();
+    crate::plugin_host::library::PluginScanRoot {
+        root: gamenode_platform::plugin_storage::PluginLibraryRoot {
+            id: id.into(),
+            name: "Root".into(),
+            path: approved.path.to_str().unwrap().into(),
+            volume: approved.identity.volume,
+            node: approved.identity.node,
+            volume_token: volume.volume_identity_token,
+            declared: false,
+            watching: true,
+        },
+        valid: Arc::new(|| Ok(())),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_roots_deduplicate_aliases_and_overlap_preserve_legacy_watches_and_skip_unavailable_volumes()
+ {
+    use crate::plugin_host::library::LibraryHost;
+    let base = tempfile::tempdir().unwrap();
+    let games = base.path().join("games");
+    let child = games.join("child");
+    let offline = base.path().join("offline");
+    std::fs::create_dir_all(&child).unwrap();
+    std::fs::create_dir(&offline).unwrap();
+    std::fs::write(offline.join("save"), b"keep").unwrap();
+    let alias = base.path().join("alias");
+    std::os::unix::fs::symlink(&games, &alias).unwrap();
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    store
+        .save_watch(&WatchRoot {
+            id: "legacy".into(),
+            path: alias.to_str().unwrap().into(),
+            enabled: true,
+        })
+        .unwrap();
+    let scanner = Arc::new(LibraryRootScanner::default());
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let ports = &mut Arc::get_mut(&mut h.engine.shared).unwrap().ports;
+    ports.local_games = Some(store.clone());
+    ports.discovery = Some(scanner.clone());
+    let host = super::super::PluginLibraryHost {
+        shared: Arc::downgrade(&h.engine.shared),
+    };
+    let unavailable = plugin_scan_root(&offline, "offline");
+    let away = offline.with_extension("away");
+    std::fs::rename(&offline, &away).unwrap();
+    host.set_plugin_roots(
+        "plugin/account".into(),
+        vec![
+            plugin_scan_root(&games, "same"),
+            plugin_scan_root(&child, "child"),
+            unavailable,
+        ],
+    )
+    .unwrap();
+    eventually(|| {
+        !h.engine.snapshot().local_games.discovery_scanning
+            && scanner.calls.lock().unwrap().len() == 1
+    })
+    .await;
+    assert_eq!(scanner.calls.lock().unwrap()[0], games.to_str().unwrap());
+    assert!(!offline.exists());
+    assert_eq!(std::fs::read(away.join("save")).unwrap(), b"keep");
+    host.set_plugin_roots("plugin/account".into(), vec![])
+        .unwrap();
+    eventually(|| {
+        !h.engine.snapshot().local_games.discovery_scanning
+            && scanner.calls.lock().unwrap().len() == 2
+    })
+    .await;
+    assert!(store.watches().unwrap()[0].enabled);
+    assert_eq!(store.watches().unwrap()[0].id, "legacy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_plugin_root_never_reaches_the_core_scanner() {
+    use crate::plugin_host::library::LibraryHost;
+    let folder = tempfile::tempdir().unwrap();
+    let mut root = plugin_scan_root(folder.path(), "revoked");
+    root.valid = Arc::new(|| Err(tonic::Status::permission_denied("revoked")));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let scanner = Arc::new(LibraryRootScanner::default());
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let ports = &mut Arc::get_mut(&mut h.engine.shared).unwrap().ports;
+    ports.local_games = Some(Arc::new(database.local_game_store()));
+    ports.discovery = Some(scanner.clone());
+    let host = super::super::PluginLibraryHost {
+        shared: Arc::downgrade(&h.engine.shared),
+    };
+    host.set_plugin_roots("plugin/account".into(), vec![root])
+        .unwrap();
+    eventually(|| {
+        h.engine.snapshot().local_games.discovery_completed
+            && !h.engine.snapshot().local_games.discovery_scanning
+    })
+    .await;
+    assert!(scanner.calls.lock().unwrap().is_empty());
+}

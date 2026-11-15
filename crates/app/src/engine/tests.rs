@@ -441,6 +441,7 @@ fn harness_with_providers(
     let processes = Arc::new(gamenode_core::tracker::scripted::ScriptedProcesses::default());
     let achievements = test_achievement_store();
     let ports = Ports {
+        discovery: None,
         achievements: achievements.clone(),
         backups: None,
         local_games: None,

@@ -405,8 +405,16 @@ Libraries SHALL support create/update/remove, multiple approved roots, individua
 - **WHEN** the user approves a new plugin/account library root after being informed of automatic executable discovery
 - **THEN** Core enables its existing platform-supported discovery for that root alongside plugin discovery; suggestions alone add no root and trigger no scan, and unsupported discovery is reported explicitly
 
+#### Scenario: Continuing monitoring is independent of CRUD grants
+- **WHEN** library CRUD grants are revoked after a root was explicitly approved and enabled
+- **THEN** public CRUD calls are independently denied while Core monitoring continues under the standing root approval for the active plugin/account, without requiring library.discovery
+
+#### Scenario: Approved monitoring resumes without CRUD access
+- **WHEN** the same plugin/account opens a new authenticated session with no library CRUD grants
+- **THEN** its approved enabled roots resume Core monitoring without a CRUD query, and an old session cannot acquire a new account epoch to resume another account's roots
+
 #### Scenario: Independent monitoring contributions
-- **WHEN** a plugin root is removed, disabled, revoked or fenced by an account/session change
+- **WHEN** a plugin root is removed, disabled, its approval is revoked or it is fenced by an account/session change
 - **THEN** its monitoring contribution stops without deleting game files/history or disabling an overlapping existing global or independently enabled root
 
 #### Scenario: One volume is unavailable

@@ -175,7 +175,7 @@ impl FileAccess {
         handle: &str,
     ) -> Option<(String, Vec<String>)> {
         let payload = self.sealer.open(HANDLE, session_id, handle)?;
-        if payload.len() > MAX_HANDLE_PATH + 64 {
+        if payload.len() > MAX_HANDLE_PATH + 256 {
             return None;
         }
         let mut parts = payload.split(|byte| *byte == 0);

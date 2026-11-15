@@ -9,10 +9,16 @@ reading `tasks.md` directly if the OpenSpec CLI is unavailable.
 ```sh
 python3 scripts/spec_progress.py status
 python3 scripts/spec_progress.py status --change add-third-party-plugins --section 7
+python3 scripts/spec_progress.py next --change add-third-party-plugins --design-section 11
 python3 scripts/spec_progress.py show 7.7
 python3 scripts/spec_progress.py outline
 python3 scripts/spec_progress.py outline --section 11
 ```
+
+Use `next` to print progress, the full next pending task and, optionally, one
+numbered section from `design.md` in a single helper invocation. Add `--section`
+to select the next pending task within a task section. When more than one change
+is active or available, pass `--change` to avoid selecting one implicitly.
 
 `status --json` exposes the raw apply payload; `show --line-numbers` and
 `outline --json` are available when exact source locations or machine-readable

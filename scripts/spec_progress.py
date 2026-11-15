@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def detect_default_change(repo_root: Path = REPO_ROOT) -> str:
-    """Detect the active in-progress OpenSpec change."""
+    """Resolve one active change, requiring an explicit choice when ambiguous."""
     try:
         proc = subprocess.run(
             ["openspec", "list", "--json"],
@@ -33,21 +33,26 @@ def detect_default_change(repo_root: Path = REPO_ROOT) -> str:
             text=True,
             check=True,
         )
+    except FileNotFoundError:
+        proc = None
+
+    if proc is not None:
         data = json.loads(proc.stdout)
         changes = data.get("changes", [])
         in_progress = [c for c in changes if c.get("status") == "in-progress"]
         if len(in_progress) == 1:
             return in_progress[0]["name"]
-        if in_progress:
-            # Pick the most recently modified
-            in_progress.sort(key=lambda c: c.get("lastModified", ""), reverse=True)
-            return in_progress[0]["name"]
-        if changes:
+        if len(in_progress) > 1:
+            names = ", ".join(sorted(c["name"] for c in in_progress))
+            raise ValueError(f"Multiple OpenSpec changes are in progress ({names}); pass --change.")
+        if len(changes) == 1:
             return changes[0]["name"]
-    except Exception:
-        pass
+        if changes:
+            names = ", ".join(sorted(c["name"] for c in changes))
+            raise ValueError(f"No unique in-progress OpenSpec change ({names}); pass --change.")
+        raise FileNotFoundError("OpenSpec reports no changes; pass --change.")
 
-    # Filesystem fallback
+    # Filesystem fallback is used only when the OpenSpec executable is absent.
     changes_dir = repo_root / "openspec" / "changes"
     if changes_dir.is_dir():
         candidates = [
@@ -55,12 +60,13 @@ def detect_default_change(repo_root: Path = REPO_ROOT) -> str:
             for d in changes_dir.iterdir()
             if d.is_dir() and (d / "tasks.md").is_file() and d.name != "archive"
         ]
-        if "add-third-party-plugins" in candidates:
-            return "add-third-party-plugins"
+        if len(candidates) == 1:
+            return candidates[0]
         if candidates:
-            return sorted(candidates)[0]
+            names = ", ".join(sorted(candidates))
+            raise ValueError(f"Multiple OpenSpec changes are available ({names}); pass --change.")
 
-    return "add-third-party-plugins"
+    raise FileNotFoundError("No OpenSpec change with tasks.md was found; pass --change.")
 
 
 def fetch_apply_instructions(change: str, repo_root: Path = REPO_ROOT) -> Dict[str, Any]:
@@ -73,13 +79,13 @@ def fetch_apply_instructions(change: str, repo_root: Path = REPO_ROOT) -> Dict[s
             text=True,
             check=True,
         )
-        return json.loads(proc.stdout)
-    except Exception:
-        # Fallback to direct tasks.md parsing if openspec CLI is unavailable
+    except FileNotFoundError:
+        # Fall back only when OpenSpec is not installed; real CLI/JSON errors must stay visible.
         tasks_file = repo_root / "openspec" / "changes" / change / "tasks.md"
         if not tasks_file.is_file():
             raise FileNotFoundError(f"tasks.md not found for change {change!r} at {tasks_file}")
         return parse_tasks_file_fallback(tasks_file, change)
+    return json.loads(proc.stdout)
 
 
 def parse_tasks_file_fallback(tasks_file: Path, change: str) -> Dict[str, Any]:
@@ -167,7 +173,18 @@ def format_status(
 
     out: List[str] = []
     out.append(f"OpenSpec change: {change}")
-    out.append(f"Progress: {complete}/{total} complete ({pct:.1f}%), {remaining} remaining")
+    if section_filter:
+        section_total = len(tasks)
+        section_complete = sum(1 for task in tasks if task["done"])
+        out.append(
+            f"Section {section_filter}: {section_complete}/{section_total} complete, "
+            f"{section_total - section_complete} pending"
+        )
+        out.append(
+            f"Change-wide progress: {complete}/{total} complete ({pct:.1f}%), {remaining} remaining"
+        )
+    else:
+        out.append(f"Progress: {complete}/{total} complete ({pct:.1f}%), {remaining} remaining")
 
     if pending and not section_filter:
         next_task = pending[0]
@@ -275,9 +292,30 @@ def parse_markdown_headings(file_path: Path) -> List[MarkdownHeading]:
     lines = text.splitlines(keepends=True)
     headings: List[MarkdownHeading] = []
     heading_re = re.compile(r"^(#{1,6})\s+(.*)$")
+    fence_open_re = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+    fence_close_re = re.compile(r"^ {0,3}(`+|~+)\s*$")
+    fence_char: Optional[str] = None
+    fence_size = 0
 
     for idx, raw_line in enumerate(lines, start=1):
         stripped = raw_line.rstrip("\r\n")
+        if fence_char is not None:
+            closing = fence_close_re.match(stripped)
+            if (
+                closing
+                and closing.group(1)[0] == fence_char
+                and len(closing.group(1)) >= max(fence_size, 3)
+            ):
+                fence_char = None
+                fence_size = 0
+            continue
+
+        opening = fence_open_re.match(stripped)
+        if opening:
+            fence_char = opening.group(1)[0]
+            fence_size = len(opening.group(1))
+            continue
+
         m = heading_re.match(stripped)
         if m:
             level = len(m.group(1))
@@ -301,7 +339,6 @@ def parse_markdown_headings(file_path: Path) -> List[MarkdownHeading]:
 def format_outline(headings: List[MarkdownHeading], file_path: Path) -> str:
     """Format markdown outline with line ranges and human-readable byte sizes."""
     total_bytes = file_path.stat().st_size
-    lines_total = sum(h.line_count for h in headings) if headings else 0
 
     out: List[str] = []
     out.append(f"Outline for {file_path.relative_to(REPO_ROOT) if file_path.is_relative_to(REPO_ROOT) else file_path} "
@@ -362,6 +399,18 @@ def build_parser() -> argparse.ArgumentParser:
     status_p.add_argument("--all", action="store_true", help="Include completed tasks in the output.")
     status_p.add_argument("--json", action="store_true", help="Output raw JSON.")
 
+    # next subcommand
+    next_p = sub.add_parser(
+        "next",
+        help="Show progress and the full next pending task in one helper invocation.",
+    )
+    next_p.add_argument("--change", help="OpenSpec change name (defaults to the unique active change).")
+    next_p.add_argument("--section", "-s", help="Choose the next pending task in this task section.")
+    next_p.add_argument(
+        "--design-section",
+        help="Also print a numbered section or title from design.md (for example, 11).",
+    )
+
     # show subcommand
     show_p = sub.add_parser("show", help="Show the exact task block from tasks.md without loading the entire file.")
     show_p.add_argument("task_id", help="Task ID (e.g. '7.7' or global sequential id like '46').")
@@ -385,7 +434,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     cmd = args.command or "status"
 
     if cmd == "status":
-        change = args.change or detect_default_change()
+        try:
+            change = args.change or detect_default_change()
+        except (ValueError, FileNotFoundError) as err:
+            parser.error(str(err))
         data = fetch_apply_instructions(change)
         if args.json:
             print(json.dumps(data, indent=2))
@@ -393,8 +445,50 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(format_status(data, section_filter=args.section, show_all=args.all))
         return 0
 
+    if cmd == "next":
+        try:
+            change = args.change or detect_default_change()
+        except (ValueError, FileNotFoundError) as err:
+            parser.error(str(err))
+        data = fetch_apply_instructions(change)
+        print(format_status(data, section_filter=args.section))
+
+        pending = [task for task in normalize_tasks(data.get("tasks", [])) if not task.get("done")]
+        if args.section:
+            pending = [task for task in pending if task.get("section") == args.section]
+        if pending:
+            task = pending[0]
+            start_line, end_line, content = get_task_slice(task["task_number"], data)
+            print(f"\n--- Next task {task['task_number']} (lines {start_line}-{end_line}) ---")
+            print(content)
+        else:
+            print("\nNo pending task matches the selected section.")
+
+        if args.design_section:
+            design_file = REPO_ROOT / "openspec" / "changes" / change / "design.md"
+            if not design_file.is_file():
+                sys.stderr.write(f"Error: design.md not found for change {change!r} at {design_file}\n")
+                return 1
+            headings = parse_markdown_headings(design_file)
+            try:
+                start_line, end_line, content = get_section_content(
+                    headings, args.design_section, design_file
+                )
+            except KeyError as err:
+                sys.stderr.write(f"Error: {err}\n")
+                return 1
+            print(
+                f"\n--- Design section {args.design_section} "
+                f"(lines {start_line}-{end_line}) ---"
+            )
+            print(content)
+        return 0
+
     if cmd == "show":
-        change = args.change or detect_default_change()
+        try:
+            change = args.change or detect_default_change()
+        except (ValueError, FileNotFoundError) as err:
+            parser.error(str(err))
         data = fetch_apply_instructions(change)
         try:
             start_line, end_line, content = get_task_slice(args.task_id, data)
@@ -411,7 +505,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if cmd == "outline":
-        change = args.change or detect_default_change()
+        try:
+            change = args.change or detect_default_change()
+        except (ValueError, FileNotFoundError) as err:
+            parser.error(str(err))
         if args.file:
             target_path = Path(args.file)
             if not target_path.is_absolute():

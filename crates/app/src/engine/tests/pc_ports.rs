@@ -761,6 +761,7 @@ async fn an_unverified_checksum_needs_the_request_flag() {
     wait_for_view(&rx, |view| view.catalog.state == PortCatalogState::Ready);
     let parent = tempfile::tempdir().unwrap();
     let mut request = PortInstallRequest {
+        plugin_request_id: None,
         catalog_id: "qcat_lantern".into(),
         parent_folder: parent.path().to_string_lossy().into_owned(),
         supplied: Vec::new(),
@@ -823,6 +824,7 @@ async fn a_package_install_without_its_required_update_is_blocked() {
 
     let error = service
         .prepare_install(&PortInstallRequest {
+            plugin_request_id: None,
             catalog_id: "qcat_lantern".into(),
             parent_folder: parent.path().to_string_lossy().into_owned(),
             supplied: vec![crate::engine::pc_ports::PortSuppliedChoice {
@@ -865,6 +867,7 @@ async fn retry_reuses_the_stored_plan_and_its_supplied_sources() {
     let parent = tempfile::tempdir().unwrap();
     let prepared = service
         .prepare_install(&PortInstallRequest {
+            plugin_request_id: None,
             catalog_id: "qcat_lantern".into(),
             parent_folder: parent.path().to_string_lossy().into_owned(),
             supplied: Vec::new(),
@@ -896,6 +899,7 @@ async fn retry_reuses_the_stored_plan_and_its_supplied_sources() {
         .unwrap();
     let retried = service
         .prepare_install(&PortInstallRequest {
+            plugin_request_id: None,
             catalog_id: "qcat_lantern".into(),
             parent_folder: parent.path().to_string_lossy().into_owned(),
             supplied: Vec::new(),
@@ -1384,4 +1388,169 @@ async fn a_completed_install_appears_in_the_library_without_a_manual_rescan() {
         })
     })
     .await;
+}
+
+/// Records the exact host plan and exposes controlled native job transitions.
+struct ReviewRunner {
+    store: Arc<dyn PortStore>,
+    plans: Mutex<Vec<InstallJobRequest>>,
+}
+impl InstallRunner for ReviewRunner {
+    fn enqueue(&self, _: InstallJobRequest) -> Result<(), JobError> {
+        panic!("plugin install must use the guarded runner");
+    }
+    fn enqueue_checked(
+        &self,
+        request: InstallJobRequest,
+        check: gamenode_platform::ports::job_runner::InstallAuthority,
+    ) -> Result<(), JobError> {
+        if !check() {
+            return Err(JobError::Closed);
+        }
+        self.store.save_job(&PortJobRow {
+            id: request.job_id.clone(),
+            catalog_id: request.plan.catalog_id.clone(),
+            slug: "fixture".into(),
+            port_name: "Fixture".into(),
+            release_version: None,
+            install_folder: Some(request.plan.target.clone()),
+            phase: PortJobPhase::Queued,
+            created_paths: vec![],
+            registration_id: None,
+            error: None,
+            failure_output: None,
+            seen: false,
+            created_at: 1,
+            updated_at: 1,
+            finished_at: None,
+        })?;
+        self.plans.lock().unwrap().push(request);
+        Ok(())
+    }
+    fn cancel(&self, id: &str) -> bool {
+        if let Ok(Some(mut row)) = self.store.job(id)
+            && !row.phase.is_terminal()
+        {
+            row.phase = PortJobPhase::Cancelled;
+            self.store.save_job(&row).unwrap();
+            return true;
+        }
+        false
+    }
+    fn complete_with_executable(&self, _: &str, _: &str) -> Result<(), JobError> {
+        Err(JobError::Closed)
+    }
+    fn awaiting_jobs(&self) -> Result<Vec<PortJobRow>, JobError> {
+        Ok(vec![])
+    }
+    fn active_job(&self) -> Option<String> {
+        None
+    }
+    fn queued_jobs(&self) -> Vec<String> {
+        vec![]
+    }
+    fn is_active(&self, _: &str) -> bool {
+        false
+    }
+    fn shutdown(&self) {}
+}
+
+#[tokio::test]
+async fn plugin_guided_setup_keeps_the_host_plan_and_waits_for_native_completion() {
+    let _serial = serial().lock().await;
+    let db = database();
+    let store: Arc<dyn PortStore> = Arc::new(db.ports_store());
+    let local: Arc<dyn LocalGameStore> = Arc::new(db.local_game_store());
+    let catalog = Arc::new(FakeCatalog::new(
+        vec![entry()],
+        Some(entry()),
+        vec![release(Some(format!("sha256:{}", "a".repeat(64))), None)],
+    ));
+    let (service, events) = start(service_config(store.clone(), local, catalog));
+    service.open();
+    let view = wait_for_view(&events, |v| v.catalog.state == PortCatalogState::Ready);
+    let runner = Arc::new(ReviewRunner {
+        store: store.clone(),
+        plans: Mutex::new(vec![]),
+    });
+    service.set_runner_for_test(runner.clone());
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    Arc::get_mut(&mut h.engine.shared).unwrap().ports.pc_ports = Some(service.clone());
+    h.engine.on_ports_event(PortsEvent::Changed {
+        view,
+        completion: None,
+    });
+    let engine = h.engine.clone();
+    let result = tokio::spawn(async move {
+        engine
+            .review_plugin_port(
+                "qcat_lantern".into(),
+                gamenode_core::ports::view::PortPluginRequest {
+                    id: String::new(),
+                    catalog_id: String::new(),
+                    plugin_id: "fixture.plugin".into(),
+                    publisher_fingerprint: "publisher".into(),
+                    sources: vec![],
+                },
+                Arc::new(|| Ok(())),
+            )
+            .await
+    });
+    let review = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(r) = h.engine.snapshot().ports.plugin_request {
+                break r;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!result.is_finished());
+    assert!(runner.plans.lock().unwrap().is_empty());
+    let parent = tempfile::tempdir().unwrap();
+    let mut request = PortInstallRequest {
+        plugin_request_id: Some("edited".into()),
+        catalog_id: review.catalog_id.clone(),
+        parent_folder: parent.path().to_string_lossy().into_owned(),
+        supplied: vec![],
+        accept_unverified_checksum: false,
+        accept_malware_flag: false,
+        retry_job_id: None,
+    };
+    assert!(h.engine.ports_install(request.clone()).await.is_err());
+    assert!(runner.plans.lock().unwrap().is_empty());
+    request.plugin_request_id = None;
+    assert!(
+        h.engine
+            .plugin_port_install_check(&request)
+            .unwrap()
+            .is_none(),
+        "an unrelated manual install is not fenced by the open review"
+    );
+    request.plugin_request_id = Some(review.id.clone());
+    let native = h.engine.ports_install(request).await.unwrap().unwrap();
+    h.engine.dismiss_plugin_port(review.id);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!result.is_finished(), "queued is not completed");
+    assert_eq!(
+        runner.plans.lock().unwrap()[0].plan.catalog_id,
+        "qcat_lantern"
+    );
+    let mut row = store.job(&native).unwrap().unwrap();
+    row.phase = PortJobPhase::AwaitingExecutable;
+    store.save_job(&row).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !result.is_finished(),
+        "executable selection is not completed"
+    );
+    row.phase = PortJobPhase::Completed;
+    store.save_job(&row).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    service.shutdown();
 }

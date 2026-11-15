@@ -13,8 +13,8 @@ the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 The route tables below describe the API contract, not a claim that every route
 is currently served. The implemented resource adapters cover library reads,
 presentation, storage, files, network, notifications, standard launch/install,
-jobs, backups, tools and logical libraries/roots. Saves and Locations also have handlers;
-ports, custom launches and the other domain services remain
+jobs, backups, tools, PC ports and logical libraries/roots. Saves and Locations also have handlers;
+custom launches and the other domain services remain
 unimplemented. `DescribeApi` lists exactly the served methods; generated
 bindings alone do not establish availability. The persisted
 `PermissionGrantStore` has not yet been wired into RPC sessions: handlers
@@ -715,8 +715,7 @@ There is no per-user mute yet and no notification history.
 
 A long operation (an install, a backup, a restore) answers with a job instead of blocking the call.
 `JobsGet`, `JobsWatch` and `JobsCancel` read, follow and stop it. Launch, install,
-backup create/restore, tools apply/remove and location fingerprints use the shared job registry.
-Ports remain pending.
+backup create/restore, tools apply/remove, port installation and location fingerprints use the shared job registry.
 
 - **Ownership.** A job belongs to the authenticated plugin, its pinned publisher and the active
   account profile. The request names the job by its opaque id and nothing else: it has no field for
@@ -774,6 +773,63 @@ Not in the design; chosen by reasoning, not measured, and open to change.
 Jobs live in the host's memory. A host restart forgets them and their keys, and the work does not
 resume; an operation that must not repeat across a restart has to be idempotent in its own domain
 (an install that is already installed is not installed twice).
+
+## PC ports from the host catalog
+
+`PortsList` and `PortsDetail` require `ports.read`; `PortsRequestInstall` independently
+requires `ports.install`. The plugin names only a host catalog id. URLs, paths and
+command strings cannot become port ids, and an unknown catalog id cannot produce an
+install plan. `PortRecord` returns only id, name, platform and availability; the
+trusted Core interface owns the detailed release, source URLs, recipe and risk review.
+
+- **Catalog.** Listing supports an empty/`windows`/`linux` platform filter, a case-insensitive
+  name query of at most 256 bytes, pages of 50 by default capped at 200, and session/grant/query/
+  observed-catalog cursors. Changed observations require listing again. Filtering, sorting
+  and hashing run on a worker; more than 10,000 catalog records is refused. Catalog/detail
+  calls have a 30-second request deadline. Loading/unavailable catalogs are not represented
+  as a successful empty result. The current installer is Windows-only: Linux can browse
+  Windows records marked `unavailable`, but installation is `UNAVAILABLE` before a job starts.
+- **Request context.** Supply an idempotency key in `MutationContext`; retries return the
+  same wrapper job. With no `game_id`, use revision 0: the request creates a new port through
+  Core's normal catalog workflow. If a game is named as the source context, it must resolve
+  to one scoped installed entry (or the extension's host-selected entry), and its current
+  entry revision must match. This does not override Core's normal port registration/matcher
+  or modify a foreign provider's entry. A nonempty `user_intent_id` is refused: a launch/install
+  token cannot replace the port's destination/source/risk review.
+- **Supplied resources.** Up to 16 session-owned approved Files handles can be offered as
+  candidates, with an independent `files.read` grant. Raw source paths are not accepted by
+  the plugin API. Core reopens and revalidates the handles, approvals, sharing scope and volume
+  identity on workers. Their physical paths appear only in Core's trusted setup window;
+  the user associates a candidate with a recipe requirement, chooses base/update package
+  roles where applicable, or uses the existing native file/folder pickers. Candidates are
+  not automatically selected or certified compatible. The existing installer checks the
+  actual slot contents/version before copying them; optional/unused candidates have no effect.
+- **Review.** The request brings the existing ports destination and guided setup to the user,
+  attributed to the plugin and publisher in en/pt-BR. The user chooses a destination, supplies
+  required sources and acknowledges checksum/malware warnings before Install. The host-issued
+  review id binds that exact setup to its catalog entry; another request cannot take it over
+  or reuse a retry plan. Closing declines, and an unanswered review expires in five minutes.
+  An already open manual setup is preserved. File/native dialogs and preparation run on workers.
+- **Effects and completion.** Core reuses the existing catalog/overlay release selection,
+  withdrawn-release rejection, planner, free-space/overlap checks, archive URL policy, guided
+  setup validation, staging, journal cleanup, provenance and GameNode matching. The wrapper
+  follows the actual native job; queueing or waiting for the user's executable pick is not
+  successful installation. Only a committed `Completed` result succeeds. Native failure details
+  and paths stay in Core; the plugin gets a bounded status. SDK convenience recipes remain 7.6.
+- **Cancellation and restart.** Session/grant/source-game/handle checks fence planning,
+  queueing, native phases and registration, including an executable selection after the worker
+  freed its queue slot. While active, a bounded worker poll forwards cancellation/revocation
+  to the native runner; the runner's own cancellation/cleanup path stops further work. Completed
+  effects are not claimed as undone by a later cancellation. In-memory plugin authority is not
+  restored after restart; existing native interruption recovery still applies. A running native
+  picker/network call may finish before its next checkpoint, without authorizing later effects.
+
+Socket tests use a controlled setup adapter. An engine fixture verifies review-id binding and
+that queued/executable-awaiting jobs stay pending; filesystem runner fixtures revoke authority
+during identity inspection and after entering executable selection, asserting no registration
+and cleanup of the fictional install. UI tests exercise source association and request attribution
+in both locales. They do not run native Windows pickers or install a real downloaded port;
+that acceptance remains 18.3, and third-party activation remains 8.1.
 
 ## Tools from the host catalog
 

@@ -34,6 +34,7 @@ mod artwork;
 mod drm_free;
 pub mod pc_ports;
 mod playtime;
+mod plugin_ports;
 mod providers;
 mod tools;
 
@@ -152,6 +153,7 @@ struct State {
     published_selection: Option<Vec<String>>,
     /// The PC ports projection built by the service on a worker thread.
     ports_view: gamenode_core::ports::PortsView,
+    plugin_port_request: Option<plugin_ports::PendingPort>,
     /// Cached achievement summaries for the connected store accounts.
     achievement_summaries: std::collections::BTreeMap<
         (String, String),
@@ -264,6 +266,7 @@ impl Engine {
                 library_loading: false,
                 published_selection: None,
                 ports_view: gamenode_core::ports::PortsView::default(),
+                plugin_port_request: None,
                 achievement_summaries: Default::default(),
                 achievement_language: crate::commands::normalize_locale(
                     &crate::commands::system_locale(),
@@ -306,7 +309,9 @@ impl Engine {
             pc_ports::PortsEvent::Changed { view, completion } => {
                 {
                     let mut state = self.lock();
+                    let review = state.ports_view.plugin_request.clone();
                     state.ports_view = view;
+                    state.ports_view.plugin_request = review;
                     self.publish(&mut state);
                 }
                 if let Some(completion) = completion {
@@ -1586,6 +1591,29 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    fn ports_supported(&self) -> bool {
+        self.engine()
+            .ok()
+            .and_then(|e| e.ports_service())
+            .is_some_and(|s| s.is_supported())
+    }
+    async fn ports_catalog(
+        &self,
+        detail: Option<String>,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::PortRecord>, tonic::Status> {
+        self.engine()?.plugin_ports_catalog(detail).await
+    }
+    async fn request_port(
+        &self,
+        port_id: String,
+        review: gamenode_core::ports::view::PortPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        self.engine()?
+            .review_plugin_port(port_id, review, check)
+            .await
+    }
+
     fn tools_supported(&self) -> bool {
         self.engine().is_ok_and(|e| {
             cfg!(windows)

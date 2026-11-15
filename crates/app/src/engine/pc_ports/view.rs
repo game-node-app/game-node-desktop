@@ -94,6 +94,7 @@ pub fn build(input: ViewInput<'_>) -> PortsView {
         })
         .count();
     PortsView {
+        plugin_request: None,
         catalog: catalog_status(input.status),
         entries,
         provenance: provenance(input.installations, input.jobs),

@@ -32,6 +32,7 @@ mod libraries;
 mod locations;
 mod network;
 mod notifications;
+mod ports;
 mod saves;
 mod sdk;
 mod sdk_utilities;
@@ -658,7 +659,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .ports_list(PortsListRequest::default())
+        .games_propose_custom_launch(CustomLaunchRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -672,6 +673,9 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     assert_eq!(
         resource,
         [
+            ("PortsList", MAX_PAGE_SIZE as u32),
+            ("PortsDetail", 0),
+            ("PortsRequestInstall", 0),
             ("ToolsList", MAX_PAGE_SIZE as u32),
             ("ToolsRequestApply", 0),
             ("ToolsRequestRemove", 0),
@@ -733,6 +737,12 @@ type FakeMatch = (Option<u64>, bool, u64);
 /// `(provider, game)`. A game is "matched" for a provider when it has a row here.
 #[derive(Default)]
 struct FakeHost {
+    port_support: AtomicBool,
+    port_records: Mutex<Vec<PortRecord>>,
+    port_reviews: Mutex<Vec<gamenode_core::ports::view::PortPluginRequest>>,
+    port_gate: tokio::sync::Notify,
+    port_effects: AtomicUsize,
+    port_declined: AtomicBool,
     tool_support: AtomicBool,
     tool_reviews: Mutex<Vec<(String, String, bool)>>,
     tool_gate: tokio::sync::Notify,
@@ -782,6 +792,54 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl LibraryHost for FakeHost {
+    fn ports_supported(&self) -> bool {
+        self.port_support.load(Ordering::SeqCst)
+    }
+    async fn ports_catalog(&self, detail: Option<String>) -> Result<Vec<PortRecord>, Status> {
+        let records = self
+            .port_records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| detail.as_ref().is_none_or(|id| *id == p.port_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if detail.is_some() && records.is_empty() {
+            return Err(Status::not_found("port not found"));
+        }
+        Ok(records)
+    }
+    async fn request_port(
+        &self,
+        port: String,
+        review: gamenode_core::ports::view::PortPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), Status> {
+        if !self
+            .port_records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.port_id == port)
+        {
+            return Err(Status::not_found("port not found"));
+        }
+        let check_before = check.clone();
+        tokio::task::spawn_blocking(move || check_before())
+            .await
+            .unwrap()?;
+        self.port_reviews.lock().unwrap().push(review);
+        self.port_gate.notified().await;
+        tokio::task::spawn_blocking(move || check())
+            .await
+            .unwrap()?;
+        if self.port_declined.load(Ordering::SeqCst) {
+            return Err(Status::cancelled("declined"));
+        }
+        self.port_effects.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn tools_supported(&self) -> bool {
         self.tool_support.load(Ordering::SeqCst)
     }

@@ -482,6 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::ports_pick_parent,
         commands::ports_pick_supplied,
         commands::ports_install,
+        commands::ports_dismiss_plugin_setup,
         commands::ports_cancel,
         commands::ports_mark_seen,
         commands::ports_set_preferences,

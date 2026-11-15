@@ -317,6 +317,8 @@ export const commands = {
    * Starts a background install. Arg: `{ request }`. Returns the job id, or null when the
    * request is invalid or Install is unavailable.
    */
+  portsDismissPluginSetup: (requestId: string) =>
+    safeInvoke<void>('ports_dismiss_plugin_setup', { requestId }, () => undefined),
   portsInstall: (request: PortInstallRequest) =>
     safeInvoke<string | null>('ports_install', { request }, () => null),
 

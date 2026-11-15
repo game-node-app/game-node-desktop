@@ -10,6 +10,7 @@ import { useSettingsKeyboardShortcut } from './features/settings/useSettingsKeyb
 import { Sidebar, SyncExplanationModal, TopBar } from './features/shell';
 import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToast';
 import { usePluginNotices } from './features/plugins/usePluginNotices';
+import { PluginPortSetupHost } from './features/ports/setup/PluginPortSetupHost';
 import { PluginConfirmationHost } from './features/plugins/PluginConfirmationHost';
 import { useUiStore } from './store/uiStore';
 
@@ -158,6 +159,7 @@ export const App: React.FC = () => {
         <GameToolsPanel />
       </LazyOverlay>
       <PluginConfirmationHost />
+      <PluginPortSetupHost />
       <ToastContainer />
     </div>
   );

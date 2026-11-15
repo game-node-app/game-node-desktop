@@ -8,6 +8,7 @@ import {
   usePortProgress,
   usePortsView,
   type PortCommandError,
+  type PortPluginSource,
   type PortEntryView,
   type PortInstallBlockReason,
   type PortInstallProblem,
@@ -213,6 +214,8 @@ function buildSupplied(
 }
 
 interface RequirementRowProps {
+  sources?: PortPluginSource[];
+  onSource?: (source: PortPluginSource, update?: boolean) => void;
   slot: PortSetupSlot;
   selection: SlotSelection | undefined;
   error: SlotPickError | undefined;
@@ -226,6 +229,7 @@ interface RequirementRowProps {
 }
 
 const RequirementRow: React.FC<RequirementRowProps> = ({
+  sources, onSource,
   slot,
   selection,
   error,
@@ -293,6 +297,17 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
         </div>
       )}
 
+      {sources && sources.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className={hintClass}>{t('ports.pluginSources')}</p>
+          {sources.filter((source) => packageMode ? !source.directory : source.directory === (slot.kind === 'folder')).map((source) => (
+            <div key={source.path} className="flex flex-wrap gap-1">
+              <button type="button" className={`${secondaryButtonClass} max-w-full whitespace-normal break-all text-left`} disabled={anyBusy || busy} onClick={() => onSource?.(source)}>{source.path}</button>
+              {packageMode && slot.packageOption?.requiresUpdate && <button type="button" className={secondaryButtonClass} disabled={anyBusy || busy} onClick={() => onSource?.(source, true)}>{t('ports.pluginUseUpdate')}</button>}
+            </div>
+          ))}
+        </div>
+      )}
       {slot.acceptedLabels.length > 0 && (
         <p className="break-words text-xs text-text-dimmed">
           {formatI18n(t('Ports::Accepted: {}'), slot.acceptedLabels.join(', '))}
@@ -470,13 +485,14 @@ const RequirementRow: React.FC<RequirementRowProps> = ({
  */
 export const PortSetupModal: React.FC = () => {
   const { t, locale } = useI18n();
-  const { open, catalogId, retryJobId, session } = usePortSetupStore();
+  const { open, catalogId, retryJobId, session, pluginRequestId } = usePortSetupStore();
   const ports = usePortsView();
   const detailQuery = usePortDetail(open ? catalogId : null);
 
   const entry = catalogId
     ? (ports.entries.find((candidate) => candidate.catalogId === catalogId) ?? null)
     : null;
+  const pluginReview = ports.pluginRequest?.id === pluginRequestId ? ports.pluginRequest : null;
   const detail = detailQuery.data ?? null;
   const requirements = detail?.requirements ?? entry?.requirements ?? [];
   const release = detail?.selectedRelease ?? releaseFromEntry(entry);
@@ -550,6 +566,8 @@ export const PortSetupModal: React.FC = () => {
     busySlot == null;
 
   const handleClose = () => {
+    if (starting) return;
+    if (pluginRequestId) void commands.portsDismissPluginSetup(pluginRequestId);
     closePortSetup();
   };
 
@@ -671,6 +689,7 @@ export const PortSetupModal: React.FC = () => {
     try {
       const jobId = await commands.portsInstall({
         catalogId: catalogId as string,
+        ...(pluginRequestId ? { pluginRequestId } : {}),
         parentFolder,
         supplied: buildSupplied(requirements, selections),
         ...(acceptUnverified ? { acceptUnverifiedChecksum: true } : {}),
@@ -681,7 +700,8 @@ export const PortSetupModal: React.FC = () => {
         setStartError(t('Ports::The install could not start.'));
         return;
       }
-      handleClose();
+      if (pluginRequestId) void commands.portsDismissPluginSetup(pluginRequestId);
+      closePortSetup();
     } catch (error) {
       setStartError(installErrorMessage(error, t, locale));
     } finally {
@@ -771,6 +791,10 @@ export const PortSetupModal: React.FC = () => {
               </div>
             </div>
 
+            {pluginReview && <div className="rounded-sm border border-border-subtle bg-raised p-sm text-sm text-text-default" role="status">
+              <p>{t('ports.pluginRequest', { plugin: pluginReview.pluginId })}</p>
+              <p className="break-all text-xs text-text-dimmed">{pluginReview.publisherFingerprint}</p>
+            </div>}
             {blockReason && (
               <p
                 data-testid="port-setup-blocked"
@@ -822,6 +846,17 @@ export const PortSetupModal: React.FC = () => {
               <h3 className={sectionTitleClass}>{t('Ports::Files you need to supply')}</h3>
               {requirements.map((slot) => (
                 <RequirementRow
+                  sources={pluginReview?.sources}
+                  onSource={(source, update) => {
+                    setInteracted(true);
+                    setStartError(null);
+                    setPickErrors((previous) => ({ ...previous, [slot.id]: undefined }));
+                    setSelections((previous) => {
+                      const mode = previous[slot.id]?.mode ?? (slot.packageOption ? 'package' : 'direct');
+                      const current = previous[slot.id] ?? { mode, path: null, updatePath: null };
+                      return { ...previous, [slot.id]: { ...current, ...(update ? { updatePath: source.path } : { path: source.path }) } };
+                    });
+                  }}
                   key={slot.id}
                   slot={slot}
                   selection={selections[slot.id]}

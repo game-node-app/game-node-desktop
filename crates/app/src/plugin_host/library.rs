@@ -597,6 +597,24 @@ pub struct BackupHostContext {
 
 #[async_trait::async_trait]
 pub trait LibraryHost: Send + Sync {
+    fn ports_supported(&self) -> bool {
+        false
+    }
+    async fn ports_catalog(
+        &self,
+        _detail: Option<String>,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::PortRecord>, Status> {
+        Err(Status::unavailable("ports catalog unavailable"))
+    }
+    async fn request_port(
+        &self,
+        _port_id: String,
+        _review: gamenode_core::ports::view::PortPluginRequest,
+        _check: super::jobs::Fence,
+    ) -> Result<(), Status> {
+        Err(Status::unavailable("port installation unavailable"))
+    }
+
     fn tools_supported(&self) -> bool {
         false
     }

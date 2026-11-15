@@ -349,6 +349,8 @@ pub struct PortPreferencesView {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortsView {
+    #[serde(default)]
+    pub plugin_request: Option<Box<PortPluginRequest>>,
     pub catalog: PortCatalogStatus,
     pub entries: Vec<PortEntryView>,
     /// Provenance by registration key.
@@ -358,6 +360,23 @@ pub struct PortsView {
     /// Running jobs plus completed, failed or interrupted jobs the user has not opened yet.
     pub unseen_count: usize,
     pub preferences: PortPreferencesView,
+}
+
+/// One host-owned guided-setup request. Paths stay in Core's trusted UI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortPluginRequest {
+    pub id: String,
+    pub catalog_id: String,
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub sources: Vec<PortPluginSource>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortPluginSource {
+    pub path: String,
+    pub directory: bool,
 }
 
 impl PortsView {

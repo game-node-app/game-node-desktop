@@ -985,6 +985,15 @@ pub async fn ports_install(
 
 /// Cancels a queued, running or executable-awaiting job.
 #[tauri::command]
+pub async fn ports_dismiss_plugin_setup(
+    engine: tauri::State<'_, Engine>,
+    request_id: String,
+) -> Result<(), String> {
+    engine.dismiss_plugin_port(request_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn ports_cancel(
     engine: tauri::State<'_, Engine>,
     job_id: String,

@@ -6,7 +6,7 @@ use crate::plugin_host::library::{InstallState, Projected};
 use crate::plugin_host::provider::ResourceCaller;
 
 impl ResourceApi {
-    fn tool_target(
+    pub(super) fn tool_target(
         &self,
         caller: &ResourceCaller,
         context: &ServiceContext,

@@ -28,6 +28,7 @@ mod matching;
 mod mutations;
 mod network;
 mod notifications;
+mod ports;
 mod saves;
 mod storage;
 mod tools;
@@ -55,6 +56,14 @@ const MAX_PROVIDER_ID_BYTES: usize = 128;
 
 /// The ResourceHost methods this build serves, for `DescribeApi`.
 pub const SERVED: &[Served] = &[
+    Served::new("PortsList", cap::PORTS_READ, true, "host catalog"),
+    Served::new("PortsDetail", cap::PORTS_READ, false, "host catalog"),
+    Served::new(
+        "PortsRequestInstall",
+        cap::PORTS_INSTALL,
+        false,
+        "host catalog; Core guided setup",
+    ),
     Served::new(
         "ToolsList",
         cap::TOOLS_READ,
@@ -946,6 +955,24 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.request_tool_action(r.mutation, r.tool_id, r.game_id, r.user_intent_id, true)
             .await
     }
+    async fn ports_list(
+        &self,
+        request: Request<PortsListRequest>,
+    ) -> Result<Response<PortsListReply>, Status> {
+        self.list_ports(request).await
+    }
+    async fn ports_detail(
+        &self,
+        request: Request<PortDetailRequest>,
+    ) -> Result<Response<PortDetailReply>, Status> {
+        self.detail_port(request).await
+    }
+    async fn ports_request_install(
+        &self,
+        request: Request<PortInstallRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.install_port(request).await
+    }
     not_served! {
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
@@ -973,9 +1000,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
         persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
         persistence_clear(PersistenceClearRequest) -> MutationReply;
         persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
-        ports_list(PortsListRequest) -> PortsListReply;
-        ports_detail(PortDetailRequest) -> PortDetailReply;
-        ports_request_install(PortInstallRequest) -> JobReply;
     }
 }
 

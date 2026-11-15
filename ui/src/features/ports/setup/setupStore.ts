@@ -8,6 +8,7 @@ import { Store, useStore } from '@tanstack/react-store';
  * running in the host after the modal closes, so nothing here tracks progress.
  */
 export interface PortSetupState {
+  pluginRequestId?: string | null;
   open: boolean;
   /** Catalog entry the modal configures; null when no modal was opened yet. */
   catalogId: string | null;
@@ -27,6 +28,7 @@ export const initialPortSetupState: PortSetupState = {
 export const portSetupStore = new Store<PortSetupState>(initialPortSetupState);
 
 export interface OpenPortSetupOptions {
+  pluginRequestId?: string;
   /** Reuse the stored install plan of this job (Retry from a result). */
   retryJobId?: string;
 }
@@ -40,9 +42,11 @@ export function openPortSetup(
   options: OpenPortSetupOptions = {},
 ): void {
   if (!catalogId) return;
+  if (portSetupStore.state.open && portSetupStore.state.pluginRequestId && portSetupStore.state.pluginRequestId !== options.pluginRequestId) return;
   portSetupStore.setState((previous) => ({
     open: true,
     catalogId,
+    pluginRequestId: options.pluginRequestId ?? null,
     retryJobId: options.retryJobId ?? null,
     session: previous.session + 1,
   }));

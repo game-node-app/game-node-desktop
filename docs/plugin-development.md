@@ -102,7 +102,7 @@ The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, 
 `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`,
 `ArtworkRead`, `ArtworkSet`, `StorageGet`, `StoragePut`, `StorageDelete`, the five `Files*`
 methods, `NetworkFetch`, `NotificationsPublish`, `GamesRequestLaunch`, `GamesRequestInstall`, `JobsGet`,
-`JobsWatch`, `JobsCancel`, the three `Backups*` methods, the three `Tools*` methods and the nine `Libraries*` methods (grants,
+`JobsWatch`, `JobsCancel`, the three `Backups*` methods, the three `Tools*` methods, the three `Ports*` methods and the nine `Libraries*` methods (grants,
 scope, cursors and watch rules are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
 revisions, favorites and idempotency keys are in
@@ -350,6 +350,19 @@ install flow. Rules and limits are under "Launching and installing" in
   Anything else is `NOT_FOUND`.
 - `SUCCEEDED` with `opened` means the operating system accepted the link, not that the game is
   running. Playtime is detected by GameNode as for the user's own Play button.
+
+## Host catalog PC ports
+
+Use `PortsList`/`PortsDetail` under `ports.read`; request an installation under the
+independent `ports.install` permission with `PortsRequestInstall`. Send a known
+catalog id and an idempotency key, then follow the wrapper through `JobsGet/Watch/Cancel`.
+Leave `user_intent_id` empty and use revision 0 for a new catalog install. Core opens
+its existing guided setup and the user chooses the destination, sources and risk
+acknowledgements. Optional `supplied_file_handles` are approved, session-owned Files
+candidates requiring `files.read`; the user associates them with recipe requirements.
+No plugin-provided installer URL, command or raw path is accepted. See the
+[ports API guide](plugin-api-permissions.md#pc-ports-from-the-host-catalog) for source-game
+revision scope, platform availability, cancellation and native completion semantics.
 
 ## Host catalog tools
 

@@ -61,7 +61,7 @@ by the host.
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
 | `JobsGet`, `JobsWatch`, `JobsCancel` | the permission of the operation that created the job, plus ownership of the job (see [Jobs](#jobs)) |
 
-The domain services use these grants (of them, only the `Saves` profile methods and `Locations.GetSize`, `GetAccess` and `GetLastModified` are served by this build; see [Save profiles](#save-profiles) and [Inspecting approved places](#inspecting-approved-places)):
+The domain services use these grants (of them, only the `Saves` profile methods and `Locations.GetSize`, `GetAccess`, `GetLastModified`, `GetFingerprint` and `Compare` are served by this build; see [Save profiles](#save-profiles) and [Inspecting approved places](#inspecting-approved-places)):
 
 | Service methods | Permission |
 | --- | --- |
@@ -839,9 +839,9 @@ reads nothing.
 ## Inspecting approved places
 
 `Locations.GetSize`, `GetAccess` and `GetLastModified` describe an approved place from its **metadata
-alone**. They open no file for its content and change nothing to find out: no permission, no
-timestamp, no file. `Inspect`, `GetFingerprint`, `Compare` and `WatchAvailability` are not served yet
-(`UNIMPLEMENTED`).
+alone**: they open no file for its content and change nothing to find out. `GetFingerprint` and
+`Compare` read the content, to say whether it changed (see [Fingerprints](#fingerprints)); they
+write nothing either. `Inspect` and `WatchAvailability` are not served yet (`UNIMPLEMENTED`).
 
 - **What a place is.** A handle the plugin already holds for a folder the user approved ([Files](#files)),
   or for a file or directory below it; or the id of one of the plugin's own [save profiles](#save-profiles),
@@ -887,8 +887,50 @@ timestamp, no file. `Inspect`, `GetFingerprint`, `Compare` and `WatchAvailabilit
   type-checked, never run on Windows.**
 - **A profile's lost folder** (its approval revoked or changed) is reported as `MISSING` in
   `GetAccess`, as a partial total in `GetSize`, and is left out of `GetLastModified`.
-- **Not covered.** Hashes and comparisons (13.4), volume identity, local-versus-network and media
-  hints, and availability events (13.5), and runtime resources (there are none yet).
+- **Not covered.** Volume identity, local-versus-network and media hints, and availability events
+  (task 13.5), and runtime resources (there are none yet).
+
+### Fingerprints
+
+`GetFingerprint` reads the content of a place **again every time** and answers with a SHA-256 for
+the whole tree; `Compare` says what differs between two fingerprints. Size and modification time are
+never taken as proof that bytes are equal or different.
+
+- **Request.** The place is a handle or a profile id, as above. `algorithm` is `sha256` (or empty;
+  the answer names it `sha256-tree-v1`). `idempotency_key` is required. `max_entries` bounds the walk
+  (default 10,000, at most 50,000). `require_fresh` changes nothing: there is no cache to avoid.
+- **The digest.** The SHA-256 of the tag `gamenode.location.tree.v1\0` followed, for each entry in the
+  order of the UTF-8 bytes of its label, by the label's length (8 bytes, big endian) and bytes, a type
+  byte (0 directory, 1 file), the logical size (8 bytes, big endian) and the file's own SHA-256 (32
+  zero bytes for a directory). The label is the entry's path below the place (for a profile `d<n>/`
+  for its n-th folder comes first). Empty directories are entries, case is kept, and a rename is a
+  removal plus an addition. Dates and permissions are not input. Any change to this encoding is a new
+  algorithm id.
+- **Short or long.** The call always runs the fingerprint as a job ([Jobs](#jobs)). If it finishes
+  within about two seconds the answer already has `digest`, `snapshot_id` and `complete`. Otherwise it
+  has only `job_id` (and `consistency` `pending`); watch the job, and when it ends `SUCCEEDED` with the
+  code `fingerprint_ready` (its message is the snapshot id), call again with the same key to get the
+  result. A retry never reads twice. A job cancelled or failed answers `cancelled` or `failed`.
+- **Complete or not.** `complete` is true only if every entry was read: a file that cannot be read, a
+  file that changed while it was read (its size or modification time differs after reading), a cut
+  walk, a stopped one (time, bytes) or a folder of a profile whose approval is gone make it false, and
+  then **no digest is returned**. `consistency` is `best_effort` (the files are not frozen while they
+  are read) or `unstable`. `observed_start_at` and `observed_end_at` are Unix seconds.
+- **Snapshots** are kept in the host's memory, 8 per plugin, for an hour, and are the plugin's own.
+- **Compare.** `before_snapshot_id` and `after_snapshot_id` must both be the plugin's own, and the
+  plugin needs the inspection permission of their place. The `status` is `unchanged` (both complete
+  and identical), `changed` (both complete and different), `indeterminate` (either is incomplete or
+  unstable: what differs is listed but nothing is certified, and an unreadable file is never listed as
+  modified) or `incomparable` (not the same place and selection, or a profile at another revision).
+  `changes` are paged (`page_size` default 100, at most 500; `cursor` as returned), sorted by path,
+  each `added`, `removed` or `modified` with the sizes and the `relative_path`. An entry that still
+  exists comes with a handle for the next call; a removed one has none. `expected_revision`, when not
+  0, must be the profile revision the snapshots are at (`FAILED_PRECONDITION` otherwise).
+- **Limits** (chosen by reasoning, not measured): one fingerprint running per plugin and two in all
+  (`RESOURCE_EXHAUSTED`), at most 4 GiB read and 10 minutes per fingerprint (then incomplete).
+- **A hash proves different bytes, not corruption or malice.** The same bytes under two names are two
+  entries. A fingerprint reveals whether content equals what the plugin already has, and needs no file
+  permission, like the metadata calls.
 
 ## Launching and installing
 

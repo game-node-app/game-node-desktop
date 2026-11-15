@@ -115,7 +115,7 @@ and read budget are in
 The `Saves` domain service is also served (`ListProfiles`, `GetProfile`, `CreateProfile`,
 `UpdateProfile`, `RemoveProfile`; see
 [`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles)) and `Locations.GetSize`,
-`GetAccess` and `GetLastModified` (see
+`GetAccess`, `GetLastModified`, `GetFingerprint` and `Compare` (see
 [`plugin-api-permissions.md`](plugin-api-permissions.md#inspecting-approved-places)); the Rust SDK
 exposes the raw `HostClient::saves_client()` and `HostClient::locations_client()`. Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
@@ -381,6 +381,11 @@ you already have, without reading it. Rules are under "Inspecting approved place
   about the contents; do not show "0 bytes", and do not create the folder again to make it go away.
 - Do not treat `modified_at` as a hash. A changed time or size is a hint that something changed; a
   same time and size is not proof that nothing did.
+- To know whether saves changed, take a fingerprint with `GetFingerprint` and compare it with the
+  last one with `Compare`; do not rely on times. Give each request a new idempotency key. If the answer
+  has only a `job_id`, wait for the job and ask again with the same key. Only `complete` fingerprints
+  have a digest, and only a `changed` or `unchanged` status is a verdict: `indeterminate` means a file
+  could not be read or was being written, so try again later and do not assume nothing changed.
 - `effective_access` is a snapshot of what the user could do a moment ago, not a promise: the
   file may change, or the system may refuse for another reason. `unknown` is a real answer.
 

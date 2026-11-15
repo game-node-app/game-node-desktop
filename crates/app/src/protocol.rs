@@ -1544,6 +1544,7 @@ mod tests {
                     last_played_at: None,
                 },
                 running: false,
+                session_started_at: None,
                 key: "steam:620".into(),
                 title: "Portal 2".into(),
                 detected_name: "Portal 2".into(),
@@ -1561,6 +1562,8 @@ mod tests {
                 release_year: Some(2011),
                 added_at: 0,
                 is_favorite: false,
+                hidden: false,
+                gamenode: None,
             }),
             install_dir: "/games/portal2".into(),
             release_year: Some(2011),
@@ -1570,6 +1573,7 @@ mod tests {
             achievement_backend: false,
             achievements: None,
             detected_target: None,
+            suggestions: Vec::new(),
         };
 
         // Snapshot without library returns None
@@ -1585,6 +1589,23 @@ mod tests {
             installed_total: 1,
             providers: Vec::new(),
             rows: Arc::from([]),
+            filter_counts: Default::default(),
+            scope_counts: Default::default(),
+            groups: Vec::new(),
+            saved_views: Vec::new(),
+            collections: Vec::new(),
+            view_error: None,
+            view_write: None,
+            last_saved_view: None,
+            last_hidden: None,
+            can_save_view: false,
+            title_source: gamenode_core::library::TitleSource {
+                kind: gamenode_core::library::TitleSourceKind::Scope,
+                id: "all".into(),
+            },
+            catalog: Default::default(),
+            scan_progress: Vec::new(),
+            palette_index: Vec::new(),
             scanning: false,
             failed_providers: Vec::new(),
             selected: Vec::new(),
@@ -1601,6 +1622,10 @@ mod tests {
             empty: None,
             match_dialog: None,
             add_dialog: None,
+            add_summary: None,
+            undo: None,
+            status_run: None,
+            collection_run: None,
         });
 
         // Matching game_id returns bytes

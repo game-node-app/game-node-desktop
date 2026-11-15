@@ -112,8 +112,8 @@ export const AddDialog: React.FC = () => {
               >
                 {dialog.summary.items.map((item) => (
                   <div
-                    key={item.entryKey}
-                    data-testid={`add-summary-item-${item.entryKey}`}
+                    key={item.entryKey ?? item.title}
+                    data-testid={`add-summary-item-${item.entryKey ?? item.title}`}
                     className="flex flex-col border-b border-border-subtle py-1"
                   >
                     <span className="text-sm font-medium text-text-default">
@@ -150,8 +150,8 @@ export const AddDialog: React.FC = () => {
                   <div className="flex max-h-[110px] flex-col gap-1 overflow-y-auto rounded-sm bg-raised p-compact">
                     {dialog.targets.map((tgt) => (
                       <div
-                        key={tgt.entryKey}
-                        data-testid={`add-target-${tgt.entryKey}`}
+                        key={tgt.entryKey ?? JSON.stringify(tgt.target)}
+                        data-testid={`add-target-${tgt.entryKey ?? JSON.stringify(tgt.target)}`}
                         className={`text-xs ${
                           tgt.matched ? 'text-text-default' : 'text-text-dimmed'
                         }`}

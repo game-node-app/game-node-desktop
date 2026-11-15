@@ -86,6 +86,9 @@ pub struct ExternalMatch {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryEntry {
+    /// GameNode's id for this entry, which deletes exactly the entry an add created. Empty for a
+    /// value this application built rather than read.
+    pub id: String,
     /// `None` when GameNode sent a status this build does not know. The game is still in the
     /// library.
     pub status: Option<EntryStatus>,
@@ -103,6 +106,20 @@ pub struct Collection {
     /// When set, GameNode gives every entry added to this collection this status, whatever
     /// status the request carries.
     pub default_status: Option<EntryStatus>,
+}
+
+/// One entry of the user's whole GameNode library, kept so status columns, the status facet and
+/// collection scopes work without reading GameNode again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEntry {
+    /// GameNode's id for this entry.
+    pub id: String,
+    pub game_id: u64,
+    /// `None` when GameNode sent a status this build does not know. The game is still in the
+    /// library.
+    pub status: Option<EntryStatus>,
+    pub collection_ids: Vec<String>,
 }
 
 #[async_trait]
@@ -161,6 +178,21 @@ pub trait GameApi: Send + Sync {
         user_id: &str,
     ) -> Result<Vec<Collection>, ApiError>;
 
+    /// Every entry of the user's GameNode library
+    /// (`GET /v1/collections-entries/library/:userId`), all game categories, following every
+    /// page.
+    ///
+    /// Any failed or incomplete page returns an error, so a partial list is never applied as a
+    /// complete one. The default fails rather than claiming an empty library, which would erase
+    /// the cache.
+    async fn list_library_entries(
+        &self,
+        _credential: &SessionCredential,
+        _user_id: &str,
+    ) -> Result<Vec<AccountEntry>, ApiError> {
+        Err(ApiError::Failed)
+    }
+
     /// The caller's entry for a game (`GET /v1/collections-entries/game/:id`).
     /// `Ok(None)` means the game is not in the library (`404`).
     async fn library_entry(
@@ -191,6 +223,18 @@ pub trait GameApi: Send + Sync {
         status: EntryStatus,
         collection_ids: &[String],
     ) -> Result<(), ApiError>;
+
+    /// Deletes one library entry (`DELETE /v1/collections-entries/:id`).
+    ///
+    /// A `404` counts as success: the entry is already gone. The default fails rather than
+    /// claiming the entry was deleted.
+    async fn delete_entry(
+        &self,
+        _credential: &SessionCredential,
+        _entry_id: &str,
+    ) -> Result<(), ApiError> {
+        Err(ApiError::Failed)
+    }
 
     /// The game ids the user has marked as favorite
     /// (`GET /v1/collections-entries/library/:userId/favorites`), following every page.

@@ -131,7 +131,7 @@ impl LibraryMachine {
         };
         let provider = self.provider(&entry.provider);
         let record = entry.record();
-        let play = if self.running.contains(key) {
+        let play = if self.running.contains_key(key) {
             Availability::Disabled(Reason::Running)
         } else if let Some(target) = entry.target.as_ref() {
             if !target.available {

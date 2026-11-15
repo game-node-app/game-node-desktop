@@ -1,8 +1,11 @@
 use super::*;
 use crate::library::layout::{
-    AvailabilityFilter, LibraryFilters, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
+    AvailabilityFilter, LibraryFilters, LibraryScope, SidebarSelection, Sort, SortDirection,
+    SortKey, ViewMode,
 };
-use crate::library::machine::tests::{finish_scan, loaded, record, stored, stored_with};
+use crate::library::machine::tests::{
+    finish_scan, loaded, record, scan_ops, scanned, stored, stored_with,
+};
 use crate::library::machine::{Effect, Input};
 use crate::library::selection::{Direction, SelectMode};
 use crate::library::store::{AutoMatch, GameRecord, LibraryCache};
@@ -195,7 +198,7 @@ fn the_same_running_and_playtime_sets_keep_the_generation() {
     let mut machine = library();
     let first = machine.view().unwrap();
 
-    let running = std::collections::BTreeSet::from(["steam:70".to_owned()]);
+    let running = std::collections::BTreeMap::from([("steam:70".to_owned(), 1_000)]);
     assert!(machine.set_running(running.clone()));
     let running_view = machine.view().unwrap();
     assert!(running_view.generation > first.generation);
@@ -205,6 +208,11 @@ fn the_same_running_and_playtime_sets_keep_the_generation() {
         .find(|row| row.key == "steam:70")
         .unwrap();
     assert!(row.running, "the running row is updated");
+    assert_eq!(
+        row.session_started_at,
+        Some(1_000),
+        "the row carries the authoritative execution start"
+    );
 
     assert!(!machine.set_running(running));
     let unchanged = machine.view().unwrap();
@@ -243,7 +251,7 @@ fn the_same_running_and_playtime_sets_keep_the_generation() {
 fn only_the_row_changed_by_a_running_update_gets_a_new_arc() {
     let mut machine = library();
     let first = machine.view().unwrap();
-    machine.set_running(["steam:70".to_owned()].into());
+    machine.set_running([("steam:70".to_owned(), 1_000)].into());
     let updated = machine.view().unwrap();
     for (before, after) in first.rows.iter().zip(updated.rows.iter()) {
         assert_eq!(
@@ -350,14 +358,25 @@ fn search_text_is_not_part_of_the_persisted_layout() {
 }
 
 #[test]
-fn a_saved_provider_filter_that_no_longer_exists_shows_all_games() {
+fn a_saved_store_filter_that_no_longer_exists_matches_nothing() {
     let mut machine = library();
     machine.handle(Input::SetFilter(SidebarSelection::Provider(
         "gone".to_owned(),
     )));
     let view = machine.view().unwrap();
-    assert_eq!(view.layout.sidebar, SidebarSelection::All);
-    assert_eq!(view.rows.len(), 3);
+    assert_eq!(view.layout.scope, LibraryScope::All);
+    assert_eq!(view.layout.filters.stores, ["gone"]);
+    assert!(
+        view.rows.is_empty(),
+        "unknown store ids keep matching nothing"
+    );
+    assert_eq!(
+        view.title_source,
+        crate::library::TitleSource {
+            kind: crate::library::TitleSourceKind::Scope,
+            id: "all".to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -466,6 +485,71 @@ fn the_installed_filter_is_persisted_and_saved_before_this_field_existed() {
 }
 
 #[test]
+fn the_view_exposes_faceted_counts_scopes_groups_and_the_title_source() {
+    let mut machine = library();
+    let first = machine.view().unwrap();
+    assert_eq!(first.filter_counts.availability.installed, 3);
+    assert_eq!(first.scope_counts.all, 3);
+    assert_eq!(first.scope_counts.installed, 3);
+    assert!(first.groups.is_empty());
+    assert_eq!(
+        first.title_source,
+        crate::library::TitleSource {
+            kind: crate::library::TitleSourceKind::Scope,
+            id: "all".to_owned(),
+        }
+    );
+
+    machine.handle(Input::SetGroup(crate::library::GroupBy::Store));
+    let grouped = machine.view().unwrap();
+    assert_eq!(grouped.groups.len(), 1);
+    assert_eq!(grouped.groups[0].id, "steam");
+    assert_eq!(grouped.groups[0].label_key, "Steam");
+    assert_eq!(grouped.groups[0].count, 3);
+    assert_eq!(grouped.groups[0].first_index, 0);
+    assert!(!grouped.groups[0].collapsed);
+
+    machine.handle(Input::ToggleGroup {
+        id: "steam".to_owned(),
+    });
+    let collapsed = machine.view().unwrap();
+    assert!(collapsed.rows.is_empty());
+    assert!(collapsed.groups[0].collapsed);
+    assert_eq!(collapsed.groups[0].count, 3);
+    assert_eq!(
+        collapsed.empty, None,
+        "collapsed groups are not an empty result"
+    );
+
+    machine.handle(Input::SetAllGroupsCollapsed(false));
+    machine.handle(Input::SetFilter(SidebarSelection::Provider(
+        "steam".to_owned(),
+    )));
+    let store = machine.view().unwrap();
+    assert_eq!(
+        store.title_source,
+        crate::library::TitleSource {
+            kind: crate::library::TitleSourceKind::Store,
+            id: "steam".to_owned(),
+        }
+    );
+    assert_eq!(
+        store
+            .filter_counts
+            .stores
+            .iter()
+            .map(|count| count.count)
+            .sum::<usize>(),
+        store.scope_counts.all
+    );
+
+    // Nothing changed: same generation and row arcs.
+    let again = machine.view().unwrap();
+    assert_eq!(again.generation, store.generation);
+    assert!(Arc::ptr_eq(&again.rows, &store.rows));
+}
+
+#[test]
 fn no_installed_is_its_own_empty_state_and_names_the_selected_provider() {
     let cache = LibraryCache {
         entries: vec![stored_with("steam", "70", "Half-Life", false, true, false)],
@@ -501,6 +585,82 @@ fn no_installed_is_its_own_empty_state_and_names_the_selected_provider() {
     machine.handle(Input::SetFilters(LibraryFilters::default()));
     let view = machine.view().unwrap();
     assert_eq!(view.installed_total, 1);
+    assert_eq!(view.empty, None);
+}
+
+#[test]
+fn the_installed_scope_with_nothing_installed_is_the_no_installed_state() {
+    let cache = LibraryCache {
+        entries: vec![
+            stored_with("steam", "1", "Owned", false, true, false),
+            stored_with("steam", "2", "Shared", false, false, true),
+        ],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![], 5);
+    machine.handle(Input::SetScope(LibraryScope::Installed));
+
+    let view = machine.view().unwrap();
+    assert_eq!(view.total, 2, "the library has games, just none installed");
+    assert!(view.rows.is_empty());
+    assert_eq!(
+        view.empty,
+        Some(EmptyState::NoInstalled { provider: None }),
+        "the Installed scope gets the actionable state, not a generic no-match"
+    );
+    assert_eq!(
+        serde_json::to_value(&view.empty).unwrap(),
+        serde_json::json!({ "noInstalled": { "provider": null } })
+    );
+
+    // An installed game clears the state.
+    machine.handle(Input::ScanRequested);
+    finish_scan(&mut machine, vec![record("1", "Owned", "/o")], 6);
+    assert_eq!(machine.view().unwrap().empty, None);
+
+    // Other facets or the search hiding installed games keep the generic no-match message.
+    machine.handle(Input::SetSearch("zzz".to_owned()));
+    assert_eq!(
+        machine.view().unwrap().empty,
+        Some(EmptyState::NothingMatches)
+    );
+}
+
+#[test]
+fn an_applied_saved_view_with_the_installed_scope_uses_the_no_installed_state() {
+    let mut cache = LibraryCache {
+        entries: vec![stored_with("steam", "1", "Owned", false, true, false)],
+        ..LibraryCache::default()
+    };
+    cache.saved_views = vec![crate::library::SavedView {
+        id: 4,
+        name: "Installed only".to_owned(),
+        payload: crate::library::SavedViewPayload {
+            scope: LibraryScope::Installed,
+            ..crate::library::SavedViewPayload::default()
+        },
+        position: 0,
+        created_at: 1,
+    }];
+    let (mut machine, _) = loaded(false, cache);
+    finish_scan(&mut machine, vec![], 5);
+    machine.handle(Input::ApplyView { id: 4 });
+
+    let view = machine.view().unwrap();
+    assert_eq!(view.layout.scope, LibraryScope::SavedView(4));
+    assert_eq!(view.total, 1);
+    assert!(view.rows.is_empty());
+    assert_eq!(
+        view.empty,
+        Some(EmptyState::NoInstalled { provider: None }),
+        "the saved view's effective Installed scope counts, not only its marker"
+    );
+
+    // Leaving the view for All games reveals the owned row.
+    machine.handle(Input::SetScope(LibraryScope::All));
+    let view = machine.view().unwrap();
+    assert_eq!(view.rows.len(), 1);
     assert_eq!(view.empty, None);
 }
 
@@ -586,4 +746,123 @@ fn filters_that_hide_every_row_show_nothing_matches() {
             .sum::<usize>(),
         0
     );
+}
+
+#[test]
+fn scan_progress_tracks_waiting_scanning_done_and_failed_with_found_counts() {
+    let cache = LibraryCache {
+        entries: vec![stored("steam", "620", "portal 2", true)],
+        ..LibraryCache::default()
+    };
+    let (mut machine, effects) = loaded(true, cache);
+    let ops = scan_ops(&effects);
+    assert_eq!(ops.len(), 2);
+
+    let view = machine.view().unwrap();
+    let progress = |view: &LibraryView, provider: &str| {
+        view.scan_progress
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(progress(&view, "steam").state, ScanProgressState::Waiting);
+    assert_eq!(progress(&view, "shop").state, ScanProgressState::Waiting);
+    assert_eq!(progress(&view, "drm-free").state, ScanProgressState::Done);
+    assert_eq!(view.rows.len(), 1, "known rows stay usable during a scan");
+
+    let (steam_op, _) = ops
+        .iter()
+        .find(|(_, provider)| provider == "steam")
+        .unwrap();
+    machine.handle(Input::ProviderScanStarted {
+        op: *steam_op,
+        provider: "steam".to_owned(),
+    });
+    assert_eq!(
+        progress(&machine.view().unwrap(), "steam").state,
+        ScanProgressState::Scanning
+    );
+
+    scanned(
+        &mut machine,
+        *steam_op,
+        "steam",
+        Ok(vec![
+            record("620", "portal 2", "/p"),
+            record("70", "hl", "/h"),
+        ]),
+        10,
+    );
+    let view = machine.view().unwrap();
+    let steam = progress(&view, "steam");
+    assert_eq!(steam.state, ScanProgressState::Done);
+    assert_eq!(steam.found, Some(2));
+    assert_eq!(
+        progress(&view, "shop").state,
+        ScanProgressState::Waiting,
+        "the other provider has not answered yet"
+    );
+    assert!(view.scanning);
+
+    let (shop_op, _) = ops.iter().find(|(_, provider)| provider == "shop").unwrap();
+    scanned(&mut machine, *shop_op, "shop", Err("no shop"), 11);
+    let view = machine.view().unwrap();
+    let shop = progress(&view, "shop");
+    assert_eq!(shop.state, ScanProgressState::Failed);
+    assert_eq!(shop.found, None);
+    assert!(!view.scanning);
+
+    // The DRM-free row follows the bridged discovery state and feeds the manual count.
+    machine.set_discovery_scanning(true);
+    let drm = progress(&machine.view().unwrap(), "drm-free");
+    assert_eq!(drm.state, ScanProgressState::Scanning);
+    machine.set_discovery_scanning(false);
+    assert_eq!(
+        progress(&machine.view().unwrap(), "drm-free").state,
+        ScanProgressState::Done
+    );
+}
+
+#[test]
+fn the_palette_index_ignores_filters_and_excludes_hidden_rows() {
+    let mut machine = library();
+    machine.handle(Input::SetHidden {
+        keys: vec!["steam:70".to_owned()],
+        hidden: true,
+    });
+    machine.handle(Input::SetSearch("portal".to_owned()));
+    let view = machine.view().unwrap();
+    assert_eq!(
+        view.rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        ["steam:620"],
+        "the search filters the rows"
+    );
+    let keys: Vec<&str> = view
+        .palette_index
+        .iter()
+        .map(|entry| entry.key.as_str())
+        .collect();
+    assert_eq!(keys, ["steam:240", "steam:620"]);
+    assert!(
+        view.palette_index
+            .iter()
+            .all(|entry| entry.key != "steam:70")
+    );
+    let portal = view
+        .palette_index
+        .iter()
+        .find(|entry| entry.key == "steam:620")
+        .unwrap();
+    assert_eq!(portal.title, "Portal 2");
+    assert_eq!(portal.provider_name, "Steam");
+    assert!(portal.installed);
+    assert_eq!(portal.playtime_label, None);
+
+    // A hidden running game is still tracked by the status bar data.
+    machine.set_running([("steam:70".to_owned(), 1_000)].into());
+    assert_eq!(machine.running_title().as_deref(), Some("Half-Life"));
 }

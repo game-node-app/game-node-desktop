@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -6,8 +7,8 @@ use async_trait::async_trait;
 use gamenode_core::callback::Provider;
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
-    LibraryEntry,
+    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
+    GameSummary, LibraryEntry,
 };
 use gamenode_core::library::cover::CoverUrl;
 use gamenode_core::library::{EntryStatus, LibraryMachine};
@@ -26,6 +27,7 @@ use url::Url;
 use super::{Engine, PortProgressPublisher, Ports};
 
 mod achievements;
+mod catalog;
 mod drm_free;
 mod favorites;
 mod library;
@@ -33,6 +35,7 @@ mod pc_ports;
 mod playtime;
 pub(super) mod provider_runtime;
 mod tools;
+mod web_links;
 use library::{FakeLibrary, FakeUri, SlowFiles};
 
 /// A real in-memory achievement cache for engine fixtures.
@@ -76,8 +79,21 @@ struct FakeApi {
     artwork_result: Mutex<Option<Result<Option<Vec<u8>>, ApiError>>>,
     search_result: Mutex<Option<Result<gamenode_core::game_api::SearchPage, ApiError>>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
+    /// What GameNode answers to the complete account library read and its collections.
+    account_entries: Mutex<Option<Result<Vec<AccountEntry>, ApiError>>>,
+    collections_result: Mutex<Option<Result<Vec<Collection>, ApiError>>>,
+    account_library_reads: Mutex<usize>,
+    collection_reads: Mutex<usize>,
     created: Mutex<Vec<u64>>,
+    /// The entries a create made, so the add run's read-back returns an id.
+    created_entries: Mutex<BTreeMap<u64, LibraryEntry>>,
     updated: Mutex<Vec<u64>>,
+    /// When set, every update answers with this instead of success.
+    update_result: Mutex<Option<Result<(), ApiError>>>,
+    /// Every entry id that reached the delete endpoint.
+    deleted: Mutex<Vec<String>>,
+    /// When set, every delete answers with this instead of success.
+    delete_result: Mutex<Option<Result<(), ApiError>>>,
     /// The server's favorite games, returned by every read.
     preferred: Mutex<Vec<u64>>,
     /// When set, the next favorite read fails instead of returning `preferred`.
@@ -223,36 +239,117 @@ impl GameApi for FakeApi {
         _user_id: &str,
     ) -> Result<Vec<Collection>, ApiError> {
         self.pause().await;
-        Ok(vec![])
+        *self.collection_reads.lock().unwrap() += 1;
+        self.collections_result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(vec![]))
+    }
+    async fn list_library_entries(
+        &self,
+        _credential: &SessionCredential,
+        _user_id: &str,
+    ) -> Result<Vec<AccountEntry>, ApiError> {
+        self.pause().await;
+        *self.account_library_reads.lock().unwrap() += 1;
+        self.account_entries
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(vec![]))
     }
     async fn library_entry(
         &self,
         _credential: &SessionCredential,
-        _game_id: u64,
+        game_id: u64,
     ) -> Result<Option<LibraryEntry>, ApiError> {
         self.pause().await;
-        self.entry.lock().unwrap().clone().unwrap_or(Ok(None))
+        if let Some(result) = self.entry.lock().unwrap().clone() {
+            return result;
+        }
+        if let Some(entry) = self.created_entries.lock().unwrap().get(&game_id).cloned() {
+            return Ok(Some(entry));
+        }
+        let account = self.account_entries.lock().unwrap().clone();
+        if let Some(Ok(entries)) = account
+            && let Some(entry) = entries.into_iter().find(|entry| entry.game_id == game_id)
+        {
+            return Ok(Some(LibraryEntry {
+                id: entry.id,
+                status: entry.status,
+                collection_ids: entry.collection_ids,
+                platform_ids: vec![6],
+                finished_at: Some("2026-01-01T00:00:00Z".to_owned()),
+            }));
+        }
+        Ok(None)
     }
     async fn update_entry(
         &self,
         _credential: &SessionCredential,
         game_id: u64,
-        _status: EntryStatus,
-        _collection_ids: &[String],
+        status: EntryStatus,
+        collection_ids: &[String],
         _existing: &LibraryEntry,
     ) -> Result<(), ApiError> {
+        self.pause().await;
+        if let Some(result) = *self.update_result.lock().unwrap() {
+            return result;
+        }
         self.updated.lock().unwrap().push(game_id);
+        if let Some(entry) = self.created_entries.lock().unwrap().get_mut(&game_id) {
+            entry.status = Some(status);
+            entry.collection_ids = collection_ids.to_vec();
+        }
+        let mut account = self.account_entries.lock().unwrap();
+        if let Some(Ok(entries)) = account.as_mut()
+            && let Some(entry) = entries.iter_mut().find(|entry| entry.game_id == game_id)
+        {
+            entry.status = Some(status);
+            entry.collection_ids = collection_ids.to_vec();
+        }
         Ok(())
     }
     async fn create_entry(
         &self,
         _credential: &SessionCredential,
         game_id: u64,
-        _status: EntryStatus,
-        _collection_ids: &[String],
+        status: EntryStatus,
+        collection_ids: &[String],
     ) -> Result<(), ApiError> {
         self.pause().await;
         self.created.lock().unwrap().push(game_id);
+        self.created_entries.lock().unwrap().insert(
+            game_id,
+            LibraryEntry {
+                id: format!("entry-{game_id}"),
+                status: Some(status),
+                collection_ids: collection_ids.to_vec(),
+                platform_ids: vec![6],
+                finished_at: None,
+            },
+        );
+        Ok(())
+    }
+    async fn delete_entry(
+        &self,
+        _credential: &SessionCredential,
+        entry_id: &str,
+    ) -> Result<(), ApiError> {
+        self.pause().await;
+        if let Some(result) = *self.delete_result.lock().unwrap() {
+            return result;
+        }
+        self.deleted.lock().unwrap().push(entry_id.to_owned());
+        let mut entries = self.created_entries.lock().unwrap();
+        if let Some(game_id) = entries
+            .iter()
+            .find(|(_, entry)| entry.id == entry_id)
+            .map(|(game_id, _)| *game_id)
+        {
+            entries.remove(&game_id);
+        }
         Ok(())
     }
     async fn list_favorites(
@@ -367,6 +464,8 @@ impl BrowserOpener for FakeBrowser {
 #[derive(Default)]
 struct FakeSettings {
     saved: Mutex<Vec<Settings>>,
+    discovery_last_checked_at: Mutex<Option<i64>>,
+    discovery_writes: Mutex<Vec<i64>>,
 }
 
 impl SettingsStore for FakeSettings {
@@ -375,6 +474,14 @@ impl SettingsStore for FakeSettings {
     }
     fn save(&self, settings: &Settings) -> Result<(), StorageError> {
         self.saved.lock().unwrap().push(*settings);
+        Ok(())
+    }
+    fn load_discovery_last_checked_at(&self) -> Result<Option<i64>, StorageError> {
+        Ok(*self.discovery_last_checked_at.lock().unwrap())
+    }
+    fn save_discovery_last_checked_at(&self, at: i64) -> Result<(), StorageError> {
+        *self.discovery_last_checked_at.lock().unwrap() = Some(at);
+        self.discovery_writes.lock().unwrap().push(at);
         Ok(())
     }
 }

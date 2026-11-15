@@ -5,12 +5,16 @@
 //! single-game edits update existing entries. Unmatched games are skipped. A failed game does
 //! not stop the others, except that a rejected session ends the run: every later game would be
 //! rejected too.
+//!
+//! A create has no entry id in its answer, so the run reads the entry back once GameNode confirms
+//! it. Only entries this add created carry an id, and only those can be undone; an edit or an
+//! entry that was already present is never in that list.
 
 use std::collections::VecDeque;
 
 use crate::game_api::{ApiError, LibraryEntry};
 
-use super::add_dialog::{AddProgress, Collections, Stage};
+use super::add_dialog::{AddProgress, AddTarget, Collections, Stage};
 use super::machine::{Effect, LibraryMachine};
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +71,9 @@ impl From<&AddOutcome> for AddOutcomeKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddItem {
-    pub entry_key: String,
+    pub target: AddTarget,
+    /// The local library key, for a row target.
+    pub entry_key: Option<String>,
     pub title: String,
     pub outcome: AddOutcome,
 }
@@ -76,24 +82,43 @@ pub struct AddItem {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddItemView {
-    pub entry_key: String,
+    pub target: AddTarget,
+    /// The local library key, for a row target.
+    pub entry_key: Option<String>,
     pub title: String,
     pub outcome: AddOutcomeKind,
     /// The status GameNode has (or applied) for the game, when it is known.
     pub status: Option<EntryStatus>,
 }
 
-/// The result of a confirmed add: one item per target, in the order they were selected.
+/// A library entry this add created, with the id the read-back returned. Undo deletes exactly
+/// these ids.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedEntry {
+    pub game_id: u64,
+    pub entry_id: String,
+}
+
+/// The result of a confirmed add: one item per target, in the order they were selected, and the
+/// entries this run created.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddSummary {
+    /// Identifies this run for the notification and for `UndoAdd`.
+    pub run: u64,
     pub items: Vec<AddItem>,
+    /// Only entries created by this run; never an edit or an already-present entry.
+    pub created: Vec<CreatedEntry>,
 }
 
 /// The result of a confirmed add, as the window shows it: flat outcomes and their counts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddSummaryView {
+    pub run_id: u64,
+    /// Whether at least one entry was created and its id read back, so Undo can delete it.
+    pub undoable: bool,
     pub items: Vec<AddItemView>,
     pub added: usize,
     pub already_present: usize,
@@ -128,10 +153,13 @@ impl AddSummary {
     /// The same summary, shaped for the window.
     pub fn view(&self) -> AddSummaryView {
         AddSummaryView {
+            run_id: self.run,
+            undoable: !self.created.is_empty(),
             items: self
                 .items
                 .iter()
                 .map(|item| AddItemView {
+                    target: item.target.clone(),
                     entry_key: item.entry_key.clone(),
                     title: item.title.clone(),
                     outcome: AddOutcomeKind::from(&item.outcome),
@@ -146,17 +174,21 @@ impl AddSummary {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StepKind {
     /// Asking whether the game is already in the library.
     Checking,
     /// The create request is out.
     Creating,
+    /// The edit request is out.
+    Updating,
+    /// The create succeeded; GameNode is asked for the entry id so Undo can exist.
+    ReadingBack,
 }
 
 #[derive(Debug)]
 struct Step {
-    key: String,
+    target: AddTarget,
     title: String,
     game_id: u64,
     op: u64,
@@ -165,10 +197,13 @@ struct Step {
 
 #[derive(Debug)]
 pub(super) struct AddRun {
-    waiting: VecDeque<String>,
+    waiting: VecDeque<AddTarget>,
     step: Option<Step>,
     items: Vec<AddItem>,
+    created: Vec<CreatedEntry>,
     total: usize,
+    /// Identifies the run for the notification and for Undo.
+    run: u64,
     /// The status GameNode will apply.
     status: EntryStatus,
     collection_ids: Vec<String>,
@@ -217,11 +252,15 @@ impl LibraryMachine {
             _ => Vec::new(),
         };
         add.error = None;
+        // A new run replaces the previous summary: only the latest add can be undone.
+        self.last_add = None;
         add.stage = Stage::Running(AddRun {
             waiting: add.targets.iter().cloned().collect(),
             step: None,
             items: Vec::new(),
+            created: Vec::new(),
             total: add.targets.len(),
+            run: self.next_op(),
             status,
             collection_ids,
         });
@@ -237,9 +276,11 @@ impl LibraryMachine {
         };
         let mut effects = Vec::new();
         loop {
-            let Some(key) = run.waiting.pop_front() else {
+            let Some(target) = run.waiting.pop_front() else {
                 let summary = AddSummary {
+                    run: run.run,
                     items: std::mem::take(&mut run.items),
+                    created: std::mem::take(&mut run.created),
                 };
                 match summary.items.as_slice() {
                     // One game that failed: back to the choices, so the user can retry.
@@ -252,14 +293,20 @@ impl LibraryMachine {
                         add.error = Some(*error);
                         add.stage = Stage::Editing;
                     }
-                    _ => add.stage = Stage::Done(summary),
+                    _ => {
+                        // Kept after the dialog closes, so the notification can offer Undo and
+                        // open the library page.
+                        self.last_add = Some(summary.clone());
+                        add.stage = Stage::Done(summary);
+                    }
                 }
                 break;
             };
-            let (title, game) = self.target_info(&key);
+            let (title, game) = self.target_info(&target);
             let Some(game_id) = game else {
                 run.items.push(AddItem {
-                    entry_key: key,
+                    entry_key: target.entry_key().map(str::to_owned),
+                    target,
                     title,
                     outcome: AddOutcome::SkippedUnmatched,
                 });
@@ -267,7 +314,7 @@ impl LibraryMachine {
             };
             let op = self.next_op();
             run.step = Some(Step {
-                key,
+                target,
                 title,
                 game_id,
                 op,
@@ -280,7 +327,7 @@ impl LibraryMachine {
         effects
     }
 
-    /// The answer to the membership read that precedes a create.
+    /// The answer to a membership read that precedes a create, or to the read-back after one.
     pub(super) fn on_add_checked(
         &mut self,
         op: u64,
@@ -295,55 +342,92 @@ impl LibraryMachine {
             return vec![];
         };
         let Some(step) = run.step.take_if(|step| {
-            step.op == op && step.game_id == game_id && step.kind == StepKind::Checking
+            step.op == op
+                && step.game_id == game_id
+                && matches!(step.kind, StepKind::Checking | StepKind::ReadingBack)
         }) else {
             self.add = Some(add);
             return vec![];
         };
 
-        match result {
-            Ok(Some(entry)) if add.editing_existing => {
+        match (step.kind, result) {
+            (StepKind::Checking, Ok(Some(entry))) if add.editing_existing => {
+                let mut effects = self.record_entry_read(game_id, &Ok(Some(entry.clone())));
                 let op = self.next_op();
-                let effect = Effect::UpdateEntry {
+                effects.push(Effect::UpdateEntry {
                     op,
                     game_id,
                     status: run.status,
                     collection_ids: run.collection_ids.clone(),
                     existing: entry,
-                };
+                });
                 run.step = Some(Step {
                     op,
-                    kind: StepKind::Creating,
+                    kind: StepKind::Updating,
                     ..step
                 });
                 self.add = Some(add);
-                vec![effect]
+                effects
             }
-            Ok(Some(entry)) => {
-                self.membership
-                    .insert(game_id, Membership::InLibrary(entry.status));
+            (StepKind::Checking, Ok(Some(entry))) => {
+                let mut effects = self.record_entry_read(game_id, &Ok(Some(entry.clone())));
                 self.membership_reads.remove(&game_id);
                 run.items
-                    .push(item(step, AddOutcome::AlreadyPresent(entry.status)));
-                self.advance_add(add)
+                    .push(item(&step, AddOutcome::AlreadyPresent(entry.status)));
+                effects.extend(self.advance_add(add));
+                effects
             }
-            Ok(None) => {
+            (StepKind::Checking, Ok(None)) => {
+                let mut effects = self.record_entry_read(game_id, &Ok(None));
                 let op = self.next_op();
-                let effect = Effect::CreateEntry {
+                effects.push(Effect::CreateEntry {
                     op,
                     game_id,
                     status: run.status,
                     collection_ids: run.collection_ids.clone(),
-                };
+                });
                 run.step = Some(Step {
                     op,
                     kind: StepKind::Creating,
                     ..step
                 });
                 self.add = Some(add);
-                vec![effect]
+                effects
             }
-            Err(error) => self.fail_add(add, step, error),
+            (StepKind::Checking, Err(error)) => self.fail_add(add, step, error),
+            (StepKind::ReadingBack, result) => {
+                let mut effects = Vec::new();
+                let (outcome, created) = match result {
+                    Ok(Some(entry)) => {
+                        effects.extend(self.record_entry_read(game_id, &Ok(Some(entry.clone()))));
+                        let created = (!entry.id.is_empty()).then(|| CreatedEntry {
+                            game_id,
+                            entry_id: entry.id.clone(),
+                        });
+                        (
+                            AddOutcome::Added(entry.status.unwrap_or(run.status)),
+                            created,
+                        )
+                    }
+                    // The create succeeded but the entry could not be read back. It is added and
+                    // stays in the library, but without an id there is nothing Undo can delete.
+                    Ok(None) | Err(_) => {
+                        self.membership
+                            .insert(game_id, Membership::InLibrary(Some(run.status)));
+                        (AddOutcome::Added(run.status), None)
+                    }
+                };
+                if let Some(created) = created {
+                    run.created.push(created);
+                }
+                run.items.push(item(&step, outcome));
+                effects.extend(self.advance_add(add));
+                effects
+            }
+            _ => {
+                self.add = Some(add);
+                vec![]
+            }
         }
     }
 
@@ -373,8 +457,62 @@ impl LibraryMachine {
                 self.membership_reads.remove(&game_id);
                 self.membership
                     .insert(game_id, Membership::InLibrary(Some(run.status)));
-                run.items.push(item(step, AddOutcome::Added(run.status)));
-                self.advance_add(add)
+                let mut effects = Vec::new();
+                if let Some(effect) =
+                    self.update_cached_entry(game_id, run.status, &run.collection_ids)
+                {
+                    effects.push(effect);
+                }
+                // The create has no id in its answer. Read the entry back so Undo can delete
+                // exactly this entry, and only after this run really created it.
+                let op = self.next_op();
+                effects.push(Effect::ReadEntry { op, game_id });
+                run.step = Some(Step {
+                    op,
+                    kind: StepKind::ReadingBack,
+                    ..step
+                });
+                self.add = Some(add);
+                effects
+            }
+            Err(error) => self.fail_add(add, step, error),
+        }
+    }
+
+    /// The answer to an edit request. An edit never enters the created list.
+    pub(super) fn on_entry_updated(
+        &mut self,
+        op: u64,
+        game_id: u64,
+        result: Result<(), ApiError>,
+    ) -> Vec<Effect> {
+        let Some(mut add) = self.add.take() else {
+            return vec![];
+        };
+        let Stage::Running(run) = &mut add.stage else {
+            self.add = Some(add);
+            return vec![];
+        };
+        let Some(step) = run.step.take_if(|step| {
+            step.op == op && step.game_id == game_id && step.kind == StepKind::Updating
+        }) else {
+            self.add = Some(add);
+            return vec![];
+        };
+        match result {
+            Ok(()) => {
+                self.membership_reads.remove(&game_id);
+                self.membership
+                    .insert(game_id, Membership::InLibrary(Some(run.status)));
+                let mut effects = Vec::new();
+                if let Some(effect) =
+                    self.update_cached_entry(game_id, run.status, &run.collection_ids)
+                {
+                    effects.push(effect);
+                }
+                run.items.push(item(&step, AddOutcome::Added(run.status)));
+                effects.extend(self.advance_add(add));
+                effects
             }
             Err(error) => self.fail_add(add, step, error),
         }
@@ -387,14 +525,15 @@ impl LibraryMachine {
         error: ApiError,
     ) -> Vec<Effect> {
         if let Stage::Running(run) = &mut add.stage {
-            run.items.push(item(step, AddOutcome::Failed(error)));
+            run.items.push(item(&step, AddOutcome::Failed(error)));
             if error == ApiError::Rejected {
                 // The session is gone: every remaining game would be refused too.
-                let remaining: Vec<String> = run.waiting.drain(..).collect();
-                for key in remaining {
-                    let (title, _) = self.target_info(&key);
+                let remaining: Vec<AddTarget> = run.waiting.drain(..).collect();
+                for target in remaining {
+                    let (title, _) = self.target_info(&target);
                     run.items.push(AddItem {
-                        entry_key: key,
+                        entry_key: target.entry_key().map(str::to_owned),
+                        target,
                         title,
                         outcome: AddOutcome::Failed(error),
                     });
@@ -405,10 +544,11 @@ impl LibraryMachine {
     }
 }
 
-fn item(step: Step, outcome: AddOutcome) -> AddItem {
+fn item(step: &Step, outcome: AddOutcome) -> AddItem {
     AddItem {
-        entry_key: step.key,
-        title: step.title,
+        target: step.target.clone(),
+        entry_key: step.target.entry_key().map(str::to_owned),
+        title: step.title.clone(),
         outcome,
     }
 }

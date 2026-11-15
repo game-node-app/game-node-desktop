@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use gamenode_core::SessionCredential;
 use gamenode_core::callback::NATIVE_ORIGIN;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
-    LibraryEntry, MAX_COVER_BYTES,
+    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
+    GameSummary, LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::cover::{CoverUrl, artwork_download_url};
 use gamenode_core::library::membership::EntryStatus;
@@ -32,6 +32,14 @@ const SEARCH_LIMIT: usize = 20;
 const FAVORITES_PAGE_SIZE: usize = 100;
 /// A favorite list that keeps claiming "more" stops here instead of looping forever.
 const MAX_FAVORITE_PAGES: usize = 1000;
+/// One page of the account library; the server allows up to 100.
+const LIBRARY_PAGE_SIZE: usize = 100;
+/// An account library that keeps claiming "more" stops here: a partial read must never replace
+/// the cache, and 100 pages already covers a very large library.
+const MAX_LIBRARY_PAGES: usize = 100;
+/// Every game category the server knows (0..=14), so add-ons, remasters and bundles are read
+/// too instead of the server's narrower default.
+const LIBRARY_GAME_CATEGORIES: std::ops::RangeInclusive<u32> = 0..=14;
 /// GameNode's platform id for PC.
 const PLATFORM_PC: u32 = 6;
 /// User ids are UUID-like; anything longer is not a user id and is never put in a URL.
@@ -213,6 +221,39 @@ struct FavoriteRow {
 }
 
 #[derive(Deserialize)]
+struct AccountLibraryPage {
+    data: Vec<AccountEntryRow>,
+    #[serde(default)]
+    pagination: Option<Pagination>,
+}
+
+#[derive(Deserialize)]
+struct AccountEntryRow {
+    id: String,
+    #[serde(rename = "gameId", deserialize_with = "number_or_string")]
+    game_id: u64,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    collections: Vec<IdRow>,
+}
+
+impl From<AccountEntryRow> for AccountEntry {
+    fn from(row: AccountEntryRow) -> Self {
+        Self {
+            id: row.id,
+            game_id: row.game_id,
+            status: EntryStatus::from_api_name(&row.status),
+            collection_ids: row
+                .collections
+                .into_iter()
+                .map(|collection| collection.id)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct LookupRow {
     uid: String,
     #[serde(rename = "gameId", deserialize_with = "number_or_string")]
@@ -333,6 +374,7 @@ struct CollectionRow {
 
 #[derive(Deserialize)]
 struct EntryRow {
+    id: String,
     status: String,
     #[serde(default)]
     collections: Vec<IdRow>,
@@ -504,6 +546,52 @@ impl GameApi for GameNodeClient {
             .collect())
     }
 
+    async fn list_library_entries(
+        &self,
+        credential: &SessionCredential,
+        user_id: &str,
+    ) -> Result<Vec<AccountEntry>, ApiError> {
+        if !is_path_safe_id(user_id) {
+            return Err(ApiError::Failed);
+        }
+        let mut found = Vec::new();
+        for page_number in 0..MAX_LIBRARY_PAGES {
+            let offset = page_number * LIBRARY_PAGE_SIZE;
+            let url = self.v1(&format!("collections-entries/library/{user_id}"), |query| {
+                query.append_pair("offset", &offset.to_string());
+                query.append_pair("limit", &LIBRARY_PAGE_SIZE.to_string());
+                for category in LIBRARY_GAME_CATEGORIES {
+                    query.append_pair("gameFilters[category][]", &category.to_string());
+                }
+            });
+            let response = self
+                .authorized(self.http.get(url), credential)
+                .send()
+                .await
+                .map_err(|_| ApiError::Failed)?;
+            match response.status() {
+                StatusCode::OK => {}
+                StatusCode::UNAUTHORIZED => return Err(ApiError::Rejected),
+                status => {
+                    tracing::warn!(status = status.as_u16(), "the account library was refused");
+                    return Err(ApiError::Failed);
+                }
+            }
+            let page: AccountLibraryPage = response.json().await.map_err(|_| ApiError::Failed)?;
+            let short = page.data.len() < LIBRARY_PAGE_SIZE;
+            let last = page
+                .pagination
+                .as_ref()
+                .is_some_and(|pagination| !pagination.has_next_page);
+            found.extend(page.data.into_iter().map(AccountEntry::from));
+            if short || last {
+                return Ok(found);
+            }
+        }
+        // A library that never stops claiming more is not a complete read.
+        Err(ApiError::Failed)
+    }
+
     async fn library_entry(
         &self,
         credential: &SessionCredential,
@@ -533,6 +621,7 @@ impl GameApi for GameNodeClient {
         // An entry with a status this build does not know is still an entry.
         let row: EntryRow = response.json().await.map_err(|_| ApiError::Failed)?;
         Ok(Some(LibraryEntry {
+            id: row.id,
             status: EntryStatus::from_api_name(&row.status),
             collection_ids: row.collections.into_iter().map(|c| c.id).collect(),
             platform_ids: row.owned_platforms.into_iter().map(|p| p.id).collect(),
@@ -598,6 +687,37 @@ impl GameApi for GameNodeClient {
             StatusCode::UNAUTHORIZED => Err(ApiError::Rejected),
             status => {
                 tracing::warn!(status = status.as_u16(), "adding the game was refused");
+                Err(ApiError::Failed)
+            }
+        }
+    }
+
+    async fn delete_entry(
+        &self,
+        credential: &SessionCredential,
+        entry_id: &str,
+    ) -> Result<(), ApiError> {
+        if !is_path_safe_id(entry_id) {
+            return Err(ApiError::Failed);
+        }
+        let response = self
+            .authorized(
+                self.http
+                    .delete(self.v1(&format!("collections-entries/{entry_id}"), |_| {})),
+                credential,
+            )
+            .send()
+            .await
+            .map_err(|_| ApiError::Failed)?;
+        match response.status() {
+            // The entry is gone, which is exactly what deleting it means.
+            StatusCode::NO_CONTENT | StatusCode::NOT_FOUND => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(ApiError::Rejected),
+            status => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "deleting the library entry was refused"
+                );
                 Err(ApiError::Failed)
             }
         }

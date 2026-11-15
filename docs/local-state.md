@@ -33,8 +33,8 @@ The database contains `schema_migrations` (version, name and applied time),
 `settings` (key/value) and the library cache tables below. The only keys
 `settings` may hold are `renderer`, `window.x`, `window.y`, `window.width`,
 `window.height`, `window.maximized`, `library.layout`, `library.excluded`, `account.last_id` and
-`account.last_name`, `sync_enabled`, `sync_explained` and `playtime_source`
-(the `SETTING_KEYS` list in `db.rs`). A fresh database
+`account.last_name`, `sync_enabled`, `sync_explained`, `playtime_source` and
+`discovery.lastCheckedAt` (the `SETTING_KEYS` list in `db.rs`). A fresh database
 defaults to GPU rendering, the default library layout and no games. No session
 token, callback URL, or pending sign-in secret belongs in this database.
 
@@ -63,15 +63,20 @@ owned game wins over a family-shared one, and clearing the catalog leaves entrie
 matches and covers in place. An unreadable ownership flag is treated as false and
 the installed fact still applies.
 
-`library.layout` is a JSON object with the view mode, sidebar selection, sort,
-sidebar and detail pane widths and whether the detail pane is open. The search
-text is never saved. A layout that cannot be read falls back to the default.
+`library.layout` is a JSON object with the scope, filters, sort, grouping,
+collapsed groups per grouping, view mode, sidebar and detail pane widths and
+whether the detail pane and sidebar are open. Saved views live per account in
+`saved_views`, not in this PC-wide layout. The search text is never saved. Older
+layouts with a provider selection, a single match state, the old playtime or
+release values, or the `installedOnly` toggle are normalized on load. A layout
+that cannot be read falls back to the default.
 
 `account.last_id` and `account.last_name` record the last signed-in account so
 the cached library can open before the session is verified. They hold no
 credential. Signing out deletes both keys; the library cache, chosen matches,
-covers and layout stay for a later sign-in by the same account. The next start
-without a session shows sign-in rather than a cached library.
+covers, layout, saved views, hidden entries and account library cache stay for a
+later sign-in by the same account. The next start without a session shows sign-in
+rather than a cached library.
 
 ## Covers
 
@@ -269,3 +274,27 @@ The cache is keyed by the connected store account, independently of any GameNode
 account, and contains no credential. Explicit store sign-out and replacement by a
 different store account delete that account's rows; session expiry and an
 unreachable store keep them.
+
+## Library organization and account library (migration `0010_library_organization.sql`)
+
+Migration `0010_library_organization.sql` is additive: every existing table and
+value is kept and the new tables start empty. An older build refuses the upgraded
+schema without modifying it. All five tables are keyed by the GameNode
+`account_id`, so signing out keeps an account's rows for its next sign-in and
+never exposes them to another account.
+
+| Table | Holds |
+| --- | --- |
+| `saved_views` | One named sidebar view per account: `name`, the JSON `payload` (scope, filters, sort, grouping and view mode), its `position` and `created_at`. Names are unique per account. |
+| `hidden_entries` | The provider entry keys the account hid from the library, with `hidden_at`. Hiding one provider entry never hides another entry of the same game. |
+| `account_library_entries` | The account's cached GameNode library entry per `game_id`: `entry_id`, nullable `status` and the JSON array of `collection_ids`. A status this build does not know is read as unknown rather than dropping the game. |
+| `account_collections` | The account's cached GameNode collections: `collection_id`, `name`, nullable `default_status` and their sidebar `position`. |
+| `account_library_reads` | The completion marker of the last complete account library read: `read_at`. Entries and collections written before a complete read are not shown without this row. |
+
+A complete read replaces entries and collections together and writes the
+completion marker in one transaction, so a failed or partial read keeps the
+previous cache. An individual entry upsert or removal never creates or clears the
+marker.
+
+`discovery.lastCheckedAt` records the last completed check of the watched DRM-free
+folders in unix seconds, so the status bar can show it after a restart.

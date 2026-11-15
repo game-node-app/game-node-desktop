@@ -21,6 +21,10 @@ use url::Url;
 pub const DEFAULT_SERVER_URL: &str = "https://server.gamenode.app";
 /// Environment variable that overrides the server, for development and tests.
 pub const SERVER_URL_ENV: &str = "GAMENODE_SERVER_URL";
+/// GameNode website used when `GAMENODE_WEB_URL` is not set.
+pub const DEFAULT_WEB_URL: &str = "https://gamenode.app";
+/// Environment variable that overrides the website, for development and tests.
+pub const WEB_URL_ENV: &str = "GAMENODE_WEB_URL";
 
 const AUTH_BASE: &str = "/v1/auth";
 const NATIVE_ORIGIN_HEADER: &str = "capacitor-origin";
@@ -31,6 +35,8 @@ const SECURE_PREFIX: &str = "__Secure-";
 pub enum ClientError {
     #[error("the GameNode server URL is invalid")]
     InvalidServerUrl,
+    #[error("the GameNode website URL is invalid")]
+    InvalidWebUrl,
     #[error("the HTTP client could not be created")]
     Http,
 }
@@ -42,6 +48,41 @@ pub fn server_url_from_env() -> Result<Url, ClientError> {
         .ok()
         .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
         .ok_or(ClientError::InvalidServerUrl)
+}
+
+/// Resolves the website base URL from the environment or the default, with the same rules as
+/// [`server_url_from_env`].
+pub fn web_url_from_env() -> Result<Url, ClientError> {
+    let raw = std::env::var(WEB_URL_ENV).unwrap_or_else(|_| DEFAULT_WEB_URL.to_owned());
+    Url::parse(&raw)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+        .ok_or(ClientError::InvalidWebUrl)
+}
+
+/// The website page of one game: `<web>/game/<id>`.
+pub fn game_page_url(web: &Url, game_id: u64) -> Url {
+    web_page_url(web, &["game", &game_id.to_string()])
+}
+
+/// The signed-in user's library page: `<web>/library/<userId>`.
+pub fn library_page_url(web: &Url, user_id: &str) -> Url {
+    web_page_url(web, &["library", user_id])
+}
+
+/// Appends path segments to a website base, keeping a development base path and clearing any
+/// query or fragment. Segments are percent-encoded, so an id can never add a path of its own.
+fn web_page_url(web: &Url, segments: &[&str]) -> Url {
+    let mut url = web.clone();
+    if let Ok(mut path) = url.path_segments_mut() {
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url
 }
 
 mod game;

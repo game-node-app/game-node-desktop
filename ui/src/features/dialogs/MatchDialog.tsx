@@ -1,13 +1,23 @@
 import React, { useEffect, useRef } from 'react';
 import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useLibraryView, coverAssetUrl, type MatchOption } from '../../api';
+import { commands, useAuth, useLibraryView, coverAssetUrl, type MatchOption } from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason } from '../library/formatters';
+import { useBatchMatchDriver } from '../library/batchMatchQueue';
 
 export const MatchDialog: React.FC = () => {
   const library = useLibraryView();
+  const { auth } = useAuth();
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
+  const accountId =
+    typeof auth === 'object' && auth !== null && 'signedIn' in auth
+      ? auth.signedIn.user.id
+      : null;
+  // A batch Match walks the selection one entry at a time. The driver lives here because the
+  // batch bar unmounts as soon as the selection shrinks to the current entry. The account keeps
+  // a run from continuing into another signed-in account.
+  useBatchMatchDriver(library, accountId);
 
   const dialog = library?.matchDialog;
 

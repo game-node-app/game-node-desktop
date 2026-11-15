@@ -13,6 +13,7 @@ import { createAppQueryClient } from '../../AppProviders';
 import {
   commands,
   createDefaultFilters,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   SNAPSHOT_QUERY_KEY,
   type AchievementListView,
@@ -57,6 +58,8 @@ function row(overrides: Partial<Row> = {}): Row {
     releaseYear: 2011,
     addedAt: 0,
     isFavorite: false,
+    hidden: false,
+    gamenode: null,
     ...overrides,
   };
 }
@@ -73,6 +76,7 @@ function detail(
     membership: 'notInLibrary',
     achievementBackend: true,
     achievements: null,
+    suggestions: [],
     ...overrides,
   };
 }
@@ -80,15 +84,19 @@ function detail(
 function library(overrides: Partial<LibraryView> = {}): LibraryView {
   const first = row();
   return {
+    ...createDefaultLibraryView(),
     generation: 1,
     layout: {
       view: 'grid',
       sort: { key: 'title', direction: 'ascending' },
-      filter: 'all',
+      scope: 'all',
+      group: 'none',
+      collapsedGroups: {},
       filters: createDefaultFilters(),
       sidebarWidth: 216,
       detailWidth: 320,
       detailOpen: true,
+      sidebarCollapsed: false,
     },
     search: '',
     access: 'verified',
@@ -310,7 +318,8 @@ describe('Achievement detail section', () => {
 
   it('localizes the section in Brazilian Portuguese', () => {
     renderDetail(snapshotWith('connected', detail({ achievements: summary() })), 'pt-BR');
-    expect(screen.getByText('Conquistas')).toBeInTheDocument();
+    const section = screen.getByTestId('detail-achievements');
+    expect(within(section).getByText('Conquistas')).toBeInTheDocument();
     expect(screen.getByText('2 de 5 desbloqueadas')).toBeInTheDocument();
   });
 });

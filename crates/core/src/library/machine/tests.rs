@@ -1,4 +1,6 @@
 use super::*;
+use crate::game_api::{AccountEntry, Collection, LibraryEntry};
+use crate::library::layout::GameNodeStatusFilter;
 use crate::library::store::{CatalogError, CatalogRecord};
 use crate::provider::registry::{self, tests::STEAM_MANIFEST};
 use crate::provider::{Platform, Record};
@@ -1278,4 +1280,577 @@ fn a_failed_owned_sync_does_not_block_a_shared_sync() {
     assert_eq!(state.catalog_error, Some(CatalogError::Server));
     assert_eq!(state.last_catalog_at, Some(10));
     assert_eq!(state.last_shared_at, Some(20));
+}
+
+fn account_entry(
+    game_id: u64,
+    id: &str,
+    status: Option<EntryStatus>,
+    collections: &[&str],
+) -> AccountEntry {
+    AccountEntry {
+        id: id.to_owned(),
+        game_id,
+        status,
+        collection_ids: collections.iter().map(|id| (*id).to_owned()).collect(),
+    }
+}
+
+fn collection(id: &str, name: &str) -> Collection {
+    Collection {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        default_status: None,
+    }
+}
+
+/// An installed, matched Portal 2 (steam:620 → game 7) whose cache has no account library yet.
+fn matched_cache() -> LibraryCache {
+    LibraryCache {
+        entries: vec![stored("steam", "620", "Portal 2", true)],
+        auto_matches: vec![AutoMatch {
+            category: 1,
+            uid: "620".to_owned(),
+            game_ids: vec![7],
+            checked_at: 1,
+        }],
+        games: vec![GameRecord {
+            game_id: 7,
+            name: "Portal 2".to_owned(),
+            release_year: Some(2011),
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+        }],
+        ..LibraryCache::default()
+    }
+}
+
+fn sync_ops(effects: &[Effect]) -> Vec<(u64, String)> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::SyncAccountLibrary { op, user_id } => Some((*op, user_id.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn membership_reads(effects: &[Effect]) -> Vec<(u64, u64)> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::ReadEntry { op, game_id } => Some((*op, *game_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_verified_session_and_each_scan_read_the_account_library() {
+    let (mut machine, effects) = loaded(false, matched_cache());
+    assert!(
+        sync_ops(&effects).is_empty(),
+        "nothing is read before verification: {effects:?}"
+    );
+    finish_scan(
+        &mut machine,
+        vec![record("620", "Portal 2", "/g/Portal 2")],
+        5,
+    );
+
+    let effects = machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+    let ops = sync_ops(&effects);
+    assert_eq!(ops.len(), 1, "{effects:?}");
+    let (op, user_id) = ops[0].clone();
+    assert_eq!(user_id, "a");
+
+    let entries = vec![account_entry(
+        7,
+        "entry-7",
+        Some(EntryStatus::Finished),
+        &["backlog"],
+    )];
+    let collections = vec![collection("backlog", "Backlog curto")];
+    let effects = machine.handle(Input::AccountLibrarySynced {
+        op,
+        result: Ok((entries.clone(), collections.clone())),
+        now: 20,
+    });
+    assert_eq!(
+        effects,
+        [Effect::PersistAccountLibrary {
+            account_id: "a".to_owned(),
+            entries: entries.clone(),
+            collections: collections.clone(),
+            read_at: 20,
+        }]
+    );
+    assert_eq!(machine.account_library.as_ref().unwrap().read_at, 20);
+
+    // Rows, the status facet and its counts use the complete read.
+    let query = machine.query("");
+    assert!(query.filter_counts.gamenode_status.available);
+    assert_eq!(query.filter_counts.gamenode_status.finished, 1);
+    let rows = machine.visible_rows("");
+    let gamenode = rows[0].gamenode.as_ref().expect("a cached entry");
+    assert_eq!(gamenode.status, Some(EntryStatus::Finished));
+    assert_eq!(gamenode.entry_id, "entry-7");
+    assert_eq!(gamenode.collection_ids, ["backlog"]);
+
+    // A collection scope and a conflicting status facet hide or show the row.
+    machine.layout.scope = LibraryScope::Collection("backlog".into());
+    assert_eq!(machine.visible_rows("").len(), 1);
+    machine.layout.scope = LibraryScope::All;
+    machine.layout.filters.gamenode_status = vec![GameNodeStatusFilter::Playing];
+    assert!(machine.visible_rows("").is_empty());
+    machine.layout.filters.gamenode_status.clear();
+
+    // A rescan reads the library again even while favorites sync is off.
+    machine.handle(Input::SetSyncActive(false));
+    let effects = machine.handle(Input::ScanRequested);
+    let (next_op, _) = sync_ops(&effects)[0].clone();
+    assert_ne!(next_op, op);
+
+    // A failed read keeps the previous complete cache and writes nothing.
+    let before = machine.account_library.clone();
+    assert!(
+        machine
+            .handle(Input::AccountLibrarySynced {
+                op: next_op,
+                result: Err(ApiError::Failed),
+                now: 30,
+            })
+            .is_empty()
+    );
+    assert_eq!(machine.account_library, before);
+
+    // An answer to the older read is stale and changes nothing.
+    assert!(
+        machine
+            .handle(Input::AccountLibrarySynced {
+                op,
+                result: Ok((vec![], vec![])),
+                now: 40,
+            })
+            .is_empty()
+    );
+    assert_eq!(machine.account_library, before);
+}
+
+#[test]
+fn a_single_game_read_updates_one_cached_entry_and_removes_it() {
+    let cached = account_entry(7, "entry-7", Some(EntryStatus::Finished), &["backlog"]);
+    let cache = LibraryCache {
+        account_library: Some(AccountLibrary {
+            entries: [(7, cached.clone())].into_iter().collect(),
+            collections: vec![collection("backlog", "Backlog curto")],
+            read_at: 9,
+        }),
+        ..matched_cache()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+
+    let effects = machine.handle(Input::Select {
+        key: "steam:620".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    let (op, game_id) = membership_reads(&effects)[0];
+    assert_eq!(game_id, 7);
+    // The cached status is shown before the refresh answers.
+    assert_eq!(
+        machine.view().unwrap().detail.unwrap().membership,
+        Membership::InLibrary(Some(EntryStatus::Finished))
+    );
+
+    let read = LibraryEntry {
+        id: "entry-7".to_owned(),
+        status: Some(EntryStatus::Planned),
+        collection_ids: vec!["coop".to_owned()],
+        platform_ids: vec![6],
+        finished_at: None,
+    };
+    let effects = machine.handle(Input::EntryRead {
+        op,
+        game_id,
+        result: Ok(Some(read)),
+    });
+    assert_eq!(
+        effects,
+        [Effect::PersistAccountEntry {
+            account_id: "a".to_owned(),
+            game_id: 7,
+            entry: Some(account_entry(
+                7,
+                "entry-7",
+                Some(EntryStatus::Planned),
+                &["coop"]
+            )),
+        }]
+    );
+    let updated = machine
+        .account_library
+        .as_ref()
+        .unwrap()
+        .entries
+        .get(&7)
+        .unwrap();
+    assert_eq!(updated.status, Some(EntryStatus::Planned));
+    assert_eq!(updated.collection_ids, ["coop"]);
+    let query = machine.query("");
+    assert_eq!(query.filter_counts.gamenode_status.planned, 1);
+    assert_eq!(query.filter_counts.gamenode_status.finished, 0);
+
+    // A refresh that finds no entry removes it and persists the removal.
+    let effects = machine.handle(Input::RefreshMembership);
+    let (op, game_id) = membership_reads(&effects)[0];
+    let effects = machine.handle(Input::EntryRead {
+        op,
+        game_id,
+        result: Ok(None),
+    });
+    assert_eq!(
+        effects,
+        [Effect::PersistAccountEntry {
+            account_id: "a".to_owned(),
+            game_id: 7,
+            entry: None,
+        }]
+    );
+    assert!(
+        !machine
+            .account_library
+            .as_ref()
+            .unwrap()
+            .entries
+            .contains_key(&7)
+    );
+    assert_eq!(machine.membership(7), Membership::NotInLibrary);
+    assert!(machine.visible_rows("")[0].gamenode.is_none());
+    assert_eq!(
+        machine
+            .query("")
+            .filter_counts
+            .gamenode_status
+            .not_in_library,
+        1
+    );
+}
+
+#[test]
+fn an_unreadable_read_keeps_the_cached_membership_visible_but_blocks_editing() {
+    let cached = account_entry(7, "entry-7", Some(EntryStatus::Finished), &[]);
+    let cache = LibraryCache {
+        account_library: Some(AccountLibrary {
+            entries: [(7, cached)].into_iter().collect(),
+            collections: vec![],
+            read_at: 9,
+        }),
+        ..matched_cache()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+    let effects = machine.handle(Input::Select {
+        key: "steam:620".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    let (op, game_id) = membership_reads(&effects)[0];
+
+    assert!(
+        machine
+            .handle(Input::EntryRead {
+                op,
+                game_id,
+                result: Err(ApiError::Failed),
+            })
+            .is_empty(),
+        "a failed read never writes"
+    );
+    let view = machine.view().unwrap();
+    assert_eq!(
+        view.detail.unwrap().membership,
+        Membership::InLibrary(Some(EntryStatus::Finished)),
+        "the cached status stays visible"
+    );
+    assert_eq!(
+        view.actions.add_to_gamenode,
+        crate::library::Availability::Disabled(crate::library::Reason::MembershipUnavailable),
+        "editing is not offered without a read"
+    );
+    assert!(
+        machine
+            .account_library
+            .as_ref()
+            .unwrap()
+            .entries
+            .contains_key(&7)
+    );
+}
+
+#[test]
+fn a_late_complete_read_keeps_a_status_and_collection_change_confirmed_after_it_started() {
+    let cached = account_entry(7, "entry-7", Some(EntryStatus::Finished), &["backlog"]);
+    let cache = LibraryCache {
+        account_library: Some(AccountLibrary {
+            entries: [(7, cached)].into_iter().collect(),
+            collections: vec![collection("backlog", "Backlog")],
+            read_at: 9,
+        }),
+        ..matched_cache()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    let effects = machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+    let (sync_op, _) = sync_ops(&effects)[0].clone();
+
+    // A batch status change is confirmed while the complete read is still in flight.
+    let effects = machine.handle(Input::SetStatus {
+        keys: vec!["steam:620".to_owned()],
+        status: EntryStatus::Playing,
+    });
+    let (check_op, game_id) = membership_reads(&effects)[0];
+    let fresh = LibraryEntry {
+        id: "entry-7".to_owned(),
+        status: Some(EntryStatus::Finished),
+        collection_ids: vec!["backlog".to_owned()],
+        platform_ids: vec![6],
+        finished_at: None,
+    };
+    let effects = machine.handle(Input::EntryRead {
+        op: check_op,
+        game_id,
+        result: Ok(Some(fresh)),
+    });
+    let update_op = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::UpdateEntry { op, .. } => Some(*op),
+            _ => None,
+        })
+        .expect("the status update");
+    let effects = machine.handle(Input::EntryUpdated {
+        op: update_op,
+        game_id,
+        result: Ok(()),
+    });
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::PersistAccountEntry {
+                game_id: 7,
+                entry: Some(entry),
+                ..
+            } if entry.status == Some(EntryStatus::Playing)
+        )),
+        "the confirmed write is persisted: {effects:?}"
+    );
+    let (refresh_op, _) = membership_reads(&effects)[0];
+    machine.handle(Input::EntryRead {
+        op: refresh_op,
+        game_id,
+        result: Ok(Some(LibraryEntry {
+            status: Some(EntryStatus::Playing),
+            collection_ids: vec!["backlog".to_owned(), "coop".to_owned()],
+            ..fresh_for(7)
+        })),
+    });
+
+    // The whole read's snapshot was taken before the write: Finished and only `backlog`.
+    let stale = vec![
+        account_entry(7, "entry-7", Some(EntryStatus::Finished), &["backlog"]),
+        account_entry(8, "entry-8", Some(EntryStatus::Planned), &[]),
+    ];
+    let collections = vec![collection("backlog", "Backlog"), collection("coop", "Coop")];
+    let effects = machine.handle(Input::AccountLibrarySynced {
+        op: sync_op,
+        result: Ok((stale, collections.clone())),
+        now: 30,
+    });
+    let [
+        Effect::PersistAccountLibrary {
+            entries,
+            collections: persisted,
+            read_at,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("one complete replace: {effects:?}");
+    };
+    assert_eq!(*read_at, 30);
+    assert_eq!(*persisted, collections, "the read's collections are kept");
+    let entry = entries
+        .iter()
+        .find(|entry| entry.game_id == 7)
+        .expect("the confirmed game");
+    assert_eq!(
+        (entry.status, entry.collection_ids.clone()),
+        (
+            Some(EntryStatus::Playing),
+            vec!["backlog".to_owned(), "coop".to_owned()]
+        ),
+        "the confirmed status and both collections win over the stale snapshot"
+    );
+    assert!(
+        entries.iter().any(|entry| entry.game_id == 8),
+        "untouched games still come from the complete read"
+    );
+    let cached = machine
+        .account_library
+        .as_ref()
+        .unwrap()
+        .entries
+        .get(&7)
+        .unwrap();
+    assert_eq!(cached.status, Some(EntryStatus::Playing));
+    assert_eq!(cached.collection_ids, ["backlog", "coop"]);
+    assert_eq!(machine.account_library.as_ref().unwrap().read_at, 30);
+    assert_eq!(
+        machine.query("").filter_counts.gamenode_status.playing,
+        1,
+        "rows and counts use the merged state"
+    );
+}
+
+#[test]
+fn a_late_first_complete_read_keeps_a_game_confirmed_after_it_started() {
+    let (mut machine, _) = loaded(false, matched_cache());
+    let effects = machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+    let (sync_op, _) = sync_ops(&effects)[0].clone();
+    assert!(machine.account_library.is_none());
+
+    // The game is refreshed after being added while the first complete read is in flight.
+    let effects = machine.handle(Input::Select {
+        key: "steam:620".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    let (read_op, game_id) = membership_reads(&effects)[0];
+    machine.handle(Input::EntryRead {
+        op: read_op,
+        game_id,
+        result: Ok(Some(LibraryEntry {
+            id: "entry-7".to_owned(),
+            status: Some(EntryStatus::Playing),
+            collection_ids: vec!["coop".to_owned()],
+            platform_ids: vec![6],
+            finished_at: None,
+        })),
+    });
+    assert!(
+        machine.account_library.is_none(),
+        "a per-game read never creates the complete marker"
+    );
+
+    let collections = vec![collection("coop", "Coop")];
+    let effects = machine.handle(Input::AccountLibrarySynced {
+        op: sync_op,
+        result: Ok((Vec::new(), collections.clone())),
+        now: 25,
+    });
+    let [
+        Effect::PersistAccountLibrary {
+            entries,
+            collections: persisted,
+            read_at,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("one complete replace: {effects:?}");
+    };
+    let entry = entries
+        .iter()
+        .find(|entry| entry.game_id == 7)
+        .expect("the game confirmed during the first read");
+    assert_eq!(entry.status, Some(EntryStatus::Playing));
+    assert_eq!(entry.collection_ids, ["coop"]);
+    assert_eq!(*read_at, 25);
+    assert_eq!(*persisted, collections);
+    assert_eq!(
+        machine
+            .account_library
+            .as_ref()
+            .unwrap()
+            .entries
+            .get(&7)
+            .unwrap()
+            .status,
+        Some(EntryStatus::Playing)
+    );
+}
+
+#[test]
+fn a_late_complete_read_does_not_resurrect_an_entry_removed_after_it_started() {
+    let (mut machine, _) = loaded(false, matched_cache());
+    let effects = machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: 10,
+    });
+    let (sync_op, _) = sync_ops(&effects)[0].clone();
+    assert!(machine.account_library.is_none());
+
+    // The confirmed read after a delete says the game is gone.
+    let effects = machine.handle(Input::Select {
+        key: "steam:620".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    let (read_op, game_id) = membership_reads(&effects)[0];
+    machine.handle(Input::EntryRead {
+        op: read_op,
+        game_id,
+        result: Ok(None),
+    });
+
+    // The older snapshot still has the entry; the confirmed removal wins.
+    let stale = vec![account_entry(
+        7,
+        "entry-7",
+        Some(EntryStatus::Finished),
+        &[],
+    )];
+    let effects = machine.handle(Input::AccountLibrarySynced {
+        op: sync_op,
+        result: Ok((stale, Vec::new())),
+        now: 40,
+    });
+    let [Effect::PersistAccountLibrary { entries, .. }] = effects.as_slice() else {
+        panic!("one complete replace: {effects:?}");
+    };
+    assert!(
+        entries.is_empty(),
+        "the removed game is not written back: {entries:?}"
+    );
+    assert!(
+        !machine
+            .account_library
+            .as_ref()
+            .unwrap()
+            .entries
+            .contains_key(&7)
+    );
+}
+
+fn fresh_for(game_id: u64) -> LibraryEntry {
+    LibraryEntry {
+        id: format!("entry-{game_id}"),
+        status: None,
+        collection_ids: Vec::new(),
+        platform_ids: vec![6],
+        finished_at: None,
+    }
 }

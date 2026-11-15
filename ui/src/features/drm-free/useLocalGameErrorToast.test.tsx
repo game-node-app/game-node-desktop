@@ -13,7 +13,7 @@ function snapshotWithError(error: string | null): Snapshot {
 }
 
 function dangerMessages(): string[] {
-  return uiStore.state.toasts.filter((t) => t.kind === 'danger').map((t) => t.message);
+  return uiStore.state.toasts.filter((t) => t.kind === 'danger').map((t) => t.title);
 }
 
 describe('useLocalGameErrorToast', () => {

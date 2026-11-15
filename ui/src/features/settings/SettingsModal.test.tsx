@@ -8,6 +8,7 @@ import {
   SNAPSHOT_QUERY_KEY,
   APP_INFO_QUERY_KEY,
   LICENSE_NOTICES_QUERY_KEY,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   commands,
   type Snapshot,
@@ -23,11 +24,11 @@ import {
 import {
   SettingsModal,
   ToastContainer,
-  useSettingsKeyboardShortcut,
 } from './index';
+import { useGlobalShortcuts } from '../shell/useGlobalShortcuts';
 
 function ShortcutTestHarness() {
-  useSettingsKeyboardShortcut();
+  useGlobalShortcuts();
   return <SettingsModal />;
 }
 
@@ -616,15 +617,19 @@ describe('SettingsModal Feature Suite', () => {
       openSettingsModal('stores');
       renderSettings('en', {
         library: {
+          ...createDefaultLibraryView(),
           generation: 1,
           layout: {
             view: 'grid',
             sort: { key: 'title', direction: 'ascending' },
-            filter: 'all',
+            scope: 'all',
+            group: 'none',
+            collapsedGroups: {},
             filters: createDefaultFilters(),
             sidebarWidth: 200,
             detailWidth: 300,
             detailOpen: false,
+            sidebarCollapsed: false,
           },
           search: '',
           access: 'verified',

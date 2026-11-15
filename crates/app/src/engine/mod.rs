@@ -44,6 +44,26 @@ pub use pc_ports::{PortProgressPublisher, PortsService};
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A page on the GameNode website the app can open in the default browser (D14).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GameNodePage {
+    /// `https://gamenode.app/library/<signed-in user id>`.
+    Library,
+    /// `https://gamenode.app/game/<id>`.
+    Game { id: u64 },
+}
+
+/// Why a GameNode page could not be opened. The code is stable; the UI words the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "code")]
+pub enum GameNodePageError {
+    /// The library page needs a verified session, and there is none.
+    NoSession,
+    /// The website URL, the blocking worker or the system browser failed.
+    Browser,
+}
+
 /// The shortest time between snapshots published for cover completions.
 const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -365,6 +385,42 @@ impl Engine {
         self.snapshot_of(&mut state)
     }
 
+    /// Opens one GameNode website page in the default browser, off the UI thread. The library page
+    /// needs the verified session's user id; a game page does not.
+    pub async fn open_gamenode_page(&self, page: GameNodePage) -> Result<(), GameNodePageError> {
+        let (browser, user_id) = {
+            let state = self.lock();
+            let user_id = match &page {
+                GameNodePage::Game { .. } => None,
+                GameNodePage::Library => {
+                    state
+                        .machine
+                        .verified_credential()
+                        .ok_or(GameNodePageError::NoSession)?;
+                    match state.machine.state() {
+                        AuthState::SignedIn(user) => Some(user.id.clone()),
+                        _ => return Err(GameNodePageError::NoSession),
+                    }
+                }
+            };
+            (self.shared.ports.browser.clone(), user_id)
+        };
+        let web = gamenode_api::web_url_from_env().map_err(|_| GameNodePageError::Browser)?;
+        let url = match (page, user_id) {
+            (GameNodePage::Game { id }, _) => gamenode_api::game_page_url(&web, id),
+            (GameNodePage::Library, Some(user_id)) => {
+                gamenode_api::library_page_url(&web, &user_id)
+            }
+            (GameNodePage::Library, None) => return Err(GameNodePageError::NoSession),
+        };
+        self.shared
+            .runtime
+            .spawn_blocking(move || browser.open(&url))
+            .await
+            .map_err(|_| GameNodePageError::Browser)?
+            .map_err(|_| GameNodePageError::Browser)
+    }
+
     /// The artwork the details panel shows for `game_id`, if any. Takes the engine lock only
     /// long enough to clone a handle, unlike [`Engine::snapshot`], which rebuilds the view.
     pub fn artwork(&self, game_id: u64) -> Option<Arc<[u8]>> {
@@ -380,6 +436,11 @@ impl Engine {
 
     fn snapshot_of(&self, state: &mut State) -> Snapshot {
         self.update_playtime_view(state, unix_now());
+        // The library does not own the local-games view; bridge the DRM-free discovery flag so
+        // the scanning panel's pseudo row follows it even when no library input arrives.
+        state
+            .library
+            .set_discovery_scanning(state.local.discovery_scanning);
         let library = state.library.view();
         // Achievements live in the engine cache, not in the library machine. The detail snapshot
         // carries only the compact summary; the full list comes from the async command.
@@ -419,10 +480,20 @@ impl Engine {
         snapshot.playtime_error = state.playtime.error;
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
+        let running_sessions = if state.playtime.available {
+            state.playtime.tracker.running_started_at()
+        } else {
+            Default::default()
+        };
         snapshot.tracking = gamenode_core::snapshot::TrackingView {
-            title: state.library.running_title().unwrap_or_default(),
+            title: if running_sessions.is_empty() {
+                String::new()
+            } else {
+                state.library.running_title().unwrap_or_default()
+            },
             available: state.playtime.available,
-            running: state.playtime.tracker.running(),
+            running: running_sessions.keys().cloned().collect(),
+            session_started_at: running_sessions,
         };
         snapshot.tools = state.tools.clone();
         snapshot.store_accounts = store_accounts;
@@ -728,6 +799,7 @@ impl Engine {
                 &input,
                 LibInput::PickMatch { .. }
                     | LibInput::MarkNoGame { .. }
+                    | LibInput::MarkEntryNoGame { .. }
                     | LibInput::ClearMatch
                     | LibInput::LookupDone { .. }
             );
@@ -868,6 +940,9 @@ impl Engine {
     fn run_library(&self, state: &mut State, input: LibInput) {
         // Relative filters are measured in days; the library never reads the clock itself.
         state.library.set_now(unix_now());
+        state
+            .library
+            .set_discovery_scanning(state.local.discovery_scanning);
         self.apply_favorites_gate(state);
         // A verified session, a completed scan and a successful Add to GameNode are the moments
         // pending favorites are worth retrying.
@@ -1140,6 +1215,12 @@ impl Engine {
                 });
             }
             LibEffect::RunScan { op, provider } => {
+                // The progress row moves from waiting to scanning before the work starts. The
+                // input is queued, so a very fast answer may arrive first; it then stays done.
+                self.later(LibInput::ProviderScanStarted {
+                    op,
+                    provider: provider.clone(),
+                });
                 let Some(found) = state.library.provider(&provider).cloned() else {
                     self.later(LibInput::ProviderScanned {
                         targets: Default::default(),
@@ -1229,6 +1310,34 @@ impl Engine {
             LibEffect::PersistLayout(layout) => {
                 self.persist(move |store| store.save_layout(&layout))
             }
+            LibEffect::PersistView {
+                op,
+                account_id,
+                view,
+            } => {
+                // The insert's AUTOINCREMENT id is the only id the machine accepts for a new
+                // view, so the answer goes back as an input instead of being guessed here.
+                let (engine, store) = (self.clone(), ports.library.clone());
+                self.shared.storage.submit(move || {
+                    let result = store.save_view(&account_id, &view).map_err(|error| {
+                        tracing::warn!(%error, "could not save the library view");
+                    });
+                    engine.library_input(LibInput::ViewPersisted {
+                        op,
+                        account_id,
+                        result,
+                    });
+                });
+            }
+            LibEffect::DeleteViewEffect { account_id, id } => {
+                self.persist(move |store| store.delete_view(&account_id, id))
+            }
+            LibEffect::PersistHidden {
+                account_id,
+                keys,
+                hidden,
+                now,
+            } => self.persist(move |store| store.set_hidden(&account_id, &keys, hidden, now)),
             LibEffect::PersistFavorite(favorite) => {
                 self.persist(move |store| store.save_favorite(&favorite));
             }
@@ -1337,6 +1446,38 @@ impl Engine {
                     engine.check_rejected(rejected);
                 });
             }
+            LibEffect::SuggestMatches { op, key, query } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::SuggestionsFound {
+                        op,
+                        key,
+                        result: Err(ApiError::Failed),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api.search_page(&credential, &query).await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::SuggestionsFound { op, key, result });
+                    engine.check_rejected(rejected);
+                });
+            }
+            LibEffect::CatalogSearch { op, query } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::CatalogSearchDone {
+                        op,
+                        query,
+                        result: Err(ApiError::Failed),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api.search_page(&credential, &query).await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::CatalogSearchDone { op, query, result });
+                    engine.check_rejected(rejected);
+                });
+            }
             LibEffect::FetchCover { game_id, url } => {
                 let (engine, api, dir) =
                     (self.clone(), ports.games.clone(), ports.covers_dir.clone());
@@ -1395,6 +1536,49 @@ impl Engine {
                     engine.check_rejected(rejected);
                 });
             }
+            LibEffect::SyncAccountLibrary { op, user_id } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::AccountLibrarySynced {
+                        op,
+                        result: Err(ApiError::Failed),
+                        now: unix_now(),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    // The complete entry list and the collections are independent requests.
+                    let (entries, collections) = tokio::join!(
+                        api.list_library_entries(&credential, &user_id),
+                        api.list_collections(&credential, &user_id)
+                    );
+                    let result = match (entries, collections) {
+                        (Ok(entries), Ok(collections)) => Ok((entries, collections)),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    };
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::AccountLibrarySynced {
+                        op,
+                        result,
+                        now: unix_now(),
+                    });
+                    engine.check_rejected(rejected);
+                });
+            }
+            LibEffect::PersistAccountLibrary {
+                account_id,
+                entries,
+                collections,
+                read_at,
+            } => self.persist(move |store| {
+                store.replace_account_library(&account_id, &entries, &collections, read_at)
+            }),
+            LibEffect::PersistAccountEntry {
+                account_id,
+                game_id,
+                entry,
+            } => self.persist(move |store| {
+                store.save_account_entry(&account_id, game_id, entry.as_ref())
+            }),
             LibEffect::ListCollections { op, user_id } => {
                 let Some(credential) = credential else {
                     return self.later(LibInput::CollectionsListed {
@@ -1445,7 +1629,7 @@ impl Engine {
                 existing,
             } => {
                 let Some(credential) = credential else {
-                    return self.later(LibInput::EntryCreated {
+                    return self.later(LibInput::EntryUpdated {
                         op,
                         game_id,
                         result: Err(ApiError::Failed),
@@ -1457,7 +1641,31 @@ impl Engine {
                         .update_entry(&credential, game_id, status, &collection_ids, &existing)
                         .await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
-                    engine.library_input(LibInput::EntryCreated {
+                    engine.library_input(LibInput::EntryUpdated {
+                        op,
+                        game_id,
+                        result,
+                    });
+                    engine.check_rejected(rejected);
+                });
+            }
+            LibEffect::DeleteEntry {
+                op,
+                game_id,
+                entry_id,
+            } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::EntryDeleted {
+                        op,
+                        game_id,
+                        result: Err(ApiError::Failed),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api.delete_entry(&credential, &entry_id).await;
+                    let rejected = matches!(result, Err(ApiError::Rejected));
+                    engine.library_input(LibInput::EntryDeleted {
                         op,
                         game_id,
                         result,

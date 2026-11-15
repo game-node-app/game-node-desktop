@@ -915,6 +915,57 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
 
 #[cfg(not(windows))]
 #[tokio::test(flavor = "multi_thread")]
+async fn the_last_watched_folder_check_is_saved_and_reloaded_on_start() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    store
+        .save_watch(&WatchRoot {
+            id: "watch".into(),
+            path: "/games".into(),
+            enabled: true,
+        })
+        .unwrap();
+    Arc::get_mut(&mut h.engine.shared)
+        .unwrap()
+        .ports
+        .local_games = Some(store.clone());
+
+    h.engine.rescan_local_folders();
+    h.until("a completed check with a timestamp", |s| {
+        s.local_games.discovery_completed
+            && !s.local_games.discovery_scanning
+            && s.local_games.discovery_last_checked_at.is_some()
+    })
+    .await;
+    let writes = h.settings.discovery_writes.lock().unwrap().len();
+    assert!(writes >= 1);
+
+    // Every completed check writes the setting again.
+    h.engine.rescan_local_folders();
+    eventually(|| h.settings.discovery_writes.lock().unwrap().len() > writes).await;
+    let latest = *h.settings.discovery_last_checked_at.lock().unwrap();
+
+    // A fresh engine over the same settings reads the timestamp at startup.
+    let mut restarted = harness(FakeApi::new(), FakeCreds::with(None));
+    {
+        let shared = Arc::get_mut(&mut restarted.engine.shared).unwrap();
+        shared.ports.local_games = Some(store);
+        shared.ports.settings = h.settings.clone();
+    }
+    restarted.engine.start();
+    let snapshot = restarted
+        .until("the saved check reloaded", |s| {
+            s.local_games.discovery_last_checked_at.is_some()
+        })
+        .await;
+    assert_eq!(snapshot.local_games.discovery_last_checked_at, latest);
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
 async fn discovery_failure_remains_visible_after_refresh() {
     let mut h = harness(FakeApi::new(), FakeCreds::with(None));
     let database = gamenode_platform::db::SqliteSettingsStore::new(

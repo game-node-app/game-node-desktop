@@ -1,0 +1,94 @@
+## 5365:2479 L4 · Menus e popovers
+COMMON MENU SURFACE (all menus): col gap1 p6 bg=secondary bd1=#333333 r8 sh(0,12,32,0,#00000080)
+ section label: row p6/10/4/10 ; T 10/600 ls0.8 upper text/muted
+ item: 32h row gap10 p0/10/0/10 ai:center r6 ; icon 16 text/secondary (or 16px empty spacer to align) ; T 13/400 text-default fillW ; optional Kbd(s) right
+ item hover/focused: bg=bg/raised, icon+text text/primary
+ checked item: I check 16:primary in icon slot, label 13/500
+ separator: row p4/0/4/0 ; 1px line bg=border/subtle
+
+### Menu Ordenar (260 wide) — triggered by toolbar "Ordenar" button
+ "Ordenar por" label
+ [spacer] "Título (A–Z)"            → sort title asc
+ [spacer] "Título (Z–A)"            → sort title desc
+ [check]  "Jogado recentemente"     → lastPlayed desc  (checked)
+ [spacer] "Tempo de jogo"           → playtime desc
+ [spacer] "Adicionado recentemente" → dateAdded desc
+ [spacer] "Ano de lançamento"       → releaseYear desc
+ [spacer] "Status de correspondência" → matchStatus
+ separator
+ I sort-descending "Ordem decrescente" Kbd "Shift" "S"   (toggle; menu stays open: closeOnItemClick=false; icon = sort-ascending when ascending)
+ Note: "Ordem do toolbar; a direção alterna sem fechar o menu."
+ Existing SortKey "provider" (Loja) is kept as an extra item "Loja" after "Status de correspondência".
+
+### Menu Agrupar (240 wide) — toolbar "Agrupar" button
+ "Agrupar por" label
+ [spacer] "Sem grupos"
+ [check]  "Loja"
+ [spacer] "Status no GameNode"
+ [spacer] "Correspondência"
+ [spacer] "Instalação"
+ [spacer] "Década de lançamento"
+ separator
+ I minus "Recolher todos os grupos"   (toggles to I plus "Expandir todos os grupos" when all collapsed; disabled when Sem grupos)
+ Note: "Cabeçalhos recolhíveis na grade e na lista."
+
+### Menu de contexto do jogo (280 wide) — right click / Shift+F10 / ContextMenu key on tile or row; also the detail "dots" button
+ header: row gap10 p8/10/8/10 ; cover 24x32 r3 ; col gap1: T title 13/600 text/primary ; T "Steam · Instalado" 11/400 text-dimmed
+ separator
+ I player-play "Jogar" Kbd "Enter"      (focused example shows bg=bg/raised, icon/text text/primary) — "Instalar" (download) when not installed; "Em execução" disabled when running
+ I folder-open "Abrir pasta de instalação"   (only when installed)
+ separator
+ I plus "Adicionar ao GameNode…"           (only when matched & not in library; label "Editar no GameNode…" otherwise? → see design.md D-ctx)
+ I link "Alterar correspondência…"         ("Associar…" when unmatched)
+ I star-filled "Remover dos favoritos" Kbd "F"   (I star "Adicionar aos favoritos" when not favorite)
+ I bookmark-plus "Adicionar à coleção" [NOVO badge = annotation only] I chevron-right 14:text-dimmed   → submenu listing collections with check marks
+ separator
+ I tool "Ferramentas do jogo…"
+ I shield-check "Proteção local dos saves"
+ I trophy "Ver conquistas"
+ separator
+ I eye "Ocultar da biblioteca"   [NOVO annotation]  (I eye "Mostrar na biblioteca" when entry is hidden)
+ (existing local-game item "Remover da biblioteca…" (trash, danger text) remains for DRM-free/local entries, placed last)
+
+### Menu do aplicativo (260 wide) — opened from the top-bar user menu (avatar)
+ header: row gap10 p10 ; avatar 32 circle grad(#f15025,#872c13) (or user avatar image) ; T "cassi" 13/600 text/primary ; T "Conectado ao GameNode" 11/400 text-dimmed
+ separator
+ I books "Biblioteca"
+ I plus "Adicionar um jogo"
+ I refresh "Verificar biblioteca novamente"
+ I settings "Configurações" Kbd "Ctrl" ","
+ I keyboard "Atalhos de teclado" Kbd "?"
+ I info-circle "Sobre e licenças"
+ separator
+ I logout "Sair da conta"
+ I power "Encerrar GameNode" Kbd "Ctrl" "Q"
+ Note: "Aberto pelo avatar; substitui o antigo menu solto."
+
+### Paleta de comandos (NOVO) 600 wide — Ctrl+K anywhere, or click the top-bar command search
+F col bg=secondary bd1=#333333 r12 sh(0,12,32,0,#00000080)
+ F 52h row gap10 p0/16/0/16 ai:center bd-bottom1=border/subtle
+  I search 18:text/secondary ; input 15/400 text/primary (caret primary) ; [spacer] ; Kbd "Esc"
+ F col gap1 p6 (results, max ~8 visible, scroll)
+  section label row p8/10/4/10 "Jogos" 10/600 ls0.8 upper text/muted
+  F 40h row gap12 p0/10/0/10 ai:center r6 ACTIVE bg=bg/raised
+   I player-play 16:primary ; col gap1: T "Emberfall: Iron Trail" 13/500 text/primary ; T "Steam · Instalado · 42 h" 11/400 text-dimmed ; T "Jogar" 12/400 text/secondary (primary action hint)
+  F 40h row ... inactive
+   I device-gamepad-2 16:text/secondary (store icon) ; T "Ember Knights of the Tide" 13/400 text-default ; T "Epic Games Store · Não instalado" 11/400 text-dimmed ; T "Abrir" 12/400 text-dimmed
+  "Ações" label
+   I folder "Adicionar jogo DRM-free…"
+   I refresh "Verificar biblioteca novamente" Kbd "F5"
+  "Configurações" label
+   I settings "Configurações › Lojas › Membro da família"
+ F footer row gap16 p10/16/10/16 bg=surface bd-top1=border/subtle
+  Kbd "Setas" T "navegar" 11/400 text-dimmed ; Kbd "Enter" "abrir" ; Kbd "Tab" "ações do jogo"
+
+### Salvar como visão (NOVO) dialog — 340 wide (AppModal, sm)
+F col gap12 p16 bg=secondary bd1=#333333 r10 sh(0,12,32,0,#00000080)
+ T "Salvar como visão" 15/600 text/primary
+ F col gap6 ; T "Nome" 12/500 text/secondary ; input 34h p0/10/0/10 bg=surface bd1=primary(focused) r6 ; T "Steam 10 h+" 13/400 text/primary
+ F col gap6 p10 bg=background bd1=border/subtle r6 ; T "Inclui" 10/600 ls0.8 upper text/muted ; T "Loja: Steam, DRM-free · Tempo de jogo: 10 h+ · Ordenar: Jogado recentemente · Grade" 12/400 lh17 text-default
+ F row gap8 ; I bookmark 14:text/secondary ; T "Aparece em “Coleções e visões” na barra lateral" 12/400 text-dimmed
+ F row gap8 jc:end ; <Button Ghost SM> "Cancelar" ; <Button Primary SM> "Salvar visão"
+
+### Tooltip com atalho — every icon button
+F 28h row gap8 p5/8/5/8 ai:center bg=#2e2e2e r6 ; T "Painel de detalhes" 12/400 text/primary ; Kbd "Ctrl" ; Kbd "I"

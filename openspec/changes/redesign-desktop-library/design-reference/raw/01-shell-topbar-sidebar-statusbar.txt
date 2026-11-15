@@ -1,0 +1,84 @@
+## 5361:768 Top bar
+F [Top bar] 1440x48 row gap16 p0/0/0/16 ai:center FF bg=bg/sidebar bd0/0/1/0=#202020
+ C <brand/gamenode-wordmark> 62.4x24   (reuse existing brand wordmark asset/component; white letters + #f15025 mark)
+ F 59x16 row p2/5/2/5 HH bg=surface r2
+  T "DESKTOP" 10/700 ls0.8 text-dimmed
+ F [spacer] 209.8x1 FF
+ F [Command search (NOVO)] 440x32 row gap8 p0/10/0/10 ai:center bg=surface bd1=border/subtle r6
+  I search 16:text-dimmed
+  T "Buscar jogos, ações e configurações" 13/400 text-dimmed fillW
+  C <Kbd> 30x18 "Ctrl"
+  C <Kbd> 19x18 "K"
+ F [spacer] 209.8x1 FF
+ F [Sync status] 92x16 row gap6 ai:center HH
+  I cloud-check 16:success
+  T "Sincronizado" 12/400 text/secondary
+ F [User menu] 101x32 row gap8 p0/8/0/8 ai:center HF r6
+  ELL [Ellipse] 24x24 bg=grad(#f15025,#872c13)
+  T "cassi" 13/500 text-default
+  I chevron-down 14:text-dimmed
+ F [Window controls] 138x48 row HH
+  F 46x48 row jc:center ai:center
+   I minus 16:text/secondary
+  F 46x48 row jc:center ai:center
+   I square 12:text/secondary
+  F 46x48 row jc:center ai:center
+   I x 16:text/secondary
+## 5361:813 Sidebar
+F [Sidebar] 240x826 col gap20 p16/12/12/12 FF bg=bg/sidebar bd0/1/0/0=border/subtle
+ F [Seu espaço] 215x183 col gap2 FH
+  F [group-header] 215x13 row p0/10/0/10 ai:center FH
+   T "Seu espaço" 11/600 ls0.8 upper text/muted
+   F [spacer] 123x1 FF
+  C <Nav item State=Active> 215x32 "Todos os jogos"|"248" icons=books:primary fillW
+  C <Nav item State=Default> 215x32 "Instalados"|"37" icons=device-desktop:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Favoritos"|"12" icons=star:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Jogados recentemente"|"8" icons=history:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Em execução"|"1" icons=player-play:text/secondary fillW
+ F [Lojas] 215x115 col gap2 FH
+  F [group-header] 215x13 row p0/10/0/10 ai:center FH
+   T "Lojas" 11/600 ls0.8 upper text/muted
+   F [spacer] 158x1 FF
+  C <Nav item State=Default> 215x32 "Steam"|"164" icons=brand-steam:text/secondary fillW
+  F [Epic (aviso)] 215x32 row FH
+   C <Nav item State=Default> 216x32 "Epic Games Store"|"52" icons=device-gamepad-2:text/secondary
+   I alert-triangle 14:warning abs@168,9      (warning glyph sits just left of the count)
+  C <Nav item State=Default> 215x32 "Jogos DRM-free"|"32" icons=folder:text/secondary fillW
+ F [Coleções (NOVO)] 215x150 col gap2 FH
+  F [group-header] 215x14 row p0/10/0/10 ai:center FH
+   T "Coleções e visões" 11/600 ls0.8 upper text/muted
+   F [spacer] 64x1 FF
+   I plus 14:text-dimmed
+  C <Nav item State=Default> 215x32 "Zerados em 2026"|"14" icons=bookmark:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Backlog curto"|"9" icons=bookmark:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Coop no sofá"|"6" icons=bookmark:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Steam 10 h+"|"42" icons=filter:text/secondary fillW
+ F [Navegar] 215x115 col gap2 FH
+  F [group-header] 215x13 row p0/10/0/10 ai:center FH
+   T "Navegar" 11/600 ls0.8 upper text/muted
+   F [spacer] 140x1 FF
+  C <Nav item State=Default> 215x32 "Jogos descobertos"|"3" icons=radar:text/secondary fillW   (count rendered in primary)
+  C <Nav item State=Default> 215x32 "Explorar no GameNode"|"" icons=compass:text/secondary fillW
+  C <Nav item State=Default> 215x32 "Ports para PC"|"" icons=package:text/secondary fillW
+ F [spacer] 1x51 FF
+ C <Button Variant=Secondary, Size=SM> 215x32 "Adicionar jogo DRM-free" icons=plus:text-default fillW
+ F [Configurações] 215x32 row gap10 p0/10/0/10 ai:center FF r6
+  I settings 16:text/secondary
+  T "Configurações" 14/400 text-default fillW
+  C <Kbd> 30x18 "Ctrl"
+  C <Kbd> 15x18 ","
+## 5361:1662 Barra de status (NOVO)
+F [Barra de status (NOVO)] 1440x26 row gap16 p0/12/0/12 ai:center FF bg=bg/sidebar bd1/0/0/0=border/subtle
+ F 166x13 row gap6 ai:center HH
+  I circle-check 12:success
+  T "Steam · sincronizado há 2 min" 11/400 text/secondary
+ F 193x13 row gap6 ai:center HH
+  I alert-triangle 12:warning
+  T "Epic Games Store · sessão expirada" 11/400 text/secondary
+ F 242x13 row gap6 ai:center HH
+  I folder-search 12:text-dimmed
+  T "Pastas monitoradas · última verificação 14:32" 11/400 text/secondary
+ F [spacer] 490x1 FF
+ F 261x13 row gap6 ai:center HH
+  I player-play-filled 12:success
+  T "Em execução: Distant Skies: Recompiled · 0:42:10" 11/400 text/secondary

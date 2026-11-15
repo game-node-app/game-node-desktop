@@ -1,0 +1,66 @@
+## 5364:2668 Popover de filtros — anchored below the "Filtros" button (opens with click or Ctrl+Shift+F)
+F [Popover de filtros] 760x565 col FH bg=secondary bd1=#333333 r10 sh(0,16,40,0,#0000008c)
+ F [Cabeçalho] row gap10 p12/16/12/16 ai:center FH bd-bottom1=border/subtle
+  T "Filtros" 15/600 text/primary
+  F [Buscar filtro (NOVO)] 30h row gap6 p0/10/0/10 ai:center FF bg=surface bd1=border/subtle r6
+   I search 14:text-dimmed
+   T "Buscar um filtro" 12/400 text-dimmed fillW        (filters group/option labels; hides non-matching options and empty groups)
+  T "Os filtros são aplicados na hora" 12/400 text-dimmed
+ F [Grupos] row gap20 p16 FH          (3 equal columns, col gap18 between groups)
+  COLUMN 1
+   F [Disponibilidade] col gap4
+    F row gap6 p0/0/4/0 ; T "Disponibilidade" 11/600 ls0.8 upper text/muted
+    F [opção] 30h row gap8 p0/6/0/6 ai:center FF r6 (hover bg=bg/raised)
+     C <Checkbox Unchecked> 16 ; I device-desktop 14:text/secondary ; T "Instalado neste PC" 13/400 text-default fillW ; T "37" 12/400 text-dimmed
+    F [opção] Checkbox ; I books 14 ; "Na biblioteca" ; "248"          (→ availability.owned)
+    F [opção] Checkbox ; I users-group 14 ; "Compartilhado pela família" ; "11"   (→ availability.shared)
+   F [Loja] col gap4
+    T "Loja" header
+    F [opção] CHECKED: row bg=bg/raised r6 ; C <Checkbox Checked> (check icon) ; I brand-steam 14 ; T "Steam" 13/500 text/primary ; "164"
+    F [opção] unchecked ; I device-gamepad-2 14 ; "Epic Games Store" 13/400 text-default ; "52"
+    F [opção] CHECKED ; I folder 14 ; "Jogos DRM-free" 13/500 text/primary ; "32"
+   F [Atalhos] col gap4
+    T "Atalhos" header
+    F 32h row gap8 p0/6/0/6 ; I star 14:text/secondary ; T "Somente favoritos" 13/400 fillW ; C <Switch Off> 34x20
+    F 32h row gap8 p0/6/0/6 ; I player-play 14 ; T "Somente em execução" ; C <Switch Off>
+    (ADD per user decision) F 32h ; I eye 14 ; T "Mostrar ocultos" ; C <Switch> — shows hidden entries dimmed (opacity .5)
+  COLUMN 2
+   F [Correspondência] col gap4
+    T "Correspondência" header
+    F [opção] Checkbox ; ELL 8x8 bg=success ; "Associado" ; "221"
+    F [opção] Checkbox ; ELL 8x8 bg=warning ; "Precisa de revisão" ; "9"      (= ambiguous)
+    F [opção] Checkbox ; ELL 8x8 bg=text-dimmed ; "Sem correspondência" ; "14" (= unmatched)
+    F [opção] Checkbox ; ELL 8x8 bg=text/muted ; "Marcado como não-jogo" ; "4" (= noGame)
+   F [Status no GameNode] col gap4
+    F row gap6 ; T "Status no GameNode" header ; F p1/5/1/5 bg=accent/subtle r3 ; T "NOVO" 9/700 ls0.6 primary   (NOVO badge: design annotation only — DO NOT ship the badge)
+    F [opção] Checkbox ; "Jogando" ; "18"
+    F [opção] Checkbox ; "Zerado" ; "64"
+    F [opção] Checkbox ; "Na lista" ; "41"
+    F [opção] Checkbox ; "Abandonado" ; "7"
+    F [opção] Checkbox ; "Fora do GameNode" ; "118"
+    (ADD: "Em andamento"/ongoing appears only when count > 0, between Na lista and Abandonado)
+  COLUMN 3
+   F [Tempo de jogo] col gap4
+    T "Tempo de jogo" header
+    F 34h row gap2 p3 FH bg=bg/canvas bd1=border/subtle r8      (SegmentedControl, 3 equal segments 26h r5)
+     "Qualquer" 12/400 text/secondary | SELECTED "10 h+" 12/600 text/primary bg=bg/raised | "100 h+"
+   F [Histórico] col gap4
+    T "Histórico" header
+    SegmentedControl: SELECTED "Todos" | "Jogados" | "Nunca jogados"
+   F [Última sessão] col gap4
+    T "Última sessão" header
+    F row gap6 wrap ; chips 26h p0/10/0/10 bg=surface bd1=border/subtle r999 T 12/400 text-default:
+     "7 dias" | "30 dias" | "90 dias" | "Último ano" | "Mais antigo"
+     (SELECTED chip, single-select toggle: bg=accent/subtle bd1=primary text/primary 12/600 — same treatment as filter-chip)
+   F [Lançamento] chips: "Anos 1990" | "Anos 2000" | "Anos 2010" | "Anos 2020"  (+ "Antes de 1990" and "Desconhecido" only when count>0)
+   F [Adicionado] chips: "Esta semana" | "Este mês" | "Este ano" | "Antes"
+ F [Rodapé] row gap10 p12/16/12/16 ai:center FH bg=surface bd-top1=border/subtle
+  C <Button Ghost SM> "Limpar tudo" icons=arrow-back-up
+  F [spacer] FF
+  T "Mostrando 42 de 248" 12/400 text-dimmed
+  C <Button Secondary SM> "Salvar como visão" icons=bookmark-plus
+  C <Button Primary SM> "Concluído"
+## 5364:2890 Nota (designer note)
+"• Os grupos de filtro correspondem a availability, store, matchState, played, lastPlayed, playtime, releaseDecade e dateAdded já implementados.
+ • NOVO: busca dentro do painel, status no GameNode, contagens por opção e “Salvar como visão”, que cria um item na barra lateral.
+ • Ctrl+Shift+F abre o painel; Esc fecha e devolve o foco ao botão Filtros."

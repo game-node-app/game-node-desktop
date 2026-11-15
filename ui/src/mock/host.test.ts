@@ -1,7 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMockHost } from './host';
-import { createDefaultFilters, type AppInfo, type LibraryFilters, type PluginInfo, type Snapshot } from '../api/types';
+import { createMockHost, MOCK_CATALOG_GAMES, MOCK_COLLECTIONS, MOCK_HIDDEN_KEY } from './host';
+import { groupRows, runLibraryQuery, sortRows, type ProviderRef } from './query';
+import {
+  createDefaultFilters,
+  createDefaultLibraryLayout,
+  type AppInfo,
+  type LibraryFilters,
+  type LibraryLayout,
+  type PluginInfo,
+  type Row,
+  type Snapshot,
+} from '../api/types';
 import type { PortProgress, PortSuppliedPick, PortToolsCacheView } from '../api/ports';
+
+/** Waits for the mock's asynchronous saved-view write to finish. */
+async function waitForViewWrite(
+  host: ReturnType<typeof createMockHost>,
+  state: 'succeeded' | 'failed',
+) {
+  await vi.waitFor(async () => {
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library?.viewWrite?.state).toBe(state);
+  }, { timeout: 1_000 });
+}
 
 describe('UI mock host', () => {
   it('starts with a verified mock session and deterministic games', async () => {
@@ -9,11 +30,81 @@ describe('UI mock host', () => {
     const snapshot = await host.invoke('get_snapshot') as Snapshot;
     expect(snapshot.auth).toEqual({ signedIn: { user: { id: 'mock-user', username: 'UI Developer', email: 'ui@example.invalid' } } });
     expect(snapshot.library?.access).toBe('verified');
-    expect(snapshot.library?.layout.sidebarWidth).toBe(248);
+    expect(snapshot.library?.layout.sidebarWidth).toBe(240);
+    expect(snapshot.library?.layout.detailWidth).toBe(360);
     expect(snapshot.library?.layout.sidebarCollapsed).toBe(false);
     expect(snapshot.library?.rows).toHaveLength(12);
     snapshot.library!.rows.length = 0;
     expect((await host.invoke('get_snapshot') as Snapshot).library?.rows).toHaveLength(12);
+  });
+
+  it('exposes the running fixture with its real process start', async () => {
+    const host = createMockHost();
+    const snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const runningKey = snapshot.tracking.running[0];
+    expect(runningKey).toBeTruthy();
+    const row = snapshot.library!.rows.find((item) => item.key === runningKey);
+    expect(row?.running).toBe(true);
+    expect(row?.sessionStartedAt).toBe(
+      snapshot.tracking.sessionStartedAt[runningKey],
+    );
+    expect(snapshot.tracking.sessionStartedAt[runningKey]).toBeLessThanOrEqual(
+      Math.floor(Date.now() / 1000) - 2500,
+    );
+  });
+
+  it('mirrors the cached account library statuses, collections and last check', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.localGames.discoveryLastCheckedAt).toBeGreaterThan(0);
+    const label = (row: Row): string =>
+      row.gamenode ? row.gamenode.status ?? 'inLibrary' : 'notInLibrary';
+    const statuses = new Set(snapshot.library!.rows.map(label));
+    for (const status of [
+      'playing',
+      'finished',
+      'planned',
+      'ongoing',
+      'dropped',
+      'inLibrary',
+      'notInLibrary',
+    ]) {
+      expect(statuses.has(status)).toBe(true);
+    }
+    for (const collection of MOCK_COLLECTIONS) {
+      expect(
+        snapshot.library!.rows.some((row) =>
+          row.gamenode?.collectionIds.includes(collection.id),
+        ),
+      ).toBe(true);
+    }
+    expect(snapshot.library!.filterCounts!.gamenodeStatus.available).toBe(true);
+    expect(snapshot.library!.filterCounts!.gamenodeStatus.finished).toBeGreaterThan(0);
+
+    await host.invoke('library_input', {
+      input: { setScope: { collection: 'backlog-curto' } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.length).toBeGreaterThan(0);
+    expect(
+      snapshot.library!.rows.every((row) =>
+        row.gamenode?.collectionIds.includes('backlog-curto'),
+      ),
+    ).toBe(true);
+    expect(snapshot.library!.titleSource).toEqual({
+      kind: 'collection',
+      id: 'backlog-curto',
+    });
+    const counts = snapshot.library!.filterCounts!.gamenodeStatus;
+    expect(
+      counts.playing +
+        counts.finished +
+        counts.planned +
+        counts.ongoing +
+        counts.dropped +
+        counts.inLibrary +
+        counts.notInLibrary,
+    ).toBe(snapshot.library!.rows.length);
   });
 
   it('publishes interactions and resets on sign out and sign in', async () => {
@@ -254,9 +345,8 @@ describe('mock library filters and sorting', () => {
   it('keeps unknown playtime out of the unplayed facet and combines facets with AND', async () => {
     const unplayed = await withFilters({
       ...createDefaultFilters(),
-      playtime: 'unplayed',
-      installed: false,
-    } as LibraryFilters);
+      played: 'unplayed',
+    });
     // The first fixture row is installed, owned and has a known zero; the unknown rows are not
     // presented as unplayed.
     expect(unplayed.library!.rows.map((row) => row.key)).toEqual(['steam:1']);
@@ -606,5 +696,844 @@ describe('mock PC ports catalog', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+const QUERY_NOW = 10_000_000;
+const QUERY_DAY = 86_400;
+const queryProviders: ProviderRef[] = [
+  { id: 'steam', name: 'Steam' },
+  { id: 'gog', name: 'GOG' },
+  { id: 'epic', name: 'Epic Games Store' },
+];
+
+function queryRow(overrides: Partial<Row> & Pick<Row, 'key' | 'title'>): Row {
+  return {
+    detectedName: overrides.title,
+    matchedName: overrides.title,
+    provider: 'steam',
+    providerName: 'Steam',
+    installed: false,
+    owned: true,
+    shared: false,
+    running: false,
+    status: { matched: { gameId: 1, source: 'automatic' } },
+    coverFile: null,
+    playtime: { seconds: null, source: 'store', lastPlayedAt: null },
+    releaseYear: null,
+    addedAt: QUERY_NOW,
+    isFavorite: false,
+    hidden: false,
+    gamenode: null,
+    ...overrides,
+  };
+}
+
+function queryRows(): Row[] {
+  return [
+    queryRow({
+      key: 'steam:1',
+      title: 'Alpha',
+      installed: true,
+      running: true,
+      isFavorite: true,
+      playtime: { seconds: 12 * 3600, source: 'store', lastPlayedAt: QUERY_NOW - QUERY_DAY },
+      releaseYear: 2021,
+      addedAt: QUERY_NOW - QUERY_DAY,
+      gamenode: {
+        status: 'playing',
+        collectionIds: ['backlog'],
+        entryId: 'entry-1',
+      },
+    }),
+    queryRow({
+      key: 'steam:2',
+      title: 'Bravo',
+      installed: false,
+      owned: true,
+      status: 'unmatched',
+      playtime: { seconds: 0, source: 'store', lastPlayedAt: null },
+      releaseYear: 1995,
+      addedAt: QUERY_NOW - 100 * QUERY_DAY,
+      gamenode: { status: null, collectionIds: [], entryId: 'entry-2' },
+    }),
+    queryRow({
+      key: 'gog:3',
+      title: 'Charlie',
+      provider: 'gog',
+      providerName: 'GOG',
+      installed: false,
+      owned: false,
+      shared: true,
+      isFavorite: true,
+      status: 'ambiguous',
+      releaseYear: null,
+      addedAt: QUERY_NOW - 40 * QUERY_DAY,
+      gamenode: { status: 'finished', collectionIds: [], entryId: 'entry-3' },
+    }),
+    queryRow({
+      key: 'epic:4',
+      title: 'Delta',
+      provider: 'epic',
+      providerName: 'Epic Games Store',
+      status: 'noGame',
+      playtime: { seconds: 101 * 3600, source: 'store', lastPlayedAt: QUERY_NOW - 500 * QUERY_DAY },
+      releaseYear: 1985,
+      addedAt: QUERY_NOW - 400 * QUERY_DAY,
+      gamenode: { status: 'planned', collectionIds: [], entryId: 'entry-4' },
+    }),
+  ];
+}
+
+function query(
+  rows: Row[],
+  filters: LibraryFilters,
+  overrides: Partial<LibraryLayout> = {},
+  gamenodeAvailable = true,
+) {
+  return runLibraryQuery({
+    rows,
+    layout: { ...createDefaultLibraryLayout(), filters, ...overrides },
+    search: '',
+    now: QUERY_NOW,
+    providers: queryProviders,
+    gamenodeAvailable,
+  });
+}
+
+describe('mock D3 query pipeline', () => {
+  it('matches every facet option count against filtering with that option alone', () => {
+    const rows = queryRows();
+    const base: LibraryFilters = {
+      ...createDefaultFilters(),
+      stores: ['steam', 'gog'],
+      favoritesOnly: true,
+    };
+    const counts = query(rows, base).filterCounts!;
+    const visibleWith = (change: (filters: LibraryFilters) => void) => {
+      const filters = structuredClone(base);
+      change(filters);
+      return query(rows, filters).visibleCount;
+    };
+
+    expect(counts.availability.installed).toBe(
+      visibleWith((filters) => {
+        filters.availability = { installed: true, owned: false, shared: false };
+      }),
+    );
+    expect(counts.availability.shared).toBe(
+      visibleWith((filters) => {
+        filters.availability = { installed: false, owned: false, shared: true };
+      }),
+    );
+    for (const [count, state] of [
+      [counts.matchStates.matched, 'matched'],
+      [counts.matchStates.ambiguous, 'ambiguous'],
+      [counts.matchStates.unmatched, 'unmatched'],
+      [counts.matchStates.noGame, 'noGame'],
+    ] as const) {
+      expect(count).toBe(visibleWith((filters) => { filters.matchStates = [state]; }));
+    }
+    for (const [count, status] of [
+      [counts.gamenodeStatus.playing, 'playing'],
+      [counts.gamenodeStatus.finished, 'finished'],
+      [counts.gamenodeStatus.planned, 'planned'],
+      [counts.gamenodeStatus.inLibrary, 'inLibrary'],
+      [counts.gamenodeStatus.notInLibrary, 'notInLibrary'],
+    ] as const) {
+      expect(count).toBe(visibleWith((filters) => { filters.gamenodeStatus = [status]; }));
+    }
+    expect(counts.playtime.atLeast10h).toBe(
+      visibleWith((filters) => { filters.playtime = 'atLeast10h'; }),
+    );
+    expect(counts.playtime.atLeast100h).toBe(
+      visibleWith((filters) => { filters.playtime = 'atLeast100h'; }),
+    );
+    expect(counts.played.played).toBe(
+      visibleWith((filters) => { filters.played = 'played'; }),
+    );
+    expect(counts.played.unplayed).toBe(
+      visibleWith((filters) => { filters.played = 'unplayed'; }),
+    );
+    expect(counts.lastPlayed.last7Days).toBe(
+      visibleWith((filters) => { filters.lastPlayed = 'last7Days'; }),
+    );
+    expect(counts.lastPlayed.olderThanYear).toBe(
+      visibleWith((filters) => { filters.lastPlayed = 'olderThanYear'; }),
+    );
+    expect(counts.added.last30Days).toBe(
+      visibleWith((filters) => { filters.added = 'last30Days'; }),
+    );
+    expect(counts.release).toEqual(
+      expect.arrayContaining([
+        { value: { decade: 2020 }, count: visibleWith((filters) => { filters.release = { decade: 2020 }; }) },
+        { value: 'unknown', count: visibleWith((filters) => { filters.release = 'unknown'; }) },
+      ]),
+    );
+    expect(counts.favoritesOnly).toBe(
+      visibleWith((filters) => { filters.favoritesOnly = true; }),
+    );
+    expect(counts.runningOnly).toBe(
+      visibleWith((filters) => { filters.runningOnly = true; }),
+    );
+  });
+
+  it('counts stores without the store facet or scope and keeps scope counts', () => {
+    const rows = queryRows();
+    const filters = { ...createDefaultFilters(), stores: ['steam'], favoritesOnly: true };
+    const result = query(rows, filters, { scope: { collection: 'backlog' } });
+    const withoutStores = { ...filters, stores: [] };
+    const all = query(rows, withoutStores, { scope: 'all' });
+    expect(result.filterCounts!.stores.reduce((sum, store) => sum + store.count, 0)).toBe(
+      result.scopeCounts!.all,
+    );
+    expect(result.scopeCounts!.all).toBe(all.visibleCount);
+    expect(result.filterCounts!.stores.find((store) => store.id === 'gog')!.count).toBe(1);
+
+    for (const scope of ['installed', 'favorites', 'recent', 'running'] as const) {
+      expect(result.scopeCounts![scope]).toBe(
+        query(rows, withoutStores, { scope }).visibleCount,
+      );
+    }
+  });
+
+  it('excludes hidden rows until Show hidden and reports the hidden count', () => {
+    const rows = queryRows();
+    rows[0].hidden = true;
+    const hidden = rows[0].key;
+    const filters = createDefaultFilters();
+    const result = query(rows, filters);
+    expect(result.rows.map((row) => row.key)).not.toContain(hidden);
+    expect(result.filterCounts!.showHidden).toBe(1);
+    expect(result.filterCounts!.availability.installed).toBe(0);
+    expect(result.total).toBe(3);
+
+    const shown = query(rows, { ...filters, showHidden: true });
+    expect(shown.rows.map((row) => row.key)).toContain(hidden);
+    expect(shown.filterCounts!.availability.installed).toBe(1);
+    expect(shown.filterCounts!.showHidden).toBe(1);
+    expect(shown.total).toBe(4);
+  });
+
+  it('uses the 14-day Recent boundary', () => {
+    const rows = queryRows();
+    rows[0].playtime = { seconds: 1, source: 'store', lastPlayedAt: QUERY_NOW - 13 * QUERY_DAY };
+    rows[1].playtime = { seconds: 1, source: 'store', lastPlayedAt: QUERY_NOW - 15 * QUERY_DAY };
+    const result = query(rows, createDefaultFilters(), { scope: 'recent' });
+    expect(result.rows.map((row) => row.key)).toEqual(['steam:1']);
+  });
+
+  it('keeps every grouping in its fixed order and omits empty groups', () => {
+    const rows = queryRows();
+    const sorted = sortRows(rows, { key: 'title', direction: 'ascending' });
+    const expected: Array<[Parameters<typeof groupRows>[1], string[]]> = [
+      ['store', ['steam', 'gog', 'epic']],
+      ['gameNodeStatus', ['playing', 'finished', 'planned', 'inLibrary']],
+      ['matchState', ['matched', 'ambiguous', 'unmatched', 'noGame']],
+      ['installation', ['installed', 'notInstalled']],
+      ['releaseDecade', ['2020', '1990', 'earlier', 'unknown']],
+    ];
+    for (const [group, ids] of expected) {
+      const result = groupRows(sorted, group, [], queryProviders);
+      expect(result.groups.map((item) => item.id)).toEqual(ids);
+    }
+    const onlyPlaying = groupRows(
+      sorted.map((row) => ({ ...row, gamenode: { status: 'playing' as const, collectionIds: [], entryId: 'e' } })),
+      'gameNodeStatus',
+      [],
+      queryProviders,
+    );
+    expect(onlyPlaying.groups.map((item) => item.id)).toEqual(['playing']);
+  });
+
+  it('drops collapsed group rows but keeps their headers and counts', () => {
+    const sorted = sortRows(queryRows(), { key: 'title', direction: 'ascending' });
+    const collapsed = groupRows(sorted, 'store', ['steam'], queryProviders);
+    expect(collapsed.rows.map((row) => row.key)).toEqual(['gog:3', 'epic:4']);
+    expect(collapsed.groups[0]).toMatchObject({
+      id: 'steam',
+      count: 2,
+      collapsed: true,
+      firstIndex: 0,
+    });
+  });
+
+  it('sorts GameNode status with the sort rank, not the group order', () => {
+    const rows = queryRows();
+    rows[0].gamenode = { status: 'planned', collectionIds: [], entryId: '1' };
+    rows[1].gamenode = { status: 'ongoing', collectionIds: [], entryId: '2' };
+    rows[2].gamenode = { status: 'playing', collectionIds: [], entryId: '3' };
+    rows[3].gamenode = { status: 'dropped', collectionIds: [], entryId: '4' };
+    expect(
+      sortRows(rows, { key: 'gameNodeStatus', direction: 'ascending' }).map((row) => row.gamenode?.status),
+    ).toEqual(['playing', 'ongoing', 'planned', 'dropped']);
+  });
+
+  it('mirrors the new inputs through the host: grouping, collapse, select all and clear', async () => {
+    const host = createMockHost();
+    await host.invoke('library_input', { input: { setGroup: 'store' } });
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.groups!.map((group) => group.id)).toEqual(['steam', 'gog', 'epic']);
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'scope', id: 'all' });
+
+    // Each group starts a new line in the grid; Down crosses into GOG's line from Steam's last.
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:11', mode: 'replace' } },
+    });
+    await host.invoke('library_input', { input: { setColumns: 2 } });
+    await host.invoke('library_input', {
+      input: { move: { direction: 'down', extend: false } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.selected).toEqual(['gog:4']);
+
+    // Down crosses into GOG's line, and a collapsed GOG group is skipped for the Epic group.
+    await host.invoke('library_input', { input: { toggleGroup: { id: 'gog' } } });
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:11', mode: 'replace' } },
+    });
+    await host.invoke('library_input', {
+      input: { move: { direction: 'down', extend: false } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.selected).toEqual(['epic:8']);
+    await host.invoke('library_input', { input: { toggleGroup: { id: 'gog' } } });
+
+    await host.invoke('library_input', { input: { toggleGroup: { id: 'steam' } } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.groups!.find((group) => group.id === 'steam')!.collapsed).toBe(true);
+    expect(snapshot.library!.rows.every((row) => row.provider !== 'steam')).toBe(true);
+
+    await host.invoke('library_input', { input: 'selectAll' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.selected).toHaveLength(snapshot.library!.rows.length);
+    expect(snapshot.library!.selected.some((key) => key.startsWith('steam:'))).toBe(false);
+
+    await host.invoke('library_input', { input: 'clearSelection' });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.selected).toEqual([]);
+    expect(snapshot.library!.focused).toBeNull();
+
+    await host.invoke('library_input', { input: { setAllGroupsCollapsed: false } });
+    await host.invoke('library_input', { input: { setScope: 'favorites' } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'scope', id: 'favorites' });
+    expect(snapshot.library!.rows.every((row) => row.isFavorite)).toBe(true);
+
+    await host.invoke('library_input', { input: { setScope: 'all' } });
+    await host.invoke('library_input', { input: { setFilters: { ...createDefaultFilters(), stores: ['gog'] } } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'store', id: 'gog' });
+    expect(snapshot.library!.rows.every((row) => row.provider === 'gog')).toBe(true);
+  });
+
+  it('starts from one saved view and one hidden entry, with counts that agree', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const lib = snapshot.library!;
+    expect(lib.canSaveView).toBe(false);
+    expect(lib.savedViews).toHaveLength(1);
+    expect(lib.savedViews![0]).toMatchObject({
+      id: 1,
+      name: 'Steam 10 h+',
+      active: false,
+    });
+    expect(lib.savedViews![0].count).toBe(1);
+    expect(lib.collections).toEqual(
+      MOCK_COLLECTIONS.map((collection) => ({
+        ...collection,
+        count: expect.any(Number),
+      })),
+    );
+    expect(lib.filterCounts!.showHidden).toBe(1);
+    expect(lib.rows.some((row) => row.key === MOCK_HIDDEN_KEY)).toBe(false);
+
+    // The hidden fixture is in the row data but stays out of the normal view.
+    await host.invoke('library_input', {
+      input: {
+        setFilters: { ...lib.layout.filters, showHidden: true },
+      },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.rows).toHaveLength(13);
+    const hidden = snapshot.library!.rows.find((row) => row.key === MOCK_HIDDEN_KEY)!;
+    expect(hidden.hidden).toBe(true);
+    expect(snapshot.library!.filterCounts!.showHidden).toBe(1);
+  });
+
+  it('saves, applies, renames and deletes a view with live name validation', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const filters = snapshot.library!.layout.filters;
+
+    await host.invoke('library_input', {
+      input: { setFilters: { ...filters, stores: ['epic'] } },
+    });
+    await host.invoke('library_input', {
+      input: { setSort: { key: 'lastPlayed', direction: 'descending' } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.canSaveView).toBe(true);
+
+    await host.invoke('library_input', {
+      input: { saveView: { name: '  Epic plays  ' } },
+    });
+    await waitForViewWrite(host, 'succeeded');
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.viewError).toBeNull();
+    expect(snapshot.library!.savedViews).toHaveLength(2);
+    expect(snapshot.library!.savedViews![1].name).toBe('Epic plays');
+    expect(snapshot.library!.lastSavedView).toMatchObject({
+      id: snapshot.library!.savedViews![1].id,
+      name: 'Epic plays',
+      run: expect.any(Number),
+    });
+
+    await host.invoke('library_input', {
+      input: { saveView: { name: 'epic PLAYS' } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.viewError).toBe('duplicate');
+    expect(snapshot.library!.savedViews).toHaveLength(2);
+
+    await host.invoke('library_input', { input: { saveView: { name: '   ' } } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.viewError).toBe('empty');
+
+    // Applying the fixture view highlights it and uses its own store and playtime predicates.
+    await host.invoke('library_input', { input: { applyView: { id: 1 } } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.layout.scope).toEqual({ savedView: 1 });
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'savedView', id: '1' });
+    expect(snapshot.library!.savedViews![0].active).toBe(true);
+    expect(snapshot.library!.rows).toHaveLength(snapshot.library!.savedViews![0].count);
+    expect(snapshot.library!.rows.every((row) => row.provider === 'steam')).toBe(true);
+
+    // Changing the sort leaves the view but keeps the payload's own (All) scope.
+    await host.invoke('library_input', {
+      input: { setSort: { key: 'title', direction: 'ascending' } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.layout.scope).toBe('all');
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'store', id: 'steam' });
+    expect(snapshot.library!.savedViews![0].active).toBe(false);
+    expect(snapshot.library!.layout.filters.stores).toEqual(['steam']);
+
+    // A rename updates the sidebar without touching the payload.
+    await host.invoke('library_input', {
+      input: { renameView: { id: 2, name: 'Epic backlog' } },
+    });
+    await waitForViewWrite(host, 'succeeded');
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.savedViews!.map((view) => view.name)).toEqual([
+      'Steam 10 h+',
+      'Epic backlog',
+    ]);
+    await host.invoke('library_input', {
+      input: { renameView: { id: 2, name: 'STEAM 10 H+' } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.viewError).toBe('duplicate');
+
+    // Deleting the active view keeps its filters but drops the broken marker.
+    await host.invoke('library_input', { input: { applyView: { id: 2 } } });
+    await host.invoke('library_input', { input: { deleteView: { id: 2 } } });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.savedViews!.map((view) => view.id)).toEqual([1]);
+    expect(snapshot.library!.layout.scope).toBe('all');
+    expect(snapshot.library!.layout.filters.stores).toEqual(['epic']);
+    expect(snapshot.library!.titleSource).toEqual({ kind: 'store', id: 'epic' });
+  });
+
+  it('hides and reveals rows, prunes the selection and keeps the undo run', async () => {
+    const host = createMockHost();
+    let snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    const key = snapshot.library!.rows[0].key;
+    const before = snapshot.library!.scopeCounts!.all;
+
+    await host.invoke('library_input', {
+      input: { select: { key, mode: 'replace' } },
+    });
+    await host.invoke('library_input', {
+      input: { setHidden: { keys: [key], hidden: true } },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.rows.some((row) => row.key === key)).toBe(false);
+    expect(snapshot.library!.scopeCounts!.all).toBe(before - 1);
+    expect(snapshot.library!.filterCounts!.showHidden).toBe(2);
+    expect(snapshot.library!.selected).toEqual([]);
+    expect(snapshot.library!.lastHidden).toMatchObject({
+      keys: [key],
+      hidden: true,
+      run: expect.any(Number),
+    });
+
+    // Show hidden reveals it dimmed; Show in library keeps it after Show hidden is off.
+    await host.invoke('library_input', {
+      input: {
+        setFilters: { ...snapshot.library!.layout.filters, showHidden: true },
+      },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.rows.find((row) => row.key === key)?.hidden).toBe(true);
+    await host.invoke('library_input', {
+      input: { setHidden: { keys: [key], hidden: false } },
+    });
+    await host.invoke('library_input', {
+      input: {
+        setFilters: { ...snapshot.library!.layout.filters, showHidden: false },
+      },
+    });
+    snapshot = (await host.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.rows.some((row) => row.key === key)).toBe(true);
+    expect(snapshot.library!.filterCounts!.showHidden).toBe(1);
+  });
+
+  it('keeps saved views and hidden entries for the same mock account across sign-out', async () => {
+    const first = createMockHost();
+    let snapshot = (await first.invoke('get_snapshot')) as Snapshot;
+    await first.invoke('library_input', {
+      input: { setSort: { key: 'title', direction: 'descending' } },
+    });
+    await first.invoke('library_input', {
+      input: { saveView: { name: 'Mine' } },
+    });
+    await waitForViewWrite(first, 'succeeded');
+    snapshot = (await first.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.savedViews).toHaveLength(2);
+
+    // A new host is an isolated account fixture: the previous host's changes never leak in.
+    const second = createMockHost();
+    snapshot = (await second.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.savedViews).toHaveLength(1);
+
+    // Signing out and back in is the same account: views and hidden keys stay.
+    await first.invoke('dispatch_auth', { input: 'signOut' });
+    snapshot = (await first.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library).toBeNull();
+    await first.invoke('dispatch_auth', { input: { startSignIn: 'google' } });
+    snapshot = (await first.invoke('get_snapshot')) as Snapshot;
+    expect(snapshot.library!.savedViews).toHaveLength(2);
+    expect(snapshot.library!.filterCounts!.showHidden).toBe(1);
+  });
+});
+
+describe('mock GameNode batch writes', () => {
+  it('adds matched games, keeps the summary after close and undoes only created entries', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode).toBeNull();
+
+    await host.invoke('library_input', { input: { select: { key: 'epic:8', mode: 'toggle' } } });
+    await host.invoke('library_input', { input: { select: { key: 'steam:3', mode: 'toggle' } } });
+    await host.invoke('library_input', { input: 'openAdd' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog!.targets).toEqual([
+      {
+        target: { row: 'steam:3' },
+        entryKey: 'steam:3',
+        title: 'Clockwork Harbor',
+        matched: false,
+      },
+      {
+        target: { row: 'epic:8' },
+        entryKey: 'epic:8',
+        title: 'Hollow Mountain',
+        matched: true,
+      },
+    ]);
+
+    await host.invoke('library_input', { input: 'confirmAdd' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const summary = snapshot.library!.addSummary!;
+    expect(summary).toMatchObject({ added: 1, skipped: 1, undoable: true });
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode,
+    ).toMatchObject({ status: 'playing', collectionIds: [] });
+
+    await host.invoke('library_input', { input: 'closeAdd' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog).toBeNull();
+    expect(snapshot.library!.addSummary!.runId).toBe(summary.runId);
+
+    await host.invoke('library_input', { input: { undoAdd: { run: summary.runId } } });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.undo).toEqual({
+      run: summary.runId,
+      state: 'done',
+      deleted: 1,
+      failed: 0,
+    });
+    expect(snapshot.library!.addSummary!.undoable).toBe(false);
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode,
+    ).toBeNull();
+  });
+
+  it('applies batch status, collection and favorite changes with skip reasons', async () => {
+    const host = createMockHost();
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.find((row) => row.key === 'epic:6')!.gamenode!.status).toBeNull();
+
+    await host.invoke('library_input', {
+      input: {
+        setStatus: {
+          keys: ['steam:1', 'epic:6', 'epic:8', 'steam:3'],
+          status: 'finished',
+        },
+      },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.statusRun).toEqual({
+      run: 1,
+      status: 'finished',
+      changed: 1,
+      skipped: 3,
+      failed: 0,
+      skippedUnmatched: 1,
+      skippedNotInLibrary: 1,
+      skippedUnknownStatus: 1,
+    });
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'steam:1')!.gamenode!.status,
+    ).toBe('finished');
+
+    await host.invoke('library_input', {
+      input: { addToCollection: { keys: ['gog:2'], collectionId: 'backlog-curto' } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.collectionRun).toMatchObject({
+      changed: 1,
+      collectionName: 'Backlog curto',
+      skipped: 0,
+      failed: 0,
+    });
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'gog:2')!.gamenode,
+    ).toMatchObject({
+      status: 'finished',
+      collectionIds: ['coop-no-sofa', 'backlog-curto'],
+    });
+
+    await host.invoke('library_input', {
+      input: { setFavorites: { keys: ['steam:1', 'steam:3'], favorite: true, now: 1 } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.find((row) => row.key === 'steam:1')!.isFavorite).toBe(true);
+    expect(snapshot.library!.rows.find((row) => row.key === 'steam:3')!.isFavorite).toBe(false);
+    await host.invoke('library_input', {
+      input: { setFavorites: { keys: ['steam:1'], favorite: false, now: 2 } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows.find((row) => row.key === 'steam:1')!.isFavorite).toBe(false);
+  });
+
+  it('simulates failed GameNode writes without losing local favorites', async () => {
+    const host = createMockHost({ failMutations: true });
+    await host.invoke('library_input', { input: { select: { key: 'epic:8', mode: 'replace' } } });
+    await host.invoke('library_input', { input: 'openAdd' });
+    await host.invoke('library_input', { input: 'confirmAdd' });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addSummary).toMatchObject({
+      added: 0,
+      failed: 1,
+      undoable: false,
+    });
+    expect(
+      snapshot.library!.rows.find((row) => row.key === 'epic:8')!.gamenode,
+    ).toBeNull();
+
+    await host.invoke('library_input', {
+      input: { setStatus: { keys: ['steam:1'], status: 'finished' } },
+    });
+    await host.invoke('library_input', {
+      input: { addToCollection: { keys: ['gog:2'], collectionId: 'backlog-curto' } },
+    });
+    await host.invoke('library_input', {
+      input: { setFavorites: { keys: ['steam:1'], favorite: true, now: 3 } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.statusRun).toMatchObject({ changed: 0, failed: 1 });
+    expect(snapshot.library!.collectionRun).toMatchObject({ changed: 0, failed: 1 });
+    expect(snapshot.library!.rows.find((row) => row.key === 'steam:1')!.isFavorite).toBe(true);
+  });
+});
+
+describe('mock catalog, suggestions, scan progress and palette', () => {
+  it('serves 40 fictional catalog games and ignores stale or short queries', async () => {
+    vi.useFakeTimers();
+    try {
+      expect(MOCK_CATALOG_GAMES).toHaveLength(40);
+      const host = createMockHost();
+      await host.invoke('library_input', { input: { catalogSearch: 'a' } });
+      let snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('idle');
+      expect(snapshot.library!.catalog!.results).toHaveLength(0);
+
+      await host.invoke('library_input', { input: { catalogSearch: 'aster' } });
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('loading');
+      vi.advanceTimersByTime(250);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('ready');
+      expect(snapshot.library!.catalog!.results.map((game) => game.title)).toEqual(['Aster Vale']);
+      expect(snapshot.library!.catalog!.results[0].inLibrary).toBe(true);
+      expect(snapshot.library!.catalog!.results[0].localKey).toBe('steam:1');
+
+      // A newer query wins even though the older timer was still pending.
+      await host.invoke('library_input', { input: { catalogSearch: 'aster' } });
+      await host.invoke('library_input', { input: { catalogSearch: 'amber' } });
+      vi.advanceTimersByTime(250);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.results.map((game) => game.title)).toEqual([
+        'Amber Circuit',
+      ]);
+      expect(snapshot.library!.catalog!.results[0].inLibrary).toBe(true);
+      expect(snapshot.library!.catalog!.results[0].localKey).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('mirrors the catalog error, offline and incomplete states', async () => {
+    vi.useFakeTimers();
+    try {
+      const errorHost = createMockHost({ catalogScenario: 'error' });
+      await errorHost.invoke('library_input', { input: { catalogSearch: 'aster' } });
+      vi.advanceTimersByTime(250);
+      let snapshot = await errorHost.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('error');
+      expect(snapshot.library!.catalog!.results).toHaveLength(0);
+
+      const offlineHost = createMockHost({ catalogScenario: 'offline' });
+      await offlineHost.invoke('library_input', { input: { catalogSearch: 'aster' } });
+      snapshot = await offlineHost.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('offline');
+
+      const incompleteHost = createMockHost({ catalogScenario: 'incomplete' });
+      await incompleteHost.invoke('library_input', { input: { catalogSearch: 'aster' } });
+      vi.advanceTimersByTime(250);
+      snapshot = await incompleteHost.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.catalog!.status).toBe('ready');
+      expect(snapshot.library!.catalog!.incomplete).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adds and undoes a catalog game and refreshes the result membership', async () => {
+    const host = createMockHost();
+    await host.invoke('library_input', { input: { catalogSearch: 'brass' } });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    // The mock catalog answers asynchronously; let the 250 ms timer run.
+    await new Promise((resolve) => setTimeout(resolve, 280));
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.catalog!.status).toBe('ready');
+    expect(snapshot.library!.catalog!.results[0].inLibrary).toBe(false);
+
+    await host.invoke('library_input', {
+      input: {
+        openAddForGame: {
+          gameId: 14,
+          title: 'Brass Meridian',
+          coverUrl: '/mock-covers/mock-1.svg',
+        },
+      },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addDialog?.mode).toBe('catalog');
+    expect(snapshot.library!.addDialog?.targets[0].target).toEqual({ game: 14 });
+
+    await host.invoke('library_input', { input: 'confirmAdd' });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.addSummary?.added).toBe(1);
+    expect(snapshot.library!.catalog!.results[0].inLibrary).toBe(true);
+    expect(snapshot.library!.rows.some((row) => row.title === 'Brass Meridian')).toBe(false);
+
+    const run = snapshot.library!.addSummary!.runId;
+    await host.invoke('library_input', { input: { undoAdd: { run } } });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.undo?.state).toBe('done');
+    expect(snapshot.library!.catalog!.results[0].inLibrary).toBe(false);
+  });
+
+  it('shows both suggestions for the unmatched fixture and uses one', async () => {
+    const host = createMockHost();
+    await host.invoke('library_input', {
+      input: { select: { key: 'steam:3', mode: 'replace' } },
+    });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    const detail = snapshot.library!.detail!;
+    expect(detail.suggestions).toHaveLength(2);
+    expect(detail.suggestions![0].title).toBe('Clockwork Harbor');
+    expect(detail.suggestions![0].confidence).toBe(95);
+
+    await host.invoke('library_input', {
+      input: { useSuggestion: { key: 'steam:3', gameId: 201, now: Math.floor(Date.now() / 1000) } },
+    });
+    snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.detail!.row.status).toEqual({
+      matched: { gameId: 201, source: 'chosen' },
+    });
+    expect(snapshot.library!.detail!.suggestions).toHaveLength(0);
+  });
+
+  it('keeps the palette index independent of filters and excludes hidden rows', async () => {
+    const host = createMockHost();
+    await host.invoke('library_input', { input: { setSearch: 'aster' } });
+    let snapshot = await host.invoke('get_snapshot') as Snapshot;
+    expect(snapshot.library!.rows).toHaveLength(1);
+    expect(snapshot.library!.paletteIndex).toHaveLength(12);
+    expect(
+      snapshot.library!.paletteIndex!.some((entry) => entry.key === MOCK_HIDDEN_KEY),
+    ).toBe(false);
+    expect(
+      snapshot.library!.paletteIndex!.some((entry) => entry.key === 'epic:8'),
+    ).toBe(true);
+    expect(snapshot.library!.paletteIndex![0]).toMatchObject({
+      title: expect.any(String),
+      providerName: expect.any(String),
+      installed: expect.any(Boolean),
+    });
+  });
+
+  it('walks scan progress through waiting, scanning and done including DRM-free', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = createMockHost();
+      let snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.scanProgress).toHaveLength(4);
+      expect(
+        snapshot.library!.scanProgress!.find((entry) => entry.provider === 'drm-free'),
+      ).toMatchObject({ state: 'done', found: 2 });
+
+      await host.invoke('rescan_library');
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.scanning).toBe(true);
+      expect(snapshot.library!.scanProgress!.every((entry) => entry.state === 'waiting')).toBe(true);
+      expect(snapshot.localGames.discoveryScanning).toBe(true);
+
+      vi.advanceTimersByTime(120);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.scanProgress!.every((entry) => entry.state === 'scanning')).toBe(true);
+
+      vi.advanceTimersByTime(700);
+      snapshot = await host.invoke('get_snapshot') as Snapshot;
+      expect(snapshot.library!.scanning).toBe(false);
+      expect(snapshot.library!.scanProgress!.every((entry) => entry.state === 'done')).toBe(true);
+      expect(snapshot.localGames.discoveryScanning).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs openGameNodePage without side effects', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const host = createMockHost();
+    await host.invoke('open_gamenode_page', { page: 'library' });
+    await host.invoke('open_gamenode_page', { page: { game: { id: 42 } } });
+    expect(info).toHaveBeenCalledWith('[UI mock] openGameNodePage', 'library');
+    expect(info).toHaveBeenCalledWith('[UI mock] openGameNodePage', { game: { id: 42 } });
+    info.mockRestore();
   });
 });

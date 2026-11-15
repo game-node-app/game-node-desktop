@@ -1,0 +1,64 @@
+## L5 · Estados (each "tela" is a 676x420 mock of the main column content; real size = main column)
+
+### 5366:2583 Biblioteca vazia (first run) — EmptyState.noGames
+F col gap14 jc:center ai:center (centered in main column)
+ F 64x64 circle jc:center ai:center bg=bg/raised bd1=border/subtle r999 ; I books 28:primary
+ T "Sua biblioteca está vazia" 18/600 text/primary
+ T "Conecte uma loja ou escolha uma pasta de jogos DRM-free para começar." 13/400 text/secondary
+ F 420w col gap2 p6 bg=secondary bd1=border/subtle r8      (3-step checklist)
+  F row gap12 p10 ai:center r6       STEP DONE
+   F 24x24 circle bg=success ; I check 14:text/primary
+   F col gap1 ; T "Entrar no GameNode" 13/500 text-dimmed ; T "Conta cassi conectada" 11/400 text-dimmed     ("Conta {username} conectada")
+  F row gap12 p10 ai:center r6       STEP TODO
+   F 24x24 circle bg=bg/raised ; T "2" 12/600 text/secondary
+   F col gap1 FH ; T "Conectar uma loja" 13/500 text/primary ; T "Steam ou Epic Games Store" 11/400 text-dimmed
+   C <Button Primary SM> "Conectar"          → openSettingsModal('stores')
+  F row gap12 p10 ai:center r6
+   F 24x24 circle bg=bg/raised ; T "3" 12/600 text/secondary
+   F col gap1 FH ; T "Adicionar pasta DRM-free" 13/500 text/primary ; T "O GameNode encontra os executáveis" 11/400 text-dimmed
+   C <Button Secondary SM> "Escolher pasta…"    → existing add-watch-folder flow
+  (step 2 becomes DONE when any store account is connected; step 3 DONE when >=1 watch folder exists; button hidden on done steps; first non-done step's button is Primary, later ones Secondary)
+
+### 5366:2628 Sem resultados — EmptyState.nothingMatches (with a search term)
+ toolbar search FOCUSED: bg=surface bd1=primary r6 ; I search 16:text/secondary ; T "lumen drift" 13/400 text/primary ; I x 14:text-dimmed (clear button)
+ F col gap12 jc:center ai:center
+  F 64x64 circle bg=bg/raised bd1=border/subtle ; I search 28:text/secondary
+  T "Nenhum jogo corresponde a “lumen drift”" 16/600 text/primary     (no search term: "Nenhum jogo corresponde aos filtros")
+  T "2 filtros ativos podem estar escondendo resultados." 13/400 text/secondary   (omit when 0 filters; singular "1 filtro ativo pode estar escondendo resultados.")
+  F row gap8
+   C <Button Secondary SM> "Limpar filtros" icons=arrow-back-up      (only when filters>0)
+   C <Button Ghost SM> "Buscar no GameNode" icons=compass           (only when search term; opens Catalog view prefilled with the term)
+
+### 5366:2667 Verificando (scan in progress)
+ F col gap10 p14 bg=surface bd-bottom1=border/subtle       (scan panel at top of main column, above grid)
+  F row gap10 ai:center ; I loader-2 16:primary (spinning) ; T "Verificando a biblioteca…" 13/600 text/primary fillW ; C <Button Ghost SM> "Cancelar"
+  F row gap10 ai:center ; T "Steam" 12/400 text/secondary (fixed label col ~120) ; progress track 4h bg=bg/raised r2 FF, fill bg=success (complete) ; T "164/164" 12/400 text-dimmed
+  F row ; T "Epic Games Store" ; track fill bg=primary (in progress, 30/52) ; T "30/52"
+  F row ; T "Pastas DRM-free" ; track fill bg=primary (indeterminate) ; T "D:\\Jogos" (current folder)
+ F row gap14 p16 (skeleton tiles while no rows yet)
+  F 110x180 col gap8 ×5 with opacity 1, .9, .7, .6, .4
+   REC 110x146 bg=bg/raised r8 ; REC 90x10 bg=bg/raised r3 ; REC 60x8 bg=surface r3
+  (real skeleton tiles use Game tile geometry: cover 160x214 r6 bg=bg/raised, line 120x10, line 80x8; animate-pulse)
+
+### 5366:2717 Banners (top of main column, below header; dismissible per session)
+ BANNER: row gap12 p12 ai:center r8 ; icon 18 ; col gap2 FH: T title 13/600 text/primary ; T body 12/400 text/secondary ; optional Button SM ; I x 14:text-dimmed (dismiss)
+ 1 warning: bg=warning-subtle bd1=warning ; I alert-triangle:warning ; "A sessão da Epic Games Store expirou" / "Entre de novo para atualizar os 52 jogos desta loja." ; <Button Secondary SM> "Entrar novamente"    (StoreAccount state=expired)
+ 2 danger:  bg=danger-subtle bd1=danger ; I cloud-off:danger ; "Não foi possível acessar a Steam" / "Tentaremos de novo em 2 min. Os jogos continuam disponíveis." ; <Button Secondary SM> "Tentar agora"   (failedProviders / state=unreachable)
+ 3 neutral: bg=surface bd1=text/muted ; I wifi-off:text/muted ; "Você está offline" / "Mostrando a última cópia sincronizada. Jogar continua funcionando."   (no button)
+ 4 brand:   bg=accent/subtle bd1=primary ; I radar:primary ; "3 jogos novos descobertos" / "Encontrados nas pastas monitoradas." ; <Button Primary SM> "Revisar"   (local candidates > 0 → DiscoveryModal)
+
+### 5366:2781 Notificações (Mantine Notifications, bottom-right, stacked, gap10; success/progress auto-close 6s; errors persist until dismissed)
+ CARD 380w col gap8 p12 bg=secondary bd1=#333333 r8 sh(0,10,28,0,#00000073)
+  F row gap10 ; F 3x36 accent bar r2 (success|primary|danger) ; icon 18 ; col gap2: T title 13/600 text/primary ; T body 12/400 text/secondary ; I x 14:text-dimmed
+  actions row gap12 pl13 ; T 12/600 primary (link buttons)   | or progress track 4h bg=bg/raised r2 fill primary
+ 1 success: I circle-check:success ; "3 jogos adicionados ao GameNode" / "Status: Na lista · Coleção: Backlog curto" ; actions "Desfazer" "Ver no GameNode"
+ 2 progress: I download:primary ; "Baixando OptiScaler 0.7.4" / "Emberfall: Iron Trail · 64%" ; progress bar 64%
+ 3 error: I circle-x:danger ; "Não foi possível iniciar Neon Courier 2088" / "O executável não foi encontrado." ; actions "Localizar executável" "Ver log"
+
+### 5366:2830 Atalhos de teclado (NOVO) — AppModal, opened by "?" or app menu
+ F col gap14 p20/24/0/24 ; header row: T "Atalhos de teclado" 16/600 text/primary fillW ; I x 16:text/secondary (close)
+ F row gap24 (2 columns)
+  section: col gap2 ; T label 10/600 ls0.8 upper text/muted ; rows 30h row ai:center bd-bottom1=border/subtle ; T 13/400 text-default fillW ; Kbd(s) gap4
+  Geral: "Paleta de comandos" Ctrl K | "Configurações" Ctrl , | "Verificar novamente" F5 | "Encerrar" Ctrl Q
+  Biblioteca: "Buscar" Ctrl F | "Filtros" Ctrl Shift F | "Grade / lista" Ctrl L
+  Jogo selecionado: "Jogar" Enter | "Favoritar" F | "Painel de detalhes" Ctrl I | "Menu de contexto" Shift F10 | "Selecionar vários" Ctrl Clique | "Selecionar tudo" Ctrl A

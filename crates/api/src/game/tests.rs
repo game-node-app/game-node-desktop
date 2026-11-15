@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gamenode_core::SessionCredential;
 use gamenode_core::game_api::{
-    ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi, GameSummary,
-    LibraryEntry, MAX_COVER_BYTES,
+    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
+    GameSummary, LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::membership::EntryStatus;
 use httpmock::HttpMockRequest;
@@ -11,6 +11,7 @@ use httpmock::prelude::*;
 use serde_json::{Value, json};
 use url::Url;
 
+use super::{LIBRARY_PAGE_SIZE, MAX_LIBRARY_PAGES};
 use crate::GameNodeClient;
 
 fn client(server: &MockServer) -> GameNodeClient {
@@ -60,6 +61,43 @@ fn page(rows: Vec<Value>, has_next_page: bool) -> Value {
         "data": rows,
         "pagination": { "totalItems": 0, "totalPages": 1, "hasNextPage": has_next_page }
     })
+}
+
+fn account_row(id: &str, game_id: u64, status: &str) -> Value {
+    json!({
+        "id": id,
+        "gameId": game_id,
+        "status": status,
+        "collections": [{ "id": "c1", "name": "Backlog" }]
+    })
+}
+
+fn account_page(rows: Vec<Value>, has_next_page: bool) -> Value {
+    json!({
+        "data": rows,
+        "pagination": { "totalItems": 0, "totalPages": 1, "hasNextPage": has_next_page }
+    })
+}
+
+fn account_entries(count: usize, first_game_id: u64) -> Vec<Value> {
+    (0..count)
+        .map(|index| {
+            account_row(
+                &format!("e{}", first_game_id + index as u64),
+                first_game_id + index as u64,
+                "playing",
+            )
+        })
+        .collect()
+}
+
+fn category_params(request: &HttpMockRequest) -> Vec<String> {
+    request
+        .query_params()
+        .into_iter()
+        .filter(|(key, _)| key == "gameFilters[category][]")
+        .map(|(_, value)| value)
+        .collect()
 }
 
 fn summary(id: u64, name: &str) -> GameSummary {
@@ -657,6 +695,7 @@ async fn an_entry_reports_its_status_and_a_404_means_absent() {
     assert_eq!(
         api.library_entry(&cred(), 7).await,
         Ok(Some(LibraryEntry {
+            id: "e1".into(),
             status: Some(EntryStatus::Finished),
             ..Default::default()
         }))
@@ -672,11 +711,12 @@ async fn an_entry_with_an_unknown_status_is_still_an_entry() {
     server.mock(|when, then| {
         when.method(GET).path("/v1/collections-entries/game/7");
         then.status(200)
-            .json_body(json!({ "status": "from-the-future" }));
+            .json_body(json!({ "id": "e1", "status": "from-the-future" }));
     });
     assert_eq!(
         client(&server).library_entry(&cred(), 7).await,
         Ok(Some(LibraryEntry {
+            id: "e1".into(),
             status: None,
             ..Default::default()
         }))
@@ -810,6 +850,7 @@ async fn editing_preserves_platforms_and_completion_date() {
     let read = server.mock(|when, then| {
         when.method(GET).path("/v1/collections-entries/game/7");
         then.status(200).json_body(json!({
+            "id": "e1",
             "status": "finished", "collections": [{"id": "old"}],
             "ownedPlatforms": [{"id": 6}, {"id": 48}],
             "finishedAt": "2026-01-01T00:00:00Z"
@@ -1026,4 +1067,212 @@ async fn a_missing_entry_is_not_in_library_and_other_errors_are_transient() {
         );
         mock.delete_async().await;
     }
+}
+
+#[tokio::test]
+async fn the_account_library_is_read_across_every_page_with_all_categories() {
+    let server = MockServer::start_async().await;
+    let all_categories: Vec<String> = (0..=14).map(|category| category.to_string()).collect();
+    let first_categories = all_categories.clone();
+    let first = server.mock(move |when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1")
+            .header("authorization", "Bearer tok")
+            .query_param("offset", "0")
+            .query_param("limit", "100")
+            .is_true(move |request| category_params(request) == first_categories);
+        then.status(200)
+            .json_body(account_page(account_entries(LIBRARY_PAGE_SIZE, 1), true));
+    });
+    let second = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1")
+            .query_param("offset", "100")
+            .query_param("limit", "100")
+            .is_true(|request| category_params(request).len() == 15);
+        then.status(200).json_body(account_page(
+            vec![
+                account_row("e101", 101, "finished"),
+                account_row("e102", 102, "dropped"),
+            ],
+            false,
+        ));
+    });
+
+    let found = client(&server)
+        .list_library_entries(&cred(), "user-1")
+        .await
+        .unwrap();
+
+    first.assert_async().await;
+    second.assert_async().await;
+    assert_eq!(found.len(), LIBRARY_PAGE_SIZE + 2);
+    assert_eq!(
+        found.first(),
+        Some(&AccountEntry {
+            id: "e1".into(),
+            game_id: 1,
+            status: Some(EntryStatus::Playing),
+            collection_ids: vec!["c1".into()],
+        })
+    );
+    assert_eq!(found[100].id, "e101");
+    assert_eq!(found[100].game_id, 101);
+    assert_eq!(found[100].status, Some(EntryStatus::Finished));
+    assert_eq!(found[101].status, Some(EntryStatus::Dropped));
+}
+
+#[tokio::test]
+async fn an_empty_account_library_is_an_empty_list() {
+    let server = MockServer::start_async().await;
+    let empty = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1")
+            .query_param("offset", "0")
+            .query_param("limit", "100");
+        then.status(200).json_body(account_page(vec![], false));
+    });
+
+    assert_eq!(
+        client(&server)
+            .list_library_entries(&cred(), "user-1")
+            .await,
+        Ok(vec![])
+    );
+    empty.assert_async().await;
+}
+
+#[tokio::test]
+async fn an_account_entry_with_an_unknown_status_is_still_an_entry() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1");
+        then.status(200).json_body(account_page(
+            vec![account_row("e7", 7, "from-the-future")],
+            false,
+        ));
+    });
+
+    assert_eq!(
+        client(&server)
+            .list_library_entries(&cred(), "user-1")
+            .await,
+        Ok(vec![AccountEntry {
+            id: "e7".into(),
+            game_id: 7,
+            status: None,
+            collection_ids: vec!["c1".into()],
+        }])
+    );
+}
+
+#[tokio::test]
+async fn an_account_library_that_never_ends_fails_at_the_page_cap() {
+    let server = MockServer::start_async().await;
+    let pages = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/collections-entries/library/user-1");
+        then.status(200)
+            .json_body(account_page(account_entries(LIBRARY_PAGE_SIZE, 1), true));
+    });
+
+    assert_eq!(
+        client(&server)
+            .list_library_entries(&cred(), "user-1")
+            .await,
+        Err(ApiError::Failed)
+    );
+    pages.assert_calls_async(MAX_LIBRARY_PAGES).await;
+}
+
+#[tokio::test]
+async fn account_library_errors_are_classified_and_ids_are_checked() {
+    for (status, expected) in [(401, ApiError::Rejected), (500, ApiError::Failed)] {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/collections-entries/library/user-1");
+            then.status(status);
+        });
+        assert_eq!(
+            client(&server)
+                .list_library_entries(&cred(), "user-1")
+                .await,
+            Err(expected),
+            "{status}"
+        );
+        mock.delete_async().await;
+    }
+
+    let server = MockServer::start_async().await;
+    let any = server.mock(|when, then| {
+        when.method(GET).is_true(|_| true);
+        then.status(200).json_body(account_page(vec![], false));
+    });
+    for bad in ["", "../x", "a/b", "a?b", "a b"] {
+        assert_eq!(
+            client(&server).list_library_entries(&cred(), bad).await,
+            Err(ApiError::Failed),
+            "{bad:?}"
+        );
+    }
+    any.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn deleting_an_entry_treats_no_content_and_not_found_as_success() {
+    for status in [204u16, 404] {
+        let server = MockServer::start_async().await;
+        let deleted = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/v1/collections-entries/e1")
+                .header("authorization", "Bearer tok");
+            then.status(status);
+        });
+        assert_eq!(
+            client(&server).delete_entry(&cred(), "e1").await,
+            Ok(()),
+            "{status}"
+        );
+        deleted.assert_async().await;
+    }
+}
+
+#[tokio::test]
+async fn delete_errors_are_classified_and_the_id_is_checked() {
+    for (status, expected) in [
+        (401, ApiError::Rejected),
+        (200, ApiError::Failed),
+        (400, ApiError::Failed),
+        (500, ApiError::Failed),
+    ] {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/v1/collections-entries/e1")
+                .header("authorization", "Bearer tok");
+            then.status(status);
+        });
+        assert_eq!(
+            client(&server).delete_entry(&cred(), "e1").await,
+            Err(expected),
+            "{status}"
+        );
+        mock.assert_async().await;
+    }
+
+    let server = MockServer::start_async().await;
+    let any = server.mock(|when, then| {
+        when.method(DELETE).is_true(|_| true);
+        then.status(204);
+    });
+    for bad in ["", "../x", "a/b", "a?b", "a b"] {
+        assert_eq!(
+            client(&server).delete_entry(&cred(), bad).await,
+            Err(ApiError::Failed),
+            "{bad:?}"
+        );
+    }
+    any.assert_calls_async(0).await;
 }

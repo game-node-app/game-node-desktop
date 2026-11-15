@@ -34,8 +34,10 @@ pub(super) enum Stage {
 
 #[derive(Debug)]
 pub(super) struct AddDialog {
-    /// The entries that were selected when the dialog opened, in display order.
-    pub(super) targets: Vec<String>,
+    /// What the dialog was opened for, in display order.
+    pub(super) targets: Vec<AddTarget>,
+    /// Whether this is a library add or a catalog add (`AddTarget::Game`).
+    pub(super) mode: AddMode,
     pub(super) editing_existing: bool,
     /// The status the user picked. A collection's default status can override it, see
     /// [`LibraryMachine::applied_status`].
@@ -49,13 +51,57 @@ pub(super) struct AddDialog {
 
 use serde::{Deserialize, Serialize};
 
-/// One game the dialog will add.
+/// Where the Add to GameNode dialog was opened from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AddMode {
+    /// One or more local library rows.
+    #[default]
+    Library,
+    /// A game from the GameNode catalog, addressed by its game id instead of a local key.
+    Catalog,
+}
+
+/// One thing the dialog will add.
+///
+/// The catalog has no local row to key on, so it addresses the GameNode game directly. The add run
+/// treats both the same way after resolving the target's game id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AddTarget {
+    /// A local library entry key (`<provider>:<id>`).
+    Row(String),
+    /// A GameNode game id, as a catalog result gives it.
+    Game(u64),
+}
+
+impl AddTarget {
+    /// The local library key, for a row target.
+    pub fn entry_key(&self) -> Option<&str> {
+        match self {
+            Self::Row(key) => Some(key),
+            Self::Game(_) => None,
+        }
+    }
+
+    /// The target's GameNode game id, when it is already known.
+    pub fn game_id(&self) -> Option<u64> {
+        match self {
+            Self::Row(_) => None,
+            Self::Game(game_id) => Some(*game_id),
+        }
+    }
+}
+
+/// One target as the window shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AddTarget {
-    pub entry_key: String,
+pub struct AddTargetView {
+    pub target: AddTarget,
+    /// The local library key, for a row target.
+    pub entry_key: Option<String>,
     pub title: String,
-    /// Unmatched games are skipped when the user confirms.
+    /// Unmatched local games are skipped when the user confirms.
     pub matched: bool,
 }
 
@@ -90,7 +136,8 @@ pub type AddProgressView = AddProgress;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddDialogView {
-    pub targets: Vec<AddTarget>,
+    pub targets: Vec<AddTargetView>,
+    pub mode: AddMode,
     pub editing_existing: bool,
     /// The status the user picked.
     pub status: EntryStatus,
@@ -110,19 +157,34 @@ pub struct AddDialogView {
 }
 
 impl LibraryMachine {
-    /// The title and GameNode game of an entry, as the library shows it.
-    pub(super) fn target_info(&self, key: &str) -> (String, Option<u64>) {
-        let Some(entry) = self.entries.get(key) else {
-            return (key.to_owned(), None);
-        };
-        let game_id = self.match_status(entry).game_id();
-        let title = game_id
-            .and_then(|id| self.games.get(&id))
-            .map(|game| game.name.clone())
-            .filter(|name| !name.is_empty())
-            .or_else(|| entry.name.clone())
-            .unwrap_or_else(|| entry.store_id.clone());
-        (title, game_id)
+    /// The title and GameNode game of one target, as the library shows it.
+    pub(super) fn target_info(&self, target: &AddTarget) -> (String, Option<u64>) {
+        match target {
+            AddTarget::Row(key) => {
+                let Some(entry) = self.entries.get(key) else {
+                    return (key.clone(), None);
+                };
+                let game_id = self.match_status(entry).game_id();
+                let title = game_id
+                    .and_then(|id| self.games.get(&id))
+                    .map(|game| game.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| entry.name.clone())
+                    .unwrap_or_else(|| entry.store_id.clone());
+                (title, game_id)
+            }
+            // A catalog target names the game directly. Its title comes from the game metadata
+            // the catalog stored, or from the id until that metadata is known.
+            AddTarget::Game(game_id) => {
+                let title = self
+                    .games
+                    .get(game_id)
+                    .map(|game| game.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| game_id.to_string());
+                (title, Some(*game_id))
+            }
+        }
     }
 
     /// Opens the dialog for the selected entries, if Add to GameNode is available for them.
@@ -133,21 +195,48 @@ impl LibraryMachine {
         if !self.actions().add_to_gamenode.is_available() {
             return vec![];
         }
+        let targets = self
+            .selected_keys()
+            .into_iter()
+            .map(AddTarget::Row)
+            .collect();
+        self.start_add(targets, AddMode::Library)
+    }
+
+    /// Opens the same dialog for one GameNode catalog game (D8). No local row or selection is
+    /// needed; the game is addressed by id. The catalog view calls this once its result is chosen.
+    pub(super) fn open_add_for_game(&mut self, game_id: u64) -> Vec<Effect> {
+        if self.dialog.is_some() || self.add.is_some() {
+            return vec![];
+        }
+        self.start_add(vec![AddTarget::Game(game_id)], AddMode::Catalog)
+    }
+
+    fn start_add(&mut self, targets: Vec<AddTarget>, mode: AddMode) -> Vec<Effect> {
         let Some(user_id) = self.account.as_ref().map(|account| account.id.clone()) else {
             return vec![];
         };
-        let op = self.next_op();
-        let existing = self
-            .selected_game()
-            .and_then(|id| self.account_entries.get(&id));
+        // Only a single selected row whose entry is known can be edited in place. Catalog games
+        // are always adds: an existing one is offered View on GameNode instead.
+        let existing = (mode == AddMode::Library)
+            .then(|| {
+                self.selected_game()
+                    .and_then(|id| self.account_entries.get(&id))
+            })
+            .flatten()
+            .cloned();
         let editing_existing = existing.is_some();
+        let op = self.next_op();
         self.add = Some(AddDialog {
-            targets: self.selected_keys(),
+            targets,
+            mode,
             editing_existing,
             status: existing
+                .as_ref()
                 .and_then(|e| e.status)
                 .unwrap_or(EntryStatus::Playing),
             picked: existing
+                .as_ref()
                 .map(|e| e.collection_ids.iter().cloned().collect())
                 .unwrap_or_default(),
             collections: Collections::Loading { op },
@@ -276,13 +365,14 @@ impl LibraryMachine {
 
     pub(super) fn add_dialog_view(&self) -> Option<AddDialogView> {
         let add = self.add.as_ref()?;
-        let targets: Vec<AddTarget> = add
+        let targets: Vec<AddTargetView> = add
             .targets
             .iter()
-            .map(|key| {
-                let (title, game) = self.target_info(key);
-                AddTarget {
-                    entry_key: key.clone(),
+            .map(|target| {
+                let (title, game) = self.target_info(target);
+                AddTargetView {
+                    target: target.clone(),
+                    entry_key: target.entry_key().map(str::to_owned),
                     title,
                     matched: game.is_some(),
                 }
@@ -300,6 +390,8 @@ impl LibraryMachine {
             }
             && targets.iter().any(|target| target.matched);
         Some(AddDialogView {
+            targets,
+            mode: add.mode,
             collections: match &add.collections {
                 Collections::Loading { .. } => CollectionsView::Loading,
                 Collections::Failed(error) => CollectionsView::Failed(*error),
@@ -323,7 +415,6 @@ impl LibraryMachine {
                 _ => None,
             },
             applied_from: from.map(|collection| collection.name.clone()),
-            targets,
             editing_existing: add.editing_existing,
             status: add.status,
             applied_status,

@@ -349,6 +349,16 @@ pub async fn rescan_library(engine: tauri::State<'_, Engine>) -> Result<(), Stri
     Ok(())
 }
 
+/// Opens a GameNode website page in the default browser (D14). The browser work runs on a
+/// blocking worker; a typed error keeps the UI copy localized.
+#[tauri::command]
+pub async fn open_gamenode_page(
+    engine: tauri::State<'_, Engine>,
+    page: crate::engine::GameNodePage,
+) -> Result<(), crate::engine::GameNodePageError> {
+    engine.open_gamenode_page(page).await
+}
+
 #[tauri::command]
 pub async fn remove_entry(
     engine: tauri::State<'_, Engine>,
@@ -1244,6 +1254,19 @@ mod tests {
         assert!(matches!(error, PortCommandError::InstallInProgress));
         let json = serde_json::to_value(&error).unwrap();
         assert_eq!(json["code"], "installInProgress");
+    }
+
+    #[test]
+    fn game_node_page_values_and_errors_use_stable_codes() {
+        let game = serde_json::to_value(crate::engine::GameNodePage::Game { id: 42 }).unwrap();
+        assert_eq!(game, serde_json::json!({ "game": { "id": 42 } }));
+        let library = serde_json::to_value(crate::engine::GameNodePage::Library).unwrap();
+        assert_eq!(library, serde_json::json!("library"));
+
+        let no_session = serde_json::to_value(crate::engine::GameNodePageError::NoSession).unwrap();
+        assert_eq!(no_session["code"], "noSession");
+        let browser = serde_json::to_value(crate::engine::GameNodePageError::Browser).unwrap();
+        assert_eq!(browser["code"], "browser");
     }
 
     /// A provider host with the given loaded catalog providers and no account work.

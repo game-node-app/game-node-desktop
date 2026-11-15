@@ -276,5 +276,10 @@ mod tests {
 pub struct TrackingView {
     pub title: String,
     pub available: bool,
+    /// Running library keys, independent of the library's filters and hidden state.
     pub running: std::collections::BTreeSet<String>,
+    /// Unix second each `running` key's current execution began. This is the status bar's live
+    /// clock source, including games hidden from or filtered out of the library rows.
+    #[serde(default)]
+    pub session_started_at: std::collections::BTreeMap<String, i64>,
 }

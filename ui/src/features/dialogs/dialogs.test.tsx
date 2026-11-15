@@ -6,6 +6,7 @@ import { MantineProvider } from '@mantine/core';
 import { appTheme, createAppQueryClient } from '../../AppProviders';
 import {
   commands,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   SNAPSHOT_QUERY_KEY,
   type Snapshot,
@@ -44,15 +45,19 @@ describe('Dialogs Feature Tests', () => {
     const makeMatchSnapshot = (overrides?: Partial<MatchDialogView>): Snapshot => {
       const snap = createDefaultSnapshot();
       snap.library = {
+        ...createDefaultLibraryView(),
         generation: 1,
         layout: {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
-          filter: 'all',
+          scope: 'all',
+          group: 'none',
+          collapsedGroups: {},
           filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: true,
+          sidebarCollapsed: false,
         },
         search: '',
         access: 'verified',
@@ -215,7 +220,7 @@ describe('Dialogs Feature Tests', () => {
         'Nenhum jogo encontrado. Tente outras palavras.',
       );
       expect(screen.getByTestId('match-not-a-game-btn')).toHaveTextContent(
-        'Não está no GameNode',
+        'Fora do GameNode',
       );
       expect(screen.getByTestId('match-clear-match-btn')).toHaveTextContent(
         'Usar a correspondência automática',
@@ -273,15 +278,19 @@ describe('Dialogs Feature Tests', () => {
     const makeAddSnapshot = (overrides?: Partial<AddDialogView>): Snapshot => {
       const snap = createDefaultSnapshot();
       snap.library = {
+        ...createDefaultLibraryView(),
         generation: 1,
         layout: {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
-          filter: 'all',
+          scope: 'all',
+          group: 'none',
+          collapsedGroups: {},
           filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: true,
+          sidebarCollapsed: false,
         },
         search: '',
         access: 'verified',
@@ -303,9 +312,10 @@ describe('Dialogs Feature Tests', () => {
         },
         addDialog: {
           targets: [
-            { entryKey: 'entry-1', title: 'Hades', matched: true },
-            { entryKey: 'entry-2', title: 'Unknown Indie Game', matched: false },
+            { target: { row: 'entry-1' }, entryKey: 'entry-1', title: 'Hades', matched: true },
+            { target: { row: 'entry-2' }, entryKey: 'entry-2', title: 'Unknown Indie Game', matched: false },
           ],
+          mode: 'library',
           editingExisting: false,
           status: 'playing',
           appliedStatus: 'playing',
@@ -316,7 +326,11 @@ describe('Dialogs Feature Tests', () => {
               { id: 'col-2', name: 'Backlog', defaultStatus: 'planned', picked: true },
             ],
           },
+          progress: null,
+          error: null,
           canConfirm: true,
+          blocked: null,
+          summary: null,
           ...overrides,
         },
       };
@@ -409,18 +423,22 @@ describe('Dialogs Feature Tests', () => {
         appliedStatus: 'planned',
         appliedFrom: 'Backlog',
         summary: {
+          runId: 1,
+          undoable: true,
           added: 1,
           alreadyPresent: 1,
           skipped: 0,
           failed: 0,
           items: [
             {
+              target: { row: 'entry-1' },
               entryKey: 'entry-1',
               title: 'Hades',
               outcome: 'added',
               status: 'planned',
             },
             {
+              target: { row: 'entry-2' },
               entryKey: 'entry-2',
               title: 'Dead Cells',
               outcome: 'alreadyPresent',
@@ -456,7 +474,7 @@ describe('Dialogs Feature Tests', () => {
         'Salvos 1 · já na sua biblioteca 1 · ignorados 0 · com falha 0',
       );
       expect(screen.getByTestId('add-summary-item-entry-1')).toHaveTextContent(
-        'Salvo como Planejado',
+        'Salvo como Na lista',
       );
       expect(screen.getByTestId('add-summary-item-entry-2')).toHaveTextContent(
         'Já está na sua biblioteca',

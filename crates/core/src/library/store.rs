@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::game_api::{AccountEntry, Collection};
 use crate::ports::StorageError;
 use crate::provider::Record;
 
 use super::layout::LibraryLayout;
+use super::organization::SavedView;
 
 use serde::{Deserialize, Serialize};
 
@@ -307,6 +309,20 @@ pub enum ArtworkWrite {
     Conflict { current: u64 },
 }
 
+/// The account's last complete GameNode library read: one entry per game it knows, the account's
+/// collections and when the read finished. Games that exist only in the account library are still
+/// not library rows; the cache feeds status columns, the status facet, collection scopes and the
+/// detail pane.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AccountLibrary {
+    /// The account's library entries, keyed by GameNode game id.
+    pub entries: BTreeMap<u64, AccountEntry>,
+    pub collections: Vec<Collection>,
+    /// Unix seconds of the completed read.
+    pub read_at: i64,
+}
+
 /// Everything the library needs at startup, read in one go.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -327,6 +343,15 @@ pub struct LibraryCache {
     /// Covers written by providers' plugins.
     #[serde(default)]
     pub artwork_overrides: Vec<ArtworkOverride>,
+    /// The account's saved views, in sidebar order. Populated by the organization work.
+    #[serde(default)]
+    pub saved_views: Vec<SavedView>,
+    /// Library keys hidden for the account. Populated by the organization work.
+    #[serde(default)]
+    pub hidden: Vec<String>,
+    /// The last complete GameNode library read for the account, if any.
+    #[serde(default)]
+    pub account_library: Option<AccountLibrary>,
 }
 
 /// The last signed-in account, kept so the cached library can open before verification.
@@ -412,6 +437,46 @@ pub trait LibraryStore: Send + Sync {
     /// Inserts or replaces one game's favorite state for the account. A false, confirmed row is
     /// deleted: absence means "not favorited and nothing to send".
     fn save_favorite(&self, favorite: &FavoriteRecord) -> Result<(), StorageError>;
+
+    /// Inserts or updates one saved view of the account and returns its database id. A view with
+    /// `id == 0` is inserted; a positive `position` places it there, otherwise it goes after the
+    /// account's last view. An existing id is renamed or updated in place and keeps its creation
+    /// time. Names are unique per account.
+    fn save_view(&self, account_id: &str, view: &SavedView) -> Result<i64, StorageError>;
+
+    /// Deletes one saved view of the account. A missing id is not an error.
+    fn delete_view(&self, account_id: &str, id: i64) -> Result<(), StorageError>;
+
+    /// Hides or reveals `keys` for the account in one transaction. `now` is unix seconds and is
+    /// recorded when an entry is hidden.
+    fn set_hidden(
+        &self,
+        account_id: &str,
+        keys: &[String],
+        hidden: bool,
+        now: i64,
+    ) -> Result<(), StorageError>;
+
+    /// Replaces the account's complete GameNode library read in one transaction: entries,
+    /// collections and the completion time. A failed insertion leaves the previous cache exactly
+    /// as it was.
+    fn replace_account_library(
+        &self,
+        account_id: &str,
+        entries: &[AccountEntry],
+        collections: &[Collection],
+        read_at: i64,
+    ) -> Result<(), StorageError>;
+
+    /// Upserts (`Some`) or removes (`None`) one game of an existing complete read. It never
+    /// creates or clears the completion marker: a game learned before a complete read cannot make
+    /// the cache look complete.
+    fn save_account_entry(
+        &self,
+        account_id: &str,
+        game_id: u64,
+        entry: Option<&AccountEntry>,
+    ) -> Result<(), StorageError>;
 
     /// Inserts or updates game name, year and cover URL. The `cover_file` and `cover_failed_at`
     /// of the input are ignored (use [`save_cover_ready`](Self::save_cover_ready) and

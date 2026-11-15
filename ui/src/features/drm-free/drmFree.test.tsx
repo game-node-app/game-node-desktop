@@ -6,6 +6,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { appTheme, createAppQueryClient } from '../../AppProviders';
 import {
   commands,
+  createDefaultLibraryView,
   createDefaultSnapshot,
   SNAPSHOT_QUERY_KEY,
   type Candidate,
@@ -371,15 +372,19 @@ describe('DRM-Free Modals', () => {
 
       const snapshot = createDefaultSnapshot();
       snapshot.library = {
+        ...createDefaultLibraryView(),
         generation: 1,
         layout: {
           view: 'grid',
           sort: { key: 'title', direction: 'ascending' },
-          filter: 'all',
+          scope: 'all',
+          group: 'none',
+          collapsedGroups: {},
           filters: createDefaultFilters(),
           sidebarWidth: 200,
           detailWidth: 320,
           detailOpen: false,
+          sidebarCollapsed: false,
         },
         search: '',
         access: 'verified',
@@ -404,6 +409,8 @@ describe('DRM-Free Modals', () => {
             releaseYear: 2011,
             addedAt: 0,
             isFavorite: false,
+            hidden: false,
+            gamenode: null,
           },
         ],
         scanning: false,

@@ -1,7 +1,11 @@
 use super::*;
 use crate::db::{SETTING_KEYS, SqliteSettingsStore};
 use gamenode_core::Settings;
-use gamenode_core::library::{SidebarSelection, SortDirection, SortKey, ViewMode};
+use gamenode_core::game_api::{AccountEntry, Collection};
+use gamenode_core::library::{
+    EntryStatus, GroupBy, LibraryFilters, LibraryScope, SavedViewPayload, Sort, SortDirection,
+    SortKey, ViewMode,
+};
 use gamenode_core::ports::SettingsStore;
 use tempfile::TempDir;
 
@@ -74,75 +78,6 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
 }
 
 #[test]
-fn a_detected_target_approval_is_revision_checked_and_survives_reopening() {
-    use gamenode_core::library::{DetectedTarget, TargetApproval, TargetSpec};
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.sqlite3");
-    let db = SqliteSettingsStore::open(&path).unwrap();
-    let store = db.library_store();
-    let spec = TargetSpec::Executable {
-        root: r"C:\Games\Portal 2".into(),
-        path: "Portal2.exe".into(),
-        arguments: vec![],
-        working_directory: String::new(),
-    };
-    store
-        .save_scan(
-            "steam",
-            &[record("620", "Portal 2")],
-            &BTreeMap::from([("620".into(), spec)]),
-            100,
-        )
-        .unwrap();
-    let candidate = store
-        .load_cache(None)
-        .unwrap()
-        .entries
-        .remove(0)
-        .target
-        .unwrap();
-    assert!(!candidate.approved);
-    assert_eq!(candidate.revision, 1);
-
-    let approved = DetectedTarget {
-        approved: true,
-        identity: Some("volume:file-id".into()),
-        ..candidate.clone()
-    };
-    assert_eq!(
-        store.save_target_review("steam:620", 1, &approved).unwrap(),
-        TargetApproval::Applied { revision: 1 }
-    );
-    assert_eq!(
-        store.save_target_review("steam:620", 0, &approved).unwrap(),
-        TargetApproval::Conflict { current: 1 }
-    );
-
-    store
-        .save_scan(
-            "steam",
-            &[record("620", "Portal 2")],
-            &BTreeMap::from([("620".into(), approved.spec.clone())]),
-            200,
-        )
-        .unwrap();
-
-    drop(store);
-    drop(db);
-    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
-    let target = reopened
-        .load_cache(None)
-        .unwrap()
-        .entries
-        .remove(0)
-        .target
-        .unwrap();
-    assert!(target.approved);
-    assert_eq!(target.identity.as_deref(), Some("volume:file-id"));
-}
-
-#[test]
 fn a_rescan_updates_entries_adds_new_ones_and_keeps_first_seen() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
@@ -191,7 +126,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
-                source: Default::default(),
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -303,47 +238,6 @@ fn a_scan_that_fails_part_way_changes_nothing() {
 }
 
 #[test]
-fn a_choice_keeps_who_made_it_and_older_rows_read_as_the_users() {
-    use gamenode_core::library::ChoiceSource;
-    let dir = TempDir::new().unwrap();
-    let store = open(&dir).library_store();
-    let choice = |source| ChosenMatch {
-        entry_key: "epic:abc".into(),
-        game_id: Some(9),
-        chosen_at: 5,
-        source,
-    };
-    store
-        .save_chosen_match("alice", &choice(ChoiceSource::Plugin))
-        .unwrap();
-    assert_eq!(
-        store.load_cache(Some("alice")).unwrap().chosen_matches,
-        [choice(ChoiceSource::Plugin)]
-    );
-    // The user choosing again takes the entry over.
-    store
-        .save_chosen_match("alice", &choice(ChoiceSource::User))
-        .unwrap();
-    assert_eq!(
-        store.load_cache(Some("alice")).unwrap().chosen_matches,
-        [choice(ChoiceSource::User)]
-    );
-    // A row written without the column (before migration 12) is the user's.
-    open(&dir)
-        .conn()
-        .execute(
-            "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
-             VALUES ('bob', 'steam:1', 2, 3)",
-            [],
-        )
-        .unwrap();
-    assert_eq!(
-        store.load_cache(Some("bob")).unwrap().chosen_matches[0].source,
-        ChoiceSource::User
-    );
-}
-
-#[test]
 fn chosen_matches_are_separate_per_account() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
@@ -351,7 +245,7 @@ fn chosen_matches_are_separate_per_account() {
         entry_key: "steam:620".into(),
         game_id,
         chosen_at: 5,
-        source: Default::default(),
+        source: gamenode_core::library::ChoiceSource::User,
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();
@@ -380,7 +274,6 @@ fn chosen_matches_are_separate_per_account() {
             "alice",
             &ChosenMatch {
                 chosen_at: 9,
-                source: Default::default(),
                 ..choice(Some(99))
             },
         )
@@ -476,20 +369,18 @@ fn the_layout_survives_reopening() {
         LibraryLayout::default()
     );
 
+    let mut filters = gamenode_core::library::LibraryFilters::default();
+    filters.availability.installed = true;
+    filters.stores = vec!["steam".into()];
     let layout = LibraryLayout {
         view: ViewMode::List,
-        sidebar: SidebarSelection::Provider("steam".into()),
+        scope: LibraryScope::Installed,
         sort: gamenode_core::library::Sort {
             key: SortKey::Provider,
             direction: SortDirection::Descending,
         },
-        filters: gamenode_core::library::LibraryFilters {
-            availability: gamenode_core::library::AvailabilityFilter {
-                installed: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        filters,
+        group: gamenode_core::library::GroupBy::Store,
         sidebar_width: 180,
         detail_width: 420,
         detail_open: false,
@@ -558,7 +449,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
                 entry_key: "steam:620".into(),
                 game_id: Some(1),
                 chosen_at: 1,
-                source: Default::default(),
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -1196,7 +1087,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
                 entry_key: "steam:620".into(),
                 game_id: Some(72),
                 chosen_at: 110,
-                source: Default::default(),
+                source: gamenode_core::library::ChoiceSource::User,
             },
         )
         .unwrap();
@@ -1407,7 +1298,7 @@ fn the_local_state_doc_names_every_table_setting_and_folder() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    for table in &tables {
+    for table in tables.iter().filter(|table| !table.starts_with("sqlite_")) {
         assert!(
             DOC.contains(&format!("`{table}`")),
             "docs/local-state.md lacks table {table}"
@@ -1435,7 +1326,7 @@ fn a_chosen_match_can_be_forgotten_for_one_account_only() {
         entry_key: "steam:620".to_owned(),
         game_id,
         chosen_at: 5,
-        source: Default::default(),
+        source: gamenode_core::library::ChoiceSource::User,
     };
     store.save_chosen_match("alice", &choice(Some(72))).unwrap();
     store.save_chosen_match("bob", &choice(None)).unwrap();
@@ -1584,6 +1475,483 @@ fn the_favorites_migration_adds_the_table_and_keeps_existing_data() {
         .unwrap();
     assert_eq!(store.load_cache(Some("ana")).unwrap().entries.len(), 1);
     assert_eq!(store.load_cache(Some("ana")).unwrap().favorites.len(), 1);
+}
+
+fn saved_view_payload() -> SavedViewPayload {
+    let mut filters = LibraryFilters::default();
+    filters.stores = vec!["steam".into()];
+    SavedViewPayload {
+        scope: LibraryScope::Collection("coop".into()),
+        filters,
+        sort: Sort {
+            key: SortKey::Playtime,
+            direction: SortDirection::Descending,
+        },
+        group: GroupBy::Store,
+        view: ViewMode::List,
+    }
+}
+
+fn saved_view(name: &str, position: i64, created_at: i64) -> SavedView {
+    SavedView {
+        id: 0,
+        name: name.into(),
+        payload: saved_view_payload(),
+        position,
+        created_at,
+    }
+}
+
+fn account_entry(game_id: u64, entry_id: &str, status: Option<EntryStatus>) -> AccountEntry {
+    AccountEntry {
+        id: entry_id.into(),
+        game_id,
+        status,
+        collection_ids: vec!["coop".into()],
+    }
+}
+
+#[test]
+fn saved_views_round_trip_per_account_and_a_rename_keeps_the_id() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let first_id = store
+        .save_view("ana", &saved_view("Steam 10 h+", 0, 10))
+        .unwrap();
+    let second_id = store
+        .save_view("ana", &saved_view("Backlog", 0, 11))
+        .unwrap();
+    let bob_id = store
+        .save_view("bo", &saved_view("Steam 10 h+", 0, 12))
+        .unwrap();
+    assert!(first_id > 0 && second_id > first_id && bob_id > 0);
+
+    let views = store.load_cache(Some("ana")).unwrap().saved_views;
+    assert_eq!(views.len(), 2, "the views belong to one account");
+    assert_eq!(views[0].id, first_id);
+    assert_eq!(views[0].position, 0);
+    assert_eq!(views[0].created_at, 10);
+    assert_eq!(views[0].payload, saved_view_payload());
+    assert_eq!((views[1].id, views[1].position), (second_id, 1));
+
+    // Renaming updates in place: same id and creation time, new name and payload.
+    let mut renamed = views[0].clone();
+    renamed.name = "Steam backlog".into();
+    renamed.created_at = 999;
+    renamed.payload.group = GroupBy::GameNodeStatus;
+    assert_eq!(store.save_view("ana", &renamed).unwrap(), first_id);
+    let views = store.load_cache(Some("ana")).unwrap().saved_views;
+    assert_eq!(views[0].id, first_id);
+    assert_eq!(views[0].name, "Steam backlog");
+    assert_eq!(views[0].created_at, 10, "renaming keeps the creation time");
+    assert_eq!(views[0].payload.group, GroupBy::GameNodeStatus);
+
+    // Names are unique per account, not globally.
+    assert!(
+        store
+            .save_view("ana", &saved_view("Steam backlog", 0, 20))
+            .is_err(),
+        "a duplicate name is rejected for the same account"
+    );
+    assert!(
+        store
+            .save_view("bo", &saved_view("Steam backlog", 0, 20))
+            .is_ok(),
+        "another account may reuse a name"
+    );
+
+    // Sign-out exposes nothing and does not delete the account's views.
+    assert!(store.load_cache(None).unwrap().saved_views.is_empty());
+    assert_eq!(store.load_cache(Some("ana")).unwrap().saved_views.len(), 2);
+    assert!(
+        store
+            .load_cache(Some("carol"))
+            .unwrap()
+            .saved_views
+            .is_empty()
+    );
+
+    store.delete_view("ana", first_id).unwrap();
+    let views = store.load_cache(Some("ana")).unwrap().saved_views;
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].id, second_id);
+    assert_eq!(
+        store.load_cache(Some("bo")).unwrap().saved_views.len(),
+        2,
+        "deleting one account's view leaves other accounts alone"
+    );
+    store.delete_view("ana", first_id).unwrap(); // already gone
+}
+
+#[test]
+fn hidden_entries_round_trip_per_account_and_survive_sign_out() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    let keys = vec!["steam:2".to_owned(), "steam:1".to_owned()];
+
+    store.set_hidden("ana", &keys, true, 10).unwrap();
+    assert_eq!(
+        store.load_cache(Some("ana")).unwrap().hidden,
+        ["steam:1", "steam:2"],
+        "hidden keys are ordered for a stable cache"
+    );
+    assert!(store.load_cache(Some("bo")).unwrap().hidden.is_empty());
+    assert!(store.load_cache(None).unwrap().hidden.is_empty());
+
+    store
+        .set_hidden("ana", &["steam:1".to_owned()], false, 20)
+        .unwrap();
+    assert_eq!(store.load_cache(Some("ana")).unwrap().hidden, ["steam:2"]);
+
+    // Hiding again refreshes the recorded time; an empty key list is a no-op.
+    store
+        .set_hidden("ana", &["steam:2".to_owned()], true, 30)
+        .unwrap();
+    store
+        .set_hidden("ana", &["steam:9".to_owned()], true, 40)
+        .unwrap();
+    store.set_hidden("ana", &[], false, 50).unwrap();
+    let hidden_at: i64 = settings
+        .conn()
+        .query_row(
+            "SELECT hidden_at FROM hidden_entries WHERE account_id = 'ana' AND entry_key = 'steam:2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hidden_at, 30);
+
+    // Signing out keeps the row for the next sign-in and does not leak it to another account.
+    assert_eq!(
+        store.load_cache(Some("ana")).unwrap().hidden,
+        ["steam:2", "steam:9"]
+    );
+    assert!(store.load_cache(Some("bo")).unwrap().hidden.is_empty());
+}
+
+#[test]
+fn account_library_round_trips_statuses_and_collections_per_account() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let entries = vec![
+        account_entry(7, "entry-7", Some(EntryStatus::Playing)),
+        AccountEntry {
+            collection_ids: Vec::new(),
+            ..account_entry(9, "entry-9", None)
+        },
+    ];
+    let collections = vec![
+        Collection {
+            id: "coop".into(),
+            name: "Coop".into(),
+            default_status: Some(EntryStatus::Finished),
+        },
+        Collection {
+            id: "later".into(),
+            name: "Later".into(),
+            default_status: None,
+        },
+    ];
+    store
+        .replace_account_library("ana", &entries, &collections, 100)
+        .unwrap();
+
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 100);
+    assert_eq!(library.collections, collections);
+    assert_eq!(library.entries.get(&7), Some(&entries[0]));
+    assert_eq!(library.entries.get(&9), Some(&entries[1]));
+    assert!(
+        store
+            .load_cache(Some("bo"))
+            .unwrap()
+            .account_library
+            .is_none()
+    );
+    assert!(store.load_cache(None).unwrap().account_library.is_none());
+
+    // One game is refreshed without touching the completion time or other entries.
+    let played = AccountEntry {
+        status: Some(EntryStatus::Finished),
+        ..account_entry(9, "entry-9", Some(EntryStatus::Finished))
+    };
+    store.save_account_entry("ana", 9, Some(&played)).unwrap();
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 100);
+    assert_eq!(library.entries[&9], played);
+    assert_eq!(library.entries.len(), 2);
+
+    store.save_account_entry("ana", 7, None).unwrap();
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 100, "an individual write keeps the marker");
+    assert!(!library.entries.contains_key(&7));
+    assert_eq!(library.entries.len(), 1);
+
+    // A complete read with no entries is still a complete read.
+    store.replace_account_library("ana", &[], &[], 200).unwrap();
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 200);
+    assert!(library.entries.is_empty() && library.collections.is_empty());
+}
+
+#[test]
+fn an_individual_account_entry_never_fabricates_a_complete_read() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    let entry = account_entry(7, "entry-7", Some(EntryStatus::Planned));
+
+    store.save_account_entry("ana", 7, Some(&entry)).unwrap();
+    assert!(
+        store
+            .load_cache(Some("ana"))
+            .unwrap()
+            .account_library
+            .is_none(),
+        "a game learned before a complete read is not a complete cache"
+    );
+    let rows: i64 = settings
+        .conn()
+        .query_row("SELECT COUNT(*) FROM account_library_entries", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 1, "the individual row is stored but not exposed");
+
+    store
+        .replace_account_library("ana", &[entry], &[], 50)
+        .unwrap();
+    store.save_account_entry("ana", 7, None).unwrap();
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 50);
+    assert!(library.entries.is_empty(), "the removal kept the marker");
+}
+
+#[test]
+fn a_failed_account_library_replacement_keeps_the_previous_cache() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    let original_entry = account_entry(7, "entry-7", Some(EntryStatus::Playing));
+    let original_collection = Collection {
+        id: "coop".into(),
+        name: "Coop".into(),
+        default_status: Some(EntryStatus::Finished),
+    };
+    store
+        .replace_account_library(
+            "ana",
+            std::slice::from_ref(&original_entry),
+            std::slice::from_ref(&original_collection),
+            100,
+        )
+        .unwrap();
+
+    settings
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER boom BEFORE INSERT ON account_library_entries
+             WHEN NEW.entry_id = 'bad'
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .unwrap();
+    let result = store.replace_account_library(
+        "ana",
+        &[
+            account_entry(8, "entry-8", None),
+            account_entry(9, "bad", None),
+        ],
+        &[],
+        200,
+    );
+    assert!(result.is_err());
+
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    assert_eq!(library.read_at, 100, "the failed read kept the old time");
+    assert_eq!(library.entries.len(), 1);
+    assert_eq!(library.entries[&7], original_entry);
+    assert_eq!(library.collections, [original_collection]);
+}
+
+#[test]
+fn unknown_account_statuses_and_damaged_collections_degrade_to_none_and_empty() {
+    let dir = TempDir::new().unwrap();
+    let settings = open(&dir);
+    let store = settings.library_store();
+    store
+        .replace_account_library(
+            "ana",
+            &[account_entry(7, "entry-7", Some(EntryStatus::Playing))],
+            &[Collection {
+                id: "coop".into(),
+                name: "Coop".into(),
+                default_status: Some(EntryStatus::Finished),
+            }],
+            100,
+        )
+        .unwrap();
+    settings
+        .conn()
+        .execute_batch(
+            "UPDATE account_library_entries
+                SET status = 'shelved', collection_ids = 'not json'
+              WHERE account_id = 'ana';
+             UPDATE account_collections
+                SET default_status = 'shelved'
+              WHERE account_id = 'ana';",
+        )
+        .unwrap();
+
+    let library = store
+        .load_cache(Some("ana"))
+        .unwrap()
+        .account_library
+        .unwrap();
+    let entry = &library.entries[&7];
+    assert_eq!(entry.status, None, "an unknown status means unknown");
+    assert!(
+        entry.collection_ids.is_empty(),
+        "a damaged collection list keeps the membership but not the ids"
+    );
+    assert_eq!(library.collections[0].default_status, None);
+    assert_eq!(library.collections[0].name, "Coop");
+}
+
+// Tests retained from the plugin branch during main integration.
+
+#[test]
+fn a_detected_target_approval_is_revision_checked_and_survives_reopening() {
+    use gamenode_core::library::{DetectedTarget, TargetApproval, TargetSpec};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    let spec = TargetSpec::Executable {
+        root: r"C:\Games\Portal 2".into(),
+        path: "Portal2.exe".into(),
+        arguments: vec![],
+        working_directory: String::new(),
+    };
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), spec)]),
+            100,
+        )
+        .unwrap();
+    let candidate = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(!candidate.approved);
+    assert_eq!(candidate.revision, 1);
+
+    let approved = DetectedTarget {
+        approved: true,
+        identity: Some("volume:file-id".into()),
+        ..candidate.clone()
+    };
+    assert_eq!(
+        store.save_target_review("steam:620", 1, &approved).unwrap(),
+        TargetApproval::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_target_review("steam:620", 0, &approved).unwrap(),
+        TargetApproval::Conflict { current: 1 }
+    );
+
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([("620".into(), approved.spec.clone())]),
+            200,
+        )
+        .unwrap();
+
+    drop(store);
+    drop(db);
+    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
+    let target = reopened
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .remove(0)
+        .target
+        .unwrap();
+    assert!(target.approved);
+    assert_eq!(target.identity.as_deref(), Some("volume:file-id"));
+}
+
+#[test]
+fn a_choice_keeps_who_made_it_and_older_rows_read_as_the_users() {
+    use gamenode_core::library::ChoiceSource;
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let choice = |source| ChosenMatch {
+        entry_key: "epic:abc".into(),
+        game_id: Some(9),
+        chosen_at: 5,
+        source,
+    };
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::Plugin))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::Plugin)]
+    );
+    // The user choosing again takes the entry over.
+    store
+        .save_chosen_match("alice", &choice(ChoiceSource::User))
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("alice")).unwrap().chosen_matches,
+        [choice(ChoiceSource::User)]
+    );
+    // A row written without the column (before migration 12) is the user's.
+    open(&dir)
+        .conn()
+        .execute(
+            "INSERT INTO chosen_matches (account_id, entry_key, game_id, chosen_at)
+             VALUES ('bob', 'steam:1', 2, 3)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.load_cache(Some("bob")).unwrap().chosen_matches[0].source,
+        ChoiceSource::User
+    );
 }
 
 #[test]

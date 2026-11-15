@@ -157,7 +157,7 @@ impl Engine {
             self.refresh_playtime_display(state);
         }
         let running_changed = state.library.set_running(if state.playtime.available {
-            state.playtime.tracker.running()
+            state.playtime.tracker.running_started_at()
         } else {
             Default::default()
         });
@@ -259,7 +259,7 @@ impl Engine {
             .tracker
             .update(input, gamenode_platform::random::session_id);
         self.track_effects(&mut state, effects);
-        let running = state.playtime.tracker.running();
+        let running = state.playtime.tracker.running_started_at();
         state.library.set_running(running);
         self.read_counters(&mut state);
         self.publish(&mut state);
@@ -335,7 +335,7 @@ impl Engine {
                         );
                         changed |= engine.track_effects(&mut state, effects);
                         let running = if state.playtime.available {
-                            state.playtime.tracker.running()
+                            state.playtime.tracker.running_started_at()
                         } else {
                             Default::default()
                         };

@@ -5,6 +5,11 @@ import type { Config } from 'tailwindcss';
  *
  * Colors, spacing, radii, and font sizes reuse the Version 3.0 CSS variables from
  * `src/styles/theme.css` so the desktop Tauri shell and the web clients stay in sync.
+ *
+ * The library-redesign additions (radii thumb…palette, font sizes badge…heading,
+ * letter spacing label/overline, overlay colors and shadows, status-bar and
+ * window-control sizes) keep their Figma provenance in `src/styles/theme.css` and
+ * `openspec/changes/redesign-desktop-library/design-reference/tokens.md`.
  */
 const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -44,6 +49,12 @@ const config: Config = {
         md: 'var(--radius-md)',
         lg: 'var(--radius-lg)',
         xl: 'var(--radius-xl)',
+        // Desktop library redesign radii, from design-reference/tokens.md.
+        thumb: 'var(--radius-thumb)',
+        segment: 'var(--radius-segment)',
+        control: 'var(--radius-control)',
+        popover: 'var(--radius-popover)',
+        palette: 'var(--radius-palette)',
       },
       fontSize: {
         xs: 'var(--font-size-xs)',
@@ -51,9 +62,25 @@ const config: Config = {
         md: 'var(--font-size-md)',
         lg: 'var(--font-size-lg)',
         xl: 'var(--font-size-xl)',
+        // Desktop library redesign type scale, from design-reference/tokens.md.
+        badge: 'var(--font-size-badge)',
+        overline: 'var(--font-size-overline)',
+        caption: 'var(--font-size-caption)',
+        body: 'var(--font-size-body)',
+        title: 'var(--font-size-title)',
+        heading: 'var(--font-size-heading)',
+      },
+      letterSpacing: {
+        // Uppercase section labels and the DESKTOP badge; stat/table labels.
+        label: '0.8px',
+        overline: '0.6px',
+      },
+      // `body` is a background-only token. Keeping it in `colors` would make the
+      // 13px `text-body` type token also emit a near-black text color.
+      backgroundColor: {
+        body: 'var(--color-background)',
       },
       colors: {
-        body: 'var(--color-background)',
         paper: {
           DEFAULT: '#161616',
           0: '#161616',
@@ -94,6 +121,14 @@ const config: Config = {
         'text-default': '#D9D9D9',
         'text-dimmed': '#808080',
         'text-secondary': 'var(--color-text-secondary)',
+        // Desktop library redesign colors, from design-reference/tokens.md.
+        'text-primary': 'var(--color-text-primary)',
+        'text-muted': 'var(--color-text-muted)',
+        canvas: 'var(--color-canvas)',
+        'border-strong': 'var(--color-border-strong)',
+        'border-overlay': 'var(--color-border-overlay)',
+        'border-floating': 'var(--color-border-floating)',
+        tooltip: 'var(--color-tooltip)',
         'on-primary': '#EDEDED',
         danger: {
           DEFAULT: '#E5484D',
@@ -113,6 +148,10 @@ const config: Config = {
         modal: '0 32px 80px rgba(0, 0, 0, 0.55)',
         alert: '0 24px 64px rgba(0, 0, 0, 0.6)',
         toast: '0 12px 32px rgba(0, 0, 0, 0.5)',
+        // Menu, palette and floating batch bar reuse the toast shadow.
+        menu: '0 12px 32px rgba(0, 0, 0, 0.5)',
+        popover: 'var(--shadow-popover)',
+        notification: 'var(--shadow-notification)',
       },
       maxWidth: {
         modal: 'var(--modal-max-width)',
@@ -124,9 +163,11 @@ const config: Config = {
         sidebar: 'var(--sidebar-width)',
         'sidebar-compact': 'var(--sidebar-width-compact)',
         logo: 'var(--size-logo-width)',
+        'window-control': 'var(--window-control-width)',
       },
       height: {
         topbar: 'var(--size-topbar-height)',
+        statusbar: 'var(--statusbar-height)',
         control: 'var(--size-control-height)',
         logo: 'var(--size-logo-height)',
       },

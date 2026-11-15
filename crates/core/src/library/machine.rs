@@ -8,27 +8,39 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use crate::game_api::{ApiError, Collection, ExternalMatch, GameSummary, LibraryEntry};
+use crate::game_api::{
+    AccountEntry, ApiError, Collection, ExternalMatch, GameSummary, LibraryEntry,
+};
 use crate::provider::{Provider, Record};
 
 use super::add_dialog::AddDialog;
+use super::add_run::AddSummary;
+use super::batch::{
+    CollectionRun, CollectionRunView, StatusRun, StatusRunView, UndoAddView, UndoRun,
+};
+use super::catalog::CatalogSession;
 use super::cover::CoverUrl;
 use super::cover_queue::CoverQueue;
 use super::favorites::FavoriteState;
 use super::layout::{
-    DETAIL_WIDTH_RANGE, LibraryFilters, LibraryLayout, SIDEBAR_WIDTH_RANGE, SidebarSelection, Sort,
-    ViewMode,
+    DETAIL_WIDTH_RANGE, GroupBy, LibraryFilters, LibraryLayout, LibraryScope, SIDEBAR_WIDTH_RANGE,
+    SidebarSelection, Sort, ViewMode,
 };
 use super::lookup::LookupRun;
 use super::match_dialog::MatchDialog;
 use super::membership::{EntryStatus, Membership};
+use super::organization::{
+    HiddenNotice, SavedView, SavedViewNotice, SavedViewPayload, ViewError, ViewWriteOperation,
+    ViewWriteView,
+};
 use super::selection::{Direction, SelectMode, Selection};
 use super::store::{
-    ArtworkOverride, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate, ChosenMatch,
-    DisplayOverride, FavoriteRecord, GameRecord, LastAccount, LibraryCache, ProviderScanState,
-    StoredEntry, entry_key,
+    AccountLibrary, ArtworkOverride, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate,
+    ChosenMatch, DisplayOverride, FavoriteRecord, GameRecord, LastAccount, LibraryCache,
+    ProviderScanState, StoredEntry, entry_key,
 };
-use super::view::LibraryView;
+use super::suggest::SuggestionView;
+use super::view::{LibraryView, ScanProgress, ScanProgressState};
 
 use serde::{Deserialize, Serialize};
 
@@ -114,11 +126,44 @@ pub enum Effect {
         op: u64,
         query: String,
     },
+    /// Search GameNode for one unmatched entry's title and report with
+    /// [`Input::SuggestionsFound`] (`GameApi::search_page`).
+    SuggestMatches {
+        op: u64,
+        key: String,
+        query: String,
+    },
+    /// Search the GameNode catalog and report with [`Input::CatalogSearchDone`]
+    /// (`GameApi::search_page`).
+    CatalogSearch {
+        op: u64,
+        query: String,
+    },
     /// Store the account's choice for an entry. `games` for a picked search result are written
     /// first, with [`Effect::PersistMatches`].
     PersistChoice {
         account_id: String,
         choice: ChosenMatch,
+    },
+    /// Insert (`id == 0`) or rename/update one saved view and report the database id with
+    /// [`Input::ViewPersisted`]. The insert answer is the only source of a new view's id.
+    PersistView {
+        op: u64,
+        account_id: String,
+        view: SavedView,
+    },
+    /// Delete one saved view of the account.
+    DeleteViewEffect {
+        account_id: String,
+        id: i64,
+    },
+    /// Hide or reveal `keys` for the account in one transaction.
+    PersistHidden {
+        account_id: String,
+        keys: Vec<String>,
+        hidden: bool,
+        /// Unix seconds.
+        now: i64,
     },
     /// Delete the account's choice for an entry.
     ForgetChoice {
@@ -148,6 +193,26 @@ pub enum Effect {
         op: u64,
         user_id: String,
     },
+    /// Read the account's complete GameNode library and its collections
+    /// (`GameApi::list_library_entries` and `GameApi::list_collections`) and report with
+    /// [`Input::AccountLibrarySynced`]. Only sent with a verified session.
+    SyncAccountLibrary {
+        op: u64,
+        user_id: String,
+    },
+    /// Replace the account's stored complete GameNode library read in one transaction.
+    PersistAccountLibrary {
+        account_id: String,
+        entries: Vec<AccountEntry>,
+        collections: Vec<Collection>,
+        read_at: i64,
+    },
+    /// Upsert (`Some`) or remove (`None`) one game of the stored complete read.
+    PersistAccountEntry {
+        account_id: String,
+        game_id: u64,
+        entry: Option<AccountEntry>,
+    },
     /// Add a game to the library (`GameApi::create_entry`) and report with
     /// [`Input::EntryCreated`]. Only sent right after a read found no entry.
     CreateEntry {
@@ -162,6 +227,13 @@ pub enum Effect {
         status: EntryStatus,
         collection_ids: Vec<String>,
         existing: LibraryEntry,
+    },
+    /// Delete one library entry by its GameNode id (`GameApi::delete_entry`) and report with
+    /// [`Input::EntryDeleted`]. Only the entries an add created are ever addressed here.
+    DeleteEntry {
+        op: u64,
+        game_id: u64,
+        entry_id: String,
     },
     PersistCoverReady {
         game_id: u64,
@@ -207,6 +279,12 @@ pub enum Input {
         expected_revision: u64,
         target: super::target::DetectedTarget,
     },
+    /// The engine started one provider's scan. It turns the provider's progress from waiting to
+    /// scanning; an answer for a superseded scan is ignored by the same op check.
+    ProviderScanStarted {
+        op: u64,
+        provider: String,
+    },
     /// The answer to an [`Effect::SyncCatalog`]. `owned`/`shared` are `None` when that fact set
     /// was not attempted; `Err` keeps the previous set and records the category.
     CatalogSynced {
@@ -233,8 +311,7 @@ pub enum Input {
         display_name: Option<String>,
         revision: u64,
     },
-    /// A plugin's artwork override of an entry was stored (or cleared with `None`) at this
-    /// revision. Applies only to entries the library knows.
+    /// A plugin's artwork override of an entry was stored (or cleared with `None`) at this revision.
     ArtworkStored {
         key: String,
         file: Option<String>,
@@ -244,15 +321,45 @@ pub enum Input {
     CatalogSearched {
         games: Vec<GameSummary>,
     },
-    /// Match a plugin's own entry to a game ([`LibraryMachine::plan_plugin_match`] decides).
+    /// Match a plugin's own entry to a game (`plan_plugin_match` decides).
     AssignPluginMatch {
         key: String,
         game_id: u64,
         now: i64,
     },
+    /// Save the effective scope, filters, sort, grouping and view mode as a named view.
+    SaveView {
+        name: String,
+    },
+    RenameView {
+        id: i64,
+        name: String,
+    },
+    DeleteView {
+        id: i64,
+    },
+    ApplyView {
+        id: i64,
+    },
+    SetHidden {
+        keys: Vec<String>,
+        hidden: bool,
+    },
+    ViewPersisted {
+        op: u64,
+        account_id: String,
+        result: Result<i64, ()>,
+    },
     /// Mark or unmark the entry's matched game as a favorite. `now` is unix seconds.
     SetFavorite {
         key: String,
+        favorite: bool,
+        now: i64,
+    },
+    /// Apply one favorite value to every selected matched game, one local-first change each.
+    /// Unmatched keys are ignored.
+    SetFavorites {
+        keys: Vec<String>,
         favorite: bool,
         now: i64,
     },
@@ -289,13 +396,55 @@ pub enum Input {
         op: u64,
         result: Result<Vec<GameSummary>, ApiError>,
     },
+    /// The answer to an [`Effect::SuggestMatches`]. Only the latest request for the selected key
+    /// is applied.
+    SuggestionsFound {
+        op: u64,
+        key: String,
+        result: Result<crate::game_api::SearchPage, ApiError>,
+    },
+    /// Use one suggestion for the selected entry. The choice is persisted and its cover fetched
+    /// exactly like a pick in the match dialog.
+    UseSuggestion {
+        key: String,
+        game_id: u64,
+        /// Unix seconds.
+        now: i64,
+    },
+    /// Search the GameNode catalog. A trimmed query shorter than two characters sends nothing.
+    CatalogSearch(String),
+    /// The answer to an [`Effect::CatalogSearch`]. `query` echoes the request so a late answer
+    /// for another query is dropped.
+    CatalogSearchDone {
+        op: u64,
+        query: String,
+        result: Result<crate::game_api::SearchPage, ApiError>,
+    },
+    /// Reset the catalog view to its idle state and invalidate any request in flight.
+    CatalogClear,
+    /// The catalog detail panel selection; None releases its artwork focus.
+    CatalogFocus(Option<u64>),
+    /// Open the Add to GameNode dialog for one catalog game, recording the metadata the dialog
+    /// needs. No local library row is created.
+    OpenAddForGame {
+        game_id: u64,
+        title: String,
+        cover_url: Option<String>,
+    },
     /// Match the entry to a candidate or search result. `now` is unix seconds.
     PickMatch {
         game_id: u64,
         now: i64,
     },
-    /// Mark the entry as having no GameNode game; later lookups never change it.
+    /// Mark the dialog's entry as having no GameNode game; later lookups never change it.
     MarkNoGame {
+        now: i64,
+    },
+    /// Mark one entry as having no GameNode game without the match dialog, as the detail pane's
+    /// Not a game action does. `key` must be the single shown selection, so a stale action cannot
+    /// apply to another entry. `now` is unix seconds.
+    MarkEntryNoGame {
+        key: String,
         now: i64,
     },
     /// Forget the user's choice so the automatic match, if any, applies again.
@@ -333,11 +482,27 @@ pub enum Input {
     SetColumns(usize),
     /// Grid or list.
     SetView(ViewMode),
-    /// All games, or one provider.
+    /// The pre-scope sidebar choice: All games, or one provider (which becomes the store
+    /// shortcut: All scope plus that store).
     SetFilter(SidebarSelection),
+    /// The active sidebar scope. A saved view is only a highlight marker; its payload is applied
+    /// to the layout separately.
+    SetScope(LibraryScope),
+    /// How the sorted rows are partitioned into collapsible sections.
+    SetGroup(GroupBy),
+    /// Collapse or expand one group of the active grouping. The id is `RowGroup::id`.
+    ToggleGroup {
+        id: String,
+    },
+    /// Collapse every non-empty group of the active grouping, or expand all of them.
+    SetAllGroupsCollapsed(bool),
     /// The search box text. Not remembered across restarts.
     SetSearch(String),
     SetSort(Sort),
+    /// Select every visible row: hidden rows stay out, and so do collapsed groups.
+    SelectAll,
+    /// Clear the selection and the keyboard focus.
+    ClearSelection,
     /// Pane sizes in logical pixels, clamped to a usable range.
     SetSidebarWidth(u32),
     SetDetailWidth(u32),
@@ -351,6 +516,14 @@ pub enum Input {
         op: u64,
         game_id: u64,
         result: Result<Option<LibraryEntry>, ApiError>,
+    },
+    /// The answer to an [`Effect::SyncAccountLibrary`]: the complete library entries and the
+    /// account's collections. Any failure keeps the previous complete read.
+    AccountLibrarySynced {
+        op: u64,
+        result: Result<(Vec<AccountEntry>, Vec<Collection>), ApiError>,
+        /// Unix seconds when the answer arrived.
+        now: i64,
     },
     /// Read the selected game's standing again (after a failed read).
     RefreshMembership,
@@ -371,6 +544,33 @@ pub enum Input {
         op: u64,
         game_id: u64,
         result: Result<(), ApiError>,
+    },
+    /// The answer to an [`Effect::UpdateEntry`]. An edit, a status change and a collection change
+    /// all answer this way; the step's op decides which run handles it.
+    EntryUpdated {
+        op: u64,
+        game_id: u64,
+        result: Result<(), ApiError>,
+    },
+    /// Delete exactly the entries the add run `run` created. Any other run is stale and ignored.
+    UndoAdd {
+        run: u64,
+    },
+    /// The answer to an [`Effect::DeleteEntry`].
+    EntryDeleted {
+        op: u64,
+        game_id: u64,
+        result: Result<(), ApiError>,
+    },
+    /// Set one GameNode status on every selected game already in the library.
+    SetStatus {
+        keys: Vec<String>,
+        status: EntryStatus,
+    },
+    /// Add every selected game already in the library to one collection, keeping its status.
+    AddToCollection {
+        keys: Vec<String>,
+        collection_id: String,
     },
     /// Remove an entry from the library (`allow_rediscovery = true` hides it until the next
     /// scan; `false` excludes it across future scans and restarts).
@@ -403,10 +603,21 @@ enum CatalogFact {
     Shared,
 }
 
+/// A saved-view write the storage worker has not answered yet. The answer is only applied while
+/// the account is still the one that asked.
+#[derive(Debug)]
+pub(super) struct PendingViewSave {
+    pub(super) account_id: String,
+    pub(super) view: SavedView,
+    pub(super) operation: ViewWriteOperation,
+}
+
 pub struct LibraryMachine {
     pub(super) local_inferences: BTreeMap<String, u64>,
     pub(super) playtime: BTreeMap<String, crate::playtime::PlaytimeView>,
-    pub(super) running: BTreeSet<String>,
+    /// Running library keys mapped to the Unix second their current execution began. The engine
+    /// derives it from the process tracker, including counter-backed entries with no session row.
+    pub(super) running: BTreeMap<String, i64>,
     pub(super) providers: Vec<Provider>,
     pub(super) phase: Phase,
     pub(super) account: Option<LastAccount>,
@@ -414,6 +625,50 @@ pub struct LibraryMachine {
     pub(super) op: u64,
     pub(super) entries: BTreeMap<String, StoredEntry>,
     pub(super) excluded: BTreeSet<String>,
+    /// Library keys hidden for this account. Empty until the organization cache is read.
+    pub(super) hidden: BTreeSet<String>,
+    /// The account's saved views, in sidebar order. Empty until the organization cache is read.
+    pub(super) saved_views: Vec<SavedView>,
+    /// The payload of the currently highlighted saved view. The layout holds the marker id; this
+    /// holds the effective scope and the values that must not change for the highlight to stay.
+    pub(super) applied_view_payload: Option<SavedViewPayload>,
+    /// The id the payload was applied for, so a different marker never borrows another view's
+    /// payload.
+    pub(super) applied_view_id: Option<i64>,
+    /// Saved-view writes in flight, by op, so an answer can be matched to its account and input.
+    pub(super) pending_view_saves: BTreeMap<u64, PendingViewSave>,
+    /// Why the last view name was refused. Cleared by the next valid save or rename.
+    pub(super) view_error: Option<ViewError>,
+    /// The latest saved-view attempt and its outcome, so the dialog stops waiting on a failure.
+    pub(super) view_write: Option<ViewWriteView>,
+    /// The last successful save, for the notification. `run` makes each save notify once.
+    pub(super) last_saved_view: Option<SavedViewNotice>,
+    /// The last hide run, for the notification and its Show again action.
+    pub(super) last_hidden: Option<HiddenNotice>,
+    /// The account's last complete GameNode library read. `None` until it is read at least once,
+    /// which is also when the GameNode status facet becomes available.
+    pub(super) account_library: Option<AccountLibrary>,
+    /// The account library sync in flight; answers to older syncs are ignored.
+    pub(super) account_library_sync: Option<u64>,
+    /// Per-game cached entries confirmed locally since the current complete read started. A late
+    /// whole read merges under these, so an older snapshot cannot revert a status, collection, add
+    /// or delete that GameNode already confirmed. `None` means "confirmed absent". Cleared when a
+    /// new complete read starts (that request is issued after the confirmed writes) and consumed
+    /// when it answers.
+    pub(super) account_library_writes: BTreeMap<u64, Option<AccountEntry>>,
+    /// Match suggestions in memory per entry key for this session. An empty list means the search
+    /// found nothing usable, so selection changes never turn into a request per input.
+    pub(super) suggestions: BTreeMap<String, Vec<SuggestionView>>,
+    /// Suggestion searches in flight, by entry key. Older or other-key answers are ignored.
+    pub(super) suggestion_requests: BTreeMap<String, u64>,
+    /// The catalog's current query, status and raw results.
+    pub(super) catalog: CatalogSession,
+    /// Per-provider scan progress for the current or latest scan, in provider order. The manual
+    /// provider's count feeds the DRM-free pseudo row instead of a store row.
+    pub(super) scan_progress: BTreeMap<String, ScanProgress>,
+    /// Whether the watched-folder discovery is running. The engine bridges this from the local
+    /// view before the library view is built; the library machine does not own local games.
+    pub(super) discovery_scanning: bool,
     pub(super) scans: BTreeMap<String, ProviderScanState>,
     /// The catalog sync op in flight for each provider; older answers are ignored.
     pub(super) catalog_ops: BTreeMap<String, u64>,
@@ -453,6 +708,21 @@ pub struct LibraryMachine {
     pub(super) membership_focus: Option<u64>,
     /// The Add to GameNode dialog, while it is open.
     pub(super) add: Option<AddDialog>,
+    /// The result of the latest add, kept after the dialog closes so its notification can offer
+    /// Undo and View on GameNode even when the dialog is gone.
+    pub(super) last_add: Option<AddSummary>,
+    /// The undo in flight for the latest add run.
+    pub(super) undo: Option<UndoRun>,
+    /// The result of the last undo, for the notification.
+    pub(super) last_undo: Option<UndoAddView>,
+    /// A batch status change in flight.
+    pub(super) status_run: Option<StatusRun>,
+    /// The result of the last batch status change, for the notification.
+    pub(super) last_status_run: Option<StatusRunView>,
+    /// A batch collection add in flight.
+    pub(super) collection_run: Option<CollectionRun>,
+    /// The result of the last batch collection add, for the notification.
+    pub(super) last_collection_run: Option<CollectionRunView>,
     /// Lookups sent and not answered yet, by external category.
     pub(super) lookups: BTreeMap<u32, LookupRun>,
     /// The match dialog, while it is open.
@@ -477,7 +747,7 @@ impl LibraryMachine {
         Self {
             local_inferences: BTreeMap::new(),
             playtime: BTreeMap::new(),
-            running: BTreeSet::new(),
+            running: BTreeMap::new(),
             providers,
             phase: Phase::Inactive,
             account: None,
@@ -485,6 +755,23 @@ impl LibraryMachine {
             op: 0,
             entries: BTreeMap::new(),
             excluded: BTreeSet::new(),
+            hidden: BTreeSet::new(),
+            saved_views: Vec::new(),
+            applied_view_payload: None,
+            applied_view_id: None,
+            pending_view_saves: BTreeMap::new(),
+            view_error: None,
+            view_write: None,
+            last_saved_view: None,
+            last_hidden: None,
+            account_library: None,
+            account_library_sync: None,
+            account_library_writes: BTreeMap::new(),
+            suggestions: BTreeMap::new(),
+            suggestion_requests: BTreeMap::new(),
+            catalog: CatalogSession::default(),
+            scan_progress: BTreeMap::new(),
+            discovery_scanning: false,
             scans: BTreeMap::new(),
             catalog_ops: BTreeMap::new(),
             auto_matches: BTreeMap::new(),
@@ -509,6 +796,13 @@ impl LibraryMachine {
             membership_reads: BTreeMap::new(),
             membership_focus: None,
             add: None,
+            last_add: None,
+            undo: None,
+            last_undo: None,
+            status_run: None,
+            last_status_run: None,
+            collection_run: None,
+            last_collection_run: None,
             lookups: BTreeMap::new(),
             dialog: None,
             offered: Default::default(),
@@ -555,12 +849,25 @@ impl LibraryMachine {
         true
     }
 
-    /// Replaces the running set. Returns whether it changed.
-    pub fn set_running(&mut self, running: BTreeSet<String>) -> bool {
+    /// Replaces the running set and its execution start times. Returns whether anything changed,
+    /// so callers that publish can skip a no-op update. The start is the authoritative live
+    /// session clock; it must not be re-derived from view mounts.
+    pub fn set_running(&mut self, running: BTreeMap<String, i64>) -> bool {
         if self.running == running {
             return false;
         }
         self.running = running;
+        self.view_dirty = true;
+        true
+    }
+
+    /// Bridges the DRM-free discovery state from the app's local view, which the machine does not
+    /// own. Returns whether it changed; the scanning panel's DRM-free row follows it.
+    pub fn set_discovery_scanning(&mut self, scanning: bool) -> bool {
+        if self.discovery_scanning == scanning {
+            return false;
+        }
+        self.discovery_scanning = scanning;
         self.view_dirty = true;
         true
     }
@@ -656,13 +963,14 @@ impl LibraryMachine {
         self.view_dirty = true;
         let mut effects = self.dispatch(input);
         effects.extend(self.plan_membership());
+        effects.extend(self.plan_suggestions());
         effects.extend(self.plan_artwork());
         effects
     }
 
     fn plan_artwork(&mut self) -> Vec<Effect> {
         let game_id = if self.access == Access::Verified && matches!(self.phase, Phase::Ready) {
-            self.selected_game()
+            self.catalog.focused_game.or_else(|| self.selected_game())
         } else {
             None
         };
@@ -681,7 +989,9 @@ impl LibraryMachine {
                 self.artwork_cache.push_back(cached);
             }
         }
-        if !self.layout.detail_open || self.artwork_attempted {
+        if (self.catalog.focused_game.is_none() && !self.layout.detail_open)
+            || self.artwork_attempted
+        {
             return vec![];
         }
         let Some(game_id) = game_id else {
@@ -748,6 +1058,10 @@ impl LibraryMachine {
                 }
                 vec![]
             }
+            Input::ProviderScanStarted { op, provider } => {
+                self.on_provider_scan_started(op, &provider);
+                vec![]
+            }
             Input::CatalogSynced {
                 op,
                 provider,
@@ -760,7 +1074,10 @@ impl LibraryMachine {
                 vec![]
             }
             Input::RequestCatalog => self.request_catalog(),
-            Input::SetFilters(filters) => self.update_layout(|layout| layout.filters = filters),
+            Input::SetFilters(filters) => {
+                let filters = filters.normalized();
+                self.update_layout(|layout| layout.filters = filters)
+            }
             Input::DisplayNameStored {
                 key,
                 display_name,
@@ -795,7 +1112,22 @@ impl LibraryMachine {
                 }
                 vec![]
             }
+            Input::SaveView { name } => self.save_view(name),
+            Input::RenameView { id, name } => self.rename_view(id, name),
+            Input::DeleteView { id } => self.delete_view(id),
+            Input::ApplyView { id } => self.apply_view(id),
+            Input::SetHidden { keys, hidden } => self.set_hidden(keys, hidden),
+            Input::ViewPersisted {
+                op,
+                account_id,
+                result,
+            } => self.on_view_persisted(op, account_id, result),
             Input::SetFavorite { key, favorite, now } => self.on_set_favorite(key, favorite, now),
+            Input::SetFavorites {
+                keys,
+                favorite,
+                now,
+            } => self.on_set_favorites(keys, favorite, now),
             Input::FavoritesSynced { op, result, now } => self.on_favorites_synced(op, result, now),
             Input::FavoritePushed {
                 op,
@@ -807,9 +1139,13 @@ impl LibraryMachine {
             Input::SetSyncActive(active) => self.set_sync_active(active),
             Input::SyncFavoritesRequested => self.request_favorites_sync(),
             Input::SetAccess { access, now } => {
+                let became_verified = access == Access::Verified && self.access != Access::Verified;
                 self.access = access;
                 let mut effects = self.plan_lookups(now);
                 effects.extend(self.plan_covers(None));
+                if became_verified {
+                    effects.extend(self.account_library_sync_effect());
+                }
                 effects
             }
             Input::CoverDone {
@@ -849,8 +1185,31 @@ impl LibraryMachine {
             }
             Input::SearchMatch => self.search_match(),
             Input::MatchSearched { op, result } => self.on_match_searched(op, result),
+            Input::SuggestionsFound { op, key, result } => {
+                self.on_suggestions_found(op, key, result)
+            }
+            Input::UseSuggestion { key, game_id, now } => self.use_suggestion(&key, game_id, now),
+            Input::CatalogSearch(query) => self.catalog_search(query),
+            Input::CatalogSearchDone { op, query, result } => {
+                self.on_catalog_search_done(op, query, result)
+            }
+            Input::CatalogFocus(game_id) => {
+                self.catalog.focused_game =
+                    game_id.filter(|id| self.catalog.games.iter().any(|game| game.id == *id));
+                vec![]
+            }
+            Input::CatalogClear => {
+                self.catalog_clear();
+                vec![]
+            }
+            Input::OpenAddForGame {
+                game_id,
+                title,
+                cover_url,
+            } => self.open_add_for_catalog_game(game_id, title, cover_url),
             Input::PickMatch { game_id, now } => self.pick_match(game_id, now),
             Input::MarkNoGame { now } => self.mark_no_game(now),
+            Input::MarkEntryNoGame { key, now } => self.mark_entry_no_game(&key, now),
             Input::ClearMatch => self.clear_match(),
             Input::Select { key, mode } => {
                 self.select(&key, mode);
@@ -875,7 +1234,39 @@ impl LibraryMachine {
                 self.update_layout(|layout| layout.detail_open = true)
             }
             Input::SetView(view) => self.update_layout(|layout| layout.view = view),
-            Input::SetFilter(sidebar) => self.update_layout(|layout| layout.sidebar = sidebar),
+            // The pre-scope sidebar input: a provider is the All scope plus that store, which is
+            // what the new store shortcut sends. The redesigned sidebar uses scopes directly.
+            Input::SetFilter(sidebar) => self.update_layout(|layout| {
+                layout.scope = LibraryScope::All;
+                layout.filters.stores = match sidebar {
+                    SidebarSelection::All => Vec::new(),
+                    SidebarSelection::Provider(id) => vec![id],
+                };
+            }),
+            Input::SetScope(LibraryScope::SavedView(id)) => {
+                if self.saved_views.iter().any(|view| view.id == id) {
+                    self.apply_view(id)
+                } else {
+                    // Kept for the pre-organization caller: an unknown marker is only a title.
+                    self.update_layout(|layout| layout.scope = LibraryScope::SavedView(id))
+                }
+            }
+            Input::SetScope(scope) => self.update_layout(|layout| layout.scope = scope),
+            Input::SetGroup(group) => {
+                let effects = self.update_layout(|layout| layout.group = group);
+                self.prune_collapsed_selection();
+                effects
+            }
+            Input::ToggleGroup { id } => self.toggle_group(&id),
+            Input::SetAllGroupsCollapsed(collapsed) => self.set_all_groups_collapsed(collapsed),
+            Input::SelectAll => {
+                self.select_all();
+                vec![]
+            }
+            Input::ClearSelection => {
+                self.selection.clear();
+                vec![]
+            }
             Input::SetSort(sort) => self.update_layout(|layout| layout.sort = sort),
             Input::SetSidebarWidth(width) => self.update_layout(|layout| {
                 layout.sidebar_width =
@@ -895,11 +1286,17 @@ impl LibraryMachine {
                 result,
             } => {
                 if self.membership_reads.get(&game_id) == Some(&op) {
-                    self.on_membership_read(game_id, result);
-                    vec![]
+                    self.on_membership_read(game_id, result)
+                } else if self.status_step_matches(op, game_id) {
+                    self.on_status_checked(op, game_id, result)
+                } else if self.collection_step_matches(op, game_id) {
+                    self.on_collection_checked(op, game_id, result)
                 } else {
                     self.on_add_checked(op, game_id, result)
                 }
+            }
+            Input::AccountLibrarySynced { op, result, now } => {
+                self.on_account_library_synced(op, result, now)
             }
             Input::RefreshMembership => {
                 self.membership_focus = None;
@@ -931,6 +1328,30 @@ impl LibraryMachine {
                 game_id,
                 result,
             } => self.on_entry_created(op, game_id, result),
+            Input::EntryUpdated {
+                op,
+                game_id,
+                result,
+            } => {
+                if self.status_step_matches(op, game_id) {
+                    self.on_status_updated(op, game_id, result)
+                } else if self.collection_step_matches(op, game_id) {
+                    self.on_collection_updated(op, game_id, result)
+                } else {
+                    self.on_entry_updated(op, game_id, result)
+                }
+            }
+            Input::UndoAdd { run } => self.undo_add(run),
+            Input::EntryDeleted {
+                op,
+                game_id,
+                result,
+            } => self.on_entry_deleted(op, game_id, result),
+            Input::SetStatus { keys, status } => self.set_status(keys, status),
+            Input::AddToCollection {
+                keys,
+                collection_id,
+            } => self.add_to_collection(keys, collection_id),
             Input::RemoveEntry {
                 key,
                 allow_rediscovery,
@@ -970,19 +1391,85 @@ impl LibraryMachine {
     }
 
     /// Applies a change to the remembered layout and asks for it to be saved if it changed.
-    fn update_layout(&mut self, change: impl FnOnce(&mut LibraryLayout)) -> Vec<Effect> {
+    pub(super) fn update_layout(&mut self, change: impl FnOnce(&mut LibraryLayout)) -> Vec<Effect> {
         let before = self.layout.clone();
         change(&mut self.layout);
+        self.reconcile_applied_view();
         if self.layout == before {
             return vec![];
         }
         vec![Effect::PersistLayout(self.layout.clone())]
     }
 
+    /// Collapses or expands one group of the active grouping, remembering the set per grouping.
+    fn toggle_group(&mut self, id: &str) -> Vec<Effect> {
+        if self.layout.group == GroupBy::None {
+            return vec![];
+        }
+        let group = self.layout.group;
+        let effects = self.update_layout(|layout| {
+            let is_empty = {
+                let collapsed = layout.collapsed_groups.entry(group).or_default();
+                if !collapsed.remove(id) {
+                    collapsed.insert(id.to_owned());
+                }
+                collapsed.is_empty()
+            };
+            if is_empty {
+                layout.collapsed_groups.remove(&group);
+            }
+        });
+        self.prune_collapsed_selection();
+        effects
+    }
+
+    /// Collapses every non-empty group of the active grouping, or expands all of them.
+    fn set_all_groups_collapsed(&mut self, collapsed: bool) -> Vec<Effect> {
+        if self.layout.group == GroupBy::None {
+            return vec![];
+        }
+        let group = self.layout.group;
+        let ids: Vec<String> = self
+            .query(&self.search)
+            .groups
+            .into_iter()
+            .map(|group| group.id)
+            .collect();
+        let effects = self.update_layout(|layout| {
+            if collapsed {
+                layout
+                    .collapsed_groups
+                    .entry(group)
+                    .or_default()
+                    .extend(ids.clone());
+            } else {
+                layout.collapsed_groups.remove(&group);
+            }
+        });
+        self.prune_collapsed_selection();
+        effects
+    }
+
     fn reset_data(&mut self) {
         self.local_inferences.clear();
         self.entries.clear();
         self.excluded.clear();
+        self.hidden.clear();
+        self.saved_views.clear();
+        self.applied_view_payload = None;
+        self.applied_view_id = None;
+        self.pending_view_saves.clear();
+        self.view_error = None;
+        self.view_write = None;
+        self.last_saved_view = None;
+        self.last_hidden = None;
+        self.account_library = None;
+        self.account_library_sync = None;
+        self.account_library_writes.clear();
+        self.suggestions.clear();
+        self.suggestion_requests.clear();
+        self.catalog.clear();
+        self.scan_progress.clear();
         self.scans.clear();
         self.catalog_ops.clear();
         self.auto_matches.clear();
@@ -996,6 +1483,13 @@ impl LibraryMachine {
         self.membership_reads.clear();
         self.membership_focus = None;
         self.add = None;
+        self.last_add = None;
+        self.undo = None;
+        self.last_undo = None;
+        self.status_run = None;
+        self.last_status_run = None;
+        self.collection_run = None;
+        self.last_collection_run = None;
         self.lookups.clear();
         self.dialog = None;
         self.favorites.clear();
@@ -1041,8 +1535,11 @@ impl LibraryMachine {
             // An unreadable cache is not fatal: the scan below rebuilds the entries.
             Err(()) => tracing::warn!("the library cache could not be read; starting empty"),
         }
+        // The layout may highlight a saved view of the account that just loaded. Restore its
+        // payload scope, or fall back to All games when the view no longer exists.
+        let mut effects = self.reconcile_saved_view_scope();
         self.phase = Phase::Ready;
-        let mut effects = self.start_scan();
+        effects.extend(self.start_scan());
         // A sync activation that happened while the cache loaded had no account to read yet.
         effects.extend(super::favorites::plan(self));
         effects
@@ -1085,6 +1582,9 @@ impl LibraryMachine {
             .into_iter()
             .map(|over| (over.entry_key.clone(), over))
             .collect();
+        self.saved_views = cache.saved_views;
+        self.hidden = cache.hidden.into_iter().collect();
+        self.account_library = cache.account_library;
         self.favorites = cache
             .favorites
             .into_iter()
@@ -1120,6 +1620,20 @@ impl LibraryMachine {
             .iter()
             .map(|provider| provider.id().to_owned())
             .collect();
+        // Every provider starts waiting; the engine reports each start before running it, and
+        // each answer moves that provider to done or failed with its found count.
+        self.scan_progress.clear();
+        for provider in &self.providers {
+            self.scan_progress.insert(
+                provider.id().to_owned(),
+                ScanProgress {
+                    provider: provider.id().to_owned(),
+                    name: provider.name().to_owned(),
+                    state: ScanProgressState::Waiting,
+                    found: None,
+                },
+            );
+        }
         let mut effects: Vec<Effect> = waiting
             .iter()
             .map(|provider| Effect::RunScan {
@@ -1129,8 +1643,77 @@ impl LibraryMachine {
             .collect();
         // The installed scan is never gated by the catalog: both start together.
         effects.extend(self.catalog_sync_effects());
+        // The library's GameNode statuses and collections are re-read on every scan, even while
+        // the sync toggle is off (see the desktop-sync delta).
+        effects.extend(self.account_library_sync_effect());
         self.scan = (!waiting.is_empty()).then_some(ScanRun { op, waiting });
         effects
+    }
+
+    /// A complete account-library read for the signed-in account, while the session is verified.
+    /// It is never gated by the sync toggle.
+    fn account_library_sync_effect(&mut self) -> Option<Effect> {
+        if self.access != Access::Verified || !matches!(self.phase, Phase::Ready) {
+            return None;
+        }
+        let user_id = self.account.as_ref()?.id.clone();
+        // This request starts now, after every confirmed write so far, so its read already
+        // includes them; only writes confirmed while it is in flight need to be merged over it.
+        self.account_library_writes.clear();
+        let op = self.next_op();
+        self.account_library_sync = Some(op);
+        Some(Effect::SyncAccountLibrary { op, user_id })
+    }
+
+    /// Replaces the complete account library read only when every page and the collections were
+    /// read. A failure keeps the previous cache, so a partial read never looks complete.
+    ///
+    /// A per-game update confirmed after this read started is newer than the read's snapshot, so
+    /// it is merged over the answer instead of being reverted by it. This includes the first read
+    /// (`account_library` still `None`): a game added, edited or removed in the meantime stays as
+    /// GameNode confirmed it.
+    fn on_account_library_synced(
+        &mut self,
+        op: u64,
+        result: Result<(Vec<AccountEntry>, Vec<Collection>), ApiError>,
+        now: i64,
+    ) -> Vec<Effect> {
+        if self.account_library_sync != Some(op) {
+            return vec![];
+        }
+        self.account_library_sync = None;
+        let Some(account_id) = self.account.as_ref().map(|account| account.id.clone()) else {
+            return vec![];
+        };
+        let Ok((entries, collections)) = result else {
+            // The next rescan retries; the last complete read stays visible.
+            return vec![];
+        };
+        let mut entries: BTreeMap<u64, AccountEntry> = entries
+            .into_iter()
+            .map(|entry| (entry.game_id, entry))
+            .collect();
+        for (game_id, local) in std::mem::take(&mut self.account_library_writes) {
+            match local {
+                Some(entry) => {
+                    entries.insert(game_id, entry);
+                }
+                None => {
+                    entries.remove(&game_id);
+                }
+            }
+        }
+        self.account_library = Some(AccountLibrary {
+            entries: entries.clone(),
+            collections: collections.clone(),
+            read_at: now,
+        });
+        vec![Effect::PersistAccountLibrary {
+            account_id,
+            entries: entries.into_values().collect(),
+            collections,
+            read_at: now,
+        }]
     }
 
     /// Emits a catalog sync for every provider that declares one and records its op.
@@ -1344,6 +1927,28 @@ impl LibraryMachine {
         self.prune_selection();
     }
 
+    fn on_provider_scan_started(&mut self, op: u64, provider: &str) {
+        if !self.scan.as_ref().is_some_and(|run| run.op == op) {
+            return;
+        }
+        let name = self
+            .provider(provider)
+            .map(|found| found.name().to_owned())
+            .unwrap_or_else(|| provider.to_owned());
+        let progress = self
+            .scan_progress
+            .entry(provider.to_owned())
+            .or_insert_with(|| ScanProgress {
+                provider: provider.to_owned(),
+                name,
+                state: ScanProgressState::Waiting,
+                found: None,
+            });
+        if progress.state == ScanProgressState::Waiting {
+            progress.state = ScanProgressState::Scanning;
+        }
+    }
+
     fn on_provider_scanned(
         &mut self,
         op: u64,
@@ -1359,6 +1964,25 @@ impl LibraryMachine {
             return vec![];
         }
         let finished = run.waiting.is_empty();
+        let found = result.as_ref().ok().map(Vec::len);
+        let state = if result.is_ok() {
+            ScanProgressState::Done
+        } else {
+            ScanProgressState::Failed
+        };
+        let name = self
+            .provider(&provider)
+            .map(|found| found.name().to_owned())
+            .unwrap_or_else(|| provider.clone());
+        self.scan_progress.insert(
+            provider.clone(),
+            ScanProgress {
+                provider: provider.clone(),
+                name,
+                state,
+                found,
+            },
+        );
 
         let outcome = match result {
             Ok(records) => ScanOutcome::Scanned { records, targets },

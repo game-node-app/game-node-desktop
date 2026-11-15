@@ -1,5 +1,5 @@
 use super::*;
-use crate::library::layout::{SidebarSelection, ViewMode};
+use crate::library::layout::ViewMode;
 use crate::library::machine::Input;
 use crate::library::machine::tests::{finish_scan, loaded, record};
 use crate::library::store::LibraryCache;
@@ -196,6 +196,92 @@ fn removed_entries_drop_out_of_the_selection() {
     assert_eq!(selection.focus(&visible), None, "the focused entry is gone");
 }
 
+#[test]
+fn grouped_grid_navigation_starts_each_group_on_a_new_line_and_clamps_columns() {
+    // Group sizes 2 and 4 with 3 columns:
+    //   [k0 k1] / [k2 k3 k4] / [k5]
+    let visible = keys(6);
+    let groups = [2, 4];
+    let mut selection = Selection::default();
+    selection.select("k1", SelectMode::Replace, &visible);
+
+    // Down crosses into the next group's first line and keeps column 1.
+    selection.step_grouped(Direction::Down, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k3"));
+
+    // Down to the shorter last line clamps to its nearest (last) column.
+    selection.step_grouped(Direction::Down, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k5"));
+
+    // Up from the last line lands on the nearest column of the previous line.
+    selection.step_grouped(Direction::Up, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k2"));
+
+    // The first line of a group has nowhere above it.
+    selection.step_grouped(Direction::Home, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k0"));
+    selection.step_grouped(Direction::Up, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k0"));
+
+    // Left/right stay on the rendered line instead of jumping into another group.
+    selection.select("k2", SelectMode::Replace, &visible);
+    selection.step_grouped(Direction::Left, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k2"));
+    selection.select("k4", SelectMode::Replace, &visible);
+    selection.step_grouped(Direction::Right, false, 3, &visible, &groups);
+    assert_eq!(selection.focus(&visible), Some("k4"));
+}
+
+#[test]
+fn grouped_navigation_skips_collapsed_groups_through_the_machine() {
+    let mut machine = library_of(4);
+    for (provider, title) in [("gog", "GOG Game"), ("shop", "Shop Game")] {
+        machine.entries.insert(
+            format!("{provider}:1"),
+            crate::library::store::StoredEntry {
+                key: format!("{provider}:1"),
+                provider: provider.to_owned(),
+                store_id: "1".to_owned(),
+                name: Some(title.to_owned()),
+                install_dir: format!("/{provider}"),
+                fields: Default::default(),
+                target: None,
+                installed: true,
+                owned: false,
+                shared: false,
+                first_seen: 1,
+                last_seen: 1,
+            },
+        );
+    }
+    machine.handle(Input::SetColumns(3));
+    machine.handle(Input::SetGroup(crate::library::GroupBy::Store));
+    // Steam has Game 0..3 (lines of 3 and 1); the next groups are GOG then Shop.
+    machine.handle(Input::Select {
+        key: "steam:3".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    machine.handle(Input::Move {
+        direction: Direction::Down,
+        extend: false,
+    });
+    assert_eq!(machine.selected_keys(), ["gog:1"]);
+
+    // Collapsing GOG makes Down cross straight to the Shop group's line.
+    machine.handle(Input::ToggleGroup {
+        id: "gog".to_owned(),
+    });
+    machine.handle(Input::Select {
+        key: "steam:3".to_owned(),
+        mode: SelectMode::Replace,
+    });
+    machine.handle(Input::Move {
+        direction: Direction::Down,
+        extend: false,
+    });
+    assert_eq!(machine.selected_keys(), ["shop:1"]);
+}
+
 // ---- through the machine ----
 
 fn library_of(count: usize) -> crate::library::machine::LibraryMachine {
@@ -256,8 +342,9 @@ fn the_selection_survives_a_filter_change_and_hidden_entries_are_not_acted_on() 
     machine.search.clear();
     assert_eq!(machine.selected_keys(), names(&["steam:0", "steam:2"]));
 
-    // Same for the sidebar.
-    machine.layout.sidebar = SidebarSelection::Provider("steam".to_owned());
+    // Same for the store shortcut: the All scope plus one store.
+    machine.layout.scope = crate::library::layout::LibraryScope::All;
+    machine.layout.filters.stores = vec!["steam".to_owned()];
     assert_eq!(machine.selected_keys().len(), 2);
 }
 

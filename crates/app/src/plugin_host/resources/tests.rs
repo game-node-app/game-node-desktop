@@ -35,9 +35,13 @@ mod notifications;
 mod ports;
 mod saves;
 mod sdk;
+mod sdk_actions;
 mod sdk_utilities;
 mod storage;
 mod tools;
+
+#[path = "../../../../plugin-sdk/examples/action_recipes.rs"]
+mod action_recipes;
 
 struct NoServices;
 

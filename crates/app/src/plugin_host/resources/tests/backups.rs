@@ -7,6 +7,8 @@ use gamenode_core::drm_free as d;
 use std::path::PathBuf;
 use tokio::sync::Notify;
 
+use super::action_recipes;
+
 const GRANTS: &[&str] = &[
     cap::FILES_READ,
     cap::GAME_SAVES_CREATE,
@@ -251,6 +253,69 @@ async fn shown(dialog: &Dialog) {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sdk_backup_calls_match_the_raw_calls_and_follow_the_job() {
+    let r = Ready::new().await;
+    let actions = r.f.host.actions().expect("an API 1.6 session");
+    let created = actions
+        .create_backup(
+            "3",
+            &r.profile.profile_id,
+            "User requested",
+            r.profile.revision,
+            &gamenode_plugin_sdk::idempotency_key(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        action_recipes::wait_for_job(&actions, &created.job_id)
+            .await
+            .unwrap()
+            .state,
+        JobState::Succeeded
+    );
+    let listed = r.list("", 50).await.unwrap();
+    let through_sdk = actions.backups("3", &r.profile.profile_id).await.unwrap();
+    assert_eq!(through_sdk.len(), listed.backups.len());
+    assert_eq!(
+        (
+            &through_sdk[0].game_id,
+            through_sdk[0].created_at,
+            through_sdk[0].size_bytes,
+            &through_sdk[0].state,
+        ),
+        (
+            &listed.backups[0].game_id,
+            listed.backups[0].created_at,
+            listed.backups[0].size_bytes,
+            &listed.backups[0].state,
+        )
+    );
+    let dialog = r.dialog(true, None);
+    let restored = actions
+        .restore_backup(
+            &listed.backups[0].backup_id,
+            "3",
+            &r.profile.profile_id,
+            r.profile.revision,
+            &gamenode_plugin_sdk::idempotency_key(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        action_recipes::wait_for_job(&actions, &restored.job_id)
+            .await
+            .unwrap()
+            .state,
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read(r.folder.join("states/s1.sav")).unwrap(),
+        b"state"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

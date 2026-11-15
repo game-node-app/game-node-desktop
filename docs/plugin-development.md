@@ -390,6 +390,34 @@ currently runs only on Windows; runtime/shared-emulator profiles remain unavaila
 until their resource/activity coordination exists. Do not infer an empty history
 or successful restoration from an unavailable/partial result.
 
+## Action services through the SDK
+
+`HostClient::actions()` returns an [`Actions`](../crates/plugin-sdk/src/actions.rs) client for
+API 1.6 sessions. It sends exactly the raw `ResourceHost` requests and covers launch/install,
+backup list/create/restore, host-catalog tools and ports, and the jobs they return:
+`launch_game`, `install_game`, `backup_page`/`backups`, `create_backup`, `restore_backup`,
+`tool_page`/`tools`, `apply_tool`, `remove_tool`, `port_page`/`ports`, `port`, `install_port`,
+`job`, `watch_job` and `cancel_job`. It adds no authority: the host still checks every grant,
+scope, revision, confirmation and job ownership.
+
+Every action answers with a job, and the user may have to confirm it in Core. Until the dialog
+closes the job is `QUEUED` with the message `awaiting confirmation`. Follow it with
+`watch_job`, falling back to `job` if the stream ends early, and branch on the terminal state and
+`result_code`; show `message` as plain text. A decline or timeout ends it `FAILED` without an
+effect. If the operation's permission is revoked while the dialog is open, the commit is refused
+and the job fails without an effect; a later confirmation cannot revive it. `PERMISSION_DENIED`
+means the plugin must ask the user to approve the access again instead of retrying.
+`cancel_job` withdraws a request that still waits; a job that already runs may answer `RUNNING`
+and report what it finally did.
+
+Reuse one idempotency key for retries of the same request and use a new key for the next change.
+Launch needs the entry `revision`; backup create/restore need the save profile revision; tool and
+port requests use the source game entry revision (0 for a new catalog port). Copy the runnable
+recipes in
+[`examples/action_recipes.rs`](../crates/plugin-sdk/examples/action_recipes.rs): `wait_for_job`,
+`cancel`, `launch`, `install`, `apply_tool`, `remove_tool`, `install_port`, `create_backup` and
+`restore_backup`.
+
 ## Save profiles
 
 Use the `Saves` service to tell GameNode where your runtime keeps a game's saves. Rules and limits are

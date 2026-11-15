@@ -11,9 +11,11 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 
+pub mod actions;
 pub mod resources;
 pub mod utilities;
 
+pub use actions::Actions;
 pub use resources::{Cover, LibrarySnapshot, Outcome, Resources, Written, idempotency_key};
 pub use tonic::{Code, Status};
 pub use utilities::{
@@ -318,6 +320,16 @@ impl HostClient {
         self.resource_context
             .clone()
             .map(|context| Resources::new(self.channel.clone(), context))
+    }
+
+    /// Typed convenience calls for the host action services (launch/install, backups, tools,
+    /// ports and their jobs), bound to this session's resource context. `None` when the session
+    /// negotiated a minor before API 1.6, like [`resource_context`](Self::resource_context).
+    /// They send exactly what the raw [`resource_client`](Self::resource_client) would.
+    pub fn actions(&self) -> Option<Actions> {
+        self.resource_context
+            .clone()
+            .map(|context| Actions::new(self.channel.clone(), context))
     }
 
     pub fn context(&self) -> &ServiceContext {

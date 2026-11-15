@@ -87,6 +87,21 @@ async fn fixture_process() {
     )
     .await
     .unwrap();
+    if std::env::var("GAMENODE_TEST_PLUGIN_MODE").as_deref() == Ok("tree") {
+        let output = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_OUTPUT").unwrap();
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "trap '' TERM; while :; do printf x >> \"$1\"; sleep 0.05; done",
+                "plugin-child",
+            ])
+            .arg(&output)
+            .spawn()
+            .unwrap();
+        let pid_path = std::env::var_os("GAMENODE_TEST_PLUGIN_TREE_PID").unwrap();
+        std::fs::write(pid_path, child.id().to_string()).unwrap();
+        std::mem::forget(child);
+    }
     gamenode_plugin_sdk::run(session, Arc::new(ChildPlugin))
         .await
         .unwrap();
@@ -96,6 +111,25 @@ async fn manager(
     executable: PathBuf,
     mode: &str,
     timeout: Duration,
+) -> (
+    ProviderProcesses,
+    super::super::PluginApiServer,
+    tempfile::TempDir,
+) {
+    manager_with_origin(
+        executable,
+        mode,
+        timeout,
+        crate::plugin_host::provider::RegistrationOrigin::Official,
+    )
+    .await
+}
+
+async fn manager_with_origin(
+    executable: PathBuf,
+    mode: &str,
+    timeout: Duration,
+    origin: crate::plugin_host::provider::RegistrationOrigin,
 ) -> (
     ProviderProcesses,
     super::super::PluginApiServer,
@@ -111,7 +145,7 @@ async fn manager(
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             kind: crate::plugin_host::provider::RegistrationKind::Provider,
-            origin: crate::plugin_host::provider::RegistrationOrigin::Official,
+            origin,
             capabilities: vec![capability::CONTEXT.into()],
             shared_catalog: false,
             services: Arc::new(Services),
@@ -140,6 +174,14 @@ async fn manager(
                 (
                     "GAMENODE_TEST_PLUGIN_CRASH_MARKER".into(),
                     directory.path().join("crash-once").into_os_string(),
+                ),
+                (
+                    "GAMENODE_TEST_PLUGIN_TREE_PID".into(),
+                    directory.path().join("tree-child-pid").into_os_string(),
+                ),
+                (
+                    "GAMENODE_TEST_PLUGIN_TREE_OUTPUT".into(),
+                    directory.path().join("tree-child-output").into_os_string(),
                 ),
             ],
             startup_timeout: timeout,
@@ -277,6 +319,84 @@ async fn concurrent_work_reuses_one_child_and_shutdown_reaps_it() {
     assert_eq!(processes.process_id("fixture").await, None);
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     assert!(!processes.inner.api.connected("fixture"));
+}
+
+#[tokio::test]
+async fn shutdown_reaps_plugin_descendants_after_the_main_process_exits() {
+    let (processes, _server, directory) = manager(
+        std::env::current_exe().unwrap(),
+        "tree",
+        Duration::from_secs(10),
+    )
+    .await;
+    processes
+        .execute("fixture", ProviderOperation::Initialize)
+        .await
+        .unwrap();
+    let pid_path = directory.path().join("tree-child-pid");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !pid_path.is_file() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let child_pid: u32 = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
+    let output = directory.path().join("tree-child-output");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while std::fs::metadata(&output).map_or(true, |metadata| metadata.len() == 0) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(std::path::Path::new(&format!("/proc/{child_pid}")).exists());
+
+    processes.stop_provider("fixture").await;
+    let stopped_at = std::fs::metadata(&output).unwrap().len();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(std::fs::metadata(&output).unwrap().len(), stopped_at);
+    processes.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn profile_change_stops_third_party_process_but_not_official_processes() {
+    let (official, _official_server, _official_directory) = manager(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+    )
+    .await;
+    official.ensure_started("fixture").await.unwrap();
+    let official_pid = official.process_id("fixture").await.unwrap();
+    let (processes, _server, _directory) = manager_with_origin(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+        crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "fixture-publisher".into(),
+        },
+    )
+    .await;
+    let profiles = processes.inner.api.profiles();
+    profiles.update(Some("account-one"), true);
+    processes.ensure_started("fixture").await.unwrap();
+    let old_pid = processes.process_id("fixture").await.unwrap();
+
+    profiles.update(None, false);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while processes.process_id("fixture").await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("sign-out should stop the third-party process");
+    assert!(!std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+    assert_eq!(official.process_id("fixture").await, Some(official_pid));
+    assert!(std::path::Path::new(&format!("/proc/{official_pid}")).exists());
+    processes.shutdown().await;
+    official.shutdown().await;
 }
 
 #[tokio::test]

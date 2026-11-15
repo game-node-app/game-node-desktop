@@ -1143,6 +1143,17 @@ impl ProviderApi {
             .any(|s| s.provider.registration.provider_id == provider_id && s.commands.is_some())
     }
 
+    /// Registered providers bound to an account profile. Their supervised processes must stop
+    /// whenever that profile changes; official providers are deliberately excluded.
+    pub(crate) fn third_party_provider_ids(&self) -> Vec<String> {
+        lock(&self.state)
+            .providers
+            .values()
+            .filter(|provider| provider.profiles.is_some())
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect()
+    }
+
     pub async fn disconnect(&self, provider_id: &str) {
         let ids = {
             let mut state = lock(&self.state);

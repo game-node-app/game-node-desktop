@@ -294,6 +294,57 @@ impl PluginPackageRegistry {
         Ok(versions)
     }
 
+    /// Removes the active pointer and every installed package version for one plugin. Callers
+    /// must stop its supervised processes and revoke sessions before invoking this method.
+    pub fn remove_plugin(&self, plugin_id: &str) -> io::Result<()> {
+        validate_identity(plugin_id)?;
+        let active_dir = self.root.join("active");
+        match fs::symlink_metadata(&active_dir) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                let pointer = active_dir.join(encode_key(plugin_id));
+                match fs::symlink_metadata(&pointer) {
+                    Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+                        fs::remove_file(pointer)?;
+                        sync_dir(&active_dir)?;
+                    }
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "plugin active pointer is not a regular file",
+                        ));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "active path is not a real directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let plugins_dir = self.root.join("plugins");
+        match fs::symlink_metadata(&plugins_dir) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                let plugin_dir = plugins_dir.join(encode_key(plugin_id));
+                remove_tree_no_links(&plugin_dir)?;
+                sync_dir(&plugins_dir)?;
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "plugins path is not a real directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
     /// Removes interrupted staging transactions and invalid active pointers. Valid old active
     /// pointers are never changed by an incomplete update; fully published but unactivated
     /// versions are retained for inspection or a later explicit activation.
@@ -720,6 +771,30 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].plugin_id, "org.example.one");
         assert_eq!(active[0].version, "1.0.0");
+    }
+
+    #[test]
+    fn remove_plugin_deactivates_and_deletes_all_versions_without_touching_other_plugins() {
+        let temp = TempDir::new().unwrap();
+        let registry = PluginPackageRegistry::at(temp.path().join("registry")).unwrap();
+        let one = source(&temp, "one", b"one");
+        let two = source(&temp, "two", b"two");
+        let removed = registry
+            .install_verified("org.example.remove", "1.0.0", &one, true)
+            .unwrap();
+        registry
+            .install_verified("org.example.remove", "2.0.0", &two, false)
+            .unwrap();
+        let retained = registry
+            .install_verified("org.example.keep", "1.0.0", &one, true)
+            .unwrap();
+
+        registry.remove_plugin("org.example.remove").unwrap();
+
+        assert!(registry.active("org.example.remove").unwrap().is_none());
+        assert!(registry.versions("org.example.remove").unwrap().is_empty());
+        assert!(!removed.package_path.exists());
+        assert_eq!(registry.active("org.example.keep").unwrap(), Some(retained));
     }
 
     #[test]

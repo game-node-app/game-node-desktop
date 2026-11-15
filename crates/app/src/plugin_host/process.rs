@@ -97,6 +97,115 @@ struct ChildProcess {
     task: tokio::task::JoinHandle<()>,
 }
 
+/// Owns the OS-level process group assigned to a supervised plugin. Dropping this guard kills
+/// remaining descendants even when the plugin's main process exits first.
+#[cfg(target_os = "linux")]
+struct ChildTree {
+    process_group: rustix::process::Pid,
+}
+
+#[cfg(target_os = "linux")]
+impl ChildTree {
+    fn attach(pid: u32) -> Result<Self, Status> {
+        rustix::process::Pid::from_raw(pid as i32)
+            .map(|process_group| Self { process_group })
+            .ok_or_else(|| Status::unavailable("plugin process group is unavailable"))
+    }
+
+    fn terminate(&self) {
+        let _ =
+            rustix::process::kill_process_group(self.process_group, rustix::process::Signal::TERM);
+    }
+
+    fn kill(&self) {
+        let _ =
+            rustix::process::kill_process_group(self.process_group, rustix::process::Signal::KILL);
+    }
+}
+
+#[cfg(windows)]
+struct ChildTree {
+    job: isize,
+}
+
+#[cfg(windows)]
+impl ChildTree {
+    fn attach(pid: u32) -> Result<Self, Status> {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+
+        // Fail closed rather than run a plugin process the host cannot supervise as a tree.
+        let process = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if process.is_null() {
+            return Err(Status::unavailable(
+                "plugin process could not be supervised",
+            ));
+        }
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            unsafe { CloseHandle(process) };
+            return Err(Status::unavailable(
+                "plugin process job could not be created",
+            ));
+        }
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        let assigned =
+            configured != 0 && unsafe { AssignProcessToJobObject(job, process as HANDLE) != 0 };
+        unsafe { CloseHandle(process) };
+        if !assigned {
+            unsafe { CloseHandle(job) };
+            return Err(Status::unavailable(
+                "plugin process tree could not be supervised",
+            ));
+        }
+        Ok(Self { job: job as isize })
+    }
+
+    fn terminate(&self) {
+        // The protocol shutdown request is the graceful path on Windows; the job is killed after
+        // the bounded grace period when the plugin does not exit.
+    }
+
+    fn kill(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        unsafe {
+            let _ = TerminateJobObject(self.job as windows_sys::Win32::Foundation::HANDLE, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ChildTree {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        self.kill();
+        unsafe { CloseHandle(self.job as HANDLE) };
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ChildTree {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 impl Drop for ChildProcess {
     fn drop(&mut self) {
         self.task.abort(); // dropping the supervised Child also kills it
@@ -145,14 +254,49 @@ impl ProviderProcesses {
             );
         }
         let (shutdown, _) = watch::channel(false);
-        Ok(Self {
+        let manager = Self {
             inner: Arc::new(Inner {
                 api,
                 endpoint,
                 slots,
                 shutdown,
             }),
-        })
+        };
+        manager.spawn_profile_shutdown()?;
+        Ok(manager)
+    }
+
+    /// Reap every third-party process when its account profile is fenced. The receiver does not
+    /// keep the process manager alive, so dropping the host also ends this task.
+    fn spawn_profile_shutdown(&self) -> Result<(), Status> {
+        let provider_ids = self.inner.api.third_party_provider_ids();
+        if provider_ids.is_empty() {
+            return Ok(());
+        }
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            Status::failed_precondition("plugin process host requires an async runtime")
+        })?;
+        let api = self.inner.api.clone();
+        let mut changes = api.profiles().subscribe();
+        let manager = Arc::downgrade(&self.inner);
+        runtime.spawn(async move {
+            let mut epoch = api.profiles().epoch();
+            while changes.changed().await.is_ok() {
+                let current = api.profiles().epoch();
+                if current == epoch {
+                    continue;
+                }
+                epoch = current;
+                let Some(inner) = manager.upgrade() else {
+                    break;
+                };
+                let processes = ProviderProcesses { inner };
+                for provider_id in &provider_ids {
+                    processes.stop_provider(provider_id).await;
+                }
+            }
+        });
+        Ok(())
     }
 
     pub fn has_provider(&self, id: &str) -> bool {
@@ -203,6 +347,8 @@ impl ProviderProcesses {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        #[cfg(target_os = "linux")]
+        command.process_group(0);
         #[cfg(windows)]
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         let child = match command.spawn() {
@@ -217,6 +363,15 @@ impl ProviderProcesses {
         let pid = child
             .id()
             .ok_or_else(|| Status::unavailable("provider process exited"))?;
+        let tree = match ChildTree::attach(pid) {
+            Ok(tree) => tree,
+            Err(error) => {
+                let mut child = child;
+                let _ = child.kill().await;
+                self.inner.api.disconnect(provider_id).await;
+                return Err(error);
+            }
+        };
         let running = Arc::new(AtomicBool::new(true));
         let stopped = Arc::new(Notify::new());
         let (stop, stop_receiver) = oneshot::channel();
@@ -233,6 +388,7 @@ impl ProviderProcesses {
                 shutdown: self.inner.shutdown.subscribe(),
                 running: running.clone(),
                 stopped: stopped.clone(),
+                tree,
             },
         ));
         *stored = Some(ChildProcess {
@@ -333,6 +489,7 @@ struct Supervision {
     shutdown: watch::Receiver<bool>,
     running: Arc<AtomicBool>,
     stopped: Arc<Notify>,
+    tree: ChildTree,
 }
 
 async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
@@ -346,6 +503,7 @@ async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
         mut shutdown,
         running,
         stopped,
+        tree,
     } = supervision;
     let opened = tokio::select! {
         ready = tokio::time::timeout(startup_timeout, &mut ready) => ready.is_ok_and(|r| r.is_ok()),
@@ -361,18 +519,31 @@ async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
         ))
     });
     if opened {
-        tokio::select! {
-            _ = child.wait() => {},
-            _ = &mut stop => {
-                api.request_shutdown(&provider_id);
-                let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
-            },
-            _ = shutdown.changed() => {
-                api.request_shutdown(&provider_id);
-                let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
-            },
+        let exited = tokio::select! {
+            _ = child.wait() => true,
+            _ = &mut stop => false,
+            _ = shutdown.changed() => false,
+        };
+        if !exited {
+            api.request_shutdown(&provider_id);
+            if tokio::time::timeout(Duration::from_secs(1), child.wait())
+                .await
+                .is_err()
+            {
+                tree.terminate();
+                if tokio::time::timeout(Duration::from_secs(2), child.wait())
+                    .await
+                    .is_err()
+                {
+                    tree.kill();
+                    let _ = child.wait().await;
+                }
+            }
         }
     }
+    // A cleanly exiting plugin may have left descendants behind. The process group/job is private
+    // to this launch and cannot affect another plugin or the desktop process.
+    tree.kill();
     if !matches!(child.try_wait(), Ok(Some(_))) {
         let _ = child.kill().await;
     }

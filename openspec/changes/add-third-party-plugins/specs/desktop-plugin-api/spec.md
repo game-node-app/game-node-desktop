@@ -401,6 +401,18 @@ The host SHALL provide working publication, validation, authorized storage, quer
 ### Requirement: Multiple libraries and roots
 Libraries SHALL support create/update/remove, multiple approved roots, individual watch flags and list/get/watch. Existing monitored roots SHALL be preserved. Removing a library/root SHALL stop its monitoring without deleting game files, saves or history; overlapping/aliased roots SHALL not duplicate game observations.
 
+#### Scenario: Approving a plugin root also enables Core discovery
+- **WHEN** the user approves a new plugin/account library root after being informed of automatic executable discovery
+- **THEN** Core enables its existing platform-supported discovery for that root alongside plugin discovery; suggestions alone add no root and trigger no scan, and unsupported discovery is reported explicitly
+
+#### Scenario: Independent monitoring contributions
+- **WHEN** a plugin root is removed, disabled, revoked or fenced by an account/session change
+- **THEN** its monitoring contribution stops without deleting game files/history or disabling an overlapping existing global or independently enabled root
+
+#### Scenario: One volume is unavailable
+- **WHEN** one approved plugin root's volume is disconnected or replaced
+- **THEN** that root is unavailable and contributes no scan while healthy roots continue, and no empty/deleted reconciliation or replacement source directory is created
+
 #### Scenario: Several game folders
 - **WHEN** a plugin proposes a library with three user-approved directories
 - **THEN** each root can be monitored independently and an unavailable external root does not disable the others

@@ -327,12 +327,56 @@ pub struct BackupReport {
     pub state: JobState,
     pub json: String,
 }
+
+/// Host-resolved backup context. It describes a real installation of any provider without
+/// registering it as a manual game or changing its library identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupTarget {
+    pub installation_id: String,
+    pub root: String,
+    pub gameplay: Vec<String>,
+    /// Store installations use folder containment; manual games keep explicit gameplay paths.
+    pub track_folder: bool,
+}
+
+/// A plugin backup uses a host-derived namespace, an approved save profile and a frozen target.
+/// Callers of this internal port must never take paths or namespaces from the plugin request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopedBackupRequest {
+    pub owner: String,
+    pub target: BackupTarget,
+    pub job_id: Option<String>,
+    pub profile: SaveProfile,
+    pub destination: String,
+    pub operation: BackupOperation,
+}
+
+/// Worker-side checks, including after previews and while the helper runs. Restore targets must
+/// be checked against current approved roots/rules before recovery or replacement writes.
+pub trait BackupAuthority: Send + Sync {
+    fn check(&self) -> Result<(), LocalError>;
+    fn validate_targets(&self, files: &[String], registry: &[String]) -> Result<(), LocalError>;
+}
+
 pub trait BackupEngine: Send + Sync {
     fn execute(
         &self,
         request: &BackupRequest,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<BackupReport, LocalError>;
+
+    fn scoped_available(&self) -> bool {
+        false
+    }
+
+    fn execute_scoped(
+        &self,
+        _request: &ScopedBackupRequest,
+        _cancelled: &std::sync::atomic::AtomicBool,
+        _authority: &dyn BackupAuthority,
+    ) -> Result<BackupReport, LocalError> {
+        Err(LocalError::Unsupported)
+    }
 }
 
 #[cfg(test)]

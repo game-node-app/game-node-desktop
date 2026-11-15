@@ -542,3 +542,38 @@ fn a_version_4_store_gains_the_save_profiles_table() {
         .unwrap();
     assert_eq!(upgraded.save_profile_rows().unwrap().len(), 1);
 }
+
+#[test]
+fn upgrading_schema_seven_preserves_values_and_keeps_backup_destinations_separate_from_private_quota()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let mut original = store(dir);
+    original
+        .put("key", b"keep", 4, None, 0, QUOTA_BYTES)
+        .unwrap();
+    drop(original);
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch("DROP TABLE backup_sources; PRAGMA user_version=7;")
+        .unwrap();
+    drop(conn);
+    let upgraded = store(dir);
+    let usage = upgraded.usage(0).unwrap();
+    upgraded
+        .remember_backup_source("profile-a", "old-destination")
+        .unwrap();
+    upgraded
+        .remember_backup_source("profile-a", "new-destination")
+        .unwrap();
+    upgraded
+        .remember_backup_source("profile-a", "old-destination")
+        .unwrap();
+    assert_eq!(upgraded.get("key", 0).unwrap().unwrap().value, b"keep");
+    assert_eq!(upgraded.usage(0).unwrap(), usage);
+    assert!(upgraded.backup_sources("profile-b").unwrap().is_empty());
+    drop(upgraded);
+    assert_eq!(
+        store(dir).backup_sources("profile-a").unwrap(),
+        ["new-destination", "old-destination"]
+    );
+}

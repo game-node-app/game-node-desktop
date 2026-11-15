@@ -21,6 +21,7 @@ export const PluginConfirmationDialog: React.FC<{
   const { t } = useI18n();
   const [remember, setRemember] = useState(false);
   const launching = confirmation.operation === 'launch';
+  const restoring = confirmation.operation === 'backup_restore';
   const game = confirmation.gameName || t('plugins.confirm.unnamedGame');
   const fingerprint = shortFingerprint(confirmation.publisherFingerprint);
 
@@ -52,10 +53,12 @@ export const PluginConfirmationDialog: React.FC<{
           className="flex flex-col gap-md"
         >
           <h2 id="plugin-confirm-title" className="text-lg font-bold text-white">
-            {launching ? t('plugins.confirm.launchTitle') : t('plugins.confirm.installTitle')}
+            {restoring ? t('plugins.confirm.restoreTitle') : launching ? t('plugins.confirm.launchTitle') : t('plugins.confirm.installTitle')}
           </h2>
           <p id="plugin-confirm-body" className="text-sm text-white">
-            {launching
+            {restoring
+              ? t('plugins.confirm.restoreBody', { plugin: confirmation.pluginId, game })
+              : launching
               ? t('plugins.confirm.launchBody', { plugin: confirmation.pluginId, game })
               : t('plugins.confirm.installBody', { plugin: confirmation.pluginId, game })}
           </p>
@@ -72,9 +75,17 @@ export const PluginConfirmationDialog: React.FC<{
             <dd className="break-words text-white">{game}</dd>
           </dl>
           <p className="text-xs text-[var(--settings-text-secondary)]">
-            {launching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
+            {restoring ? t('plugins.confirm.restoreNote') : launching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
           </p>
-          <label className="flex items-start gap-compact text-sm text-white">
+          {restoring && (
+            <ul aria-label={t('plugins.confirm.restoreTargets')} className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-white">
+              {(confirmation.details ?? []).map((detail, index) => (
+                <li key={index}>{detail.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+                  (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)}</li>
+              ))}
+            </ul>
+          )}
+          {!restoring && <label className="flex items-start gap-compact text-sm text-white">
             <input
               type="checkbox"
               className="mt-[3px]"
@@ -87,7 +98,7 @@ export const PluginConfirmationDialog: React.FC<{
                 {t('plugins.confirm.rememberHint')}
               </span>
             </span>
-          </label>
+          </label>}
           {waiting > 0 && (
             <p role="status" className="text-xs text-[var(--settings-text-secondary)]">
               {t('plugins.confirm.moreWaiting', { count: String(waiting) })}
@@ -106,7 +117,7 @@ export const PluginConfirmationDialog: React.FC<{
             <button
               type="button"
               className={settingsButtonPrimary}
-              onClick={() => onAnswer(true, remember)}
+              onClick={() => onAnswer(true, !restoring && remember)}
             >
               {t('plugins.confirm.allow')}
             </button>

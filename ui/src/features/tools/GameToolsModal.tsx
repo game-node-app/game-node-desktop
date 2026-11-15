@@ -104,6 +104,12 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
 
         {/* Content */}
         <FloatingModal.Body className="gap-lg p-[24px]">
+          {modal.pluginRequest && (
+            <div className="rounded-md border border-border-subtle bg-raised p-md text-sm text-text-default" role="status">
+              <p>{t(modal.pluginRequest.remove ? 'tools.pluginRemoveRequest' : 'tools.pluginApplyRequest', { plugin: modal.pluginRequest.pluginId })}</p>
+              <p className="break-all text-xs text-text-dimmed">{modal.pluginRequest.publisherFingerprint}</p>
+            </div>
+          )}
           {/* Anti-cheat warning banner */}
           {anticheatDetected && (
             <div
@@ -368,7 +374,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             {t('tools.close')}
           </button>
 
-          {isInstalled && (
+          {isInstalled && (!modal.pluginRequest || modal.pluginRequest.remove) && (
             <button
               type="button"
               data-testid="tool-uninstall-button"
@@ -380,7 +386,7 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
             </button>
           )}
 
-          {isInstalled ? (
+          {!modal.pluginRequest?.remove && (isInstalled ? (
             <button
               type="button"
               data-testid="tool-update-button"
@@ -398,9 +404,9 @@ export const GameToolsModal: React.FC<GameToolsModalProps> = ({
               disabled={isBusy || anticheatBlocked}
               className="rounded-sm bg-brand px-lg py-compact font-semibold text-on-primary hover:bg-brand-4 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {modal.operation && typeof modal.operation === 'object' && 'installing' in modal.operation ? t('tools.installing') : t('tools.installOptiscaler')}
+              {modal.operation && typeof modal.operation === 'object' && 'installing' in modal.operation ? t('tools.installing') : t('tools.installNamedTool', { tool: catalogItem.name })}
             </button>
-          )}
+          ))}
         </FloatingModal.Footer>
 
         <FloatingModal.ResizeHandle />

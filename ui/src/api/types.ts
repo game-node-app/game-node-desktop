@@ -661,6 +661,7 @@ export type ToolOperationStatus =
   | { failed: { message: string } };
 
 export interface ToolModalView {
+  pluginRequest?: { pluginId: string; publisherFingerprint: string; remove: boolean } | null;
   entryKey: string;
   title: string;
   installDir: string;

@@ -27,7 +27,7 @@ use gamenode_plugin_protocol::{capability as cap, proto::*};
 use sha2::{Digest, Sha256};
 use tonic::{Request, Response, Status};
 
-use super::mutations::{game_id, mutation_key, reply, request_hash};
+use super::mutations::{mutation_key, reply, request_hash};
 use super::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi};
 use crate::plugin_host::files::{
     APPROVAL_TIMEOUT, AffectedGame, DEFAULT_READ_BYTES, DeclaredFolder, FileAccess, KINDS,
@@ -424,9 +424,12 @@ impl ResourceApi {
         if request.installation_id.len() > MAX_INSTALLATION_ID_BYTES {
             return Err(Status::invalid_argument("installation_id is too long"));
         }
-        let expected_game = game_id(&request.game_id)?;
-        let (entry_key, entry) =
-            self.own_entry(&caller, &request.installation_id, expected_game)?;
+        let (entry_key, entry) = self.action_target(
+            &caller,
+            &context,
+            &request.game_id,
+            &request.installation_id,
+        )?;
         let name = entry
             .display_name
             .clone()

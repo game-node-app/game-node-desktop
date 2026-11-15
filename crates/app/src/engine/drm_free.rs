@@ -288,7 +288,7 @@ impl Engine {
             engine.enrich_local_games();
         });
     }
-    fn load_local_view(&self) -> LocalView {
+    pub(super) fn load_local_view(&self) -> LocalView {
         let Some(store) = &self.shared.ports.local_games else {
             return LocalView::default();
         };

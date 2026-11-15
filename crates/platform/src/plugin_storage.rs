@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -225,6 +225,9 @@ impl DurableStore {
         }
         if version < 7 {
             conn.execute_batch("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS plugin_libraries (id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; PRAGMA user_version = 7; COMMIT;")?;
+        }
+        if version < 8 {
+            conn.execute_batch("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS backup_sources (profile_id TEXT NOT NULL, destination TEXT NOT NULL, PRIMARY KEY(profile_id,destination)) STRICT; PRAGMA user_version = 8; COMMIT;")?;
         }
         Ok(Self { conn })
     }
@@ -791,5 +794,29 @@ impl PluginLibraryRoot {
             hash.update(part.as_bytes());
         }
         format!("{}:{:x}", self.id, hash.finalize())
+    }
+}
+
+// Backup archives are host-owned game data, separate from plugin key/value quotas and cleanup.
+impl DurableStore {
+    pub fn backup_sources(&self, profile: &str) -> Result<Vec<String>, PluginStorageError> {
+        self.conn
+            .prepare(
+                "SELECT destination FROM backup_sources WHERE profile_id=?1 ORDER BY destination",
+            )?
+            .query_map([profile], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+    pub fn remember_backup_source(
+        &self,
+        profile: &str,
+        destination: &str,
+    ) -> Result<(), PluginStorageError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO backup_sources(profile_id,destination) VALUES (?1,?2)",
+            params![profile, destination],
+        )?;
+        Ok(())
     }
 }

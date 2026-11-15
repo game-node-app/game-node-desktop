@@ -293,6 +293,36 @@ pub trait ToolInstallerHost: Send + Sync {
         install_dir: &str,
     ) -> Result<(), ToolError>;
 
+    /// Checks authority after preparation and at transactional deployment checkpoints.
+    /// Adapters without this capability must refuse plugin-triggered effects.
+    #[allow(clippy::too_many_arguments)] // Existing installer inputs plus the authority fence.
+    fn install_or_update_checked(
+        &self,
+        _store: &dyn ToolStore,
+        _catalog: &dyn ToolCatalogApi,
+        _descriptor: &ToolDescriptor,
+        _release: &ToolRelease,
+        _request: &InstallRequest,
+        _install_dir: &str,
+        _check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<ToolInstallation, ToolError> {
+        Err(ToolError::Failed(
+            "guarded tool installation unavailable".into(),
+        ))
+    }
+
+    /// Removal completes its existing recovery operation once its mutation phase starts.
+    fn uninstall_checked(
+        &self,
+        _store: &dyn ToolStore,
+        _entry_key: &str,
+        _tool_id: &str,
+        _install_dir: &str,
+        _check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
+        Err(ToolError::Failed("guarded tool removal unavailable".into()))
+    }
+
     fn recover_incomplete(
         &self,
         store: &dyn ToolStore,
@@ -350,6 +380,8 @@ pub struct GameToolView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolModalView {
+    #[serde(default)]
+    pub plugin_request: Option<ToolPluginRequest>,
     pub entry_key: String,
     pub title: String,
     pub install_dir: String,
@@ -362,6 +394,15 @@ pub struct ToolModalView {
     pub selected_proxy: ProxyDllName,
     pub anticheat_confirmed: bool,
     pub operation: Option<ToolOperationStatus>,
+}
+
+/// Attribution and the only operation a pending plugin request may perform.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPluginRequest {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub remove: bool,
 }
 
 /// Transient operation status for the modal.
@@ -762,6 +803,31 @@ impl ToolInstallerHost for MockToolInstallerHost {
         store.delete_files(entry_key, &id)?;
         store.delete_ini_patches(entry_key, &id)?;
         Ok(())
+    }
+
+    fn install_or_update_checked(
+        &self,
+        store: &dyn ToolStore,
+        catalog: &dyn ToolCatalogApi,
+        descriptor: &ToolDescriptor,
+        release: &ToolRelease,
+        request: &InstallRequest,
+        install_dir: &str,
+        check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<ToolInstallation, ToolError> {
+        check()?;
+        self.install_or_update(store, catalog, descriptor, release, request, install_dir)
+    }
+    fn uninstall_checked(
+        &self,
+        store: &dyn ToolStore,
+        entry_key: &str,
+        tool_id: &str,
+        install_dir: &str,
+        check: &dyn Fn() -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
+        check()?;
+        self.uninstall(store, entry_key, tool_id, install_dir)
     }
 
     fn recover_incomplete(

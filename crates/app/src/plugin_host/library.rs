@@ -588,8 +588,42 @@ pub struct PluginScanRoot {
 
 /// The engine's side of plugin library services: everything that reads or changes state the
 /// library machine owns. Implementations take the engine's own locks; callers never hold one.
+#[derive(Clone)]
+pub struct BackupHostContext {
+    pub engine: Arc<dyn gamenode_core::drm_free::BackupEngine>,
+    pub target: gamenode_core::drm_free::BackupTarget,
+    pub destination: String,
+}
+
 #[async_trait::async_trait]
 pub trait LibraryHost: Send + Sync {
+    fn tools_supported(&self) -> bool {
+        false
+    }
+    async fn tools_list(
+        &self,
+        _entry_key: String,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::ToolRecord>, Status> {
+        Err(Status::unavailable(
+            "tools are unavailable on this platform",
+        ))
+    }
+    async fn request_tool(
+        &self,
+        _entry_key: String,
+        _tool_id: String,
+        _review: gamenode_core::tools::ToolPluginRequest,
+        _check: super::jobs::Fence,
+    ) -> Result<(), Status> {
+        Err(Status::unavailable(
+            "tools are unavailable on this platform",
+        ))
+    }
+
+    /// Resolves the real installation and the user's backup destination on workers.
+    async fn backup_context(&self, _entry_key: String) -> Result<BackupHostContext, Status> {
+        Err(Status::unavailable("scoped backups are unavailable"))
+    }
     fn plugin_roots_supported(&self) -> bool {
         false
     }

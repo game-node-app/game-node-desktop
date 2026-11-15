@@ -69,6 +69,23 @@ describe('PluginConfirmationHost', () => {
     vi.restoreAllMocks();
   });
 
+  it.each(['en', 'pt-BR'])('reviews full restore targets without a remembered approval in %s', async (locale) => {
+    renderHost(locale);
+    await ready();
+    const target = 'C:\\Saves\\<slot>.sav';
+    act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation({
+      operation: 'backup_restore', details: ['Saves', 'snapshot-1', target],
+    })));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent(target);
+    expect(dialog).toHaveTextContent('snapshot-1');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    const buttons = screen.getAllByRole('button');
+    expect(buttons[0]).toHaveFocus();
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(answer).toHaveBeenCalledWith('c1', true, false);
+  });
+
   it('asks about the game, naming the plugin and the publisher, with Cancel focused', async () => {
     renderHost();
     await ready();

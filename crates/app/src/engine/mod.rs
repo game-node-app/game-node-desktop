@@ -132,6 +132,7 @@ struct State {
         Instant,
     >,
     tool_selected_target_exe: Option<String>,
+    plugin_tool_request: Option<tools::PluginToolRequest>,
     playtime: playtime::Playtime,
     machine: AuthMachine,
     settings: Settings,
@@ -250,6 +251,7 @@ impl Engine {
                 tool_reset_config: false,
                 tool_last_fetch: Default::default(),
                 tool_selected_target_exe: None,
+                plugin_tool_request: None,
                 playtime: playtime::Playtime::new(ports.platform),
                 machine: AuthMachine::new(nonce),
                 settings,
@@ -1584,6 +1586,93 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    fn tools_supported(&self) -> bool {
+        self.engine().is_ok_and(|e| {
+            cfg!(windows)
+                && e.shared.ports.tool_installer.is_some()
+                && e.shared.ports.tools.is_some()
+                && e.shared.ports.tool_catalog.is_some()
+        })
+    }
+    async fn tools_list(
+        &self,
+        entry_key: String,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::ToolRecord>, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || engine.plugin_tools_list(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("tools worker unavailable"))?
+    }
+    async fn request_tool(
+        &self,
+        entry_key: String,
+        tool_id: String,
+        review: gamenode_core::tools::ToolPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        self.engine()?
+            .request_plugin_tool(entry_key, tool_id, review, check)
+            .await
+    }
+
+    async fn backup_context(
+        &self,
+        entry_key: String,
+    ) -> Result<crate::plugin_host::library::BackupHostContext, tonic::Status> {
+        let engine = self.engine()?;
+        tokio::task::spawn_blocking(move || {
+            use gamenode_core::drm_free::BackupTarget;
+            let adapter = engine
+                .shared
+                .ports
+                .backups
+                .clone()
+                .filter(|adapter| adapter.scoped_available())
+                .ok_or_else(|| {
+                    tonic::Status::unavailable("backups are unavailable on this platform")
+                })?;
+            let (root, manual_id) = {
+                let state = engine.lock();
+                let entry = state
+                    .library
+                    .entry(&entry_key)
+                    .filter(|entry| entry.installed)
+                    .ok_or_else(|| tonic::Status::not_found("installed game not found"))?;
+                (
+                    entry.install_dir.clone(),
+                    entry_key.strip_prefix("manual:").map(str::to_owned),
+                )
+            };
+            let mut target = BackupTarget {
+                installation_id: String::new(),
+                root,
+                gameplay: vec![],
+                track_folder: manual_id.is_none(),
+            };
+            let local = engine.load_local_view();
+            if let Some(id) = manual_id {
+                let registration = local
+                    .registrations
+                    .iter()
+                    .find(|r| r.id == id && !r.removed)
+                    .ok_or_else(|| tonic::Status::not_found("installed game not found"))?;
+                target.gameplay = registration.gameplay.clone();
+            }
+            if target.root.is_empty() {
+                return Err(tonic::Status::failed_precondition(
+                    "installation folder unavailable",
+                ));
+            }
+            Ok(crate::plugin_host::library::BackupHostContext {
+                engine: adapter,
+                target,
+                destination: local.settings.destination,
+            })
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("backup context unavailable"))?
+    }
+
     fn plugin_roots_supported(&self) -> bool {
         true
     }

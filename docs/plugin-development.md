@@ -102,7 +102,7 @@ The desktop mounts `ResourceHost`, but serves only `LibraryList`, `LibraryGet`, 
 `MetadataUpdate`, `FavoritesList`, `FavoritesSet`, `MatchingSearch`, `MatchingAssign`,
 `ArtworkRead`, `ArtworkSet`, `StorageGet`, `StoragePut`, `StorageDelete`, the five `Files*`
 methods, `NetworkFetch`, `NotificationsPublish`, `GamesRequestLaunch`, `GamesRequestInstall`, `JobsGet`,
-`JobsWatch` and `JobsCancel` (grants,
+`JobsWatch`, `JobsCancel`, the three `Backups*` methods, the three `Tools*` methods and the nine `Libraries*` methods (grants,
 scope, cursors and watch rules are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#library-reads); the writable display name,
 revisions, favorites and idempotency keys are in
@@ -111,11 +111,14 @@ search bounds and assignment results are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#matching); the cover override, image limits
 and read budget are in
 [`plugin-api-permissions.md`](plugin-api-permissions.md#artwork); jobs are in
-[`plugin-api-permissions.md`](plugin-api-permissions.md#jobs)).
+[`plugin-api-permissions.md`](plugin-api-permissions.md#jobs); `ToolsList`, `ToolsRequestApply`
+and `ToolsRequestRemove` use [Core tool review](plugin-api-permissions.md#tools-from-the-host-catalog); logical-library roots and
+their standing monitoring consent are in
+[`plugin-api-permissions.md`](plugin-api-permissions.md#logical-libraries-and-approved-roots)).
 The `Saves` domain service is also served (`ListProfiles`, `GetProfile`, `CreateProfile`,
 `UpdateProfile`, `RemoveProfile`; see
 [`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles)) and `Locations.GetSize`,
-`GetAccess`, `GetLastModified`, `GetFingerprint` and `Compare` (see
+`GetAccess`, `GetLastModified`, `GetFingerprint`, `Compare`, `Inspect` and `WatchAvailability` (see
 [`plugin-api-permissions.md`](plugin-api-permissions.md#inspecting-approved-places)); the Rust SDK
 exposes the raw `HostClient::saves_client()` and `HostClient::locations_client()`. Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
 clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
@@ -347,6 +350,32 @@ install flow. Rules and limits are under "Launching and installing" in
   Anything else is `NOT_FOUND`.
 - `SUCCEEDED` with `opened` means the operating system accepted the link, not that the game is
   running. Playtime is detected by GameNode as for the user's own Play button.
+
+## Host catalog tools
+
+Use `ToolsList` with `tools.read` to discover the host catalog and availability.
+`ToolsRequestApply`/`ToolsRequestRemove` need their own grants, the current scoped
+library-entry revision and an idempotency key in `MutationContext`. They return a
+job and open Core's tools window; the user chooses and confirms the installation
+settings there. Send only a known tool id and GameNode game id, leave
+`user_intent_id` empty and follow `JobsGet/Watch/Cancel`. Installer URLs, payloads and
+target paths are not accepted. Cancellation, platform restrictions and filesystem
+recovery are documented in the
+[tools API guide](plugin-api-permissions.md#tools-from-the-host-catalog).
+
+## Backups
+
+Use `ResourceHost.BackupsList`, `BackupsRequestCreate` and `BackupsRequestRestore`
+with an existing approved save profile; see
+[backup scopes, effects and availability](plugin-api-permissions.md#backups-from-approved-save-profiles).
+Creation and restoration need the current profile revision and an idempotency key,
+return a caller-owned job and use the user's host backup destination. Obtain snapshot
+ids from history instead of sending paths. Restoration always asks Core to review the
+exact snapshot and affected files; it cannot use remembered launch approval.
+Cancellation, lost grants and changed profiles fence the worker. The bundled engine
+currently runs only on Windows; runtime/shared-emulator profiles remain unavailable
+until their resource/activity coordination exists. Do not infer an empty history
+or successful restoration from an unavailable/partial result.
 
 ## Save profiles
 
@@ -651,7 +680,7 @@ a late cleanup from an older attempt.
 The protocol also defines the optional `ui.settings` grant (API 1.3), `ui.configure` (API 1.6),
 and API 1.6 resource grants for library reads and metadata, favorites, matching, artwork, game
 launch/install, storage, files, network, notifications, backups, library roots, runtimes,
-diagnostics, computer hardware, game sessions/presence/performance, custom data, tools and ports.
+diagnostics, computer hardware, game sessions/presence/performance, custom data and ports.
 These identifiers are known to the protocol but are not part of the legacy `ALL` grant set.
 Knowing an identifier never grants it. The complete identifier list is in
 [`capability.rs`](../crates/plugin-protocol/src/capability.rs); method-by-method scopes and

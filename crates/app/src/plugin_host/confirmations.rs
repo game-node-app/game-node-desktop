@@ -35,6 +35,7 @@ pub struct PluginConfirmation {
     pub game_name: String,
     /// `launch` or `install`.
     pub operation: String,
+    pub details: Vec<String>,
     /// How long the host waits for the answer.
     pub timeout_seconds: u64,
 }
@@ -118,6 +119,7 @@ impl Prompter for ConfirmationBridge {
             publisher_fingerprint: request.publisher_fingerprint,
             game_name: request.game_name,
             operation: request.operation.as_str().to_owned(),
+            details: request.details,
             timeout_seconds: super::intents::CONFIRMATION_TIMEOUT.as_secs(),
         }));
         if !shown {

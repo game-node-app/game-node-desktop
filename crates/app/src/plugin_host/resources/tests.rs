@@ -22,6 +22,7 @@ use tonic::Code;
 use tonic::transport::Channel;
 
 mod artwork_handles;
+mod backups;
 mod declared_locations;
 mod files;
 mod fingerprints;
@@ -35,6 +36,7 @@ mod saves;
 mod sdk;
 mod sdk_utilities;
 mod storage;
+mod tools;
 
 struct NoServices;
 
@@ -107,6 +109,15 @@ impl Fixture {
         grants: &[&'static str],
         api_1_6: bool,
         plugin_data: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self::start_with_target(grants, api_1_6, plugin_data, None).await
+    }
+
+    async fn start_with_target(
+        grants: &[&'static str],
+        api_1_6: bool,
+        plugin_data: Option<std::path::PathBuf>,
+        target: Option<TargetGameContext>,
     ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -190,6 +201,12 @@ impl Fixture {
                 min_api_minor: cap::THIRD_PARTY_API_MINOR,
                 max_api_major: 1,
                 max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                session_kind: if target.is_some() {
+                    SessionKind::Extension
+                } else {
+                    SessionKind::Unspecified
+                },
+                target_game: target,
                 ..SessionOptions::default()
             }
         } else {
@@ -641,7 +658,7 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .backups_list(BackupsListRequest::default())
+        .ports_list(PortsListRequest::default())
         .await
         .unwrap_err();
     assert_eq!(status.code(), Code::Unimplemented);
@@ -655,6 +672,12 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
     assert_eq!(
         resource,
         [
+            ("ToolsList", MAX_PAGE_SIZE as u32),
+            ("ToolsRequestApply", 0),
+            ("ToolsRequestRemove", 0),
+            ("BackupsList", MAX_PAGE_SIZE as u32),
+            ("BackupsRequestCreate", 0),
+            ("BackupsRequestRestore", 0),
             ("LibrariesList", MAX_PAGE_SIZE as u32),
             ("LibrariesGet", 0),
             ("LibrariesWatch", 0),
@@ -710,6 +733,12 @@ type FakeMatch = (Option<u64>, bool, u64);
 /// `(provider, game)`. A game is "matched" for a provider when it has a row here.
 #[derive(Default)]
 struct FakeHost {
+    tool_support: AtomicBool,
+    tool_reviews: Mutex<Vec<(String, String, bool)>>,
+    tool_gate: tokio::sync::Notify,
+    tool_effects: AtomicUsize,
+    tool_declined: AtomicBool,
+    backup: Mutex<Option<crate::plugin_host::library::BackupHostContext>>,
     scan_roots: Mutex<HashMap<String, Vec<crate::plugin_host::library::PluginScanRoot>>>,
     names: Mutex<HashMap<String, (Option<String>, u64)>>,
     games: Mutex<BTreeMap<(String, u64), bool>>,
@@ -753,6 +782,56 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl LibraryHost for FakeHost {
+    fn tools_supported(&self) -> bool {
+        self.tool_support.load(Ordering::SeqCst)
+    }
+    async fn tools_list(&self, _: String) -> Result<Vec<ToolRecord>, Status> {
+        Ok(gamenode_core::tools::builtin_tools()
+            .into_iter()
+            .map(|d| ToolRecord {
+                tool_id: d.id.as_str().into(),
+                name: d.name,
+                version: "fixture-v1".into(),
+                availability: if self.tools_supported() {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+                .into(),
+            })
+            .collect())
+    }
+    async fn request_tool(
+        &self,
+        key: String,
+        tool: String,
+        review: gamenode_core::tools::ToolPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), Status> {
+        check()?;
+        self.tool_reviews
+            .lock()
+            .unwrap()
+            .push((key, tool, review.remove));
+        self.tool_gate.notified().await;
+        check()?;
+        if self.tool_declined.load(Ordering::SeqCst) {
+            return Err(Status::cancelled("declined"));
+        }
+        self.tool_effects.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn backup_context(
+        &self,
+        _: String,
+    ) -> Result<crate::plugin_host::library::BackupHostContext, Status> {
+        self.backup
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Status::unavailable("backup engine unavailable"))
+    }
     fn plugin_roots_supported(&self) -> bool {
         true
     }

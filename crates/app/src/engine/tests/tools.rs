@@ -1,9 +1,11 @@
 use super::*;
 use gamenode_core::drm_free::Registration;
+use gamenode_core::tools::ToolStore;
 use gamenode_core::tools::{
     CachedToolArchive, InMemoryToolStore, MockToolCatalogApi, MockToolInstallerHost, ToolChannel,
     ToolOperationStatus, ToolRelease, optiscaler_descriptor,
 };
+use std::sync::atomic::AtomicBool;
 
 async fn eventually(mut predicate: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -432,4 +434,145 @@ async fn clear_tool_cache_resets_bytes_and_archives() {
         !icon_dir.join(format!("{}.img", "a".repeat(64))).exists(),
         "clearing the settings cache removes achievement icons"
     );
+}
+
+fn plugin_review(remove: bool) -> gamenode_core::tools::ToolPluginRequest {
+    gamenode_core::tools::ToolPluginRequest {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "publisher-fingerprint".into(),
+        remove,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_tool_review_waits_for_user_selection_and_returns_the_real_operation_result() {
+    let th = tools_harness();
+    add_test_game(&th, "plugin", "Fixture");
+    let engine = th.harness.engine.clone();
+    let review = tokio::spawn(async move {
+        engine
+            .review_plugin_tool(
+                "manual:plugin".into(),
+                "optiscaler".into(),
+                plugin_review(false),
+                Arc::new(|| Ok(())),
+            )
+            .await
+    });
+    eventually(|| {
+        th.harness
+            .engine
+            .snapshot()
+            .tools
+            .modal
+            .as_ref()
+            .is_some_and(|m| m.inspection.is_some() && !m.available_versions.is_empty())
+    })
+    .await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.plugin_request.as_ref().unwrap().plugin_id,
+        "fixture.plugin"
+    );
+    assert!(th.store.list_installations().unwrap().is_empty());
+    th.harness.engine.uninstall_tool(); // An apply request never authorizes removal.
+    assert!(
+        th.harness
+            .engine
+            .snapshot()
+            .tools
+            .modal
+            .unwrap()
+            .operation
+            .is_none()
+    );
+    th.harness.engine.set_tool_anticheat_confirmed(true);
+    th.harness.engine.install_or_update_tool(false);
+    review.await.unwrap().unwrap();
+    assert_eq!(th.store.list_installations().unwrap().len(), 1);
+    th.harness.engine.close_tools();
+    let engine = th.harness.engine.clone();
+    let removal = tokio::spawn(async move {
+        engine
+            .review_plugin_tool(
+                "manual:plugin".into(),
+                "optiscaler".into(),
+                plugin_review(true),
+                Arc::new(|| Ok(())),
+            )
+            .await
+    });
+    eventually(|| {
+        th.harness
+            .engine
+            .snapshot()
+            .tools
+            .modal
+            .as_ref()
+            .is_some_and(|m| m.plugin_request.as_ref().is_some_and(|r| r.remove))
+    })
+    .await;
+    th.harness.engine.install_or_update_tool(true); // Removal never authorizes installation.
+    assert!(
+        th.harness
+            .engine
+            .snapshot()
+            .tools
+            .modal
+            .unwrap()
+            .operation
+            .is_none()
+    );
+    th.harness.engine.uninstall_tool();
+    removal.await.unwrap().unwrap();
+    assert!(th.store.list_installations().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_or_revoked_plugin_tool_review_never_installs_and_another_request_cannot_replace_it()
+ {
+    for revoked in [false, true] {
+        let th = tools_harness();
+        add_test_game(&th, "plugin", "Fixture");
+        let allowed = Arc::new(AtomicBool::new(true));
+        let flag = allowed.clone();
+        let engine = th.harness.engine.clone();
+        let review = tokio::spawn(async move {
+            engine
+                .review_plugin_tool(
+                    "manual:plugin".into(),
+                    "optiscaler".into(),
+                    plugin_review(false),
+                    Arc::new(move || {
+                        if flag.load(Ordering::SeqCst) {
+                            Ok(())
+                        } else {
+                            Err(tonic::Status::permission_denied("revoked"))
+                        }
+                    }),
+                )
+                .await
+        });
+        eventually(|| th.harness.engine.snapshot().tools.modal.is_some()).await;
+        let other = th
+            .harness
+            .engine
+            .review_plugin_tool(
+                "manual:plugin".into(),
+                "optiscaler".into(),
+                plugin_review(true),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(other.code(), tonic::Code::ResourceExhausted);
+        if revoked {
+            allowed.store(false, Ordering::SeqCst);
+        } else {
+            th.harness.engine.close_tools();
+        }
+        assert!(review.await.unwrap().is_err());
+        eventually(|| th.harness.engine.snapshot().tools.modal.is_none()).await;
+        assert!(th.store.list_installations().unwrap().is_empty());
+    }
 }

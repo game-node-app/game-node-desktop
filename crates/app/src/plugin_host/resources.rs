@@ -18,6 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 mod artwork;
+mod backups;
 mod files;
 mod games;
 mod jobs;
@@ -29,6 +30,7 @@ mod network;
 mod notifications;
 mod saves;
 mod storage;
+mod tools;
 
 use super::files::FileAccess;
 use super::fingerprints;
@@ -53,6 +55,42 @@ const MAX_PROVIDER_ID_BYTES: usize = 128;
 
 /// The ResourceHost methods this build serves, for `DescribeApi`.
 pub const SERVED: &[Served] = &[
+    Served::new(
+        "ToolsList",
+        cap::TOOLS_READ,
+        true,
+        "host catalog; scoped game",
+    ),
+    Served::new(
+        "ToolsRequestApply",
+        cap::TOOLS_APPLY,
+        false,
+        "scoped game; Core tools review",
+    ),
+    Served::new(
+        "ToolsRequestRemove",
+        cap::TOOLS_REMOVE,
+        false,
+        "scoped game; Core tools review",
+    ),
+    Served::new(
+        "BackupsList",
+        cap::BACKUPS_READ,
+        true,
+        "approved save profile",
+    ),
+    Served::new(
+        "BackupsRequestCreate",
+        cap::BACKUPS_CREATE,
+        false,
+        "approved save profile",
+    ),
+    Served::new(
+        "BackupsRequestRestore",
+        cap::BACKUPS_RESTORE,
+        false,
+        "approved save profile; confirmation required",
+    ),
     Served::new(
         "LibrariesList",
         cap::LIBRARY_ROOTS_READ,
@@ -215,6 +253,8 @@ pub struct ResourceApi {
     searches: Arc<matching::SearchLimiter>,
     /// Bounds the plugin pictures being decoded at once.
     decoders: Arc<tokio::sync::Semaphore>,
+    /// Bounds backup/history workers, including calls that are not jobs.
+    backup_slots: Arc<tokio::sync::Semaphore>,
     /// The plugins' private key/value storage.
     storage: Arc<PluginStorage>,
     /// File approvals and handles.
@@ -264,6 +304,7 @@ impl ResourceApi {
             mutations: Arc::default(),
             searches: Arc::default(),
             decoders: Arc::new(tokio::sync::Semaphore::new(artwork::DECODE_SLOTS)),
+            backup_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -864,13 +905,51 @@ impl resource_host_server::ResourceHost for ResourceApi {
         Ok(Response::new(reply))
     }
 
+    async fn backups_list(
+        &self,
+        request: Request<BackupsListRequest>,
+    ) -> Result<Response<BackupsListReply>, Status> {
+        self.list_backups(request).await
+    }
+    async fn backups_request_create(
+        &self,
+        request: Request<BackupCreateRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.create_backup(request).await
+    }
+    async fn backups_request_restore(
+        &self,
+        request: Request<BackupRestoreRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        self.restore_backup(request).await
+    }
+
+    async fn tools_list(
+        &self,
+        request: Request<ToolsListRequest>,
+    ) -> Result<Response<ToolsListReply>, Status> {
+        self.list_tools(request).await
+    }
+    async fn tools_request_apply(
+        &self,
+        request: Request<ToolApplyRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        let r = request.into_inner();
+        self.request_tool_action(r.mutation, r.tool_id, r.game_id, r.user_intent_id, false)
+            .await
+    }
+    async fn tools_request_remove(
+        &self,
+        request: Request<ToolRemoveRequest>,
+    ) -> Result<Response<JobReply>, Status> {
+        let r = request.into_inner();
+        self.request_tool_action(r.mutation, r.tool_id, r.game_id, r.user_intent_id, true)
+            .await
+    }
     not_served! {
         games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
         games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
-        backups_list(BackupsListRequest) -> BackupsListReply;
-        backups_request_create(BackupCreateRequest) -> JobReply;
-        backups_request_restore(BackupRestoreRequest) -> JobReply;
         runtimes_list(DomainListRequest) -> RuntimesListReply;
         runtimes_get(DomainGetRequest) -> RuntimeRecordReply;
         runtimes_watch(DomainWatchRequest) -> Self::RuntimesWatchStream;
@@ -894,9 +973,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
         persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
         persistence_clear(PersistenceClearRequest) -> MutationReply;
         persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
-        tools_list(ToolsListRequest) -> ToolsListReply;
-        tools_request_apply(ToolApplyRequest) -> JobReply;
-        tools_request_remove(ToolRemoveRequest) -> JobReply;
         ports_list(PortsListRequest) -> PortsListReply;
         ports_detail(PortDetailRequest) -> PortDetailReply;
         ports_request_install(PortInstallRequest) -> JobReply;

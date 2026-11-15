@@ -176,6 +176,7 @@ fn request() -> ConfirmationRequest {
         publisher_fingerprint: "ab".repeat(32),
         game_name: "Game".into(),
         operation: Operation::Launch,
+        details: vec![],
     }
 }
 

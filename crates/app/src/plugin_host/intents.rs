@@ -37,6 +37,7 @@ pub const MAX_PENDING_PER_PLUGIN: usize = 4;
 pub enum Operation {
     Launch,
     Install,
+    BackupRestore,
 }
 
 impl Operation {
@@ -45,6 +46,7 @@ impl Operation {
         match self {
             Self::Launch => "launch",
             Self::Install => "install",
+            Self::BackupRestore => "backup_restore",
         }
     }
 }
@@ -75,6 +77,8 @@ pub struct ConfirmationRequest {
     pub publisher_fingerprint: String,
     pub game_name: String,
     pub operation: Operation,
+    /// Host-resolved restore paths and snapshot identity; never a plugin explanation.
+    pub details: Vec<String>,
 }
 
 /// The user's answer.

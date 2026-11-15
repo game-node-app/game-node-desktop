@@ -406,10 +406,11 @@ impl ResourceApi {
             )));
         }
         // The profile is for one of this plugin's own library entries.
-        let (_, entry) = self.own_entry(
+        let (_, entry) = self.action_target(
             &caller,
+            &mutation.context.clone().unwrap_or_default(),
+            &profile.game_id,
             &profile.installation_id,
-            game_id(&profile.game_id)?,
         )?;
         let game = entry.game_id.map(|id| id.to_string()).unwrap_or_default();
         let id = saves::new_profile_id()?;

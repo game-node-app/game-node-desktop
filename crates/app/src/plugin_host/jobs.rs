@@ -181,6 +181,18 @@ pub struct JobContext {
 }
 
 impl JobContext {
+    /// The same cancellation/authorization check, usable by a blocking domain worker.
+    pub fn checkpoint(&self) -> Fence {
+        let cancel = self.cancel.clone();
+        let fence = self.fence.clone();
+        Arc::new(move || {
+            if *cancel.borrow() {
+                return Err(Status::cancelled("the job was cancelled"));
+            }
+            fence()
+        })
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

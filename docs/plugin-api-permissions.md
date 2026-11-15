@@ -11,20 +11,15 @@ and commit-time authorization. Contract tests compare every catalog route to
 the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 
 The route tables below describe the API contract, not a claim that every route
-is currently served. `PluginApiServer` registers `PluginHost`, `ProviderHost`
-and `ResourceHost`. In `ResourceHost` only `LibraryList`, `LibraryGet`,
-`LibraryWatch`, `MetadataUpdate`, `FavoritesList` and `FavoritesSet` have
-handlers; every other `ResourceHost` method and every
-domain service (Saves, Locations, StorageDiagnostics, Computer, GamePresence,
-GamePerformance) is not served yet, so those RPCs have no live handler that can
-enforce the listed grants. `DescribeApi` lists exactly the served methods. The
-persisted `PermissionGrantStore` also has not been wired into RPC sessions: the
-Library, metadata and favorites handlers check the grants negotiated for the session. Treat the
-per-route checks and common-data selectors below as requirements for the
-unserved handlers, not as evidence that an unavailable route is protected by
-runtime enforcement. Provider operation permissions, the permission-control
-methods and the Library, metadata and favorites services that are mounted are enforced
-by the host.
+is currently served. The implemented resource adapters cover library reads,
+presentation, storage, files, network, notifications, standard launch/install,
+jobs, backups, tools and logical libraries/roots. Saves and Locations also have handlers;
+ports, custom launches and the other domain services remain
+unimplemented. `DescribeApi` lists exactly the served methods; generated
+bindings alone do not establish availability. The persisted
+`PermissionGrantStore` has not yet been wired into RPC sessions: handlers
+check the grants negotiated for the session. Treat checks described for
+unserved handlers as requirements, not evidence of runtime enforcement.
 
 | Methods | Permission |
 | --- | --- |
@@ -719,9 +714,9 @@ There is no per-user mute yet and no notification history.
 ## Jobs
 
 A long operation (an install, a backup, a restore) answers with a job instead of blocking the call.
-`JobsGet`, `JobsWatch` and `JobsCancel` read, follow and stop it. No operation returns a job in this
-build yet except `GamesRequestLaunch` and `GamesRequestInstall` (backups, tools and ports come next);
-the three calls and the registry behind them serve them all.
+`JobsGet`, `JobsWatch` and `JobsCancel` read, follow and stop it. Launch, install,
+backup create/restore, tools apply/remove and location fingerprints use the shared job registry.
+Ports remain pending.
 
 - **Ownership.** A job belongs to the authenticated plugin, its pinned publisher and the active
   account profile. The request names the job by its opaque id and nothing else: it has no field for
@@ -780,6 +775,203 @@ Jobs live in the host's memory. A host restart forgets them and their keys, and 
 resume; an operation that must not repeat across a restart has to be idempotent in its own domain
 (an install that is already installed is not installed twice).
 
+## Tools from the host catalog
+
+`ToolsList`, `ToolsRequestApply` and `ToolsRequestRemove` require independent
+`tools.read`, `tools.apply` and `tools.remove` grants. The registry currently contains
+OptiScaler. A plugin can name a catalog tool id and a GameNode game id; it cannot
+supply a release URL, archive/payload path, destination, command, executable, proxy
+or anti-cheat acknowledgement. Unknown ids (including installer URLs) are `NOT_FOUND`.
+
+- **Listing.** With no `game_id`, list returns catalog descriptions and platform
+  availability, with no installation details. With a game, it includes the installed
+  version for that scoped target. A provider must have exactly one installed entry
+  matched to that game; ambiguous installations are refused. An extension uses only
+  its host-selected installation, including a foreign provider, without broader
+  library access. The platform filter accepts empty, `windows` or `linux`; there are
+  currently no Linux tool entries. Windows entries remain visible as `unavailable`
+  on unsupported hosts. Pagination defaults to 50, capped at 200; cursors bind the
+  session, grants, target/catalog observation and query. No paths or download URLs
+  are returned in `ToolRecord`.
+- **Request and review.** Supply `MutationContext` with the selected library-entry
+  revision and an idempotency key. Stale revisions are `ABORTED`; repeating the same
+  request/key returns the same job. The job opens Core's existing draggable tools
+  window with the plugin/publisher attribution and the requested tool/operation.
+  The user chooses the release/channel, inspected executable, proxy and reset option
+  there, and acknowledges any detected anti-cheat warning before applying. A removal
+  request offers only removal; an apply request cannot remove. Closing declines;
+  an unanswered review expires after five minutes. A launch/install intent or a
+  remembered approval cannot replace these choices: a nonempty `user_intent_id`
+  is refused. Another request cannot take over an occupied tools window.
+- **Execution and recovery.** The same catalog, target inspection, stopped-game checks,
+  deploy planner, backup journal, reversible INI patches and startup recovery used by
+  the user's tools window perform the operation. Plugins never receive access to a
+  custom payload. Worker checkpoints revalidate session/grants and the installation
+  revision while review is open, after archive acquisition and during installation.
+  Cancellation/revocation before deployment prevents changes; interruption during
+  installation invokes the existing rollback. Removal checks authority before its
+  mutation phase and then completes the existing removal/recovery sequence rather
+  than interrupting it between file restores. Completed effects are not claimed as
+  undone by a later cancellation. A failed operation produces a failed job, with
+  filesystem details confined to Core's own status display.
+- **Availability and bounds.** The production route is Windows-only and needs the
+  host tools store, catalog and installer. Unsupported hosts return `UNAVAILABLE`
+  before starting a mutation job. The existing catalog download policy and target
+  inspection bounds still apply. Waiting for a network/archive operation is not
+  interrupted midway; cancellation is checked before its result can be deployed.
+  Short UI callbacks publish state and dispatch blocking preparation and execution
+  to workers. Native Windows/download acceptance remains task 18.3; third-party
+  activation remains 8.1.
+
+Socket tests use a controlled review adapter; engine tests exercise the actual Core
+window coordinator with fixture tools ports. Platform tests use fictional game/archive
+files and verify authority loss after download and byte-identical rollback after a
+file write. These checks do not install a tool into a real game or replace native
+Windows acceptance.
+
+## Backups from approved save profiles
+
+`BackupsList`, `BackupsRequestCreate` and `BackupsRequestRestore` use independent
+`backups.read`, `backups.create` and `backups.restore` grants. Each request names an
+existing profile in the authenticated plugin/publisher/account namespace. Its folders
+must still be approved for its installation, on the same identified volume. No Files
+read/write grant is implied by a backup permission; no profile configuration alone
+authorizes creating or restoring a backup.
+
+A provider can address its own installations. An extension can address only its
+host-issued selected game, including a Steam/other-provider installation, without
+`library.read.all`, provider impersonation or a synthetic manual registration.
+Profiles and file approvals can be created for that same selected target. Broader
+library reads never widen this action scope. Foreign-profile sharing remains part
+of the shared-data tasks; it is not inferred from a profile id.
+
+- **Create and restore are jobs.** Use `MutationContext` with the resource context,
+  an idempotency key and the current **save-profile revision**. A stale revision is
+  `ABORTED`. Retrying the same request/key returns its job without another operation;
+  changing the request under that key is refused. `JobsGet/Watch/Cancel` retain their
+  owner/session/profile checks and require the creating operation's permission.
+- **Selection and effects.** Creation enumerates only approved profile folders and
+  their relative naming rules, deduplicates overlapping selections and generates
+  literal file rules for the pinned Ludusavi helper. Plugins supply neither raw
+  paths, a manifest, a destination nor a helper command. The destination is the
+  user's existing host backup setting and must not overlap the save/game folders.
+  Hashing, filesystem access, helper execution and report decoding run on workers.
+- **Archive ownership.** Archives use
+  `<destination>/plugins/<host-derived owner>/<installation hash>/<profile id>/`,
+  separate from manual archives and plugin-private key/value data. The owner binds
+  plugin, publisher and account. The helper's internal title is the stable profile id,
+  so changing its display name does not rename history. Previously used destinations
+  are recorded in namespace schema 8 before execution and remain discoverable after
+  the destination changes. Removing profile configuration or plugin-private data
+  does not delete backup archives; unavailable sources are not treated as empty.
+- **History.** List defaults to 50 records, capped at 200; cursors bind session,
+  profile revision, grant revision and observed history. A changed history requires
+  listing again. Snapshot ids seal host-resolved archive selectors; they reveal no
+  filesystem paths, cannot be edited or used by another session, and must be obtained
+  again after host/session restart. History obtains sizes through restore previews;
+  timestamps use the helper's explicit UTC/offset dates. A missing size/time is 0
+  (unknown), and a partial preview is labelled `partial`, not a complete backup.
+- **Restore consent.** Restoration first obtains and validates the selected snapshot's
+  affected paths, then asks through Core's shared `AppModal` with plugin/publisher,
+  profile, snapshot and the complete target list in en/pt-BR. Cancel is focused;
+  approval is for that snapshot only and is never remembered. The job waits for at
+  most five minutes, and cancelling it withdraws the dialog. `user_intent_id` cannot
+  substitute for this snapshot-specific review and is refused when nonempty.
+  A build without a confirmation bridge returns `FAILED_PRECONDITION`.
+- **Revalidation and recovery.** The worker rechecks session/grants, profile and
+  installation revisions, folder approvals, volume identity and selected restore
+  paths before effects and while the helper runs. A newly added restore target is
+  not covered by an earlier preview. Revocation/profile change or cancellation
+  stops further work; completed filesystem effects are not represented as undone.
+  The existing engine checks that the game is stopped, keeps ten full versions,
+  stages/promotes verified backups and makes a recovery backup of the affected
+  current files before restore. Partial/failed restore retains recovery data;
+  neither a partial helper report nor a failed recovery is successful restoration.
+- **Bounds and availability.** At most two backup/history workers run concurrently.
+  A selection visits at most 10,000 entries in five seconds and selects at most
+  1,000 unique files. History has a 30-second request deadline, at most 32 remembered
+  destinations per profile and 100 versions per destination. The helper retains its
+  five-minute execution and output limits; abandoning a call signals cancellation.
+  The bundled engine is Windows-only. Missing engine/context, unknown manual gameplay
+  targets and runtime profiles needing the coordination in tasks 13.2/14.2 return
+  explicit unavailability; no Linux backup support or shared-emulator safety is
+  claimed. Real third-party activation/target delivery remains task 8.1 and native
+  acceptance remains 18.2/18.3.
+
+The socket fixtures in
+[`resources/tests/backups.rs`](../crates/app/src/plugin_host/resources/tests/backups.rs)
+use a deterministic backup engine and isolated fictional save files. They cover
+independent scopes, selection, retry, cancellation, profile/approval changes,
+confirmation, out-of-scope archive targets and cross-provider extension operation.
+They do not execute Ludusavi or replace native Windows acceptance.
+
+## Logical libraries and approved roots
+
+`Libraries*` methods manage named collections of approved folders in the authenticated
+plugin/publisher/account namespace. They do not need an existing game installation.
+They are separate from `LibraryList/Get/Watch`, which project game entries, and from
+the user's global DRM-free watch folders, which remain intact.
+
+- **Independent grants.** `LibrariesList/Get/Watch` need `library.roots.read`;
+  `LibrariesCreate/AddRoot` need `.create`; `LibrariesUpdate/UpdateRoot` need
+  `.update`; `LibrariesRemove/RemoveRoot` need `.delete`. None grants the others,
+  file access or execution. Records are private to their creator and account;
+  common-data selectors and foreign ownership filters do not grant shared access.
+  Shared publication/delegation remains with the data-plane tasks.
+- **Revisions and retries.** Mutations carry the session resource context and an
+  idempotency key. Creation expects revision 0; every later mutation, including a root
+  edit, expects the current **library** revision. A conflict writes nothing.
+  `LibrariesUpdate.field_mask` selects `name` and/or `description`;
+  `LibrariesUpdateRoot.field_mask` selects `display_name`, `watching` and/or `folder`.
+  Folder replacement preserves the root id and invalidates its old handles.
+- **User approval.** Add a root with an empty `approved_root_handle` to ask through
+  the host's `RootApprover`. `declared_locations` accepts up to eight ordered
+  suggestions of kind `library` (or empty), using the closed placeholders and absolute
+  literal paths of [file suggestions](#files). Suggestions are unverified declarations;
+  the host checks directory existence, preselects the first existing one and lets the
+  user choose another. Consent explicitly covers read access, plugin discovery and
+  Core automatic executable discovery. The host records whether the chosen canonical
+  folder matched a suggestion. The plugin receives no list of existing or rejected
+  suggestions. A valid root handle from this session may reuse an existing approval;
+  an installation-file approval cannot substitute for a library-root approval.
+- **Availability of approval.** Choosing and confirming each have the host's five-minute
+  deadline, and only one folder approval per plugin namespace may wait at a time.
+  Without the connected approval dialog a new root returns `FAILED_PRECONDITION`;
+  declined or malformed suggestions register nothing and dispatch no scan. The
+  production folder dialog and root-level approval controls remain task 10.9; fixture
+  consent is not evidence of a working desktop approval screen.
+- **Standing monitoring consent.** An approved root starts with `watching=true`.
+  Its enabled approval plus an active plugin/account session sustains Core monitoring,
+  independently of CRUD grants and `library.discovery`. Revoking CRUD denies the
+  corresponding API calls, including reads/watch delivery, without revoking that
+  standing consent. Approved enabled roots resume on session startup without a CRUD
+  call. Session contexts retain their original profile epoch; sign-out, account
+  changes or disconnect fence their scans. Disabling/removing a root stops only that
+  contribution; overlapping global or other enabled roots keep working.
+- **Files and platforms.** Returned root handles allow confined reads only with the
+  independent `files.read` grant. They grant no writes/deletes, even with those Files
+  permissions. Replaced folders or volumes cannot inherit approval. Core deduplicates
+  overlapping/aliased roots and skips unavailable contributions independently; it
+  never creates a replacement source folder or treats a disconnected volume as an
+  empty scan. Executable discovery follows the existing Windows scanner; Linux root
+  records report `discovery_state=unsupported_platform`. Root registration does not
+  enable Linux executable discovery or approve execution.
+- **Listing and watching.** Lists default to 50 records, capped at 200. Cursors bind the
+  session, namespace revision and grant revision; a changed scope requires listing
+  again. Watches use bounded queues, poll availability each second and end on lost
+  authorization. History is not retained: a nonzero `after_revision` must match the
+  current namespace revision. Removal preserves game files, saves, history and global
+  watches. Storage bounds each namespace to 128 library records (including removal
+  tombstones) and 128 roots across active libraries.
+
+The local-socket fixtures in
+[`resources/tests/libraries.rs`](../crates/app/src/plugin_host/resources/tests/libraries.rs)
+cover approval, revisions/replay, account isolation, independent grants, read-only
+handles, unavailable roots and session-start resumption. Engine fixtures in
+[`engine/tests/drm_free.rs`](../crates/app/src/engine/tests/drm_free.rs) cover overlap,
+aliases, legacy watches and revoked scan contributions. These are automated fixtures;
+they do not establish native Windows scanner or desktop-dialog acceptance.
+
 ## Save profiles
 
 The `Saves` service (`ListProfiles`, `GetProfile`, `CreateProfile`, `UpdateProfile`, `RemoveProfile`;
@@ -790,7 +982,8 @@ reads nothing.
 - **What a profile is.** A name, one to eight folders, an optional `runtime_id`, `format_id` and
   `format_version`, and bounded descriptive metadata. Several profiles may exist for one game entry,
   for example one per emulator, each with its own folders. The name is unique per game entry, without
-  regard to case. A profile is for one of the plugin's own library entries; the game it was matched to
+  regard to case. A profile is for one of the plugin's own library entries or its extension session's selected
+  game; the game it was matched to
   when it was made is stored with it and a later catalog rematch does not change it.
 - **Folders the user already approved.** Each folder is a handle the plugin got for a folder the
   user approved for the same plugin and the same game entry ([Files](#files)), or for a directory below
@@ -831,10 +1024,10 @@ reads nothing.
   another's profiles. It is provisional until the shared data plane (section 12) and the permissions
   screen define sharing. List and get return another plugin's profile only when its id is named in
   `shared_records.selected_record_ids`; common-data `categories` are `UNIMPLEMENTED`.
-- **Not covered.** Backing up and restoring from a profile is not served (`BackupsRequestCreate` and
-  `BackupsRequestRestore` stay `UNIMPLEMENTED`), and nothing parses, converts or loads a save. A
-  profile says where saves are; it does not make them readable: reading needs `files.read` and the
-  approval.
+- **Execution and file reads.** Profile-based backup creation/restoration follows the
+  separate grants and confirmations described under Backups above. Nothing parses,
+  converts or loads a save. A profile does not authorize direct file reads: those
+  require `files.read` and folder approval.
 
 The [future save-descriptor roadmap](plugin-save-descriptors.md) documents optional artifact,
 format, content-binding, compatibility, slot/container, load/image and conversion provenance
@@ -956,9 +1149,9 @@ bypass root identity, affected-game or permission validation. Never create a rep
 folder on the underlying mount point, including while waiting for storage to return.
 
 Profile configuration and inspection are independent of the backup engine. The third-party
-profile-based backup create/restore route is not yet served (task 7.3); configuring or inspecting
-a profile does not establish Linux backup support. Existing packaged backup execution has its
-own engine/platform restrictions. Runtime inspection waits for runtime resources. Linux fixtures
+profile-based backup routes retain the engine/platform restrictions documented above;
+configuring or inspecting a profile does not establish Linux backup support.
+Runtime inspection waits for runtime resources. Linux fixtures
 exercise the local-socket API; Windows metadata/access code has been cross-checked, with native
 Windows access, disconnect/reconnect and real-device acceptance still pending. No fixture result
 should be presented as native Windows acceptance.

@@ -234,6 +234,7 @@ impl ResourceApi {
                 .clone()
                 .unwrap_or_else(|| entry.name.clone()),
             operation: action.operation,
+            details: vec![],
         };
         let (game_arg, installation_arg, operation) = (
             action.game_id.clone(),
@@ -366,6 +367,7 @@ impl ResourceApi {
                 match operation {
                     Operation::Launch => "the game was started",
                     Operation::Install => "the provider's install flow was opened",
+                    Operation::BackupRestore => unreachable!("restores use the backup adapter"),
                 },
             ),
             Err(status) => Outcome::failed(code_word(&status), status.message()),

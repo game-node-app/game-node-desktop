@@ -7,7 +7,7 @@ export const PLUGIN_CONFIRMATION_EVENT = 'plugin:confirmation';
 /** The event that says a confirmation stopped waiting (withdrawn by the plugin, or timed out). */
 export const PLUGIN_CONFIRMATION_CLOSED_EVENT = 'plugin:confirmation-closed';
 
-export type PluginConfirmationOperation = 'launch' | 'install';
+export type PluginConfirmationOperation = 'launch' | 'install' | 'backup_restore';
 
 /**
  * A plugin asks to start something on the user's computer. `id` is the host's. `pluginId` is the
@@ -21,6 +21,8 @@ export interface PluginConfirmation {
   gameName: string;
   operation: PluginConfirmationOperation;
   timeoutSeconds: number;
+  /** Full host-resolved restore targets; never interpreted as markup or commands. */
+  details?: string[];
 }
 
 /** A confirmation the user asked the host to remember for one plugin and one game. */
@@ -37,7 +39,7 @@ export const CONFIRMATION_GAME_MAX = 120;
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 
 function isOperation(value: unknown): value is PluginConfirmationOperation {
-  return value === 'launch' || value === 'install';
+  return value === 'launch' || value === 'install' || value === 'backup_restore';
 }
 
 /**
@@ -58,6 +60,9 @@ export function cleanConfirmation(raw: unknown): PluginConfirmation | null {
     publisherFingerprint: FINGERPRINT.test(fingerprint) ? fingerprint : '',
     gameName: plainText(value.gameName, CONFIRMATION_GAME_MAX),
     operation: value.operation,
+    details: Array.isArray(value.details)
+      ? value.details.filter((item): item is string => typeof item === 'string').slice(0, 1002)
+      : undefined,
     timeoutSeconds:
       typeof value.timeoutSeconds === 'number' && Number.isFinite(value.timeoutSeconds)
         ? Math.max(0, Math.floor(value.timeoutSeconds))

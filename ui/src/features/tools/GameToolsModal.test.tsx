@@ -98,6 +98,22 @@ describe('GameToolsModal', () => {
     operation: null,
   };
 
+  it.each(['en', 'pt-BR'] as const)('attributes plugin review and keeps apply/removal separate in %s', (locale) => {
+    const installed = { toolId: 'optiscaler', name: 'OptiScaler', channel: 'stable' as const, version: '0.7.1', proxyDll: 'dxgi.dll', targetExe: 'bin/x64/Cyberpunk2077.exe', state: 'installed' as const, summary: 'Fixture' };
+    const review = { pluginId: '<fixture.plugin>', publisherFingerprint: 'publisher-fingerprint', remove: false };
+    const { unmount } = renderWithProviders(<GameToolsModal modal={{ ...baseModal, tools: [installed], pluginRequest: review }} />, undefined, locale);
+    expect(screen.getByText(/<fixture.plugin>/)).toBeInTheDocument();
+    expect(screen.getByText('publisher-fingerprint')).toBeInTheDocument();
+    expect(screen.getByTestId('anticheat-warning-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-update-button')).toBeDisabled();
+    expect(screen.queryByTestId('tool-uninstall-button')).not.toBeInTheDocument();
+    unmount();
+    renderWithProviders(<GameToolsModal modal={{ ...baseModal, tools: [installed], pluginRequest: { ...review, remove: true } }} />, undefined, locale);
+    expect(screen.getByTestId('tool-uninstall-button')).toBeEnabled();
+    expect(screen.queryByTestId('tool-update-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tool-install-button')).not.toBeInTheDocument();
+  });
+
   it('renders OptiScaler catalog card with GPL-3.0 badge and source repository link', () => {
     const sourceSpy = vi.spyOn(commands, 'openToolSource').mockResolvedValue(undefined);
 

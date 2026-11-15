@@ -129,6 +129,37 @@ impl Default for PluginStorage {
 }
 
 impl PluginStorage {
+    /// Synchronous access for an already-running blocking backup worker. Never call on an async
+    /// runtime/UI thread. Only short approval/revision checks run while the namespace is locked.
+    pub(crate) fn on_backup_worker<T>(
+        &self,
+        caller: &ResourceCaller,
+        work: impl FnOnce(&mut Namespace<'_>) -> Result<T, Status>,
+    ) -> Result<T, Status> {
+        let resolver = caller
+            .namespace
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("account namespace required"))?;
+        let identity = resolver.identity();
+        let dir = self.root.as_ref().map(|root| {
+            durable::namespace_dir(
+                root,
+                &identity.publisher_fingerprint,
+                &identity.plugin_id,
+                &identity.profile_id,
+            )
+        });
+        let inner = self.slot(*resolver.storage_owner().key(), caller.profile_epoch)?;
+        let mut guard = inner
+            .try_lock()
+            .map_err(|_| Status::unavailable("backup scope is being updated"))?;
+        work(&mut Namespace {
+            inner: &mut guard,
+            dir: dir.as_deref(),
+            now: (self.clock)(),
+        })
+    }
+
     /// Durable data goes below `root` (the `plugin-data` folder).
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -709,5 +740,34 @@ impl Namespace<'_> {
             .map_err(unavailable)?;
         self.inner.counter = revision;
         Ok(revision)
+    }
+}
+
+impl Namespace<'_> {
+    pub fn backup_sources(&mut self, profile: &str) -> Result<Vec<String>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.backup_sources(profile).map_err(unavailable),
+            None => Ok(vec![]),
+        }
+    }
+    pub fn remember_backup_source(
+        &mut self,
+        profile: &str,
+        destination: &str,
+        guard: &CommitGuard,
+    ) -> Result<(), Status> {
+        guard()?;
+        let store = self
+            .durable(true)?
+            .ok_or_else(|| Status::unavailable("backup storage unavailable"))?;
+        let sources = store.backup_sources(profile).map_err(unavailable)?;
+        if sources.len() >= 32 && !sources.iter().any(|source| source == destination) {
+            return Err(Status::resource_exhausted(
+                "backup destination limit reached",
+            ));
+        }
+        store
+            .remember_backup_source(profile, destination)
+            .map_err(unavailable)
     }
 }

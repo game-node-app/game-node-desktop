@@ -13,7 +13,207 @@ use super::Engine;
 
 const RELEASE_CACHE_MAX_AGE: Duration = Duration::from_secs(3600);
 
+pub(super) struct PluginToolRequest {
+    id: String,
+    entry_key: String,
+    tool_id: String,
+    review: gamenode_core::tools::ToolPluginRequest,
+    check: crate::plugin_host::jobs::Fence,
+    done: tokio::sync::oneshot::Sender<Result<(), tonic::Status>>,
+    started: bool,
+}
+
+struct ToolWait {
+    engine: Engine,
+    id: String,
+}
+impl Drop for ToolWait {
+    fn drop(&mut self) {
+        self.engine.cancel_plugin_tool(&self.id);
+    }
+}
+
 impl Engine {
+    pub(super) fn plugin_tools_list(
+        &self,
+        entry_key: &str,
+    ) -> Result<Vec<gamenode_plugin_protocol::proto::ToolRecord>, tonic::Status> {
+        let state = self.lock();
+        if state.library.entry(entry_key).is_none()
+            && !state
+                .local
+                .registrations
+                .iter()
+                .any(|r| r.key() == entry_key && !r.removed)
+        {
+            return Err(tonic::Status::not_found("game not found"));
+        }
+        drop(state);
+        let installed = self
+            .shared
+            .ports
+            .tools
+            .as_ref()
+            .map(|s| s.list_for_entry(entry_key))
+            .transpose()
+            .map_err(|_| tonic::Status::unavailable("tools state unavailable"))?
+            .unwrap_or_default();
+        Ok(builtin_tools()
+            .into_iter()
+            .map(|d| {
+                let current = installed.iter().find(|i| i.tool_id == d.id);
+                gamenode_plugin_protocol::proto::ToolRecord {
+                    tool_id: d.id.as_str().into(),
+                    name: d.name,
+                    version: current.map(|i| i.version.clone()).unwrap_or_default(),
+                    availability: if !cfg!(windows)
+                        || self.shared.ports.tool_installer.is_none()
+                        || self.shared.ports.tool_catalog.is_none()
+                        || self.shared.ports.tools.is_none()
+                    {
+                        "unavailable"
+                    } else if current.is_some_and(|i| {
+                        i.state == gamenode_core::tools::ToolInstallState::Installed
+                    }) {
+                        "installed"
+                    } else if current.is_some() {
+                        "busy"
+                    } else {
+                        "available"
+                    }
+                    .into(),
+                }
+            })
+            .collect())
+    }
+
+    pub(super) async fn request_plugin_tool(
+        &self,
+        entry_key: String,
+        tool_id: String,
+        review: gamenode_core::tools::ToolPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        if !cfg!(windows) {
+            return Err(tonic::Status::unavailable("tools are Windows-only"));
+        }
+        self.review_plugin_tool(entry_key, tool_id, review, check)
+            .await
+    }
+
+    /// Platform-independent review coordinator; callers enforce platform availability.
+    pub(super) async fn review_plugin_tool(
+        &self,
+        entry_key: String,
+        tool_id: String,
+        review: gamenode_core::tools::ToolPluginRequest,
+        check: crate::plugin_host::jobs::Fence,
+    ) -> Result<(), tonic::Status> {
+        if self.shared.ports.tool_installer.is_none()
+            || self.shared.ports.tools.is_none()
+            || self.shared.ports.tool_catalog.is_none()
+        {
+            return Err(tonic::Status::unavailable("tools ports unavailable"));
+        }
+        if find_tool(&tool_id).is_none() {
+            return Err(tonic::Status::not_found("tool not found"));
+        }
+        check()?;
+        let id = gamenode_platform::random::session_id();
+        let (done, mut result) = tokio::sync::oneshot::channel();
+        {
+            let mut state = self.lock();
+            if state.tools.modal.is_some() || state.plugin_tool_request.is_some() {
+                return Err(tonic::Status::resource_exhausted(
+                    "tools window is already in use",
+                ));
+            }
+            state.plugin_tool_request = Some(PluginToolRequest {
+                id: id.clone(),
+                entry_key: entry_key.clone(),
+                tool_id: tool_id.clone(),
+                review,
+                check: check.clone(),
+                done,
+                started: false,
+            });
+        }
+        let _wait = ToolWait {
+            engine: self.clone(),
+            id: id.clone(),
+        };
+        let engine = self.clone();
+        let request_id = id.clone();
+        tokio::task::spawn_blocking(move || {
+            engine.open_tools_impl(Some(entry_key), ToolId::new(tool_id), Some(&request_id))
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("tools review unavailable"))?;
+        if self.lock().tools.modal.is_none() {
+            return Err(tonic::Status::failed_precondition(
+                "tools target unavailable",
+            ));
+        }
+        let deadline = Instant::now() + Duration::from_secs(300);
+        loop {
+            tokio::select! {
+                answer = &mut result => return answer.unwrap_or_else(|_| Err(tonic::Status::cancelled("tools review closed"))),
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
+                    let started = self.lock().plugin_tool_request.as_ref().is_some_and(|r| r.id == id && r.started);
+                    if !started {
+                        check()?;
+                        if Instant::now() >= deadline { return Err(tonic::Status::deadline_exceeded("tools review timed out")); }
+                    }
+                }
+            }
+        }
+    }
+
+    fn cancel_plugin_tool(&self, id: &str) {
+        let mut state = self.lock();
+        if state
+            .plugin_tool_request
+            .as_ref()
+            .is_some_and(|r| r.id == id && !r.started)
+        {
+            state.plugin_tool_request.take();
+            state.tools.modal = None;
+            self.publish(&mut state);
+        }
+    }
+
+    fn plugin_tool_operation_allowed(&self, remove: bool) -> bool {
+        let state = self.lock();
+        state
+            .plugin_tool_request
+            .as_ref()
+            .is_none_or(|r| !r.started && r.review.remove == remove && (r.check)().is_ok())
+    }
+
+    fn begin_plugin_tool(
+        &self,
+        remove: bool,
+    ) -> Result<Option<crate::plugin_host::jobs::Fence>, ()> {
+        let mut state = self.lock();
+        let Some(request) = state.plugin_tool_request.as_ref() else {
+            return Ok(None);
+        };
+        if request.started
+            || request.review.remove != remove
+            || !state.tools.modal.as_ref().is_some_and(|m| {
+                m.entry_key == request.entry_key && m.active_tool_id.as_str() == request.tool_id
+            })
+        {
+            return Err(());
+        }
+        if (request.check)().is_err() {
+            return Err(());
+        }
+        let request = state.plugin_tool_request.as_mut().unwrap();
+        request.started = true;
+        Ok(Some(request.check.clone()))
+    }
+
     /// Dispatches startup recovery of incomplete tool jobs and initializes installed tools
     /// and catalog state.
     pub fn recover_and_load_tools(&self) {
@@ -130,6 +330,23 @@ impl Engine {
 
     /// Opens the tools modal for the specified `entry_key`.
     pub fn open_tools(&self, entry_key: Option<String>) {
+        if self.lock().plugin_tool_request.is_some() {
+            return;
+        }
+        let engine = self.clone();
+        self.shared.runtime.spawn_blocking(move || {
+            if engine.lock().plugin_tool_request.is_none() {
+                engine.open_tools_impl(entry_key, ToolId::new("optiscaler"), None);
+            }
+        });
+    }
+
+    fn open_tools_impl(
+        &self,
+        entry_key: Option<String>,
+        active_tool_id: ToolId,
+        request_id: Option<&str>,
+    ) {
         let Some(entry_key) = entry_key else {
             return;
         };
@@ -160,6 +377,15 @@ impl Engine {
         }
 
         let mut state = self.lock();
+        if match request_id {
+            Some(id) => !state
+                .plugin_tool_request
+                .as_ref()
+                .is_some_and(|r| r.id == id),
+            None => state.plugin_tool_request.is_some(),
+        } {
+            return;
+        }
         let existing_tools = state
             .tools
             .installed_by_entry
@@ -167,7 +393,6 @@ impl Engine {
             .cloned()
             .unwrap_or_default();
 
-        let active_tool_id = ToolId::new("optiscaler");
         let installed_tool = existing_tools.iter().find(|t| t.tool_id == active_tool_id);
 
         let channel = installed_tool
@@ -194,7 +419,9 @@ impl Engine {
             .map(|t| t.version.clone())
             .or_else(|| cached_releases.first().map(|r| r.version.clone()));
 
+        let plugin_request = state.plugin_tool_request.as_ref().map(|r| r.review.clone());
         state.tools.modal = Some(ToolModalView {
+            plugin_request,
             entry_key: entry_key.clone(),
             title: title.clone(),
             install_dir: install_dir.clone(),
@@ -330,6 +557,11 @@ impl Engine {
             return;
         }
         state.tools.modal = None;
+        if let Some(request) = state.plugin_tool_request.take() {
+            let _ = request
+                .done
+                .send(Err(tonic::Status::cancelled("tools review declined")));
+        }
         self.publish(&mut state);
     }
 
@@ -514,6 +746,9 @@ impl Engine {
 
     /// Executes transactional installation or version update of the active tool.
     pub fn install_or_update_tool(&self, is_update: bool) {
+        if !self.plugin_tool_operation_allowed(false) {
+            return;
+        }
         let (request, release, descriptor, install_dir) = {
             let mut state = self.lock();
             let (
@@ -679,16 +914,43 @@ impl Engine {
             return;
         };
 
+        let Ok(fence) = self.begin_plugin_tool(false) else {
+            return;
+        };
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
-            let result = installer.install_or_update(
-                &*store,
-                &*catalog,
-                &descriptor,
-                &release,
-                &request,
-                &install_dir,
-            );
+            let check = || {
+                fence
+                    .as_ref()
+                    .map(|f| {
+                        f().map_err(|_| {
+                            gamenode_core::tools::ToolError::Failed(
+                                "tool authorization ended".into(),
+                            )
+                        })
+                    })
+                    .unwrap_or(Ok(()))
+            };
+            let result = if fence.is_some() {
+                installer.install_or_update_checked(
+                    &*store,
+                    &*catalog,
+                    &descriptor,
+                    &release,
+                    &request,
+                    &install_dir,
+                    &check,
+                )
+            } else {
+                installer.install_or_update(
+                    &*store,
+                    &*catalog,
+                    &descriptor,
+                    &release,
+                    &request,
+                    &install_dir,
+                )
+            };
 
             match result {
                 Ok(_installation) => {
@@ -703,6 +965,9 @@ impl Engine {
 
     /// Executes transactional uninstallation of the active tool.
     pub fn uninstall_tool(&self) {
+        if !self.plugin_tool_operation_allowed(true) {
+            return;
+        }
         let (entry_key, tool_id, install_dir) = {
             let mut state = self.lock();
             let Some(modal) = &mut state.tools.modal else {
@@ -732,9 +997,34 @@ impl Engine {
             return;
         };
 
+        let Ok(fence) = self.begin_plugin_tool(true) else {
+            return;
+        };
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
-            let result = installer.uninstall(&*store, &entry_key, tool_id.as_str(), &install_dir);
+            let check = || {
+                fence
+                    .as_ref()
+                    .map(|f| {
+                        f().map_err(|_| {
+                            gamenode_core::tools::ToolError::Failed(
+                                "tool authorization ended".into(),
+                            )
+                        })
+                    })
+                    .unwrap_or(Ok(()))
+            };
+            let result = if fence.is_some() {
+                installer.uninstall_checked(
+                    &*store,
+                    &entry_key,
+                    tool_id.as_str(),
+                    &install_dir,
+                    &check,
+                )
+            } else {
+                installer.uninstall(&*store, &entry_key, tool_id.as_str(), &install_dir)
+            };
             match result {
                 Ok(()) => {
                     engine.reload_tools_after_mutation(&entry_key, Ok(()));
@@ -830,6 +1120,23 @@ impl Engine {
             );
         state.tools.total_cache_archives = archives;
 
+        if state
+            .plugin_tool_request
+            .as_ref()
+            .is_some_and(|r| r.entry_key == entry_key && r.started)
+        {
+            let request = state.plugin_tool_request.take().unwrap();
+            let answer = outcome.as_ref().map(|_| ()).map_err(|_| {
+                tonic::Status::failed_precondition(
+                    "tool operation failed; inspect Core tool status",
+                )
+            });
+            let _ = request.done.send(answer);
+            // The plugin request has ended. Keep errors visible, without leaving a live action.
+            if let Some(modal) = &mut state.tools.modal {
+                modal.plugin_request = None;
+            }
+        }
         if let Some(modal) = &mut state.tools.modal
             && modal.entry_key == entry_key
         {

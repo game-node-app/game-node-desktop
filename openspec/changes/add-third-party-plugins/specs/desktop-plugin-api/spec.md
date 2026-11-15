@@ -6,6 +6,31 @@ Expose a language-neutral, versioned and permission-scoped host API that indepen
 
 ## ADDED Requirements
 
+### Requirement: Host-issued user intent for standard launch and install
+The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. Intents SHALL be bound to the authenticated scope, expire and be single use. Missing intent SHALL require a cancellable job awaiting host confirmation. Remembered confirmation MAY replace the dialog only within its approved plugin/game scope and SHALL remain revocable.
+
+#### Scenario: Intent binding
+- **WHEN** Core issues an intent for standard launch or install
+- **THEN** it SHALL bind the intent to plugin identity and publisher, profile, game and installation, operation kind and, for launch, the detected-target revision
+
+#### Scenario: Request without intent
+- **WHEN** a plugin with game.launch requests a launch without a user intent id
+- **THEN** the request SHALL return a job that waits while the host asks the user; the user can approve or decline, the plugin can cancel, and nothing starts until the user approves
+
+#### Scenario: Reused or shifted intent
+- **WHEN** a plugin presents an intent that was already used, expired, or issued for another plugin, profile, game, operation or target revision
+- **THEN** the host refuses it without saying which condition failed and starts nothing
+
+#### Scenario: Another provider's game
+- **WHEN** a provider session or an extension session names a game that is neither its own entry nor its selected target
+- **THEN** the host denies the request even if the plugin can read the whole library; provider sessions SHALL name only their own entries and extension sessions only their user-selected target game
+
+#### Scenario: Remembered confirmation
+- **WHEN** the user allowed one plugin to launch one game and that game's detected target is unchanged
+- **THEN** the plugin's request for that game runs without a dialog, while another game, another operation or a changed target asks again; the user MAY revoke the remembered confirmation
+
+## MODIFIED Requirements
+
 ### Requirement: Single SDK-independent wire contract
 Third-party clients SHALL be able to use the public protobuf contract and documented local transport directly. SDK clients and independent clients SHALL receive equivalent method availability, permission enforcement and results. No public service SHALL require a private SDK-only handshake.
 
@@ -57,80 +82,6 @@ Plugins SHALL be able to declare external windows, declarative forms, both or ne
 - **WHEN** external configuration is unsupported or denied but the plugin also declares an authorized declarative form
 - **THEN** the host offers that form without widening any grants
 
-### Requirement: Library and presentation services
-The API SHALL provide paginated library list/get/watch, display-metadata updates, favorites list/set, matching search/assignment and artwork read/set. Writes SHALL be limited to caller-owned provider entries and validated through Core rules. Whole-library reads SHALL require a separate grant and omit credentials and raw private snapshots.
-
-#### Scenario: Read another provider
-- **WHEN** a plugin has library.read but lacks library.read.all and requests another provider's entries
-- **THEN** those records are not disclosed
-
-#### Scenario: Stale page cursor
-- **WHEN** a list cursor is stale or no longer matches its original query scope
-- **THEN** the host rejects the page request without returning entries and the caller must restart the list
-
-#### Scenario: Plugin-initiated resource call
-- **WHEN** a plugin calls a library service
-- **THEN** the call carries the host-issued resource context from its API 1.6 session, which is checked against the session, active profile and grants and confers no authority of its own
-
-#### Scenario: Watch after a grant change
-- **WHEN** a plugin's permissions change while it watches the library
-- **THEN** the host ends the watch with the denial instead of delivering further events
-
-#### Scenario: Watch position no longer retained
-- **WHEN** a plugin resumes a watch from a revision older than the retained history
-- **THEN** the host rejects it and the caller must list again
-
-#### Scenario: Metadata revision conflict
-- **WHEN** a plugin updates metadata using an obsolete revision
-- **THEN** the host reports a conflict without overwriting the newer value
-
-#### Scenario: Foreign-provider metadata mutation
-- **WHEN** a plugin updates the display metadata of an installation owned by another provider, even if it holds library.read.all
-- **THEN** the host reports the entry as not found and changes nothing
-
-#### Scenario: Idempotent retry
-- **WHEN** a plugin retries a metadata or favorite mutation with the same idempotency key and the same request
-- **THEN** the host returns the original committed outcome, and a different request under that key is refused
-
-#### Scenario: Favorite of an unmatched game
-- **WHEN** a plugin sets the favorite of a GameNode game that none of its own entries is currently matched to
-- **THEN** the host rejects it as not found and changes no favorite
-
-#### Scenario: Catalog unavailable during search
-- **WHEN** a plugin searches the GameNode catalog without a verified online session, or GameNode cannot answer
-- **THEN** the host reports the catalog as unavailable rather than returning an empty result, and the library and the user's match dialog are unchanged
-
-#### Scenario: Assigning a game nobody offered
-- **WHEN** a plugin assigns an own entry to a GameNode game the host does not know and no plugin search returned
-- **THEN** the host reports the game as not found and changes no match
-
-#### Scenario: Match revision conflict
-- **WHEN** a plugin assigns a match using an obsolete entry revision
-- **THEN** the host reports a conflict with the current revision and stores nothing
-
-#### Scenario: Foreign-provider match assignment
-- **WHEN** a plugin assigns the installation of another provider, even if it holds library.read.all
-- **THEN** the host reports the entry as not found and changes no match
-
-#### Scenario: The user's match choice is protected
-- **WHEN** a plugin assigns an entry whose match the user chose in the match dialog to a different game
-- **THEN** the host refuses the assignment and the user's choice stays, while a plugin's own earlier choice can still be replaced
-
-#### Scenario: Cover set for an own entry
-- **WHEN** a plugin sets a valid image as the cover of one of its own entries
-- **THEN** the host decodes, shrinks and re-encodes it on a worker, shows it as that entry's cover, leaves the matched game's cover and every other entry unchanged, and an empty image restores the game's cover
-
-#### Scenario: Unsafe image refused
-- **WHEN** a plugin sets an image that is not a static PNG, JPEG or WebP, whose declared type does not match its bytes, that is damaged, that exceeds the byte or pixel limits, or whose entry it does not own
-- **THEN** the host refuses it, decodes nothing for a foreign entry, stores nothing and leaves the library artwork unchanged
-
-#### Scenario: Cover revision conflict
-- **WHEN** a plugin sets a cover using an obsolete artwork revision
-- **THEN** the host reports a conflict with the current revision and stores nothing
-
-#### Scenario: Cover read stays on the device
-- **WHEN** a plugin reads the cover of one of its own entries
-- **THEN** the host returns the cover the entry shows within the plugin's byte budget, reports an over-budget image as exhausted instead of truncating it, and downloads nothing
 
 ### Requirement: Game and installation identity
 Library projections SHALL keep the optional matched GameNode game ID separate from the provider installation identity. `game_id` SHALL contain the GameNode ID when known and be empty otherwise. `installation_id` SHALL be an opaque, stable host-issued identifier for the provider installation, not a physical path. Multiple installations MAY refer to the same GameNode game.
@@ -323,7 +274,7 @@ The game.launch permission SHALL authorize launch through the game's current det
 - **WHEN** a plugin with game.launch requests an approved game at its current target revision
 - **THEN** the host launches the detected URI or executable unchanged through its user-intent workflow
 
-#### Scenario: Attempted custom launch under standard grant
+#### Scenario: Attempted custom parameter under standard grant
 - **WHEN** a plugin with game.launch but without game.custom_launch requests a custom launch with arguments or environment values
 - **THEN** the host denies it explicitly, names the missing game.custom_launch permission and launches nothing
 
@@ -331,24 +282,6 @@ The game.launch permission SHALL authorize launch through the game's current det
 - **WHEN** a plugin whose custom launch was denied wants the game started anyway
 - **THEN** it must make its own standard launch request without parameters, and the host never turns the denied custom request into a standard launch by itself
 
-### Requirement: Host-issued user intent for standard launch and install
-The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. An intent SHALL be bound to the plugin identity and publisher, profile, game and installation, operation kind and, for launch, the detected-target revision; it SHALL be single use and expire. Without an intent the request SHALL return a job that waits for a host confirmation dialog, which the user can approve or decline and the plugin can cancel. A provider session SHALL name only its own entries and an extension session only its user-selected target game. The user MAY remember the confirmation for one plugin and one game and revoke it.
-
-#### Scenario: Request without intent
-- **WHEN** a plugin with game.launch requests a launch without a user intent id
-- **THEN** the job waits while the host asks the user, and nothing starts until the user approves
-
-#### Scenario: Reused or shifted intent
-- **WHEN** a plugin presents an intent that was already used, expired, or issued for another plugin, profile, game, operation or target revision
-- **THEN** the host refuses it without saying which condition failed and starts nothing
-
-#### Scenario: Another provider's game
-- **WHEN** a provider session or an extension session names a game that is neither its own entry nor its selected target
-- **THEN** the host denies the request even if the plugin can read the whole library
-
-#### Scenario: Remembered confirmation
-- **WHEN** the user allowed one plugin to launch one game and that game's detected target is unchanged
-- **THEN** the plugin's request for that game runs without a dialog, while another game, another operation or a changed target asks again
 
 ### Requirement: Custom game launch permission
 The independent game.custom_launch grant SHALL authorize plugin-owned per-game recipes and their approved execution, including alternate URI/executable, arguments, working directory, runtime wrappers and environment overrides. Recipes SHALL use typed target/resource handles and argument vectors rather than shell command strings. This grant SHALL NOT imply installation or normal-launch permission.
@@ -687,3 +620,79 @@ Domain APIs and Data projections SHALL enforce identical publication, operation 
 #### Scenario: Public deletion does not expand private cleanup
 - **WHEN** a plugin has delete permission for one published record and storage.persist for its own namespace
 - **THEN** it can delete that authorized record and clean its own persisted entries, but cannot delete another plugin's private data
+
+
+### Requirement: Library and presentation services
+The API SHALL provide paginated library list/get/watch, display-metadata updates, favorites list/set, matching search/assignment and artwork read/set. Writes SHALL be limited to caller-owned provider entries and validated through Core rules. Whole-library reads SHALL require a separate grant and omit credentials and raw private snapshots.
+
+#### Scenario: Read another provider
+- **WHEN** a plugin has library.read but lacks library.read.all and requests another provider's entries
+- **THEN** those records are not disclosed
+
+#### Scenario: Stale page cursor
+- **WHEN** a list cursor is stale or no longer matches its original query scope
+- **THEN** the host rejects the page request without returning entries and the caller must restart the list
+
+#### Scenario: Plugin-initiated resource call
+- **WHEN** a plugin calls a library service
+- **THEN** the call carries the host-issued resource context from its API 1.6 session, which is checked against the session, active profile and grants and confers no authority of its own
+
+#### Scenario: Watch after a grant change
+- **WHEN** a plugin's permissions change while it watches the library
+- **THEN** the host ends the watch with the denial instead of delivering further events
+
+#### Scenario: Watch position no longer retained
+- **WHEN** a plugin resumes a watch from a revision older than the retained history
+- **THEN** the host rejects it and the caller must list again
+
+#### Scenario: Metadata revision conflict
+- **WHEN** a plugin updates metadata using an obsolete revision
+- **THEN** the host reports a conflict without overwriting the newer value
+
+#### Scenario: Foreign-provider metadata mutation
+- **WHEN** a plugin updates the display metadata of an installation owned by another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes nothing
+
+#### Scenario: Idempotent retry
+- **WHEN** a plugin retries a metadata or favorite mutation with the same idempotency key and the same request
+- **THEN** the host returns the original committed outcome, and a different request under that key is refused
+
+#### Scenario: Favorite of an unmatched game
+- **WHEN** a plugin sets the favorite of a GameNode game that none of its own entries is currently matched to
+- **THEN** the host rejects it as not found and changes no favorite
+
+#### Scenario: Catalog unavailable during search
+- **WHEN** a plugin searches the GameNode catalog without a verified online session, or GameNode cannot answer
+- **THEN** the host reports the catalog as unavailable rather than returning an empty result, and the library and the user's match dialog are unchanged
+
+#### Scenario: Assigning a game nobody offered
+- **WHEN** a plugin assigns an own entry to a GameNode game the host does not know and no plugin search returned
+- **THEN** the host reports the game as not found and changes no match
+
+#### Scenario: Match revision conflict
+- **WHEN** a plugin assigns a match using an obsolete entry revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Foreign-provider match assignment
+- **WHEN** a plugin assigns the installation of another provider, even if it holds library.read.all
+- **THEN** the host reports the entry as not found and changes no match
+
+#### Scenario: The user's match choice is protected
+- **WHEN** a plugin assigns an entry whose match the user chose in the match dialog to a different game
+- **THEN** the host refuses the assignment and the user's choice stays, while a plugin's own earlier choice can still be replaced
+
+#### Scenario: Cover set for an own entry
+- **WHEN** a plugin sets a valid image as the cover of one of its own entries
+- **THEN** the host decodes, shrinks and re-encodes it on a worker, shows it as that entry's cover, leaves the matched game's cover and every other entry unchanged, and an empty image restores the game's cover
+
+#### Scenario: Unsafe image refused
+- **WHEN** a plugin sets an image that is not a static PNG, JPEG or WebP, whose declared type does not match its bytes, that is damaged, that exceeds the byte or pixel limits, or whose entry it does not own
+- **THEN** the host refuses it, decodes nothing for a foreign entry, stores nothing and leaves the library artwork unchanged
+
+#### Scenario: Cover revision conflict
+- **WHEN** a plugin sets a cover using an obsolete artwork revision
+- **THEN** the host reports a conflict with the current revision and stores nothing
+
+#### Scenario: Cover read stays on the device
+- **WHEN** a plugin reads the cover of one of its own entries
+- **THEN** the host returns the cover the entry shows within the plugin's byte budget, reports an over-budget image as exhausted instead of truncating it, and downloads nothing

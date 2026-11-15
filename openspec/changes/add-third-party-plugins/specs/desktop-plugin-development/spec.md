@@ -4,7 +4,7 @@
 
 Let third-party authors build, test and package independent clients using public documentation, an optional Rust SDK and practical examples in two languages.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Independently consumable MIT development assets
 The SDK, public protocol definitions and examples SHALL carry explicit MIT terms and copyright notices, subject to verified licensing authority. Public distributions SHALL be usable outside the GameNode workspace without internal Core/app/platform dependencies. Core and host SHALL retain GPL-3.0-only.

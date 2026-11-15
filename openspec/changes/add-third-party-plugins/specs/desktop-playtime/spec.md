@@ -52,7 +52,6 @@ For a provider without a store counter, or while the global Internal preference 
 - **WHEN** a game process was created 20 seconds before the next listing found it
 - **THEN** the session starts at the process creation time
 
-## ADDED Requirements
 
 ### Requirement: Runtime content attribution and deduplication
 Core SHALL validate authorized plugin observations to distinguish content sessions and runtime instances independently of PID or executable path. Content switches SHALL close the prior interval at the validated boundary. Core SHALL arbitrate duplicate reports and process evidence into one accounting attribution per actual play period. Existing account, source, counter, checkpoint and platform policies SHALL remain authoritative.

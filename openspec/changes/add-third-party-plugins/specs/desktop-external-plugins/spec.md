@@ -4,7 +4,7 @@
 
 Manage third-party native plugin packages, publisher identity, execution and updates independently from bundled official providers.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Managed package installation
 The application SHALL install third-party plugins only through explicit package import into its managed per-user registry. Packages and publisher-key trust SHALL belong to the OS-user registry; activation and enabled state SHALL belong to the signed-in GameNode account. Packages SHALL be validated before execution and installed disabled until the user approves activation for that account. Arbitrary files dropped outside this flow SHALL NOT be executed as plugins.

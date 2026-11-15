@@ -76,7 +76,6 @@ URI Play and Install SHALL open only a filled URI whose scheme is the scheme of 
 - **WHEN** an executable resolves through a replaced junction outside its registered game folder
 - **THEN** launch is refused and the entry offers repair
 
-## ADDED Requirements
 
 ### Requirement: Reserved official identities
 Third-party registration SHALL reject reserved official plugin/provider identities and duplicate installed provider ids. Publisher-controlled metadata SHALL NOT establish official status or select a bundled credential alias. Invalid packages SHALL fail independently without changing official registration.

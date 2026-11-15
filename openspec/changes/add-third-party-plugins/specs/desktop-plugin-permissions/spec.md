@@ -4,7 +4,8 @@
 
 Give users enforceable control over third-party access to host APIs and accurately disclose the limits of native executable permissions.
 
-## ADDED Requirements
+
+## MODIFIED Requirements
 
 ### Requirement: Explicit persistent scoped grants
 The host SHALL deny third-party data permissions by default and persist each GameNode account's permission and scope decisions independently. Effective grants SHALL be limited by manifest requests, host support, user decisions and current resource/session/profile scope. A plugin SHALL NOT grant itself permissions.
@@ -144,28 +145,6 @@ The host SHALL expose independent game.launch and game.custom_launch permissions
 - **WHEN** the host starts an approved custom game/runtime process
 - **THEN** it applies validated approved environment overrides without exposing host/plugin session credentials
 
-### Requirement: Explicit per-plugin per-game filesystem scope
-Every third-party permission SHALL start disabled at installation. File read/write/delete grants SHALL bind one authenticated plugin to explicitly approved game/resource roots and operations; no global access SHALL be implied. Shared files affecting several games SHALL require explicit approval of their full affected scope.
-
-#### Scenario: One game authorized
-- **WHEN** the user grants one plugin read/write access for game A only
-- **THEN** the API allows those operations inside approved A resources and denies game B or broader parent directories
-
-#### Scenario: Shared emulator memory card
-- **WHEN** writing one selected resource would affect several games
-- **THEN** the full shared scope must be reviewed and authorized before the host permits the write
-
-#### Scenario: Plugin-declared save locations
-- **WHEN** a plugin declares an ordered list of default folders where a game's saves live
-- **THEN** Core shows them in that order as declared by the plugin and not verified, pre-selects the first that exists, and the declarations alone grant nothing: the user confirms one or chooses another folder before any approval
-
-#### Scenario: Verify contents before asking to write
-- **WHEN** a plugin approved read-only for a folder inspects its files and then asks for write
-- **THEN** the read-only approval gives no write, and Core asks again, showing what is already approved and what is added, before any write is allowed
-
-#### Scenario: Approval requires the Core dialog
-- **WHEN** a plugin asks for access to a folder
-- **THEN** Core asks the user in its own dialog naming the plugin, game, folder, operations and every known affected game, and nothing is granted until the user confirms
 
 ### Requirement: Default-deny common-data category sharing
 Common-data read permissions SHALL start denied and be selectable during activation. Granting one SHALL permit explicit per-operation access to all plugins' published records in that category within its declared scope, without pairwise source/recipient approval. Sensitive/custom datasets SHALL retain explicit sharing review; secrets and authentication material SHALL never be included.
@@ -279,3 +258,27 @@ Public-pool read, create, update and delete SHALL require independent user-selec
 #### Scenario: Published record deletion is distinct from private cleanup
 - **WHEN** a plugin has delete permission for one published runtime record but only storage.persist for its own namespace
 - **THEN** it may delete that authorized public record, may clean its own persisted entries, and cannot address another plugin's private namespace
+
+
+### Requirement: Explicit per-plugin per-game filesystem scope
+Every third-party permission SHALL start disabled at installation. File read/write/delete grants SHALL bind one authenticated plugin to explicitly approved game/resource roots and operations; no global access SHALL be implied. Shared files affecting several games SHALL require explicit approval of their full affected scope.
+
+#### Scenario: One game authorized
+- **WHEN** the user grants one plugin read/write access for game A only
+- **THEN** the API allows those operations inside approved A resources and denies game B or broader parent directories
+
+#### Scenario: Shared emulator memory card
+- **WHEN** writing one selected resource would affect several games
+- **THEN** the full shared scope must be reviewed and authorized before the host permits the write
+
+#### Scenario: Plugin-declared save locations
+- **WHEN** a plugin declares an ordered list of default folders where a game's saves live
+- **THEN** Core shows them in that order as declared by the plugin and not verified, pre-selects the first that exists, and the declarations alone grant nothing: the user confirms one or chooses another folder before any approval
+
+#### Scenario: Verify contents before asking to write
+- **WHEN** a plugin approved read-only for a folder inspects its files and then asks for write
+- **THEN** the read-only approval gives no write, and Core asks again, showing what is already approved and what is added, before any write is allowed
+
+#### Scenario: Approval requires the Core dialog
+- **WHEN** a plugin asks for access to a folder
+- **THEN** Core asks the user in its own dialog naming the plugin, game, folder, operations and every known affected game, and nothing is granted until the user confirms

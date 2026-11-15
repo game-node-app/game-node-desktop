@@ -456,6 +456,16 @@ impl ProviderProcesses {
         }
     }
 
+    pub async fn stop_plugin(&self, plugin_id: &str) {
+        for provider_id in self
+            .inner
+            .api
+            .third_party_provider_ids_for_plugin(plugin_id)
+        {
+            self.stop_provider(&provider_id).await;
+        }
+    }
+
     pub async fn shutdown(&self) {
         self.inner.shutdown.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(4), async {

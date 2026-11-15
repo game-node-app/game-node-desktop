@@ -1154,6 +1154,54 @@ impl ProviderApi {
             .collect()
     }
 
+    /// Provider process registrations owned by one installed third-party plugin.
+    pub(crate) fn third_party_provider_ids_for_plugin(&self, plugin_id: &str) -> Vec<String> {
+        lock(&self.state)
+            .providers
+            .values()
+            .filter(|provider| {
+                provider.profiles.is_some() && provider.registration.plugin_id == plugin_id
+            })
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect()
+    }
+
+    /// Fences sessions and unregisters a third-party plugin after its process has been stopped.
+    /// Official registrations are never eligible for removal through this lifecycle path.
+    pub(crate) async fn unregister_third_party_plugin(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Vec<String>, Status> {
+        let providers: Vec<_> = {
+            let state = lock(&self.state);
+            let matching = state
+                .providers
+                .values()
+                .filter(|provider| provider.registration.plugin_id == plugin_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            if matching.iter().any(|provider| provider.profiles.is_none()) {
+                return Err(Status::permission_denied(
+                    "official plugin registrations cannot be removed here",
+                ));
+            }
+            matching
+        };
+        let provider_ids = providers
+            .iter()
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect::<Vec<_>>();
+        for provider in &providers {
+            drop(provider.commits.lock().await);
+            self.disconnect(&provider.registration.provider_id).await;
+        }
+        let mut state = lock(&self.state);
+        for provider_id in &provider_ids {
+            state.providers.remove(provider_id);
+        }
+        Ok(provider_ids)
+    }
+
     pub async fn disconnect(&self, provider_id: &str) {
         let ids = {
             let mut state = lock(&self.state);

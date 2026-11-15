@@ -399,6 +399,71 @@ async fn profile_change_stops_third_party_process_but_not_official_processes() {
     official.shutdown().await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn activation_persists_per_account_and_remove_stops_unregisters_and_deletes_packages() {
+    let (processes, _server, directory) = manager_with_origin(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+        crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "fixture-publisher".into(),
+        },
+    )
+    .await;
+    let api = processes.inner.api.clone();
+    api.profiles().update(Some("account-one"), true);
+    let package_source = directory.path().join("package-source");
+    std::fs::create_dir(&package_source).unwrap();
+    std::fs::write(package_source.join("plugin.bin"), b"fixture").unwrap();
+    let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
+        directory.path().join("packages"),
+    )
+    .unwrap();
+    registry
+        .install_verified("fixture.plugin", "1.0.0", &package_source, true)
+        .unwrap();
+    let lifecycle = crate::plugin_host::runtime::ThirdPartyPluginLifecycle::new(
+        api.clone(),
+        processes.clone(),
+        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data")),
+        crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
+    );
+
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    let pid = processes.process_id("fixture").await.unwrap();
+    assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+
+    api.profiles().update(Some("account-two"), true);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while processes.process_id("fixture").await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("changing accounts should stop the old process");
+    assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+    api.profiles().update(Some("account-one"), true);
+    lifecycle.start_enabled_plugins().await.unwrap();
+    assert!(processes.process_id("fixture").await.is_some());
+    assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+
+    lifecycle.disable("fixture.plugin".into()).await.unwrap();
+    assert!(processes.process_id("fixture").await.is_none());
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
+
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    lifecycle.remove("fixture.plugin".into()).await.unwrap();
+    assert!(processes.process_id("fixture").await.is_none());
+    assert!(
+        api.third_party_provider_ids_for_plugin("fixture.plugin")
+            .is_empty()
+    );
+    assert!(registry.active("fixture.plugin").unwrap().is_none());
+    processes.shutdown().await;
+}
+
 #[tokio::test]
 async fn missing_executable_and_handshake_timeout_release_the_launch() {
     for (executable, mode) in [

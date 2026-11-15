@@ -3,7 +3,9 @@
 
 use super::{
     login::LoginBroker,
+    managed_packages::{ManagedPackageLifecycle, PackageLifecycleError},
     process::{ProcessConfig, ProviderProcesses},
+    profile::PluginStateLayout,
     provider::{Completion, ProviderApi, Registration},
     services::ProviderServices,
 };
@@ -68,6 +70,175 @@ pub struct HostedProviders {
     entries: BTreeMap<String, Entry>,
     failures: Mutex<BTreeMap<String, String>>,
     observer: Mutex<Option<Observer>>,
+}
+
+/// Account-scoped enable/disable controls for already registered managed plugins. Registration
+/// and package validation remain host-owned; this service only starts verified process slots and
+/// persists the user's per-account choice.
+pub struct ThirdPartyPluginLifecycle {
+    api: ProviderApi,
+    processes: ProviderProcesses,
+    state: PluginStateLayout,
+    packages: ManagedPackageLifecycle,
+    mutation: tokio::sync::Mutex<()>,
+}
+
+impl ThirdPartyPluginLifecycle {
+    pub fn new(
+        api: ProviderApi,
+        processes: ProviderProcesses,
+        state: PluginStateLayout,
+        packages: ManagedPackageLifecycle,
+    ) -> Self {
+        Self {
+            api,
+            processes,
+            state,
+            packages,
+            mutation: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub async fn enabled(&self, plugin_id: String) -> Result<bool, Status> {
+        let profile = self.api.profiles().require()?;
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            state
+                .open_activation(&profile)
+                .map(|activation| activation.is_enabled(&plugin_id))
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))?
+    }
+
+    pub async fn enable(&self, plugin_id: String) -> Result<(), Status> {
+        self.set_enabled(plugin_id, true).await
+    }
+
+    pub async fn disable(&self, plugin_id: String) -> Result<(), Status> {
+        self.set_enabled(plugin_id, false).await
+    }
+
+    /// Starts the plugins enabled in the active account after registration has been restored.
+    pub async fn start_enabled_plugins(&self) -> Result<(), Status> {
+        let profile = self.api.profiles().require()?;
+        let state = self.state.clone();
+        let enabled = tokio::task::spawn_blocking(move || {
+            state
+                .open_activation(&profile)
+                .map(|activation| activation.enabled().map(str::to_owned).collect::<Vec<_>>())
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+        for plugin_id in enabled {
+            self.set_enabled(plugin_id, true).await?;
+        }
+        Ok(())
+    }
+
+    async fn set_enabled(&self, plugin_id: String, enabled: bool) -> Result<(), Status> {
+        let _mutation = self.mutation.lock().await;
+        let profile = self.api.profiles().require()?;
+        let process_ids = self.process_ids(&plugin_id)?;
+        let state = self.state.clone();
+        let account = profile.clone();
+        let plugin = plugin_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut activation = state
+                .open_activation(&account)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))?;
+            activation
+                .set_enabled(&plugin, enabled)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
+
+        if !enabled {
+            for provider_id in process_ids {
+                self.api.disconnect(&provider_id).await;
+                self.processes.stop_provider(&provider_id).await;
+            }
+            return Ok(());
+        }
+
+        if !self.api.profiles().is_current(profile.epoch()) {
+            return Err(super::profile::no_profile());
+        }
+        for provider_id in &process_ids {
+            if let Err(error) = self.processes.ensure_started(provider_id).await {
+                for provider_id in &process_ids {
+                    self.api.disconnect(provider_id).await;
+                    self.processes.stop_provider(provider_id).await;
+                }
+                let state = self.state.clone();
+                let account = profile;
+                let plugin = plugin_id;
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(mut activation) = state.open_activation(&account) {
+                        let _ = activation.set_enabled(&plugin, false);
+                    }
+                })
+                .await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn remove(&self, plugin_id: String) -> Result<(), Status> {
+        let _mutation = self.mutation.lock().await;
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        if provider_ids.is_empty() {
+            return Err(Status::not_found("third-party plugin is not registered"));
+        }
+        if let Ok(profile) = self.api.profiles().require() {
+            let state = self.state.clone();
+            let plugin = plugin_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut activation = state.open_activation(&profile).map_err(|error| {
+                    Status::internal(format!("plugin activation state: {error}"))
+                })?;
+                activation
+                    .set_enabled(&plugin, false)
+                    .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+            })
+            .await
+            .map_err(|_| Status::internal("plugin activation worker failed"))??;
+        }
+        for provider_id in &provider_ids {
+            self.api.disconnect(provider_id).await;
+            self.processes.stop_provider(provider_id).await;
+        }
+        self.api.unregister_third_party_plugin(&plugin_id).await?;
+        self.packages
+            .remove_plugin(plugin_id)
+            .await
+            .map_err(package_status)
+    }
+
+    fn process_ids(&self, plugin_id: &str) -> Result<Vec<String>, Status> {
+        let registered = self.api.third_party_provider_ids_for_plugin(plugin_id);
+        if registered.is_empty() {
+            return Err(Status::not_found("third-party plugin is not registered"));
+        }
+        let process_ids = registered
+            .into_iter()
+            .filter(|provider_id| self.processes.has_provider(provider_id))
+            .collect::<Vec<_>>();
+        if process_ids.is_empty() {
+            return Err(Status::failed_precondition(
+                "third-party plugin has no verified process configuration",
+            ));
+        }
+        Ok(process_ids)
+    }
+}
+
+fn package_status(error: PackageLifecycleError) -> Status {
+    Status::internal(format!("plugin package lifecycle failed: {error}"))
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

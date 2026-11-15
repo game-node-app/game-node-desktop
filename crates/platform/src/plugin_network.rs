@@ -36,6 +36,9 @@ use url::{Host, Url};
 
 /// The most bytes a response may hold, whatever the caller asks for.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// Package updates have a separate bounded ceiling because ZIP packages are much larger than
+/// plugin API responses. This does not widen the ordinary Network.Fetch request budget.
+pub const MAX_PACKAGE_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 /// The response budget when the caller names none.
 pub const DEFAULT_RESPONSE_BYTES: usize = 1024 * 1024;
 /// The longest a whole fetch may take, redirects and body included.
@@ -247,6 +250,43 @@ impl Request {
                 0 => MAX_TIMEOUT,
                 ms => Duration::from_millis(u64::from(ms)).min(MAX_TIMEOUT),
             },
+        })
+    }
+
+    /// Builds the host-only request used to fetch a signed plugin package archive. It shares the
+    /// HTTPS URL checks and fetch client's redirect/DNS/deadline validation while using the
+    /// package archive size ceiling instead of the smaller plugin RPC response ceiling.
+    pub fn build_package_download(
+        url: &str,
+        max_response_bytes: u64,
+    ) -> Result<Self, RequestError> {
+        let mut url = if url.len() > MAX_URL_BYTES {
+            return Err(RequestError::Url);
+        } else {
+            Url::parse(url).map_err(|_| RequestError::Url)?
+        };
+        if url.scheme() != "https"
+            || url.host().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || origin_of(&url).is_none()
+        {
+            return Err(RequestError::Url);
+        }
+        url.set_fragment(None);
+        let budget = usize::try_from(max_response_bytes).unwrap_or(usize::MAX);
+        if budget == 0 || budget > MAX_PACKAGE_RESPONSE_BYTES {
+            return Err(RequestError::Body(
+                "package response exceeds the host limit".into(),
+            ));
+        }
+        Ok(Self {
+            url,
+            method: Method::Get,
+            headers: Vec::new(),
+            body: Vec::new(),
+            max_response_bytes: budget,
+            timeout: MAX_TIMEOUT,
         })
     }
 

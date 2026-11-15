@@ -1569,6 +1569,7 @@ dependencies = [
  "webview2-com",
  "windows-core",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -1591,6 +1592,7 @@ dependencies = [
 name = "gamenode-platform"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "gamenode-core",
  "getrandom 0.4.3",
@@ -1603,6 +1605,7 @@ dependencies = [
  "ring",
  "rusqlite",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

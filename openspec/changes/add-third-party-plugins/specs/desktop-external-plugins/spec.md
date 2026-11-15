@@ -132,7 +132,7 @@ The user SHALL be able to enable and disable each third-party plugin persistentl
 - **THEN** its sessions, packages and grants are removed, library history is preserved and private configuration/secret deletion is a separate choice
 
 ### Requirement: Verified consented updates
-The host SHALL check a plugin's configured HTTPS update feed using its pinned publisher key, metadata expiry and anti-replay sequence. Updates SHALL require user approval, platform/API compatibility and full package validation. New permissions or wider scopes SHALL NOT be granted implicitly.
+The host SHALL check a plugin's configured HTTPS update feed using its pinned publisher key, metadata expiry and anti-replay sequence. The feed SHALL return a bounded JSON envelope containing base64 exact index JSON bytes and a lowercase hexadecimal detached Ed25519 signature over `GameNode/plugin-update-index/v1\0` plus those bytes. A release URL SHALL return the existing ZIP package format (`integrity.json`, `signature.ed25519` and signed payload). The host SHALL verify the index signature, expiry and sequence, then the ZIP size/hash, and extract only payload paths in its signed integrity allowlist using the same bounded path/entry/expanded-size checks as local import. Redirect destinations SHALL pass the same origin, HTTPS and public-address checks at every hop. Updates SHALL require user approval, platform/API compatibility and full package validation. Failed checks, offline feeds, interrupted downloads, invalid archives or failed candidate validation SHALL leave the active version unchanged. New permissions or wider scopes SHALL NOT be granted implicitly.
 
 #### Scenario: Update requests additional access
 - **WHEN** an update requests a new permission or wider resource scope
@@ -145,6 +145,18 @@ The host SHALL check a plugin's configured HTTPS update feed using its pinned pu
 #### Scenario: Offline update check
 - **WHEN** the update feed cannot be reached
 - **THEN** the user sees an update-check failure and the active plugin is not disabled solely for that failure
+
+#### Scenario: Update ZIP contains an unlisted or unsafe path
+- **WHEN** a downloaded ZIP contains a path not listed by its signed integrity manifest, an unsafe path, or exceeds extraction bounds
+- **THEN** extraction and installation fail and the active plugin version remains unchanged
+
+#### Scenario: Update download is interrupted or has the wrong package hash
+- **WHEN** a release download ends before its declared size or its SHA-256 differs from the signed index
+- **THEN** no package is installed or activated and the active version remains unchanged
+
+#### Scenario: Update redirect widens the approved origin
+- **WHEN** an update feed or package URL redirects to an origin that is not currently approved or resolves to a private/local address
+- **THEN** the redirected request is refused before contacting that destination and the active version remains unchanged
 
 ### Requirement: Atomic activation and rollback
 Installation and update SHALL activate only a fully validated version. Interrupted activation SHALL recover deterministically. A failed readiness check SHALL restore the previous verified version with current grants intersected with its own manifest, never older broader grants. Package updates SHALL NOT execute installer hooks.

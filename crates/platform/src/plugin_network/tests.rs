@@ -509,6 +509,29 @@ async fn a_redirect_to_an_unapproved_origin_is_refused_before_anything_is_sent_t
 }
 
 #[tokio::test]
+async fn update_package_redirect_checks_the_new_origin_before_download() {
+    let destination = serve(|_| ok("signed package archive")).await;
+    let target = destination.url("/release.zip").to_string();
+    let feed = serve(move |_| redirect(302, &target)).await;
+    let only_feed = feed.origin();
+    let error = local()
+        .fetch(get(feed.url("/plugin.zip")), |origin| origin == only_feed)
+        .await
+        .unwrap_err();
+    assert_eq!(error, FetchError::Denied);
+    assert_eq!(destination.hits(), 0);
+
+    let allowed = [feed.origin(), destination.origin()];
+    let response = local()
+        .fetch(get(feed.url("/plugin.zip")), |origin| {
+            allowed.contains(&origin.to_owned())
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.body, b"signed package archive");
+}
+
+#[tokio::test]
 async fn a_widened_approval_is_checked_at_every_hop() {
     let other = serve(|_| ok("fine")).await;
     let target = other.url("/").to_string();

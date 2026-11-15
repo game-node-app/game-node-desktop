@@ -28,6 +28,8 @@ url.workspace = true
 serde_yaml = "0.9.34"
 sha1 = "0.10.7"
 sha2 = "0.10.9"
+semver = "1.0.27"
+base64 = "0.22.1"
 sevenz-rust2 = "0.20"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

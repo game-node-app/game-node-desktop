@@ -30,6 +30,7 @@ pub mod plugin_network;
 pub mod plugin_packages;
 pub mod plugin_registry;
 pub mod plugin_storage;
+pub mod plugin_updates;
 pub mod ports;
 pub mod ports_db;
 pub mod processes;

@@ -246,6 +246,66 @@ pub fn verify_installed_package(
     verify_package_directory(package_root, publisher_key).map(|_| ())
 }
 
+/// Validate and extract an existing-format package ZIP into a new staging directory.
+/// The ZIP's own signed integrity manifest defines the only payload paths that may be extracted;
+/// the ordinary bounded extractor enforces path safety, duplicates, ZIP entry count and expansion
+/// limits before the resulting directory is imported by the managed registry.
+pub fn stage_package_archive(
+    archive_path: &Path,
+    staging_dir: &Path,
+    publisher_key: &[u8],
+) -> Result<IntegrityManifest, PackageArchiveError> {
+    let archive_file = File::open(archive_path)?;
+    if archive_file.metadata()?.len() > MAX_COMPRESSED_BYTES {
+        return Err(PackageArchiveError::CompressedLimit);
+    }
+    let mut archive = ZipArchive::new(archive_file).map_err(PackageArchiveError::InvalidZip)?;
+    if archive.len() > MAX_ENTRIES {
+        return Err(PackageArchiveError::EntryLimit);
+    }
+    let raw_integrity =
+        read_zip_metadata(&mut archive, "integrity.json", MAX_METADATA_BYTES as usize)?;
+    let signature = read_zip_metadata(&mut archive, "signature.ed25519", 64)?;
+    verify_integrity_signature(publisher_key, &raw_integrity, &signature)?;
+    let integrity = parse_integrity_json(&raw_integrity)?;
+
+    let mut expected_files = integrity.files.0.keys().cloned().collect::<BTreeSet<_>>();
+    let mut metadata_files = BTreeSet::new();
+    for name in ["integrity.json", "signature.ed25519"] {
+        expected_files.insert(name.to_owned());
+        metadata_files.insert(name.to_owned());
+    }
+    let target_files = integrity.files.0.keys().cloned().collect::<BTreeSet<_>>();
+    extract_selected_target(
+        archive_path,
+        staging_dir,
+        &expected_files,
+        &metadata_files,
+        &target_files,
+    )?;
+    verify_package_directory(staging_dir, publisher_key)?;
+    Ok(integrity)
+}
+
+fn read_zip_metadata<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+    limit: usize,
+) -> Result<Vec<u8>, PackageArchiveError> {
+    let entry = archive
+        .by_name(name)
+        .map_err(PackageArchiveError::InvalidZip)?;
+    if entry.size() > limit as u64 {
+        return Err(PackageArchiveError::MetadataLimit);
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(PackageArchiveError::MetadataLimit);
+    }
+    Ok(bytes)
+}
+
 fn verify_payload_directory_with_metadata(
     root: &Path,
     declared: &BTreeMap<String, String>,
@@ -376,6 +436,8 @@ pub enum PackageArchiveError {
     InvalidStagingDirectory,
     #[error("invalid ZIP package")]
     InvalidZip(#[source] zip::result::ZipError),
+    #[error("package signature or integrity manifest is invalid")]
+    Integrity(#[from] IntegrityError),
     #[error("failed to read or write package staging files")]
     Io(#[from] io::Error),
 }
@@ -663,6 +725,7 @@ fn has_special_unix_type(mode: Option<u32>, is_directory: bool) -> bool {
 mod tests {
     use std::{collections::BTreeSet, fs::File, io::Write};
 
+    use ring::signature::KeyPair;
     use tempfile::tempdir;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -706,6 +769,61 @@ mod tests {
 
     fn set(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn signed_archive(temp: &Path, key: &ring::signature::Ed25519KeyPair, extra: bool) -> PathBuf {
+        let payload = b"signed package payload";
+        let files = [(
+            "bin/plugin".to_owned(),
+            format!("{:x}", sha2::Sha256::digest(payload)),
+        )]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let integrity =
+            serde_json::to_vec(&serde_json::json!({"schema": 1, "files": files})).unwrap();
+        let mut signed = SIGNATURE_DOMAIN_PREFIX.to_vec();
+        signed.extend_from_slice(&integrity);
+        let signature = key.sign(&signed);
+        let path = temp.join("signed-package.zip");
+        let mut zip = ZipWriter::new(File::create(&path).unwrap());
+        for (name, contents) in [
+            ("integrity.json", integrity.as_slice()),
+            ("signature.ed25519", signature.as_ref()),
+            ("bin/plugin", payload.as_slice()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(contents).unwrap();
+        }
+        if extra {
+            zip.start_file("unlisted", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"unexpected").unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn update_zip_uses_signed_allowlist_and_bounded_extraction() {
+        let temp = tempdir().unwrap();
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[19; 32]).unwrap();
+        let public_key = key.public_key().as_ref();
+        let archive = signed_archive(temp.path(), &key, false);
+        let staging = temp.path().join("staging");
+        stage_package_archive(&archive, &staging, public_key).unwrap();
+        assert_eq!(
+            fs::read(staging.join("bin/plugin")).unwrap(),
+            b"signed package payload"
+        );
+        assert!(staging.join("integrity.json").is_file());
+
+        let bad_archive = signed_archive(temp.path(), &key, true);
+        let bad_staging = temp.path().join("bad-staging");
+        assert!(stage_package_archive(&bad_archive, &bad_staging, public_key).is_err());
+        assert!(
+            !bad_staging.exists(),
+            "failed extraction removes its staging tree"
+        );
     }
 
     #[test]

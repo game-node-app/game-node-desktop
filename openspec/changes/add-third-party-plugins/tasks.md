@@ -100,7 +100,7 @@ This change evolves the Steam integration baseline consolidated in main `desktop
 
 ## 9. Updates and recovery
 
-- [ ] 9.1 Implement signed expiring update indexes, monotonic sequence checks and validated HTTPS package retrieval; verify invalid signatures, expiry, replay, redirects, interrupted downloads and offline checks preserve the active version.
+- [x] 9.1 Implement signed expiring update indexes, monotonic sequence checks and validated HTTPS retrieval of existing-format ZIP packages; verify index and package signatures/hashes, extract only the signed integrity allowlist with local-import bounds, and prove invalid signatures, expiry, replay, redirects, interrupted downloads and offline checks preserve the active version.
 - [ ] 9.2 Implement opt-in periodic checks and manual approval with permission/scope/native-access/license/API diffs; verify checks never execute code and new/wider grants remain denied without consent.
 - [ ] 9.3 Implement staged activation, readiness timeout and last-known-good rollback using current grants; verify failed activation and interruption cannot restore revoked privileges or execute partial packages.
 - [ ] 9.4 Implement explicit downgrade and publisher-key re-trust review, with versioned plugin-private data policy; verify automated feeds cannot silently downgrade or change identity and document rollback-safe storage requirements.

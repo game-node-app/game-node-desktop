@@ -873,6 +873,11 @@ impl<'a> JobContext<'a> {
             .map_err(|error| InstallError::Internal(error.to_string()))?;
         self.job.updated_at = self.now();
         self.config.store.save_job(&self.job)?;
+        // Register the wait before the phase event, so a user pick that follows the event cannot
+        // race the worker's own bookkeeping.
+        if self.job.phase == PortJobPhase::AwaitingExecutable {
+            lock(&self.shared.awaiting).insert(self.job.id.clone());
+        }
         self.emit_phase();
         Ok(())
     }

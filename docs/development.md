@@ -1,5 +1,27 @@
 # Native development
 
+## OpenSpec task and design navigation
+
+Use the repository helper to query OpenSpec's structured task data and retrieve
+only the task or design section needed for the current work. It falls back to
+reading `tasks.md` directly if the OpenSpec CLI is unavailable.
+
+```sh
+python3 scripts/spec_progress.py status
+python3 scripts/spec_progress.py status --change add-third-party-plugins --section 7
+python3 scripts/spec_progress.py show 7.7
+python3 scripts/spec_progress.py outline
+python3 scripts/spec_progress.py outline --section 11
+```
+
+`status --json` exposes the raw apply payload; `show --line-numbers` and
+`outline --json` are available when exact source locations or machine-readable
+output are useful. For code navigation in repositories with a `.codegraph/`
+index, use `codegraph explore "<symbols or focused question>"` before broad
+text searches. Keep design documents targeted: inspect the outline first, then
+retrieve the relevant numbered section rather than printing a large `design.md`
+in full.
+
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the commit-message convention used
 by developers and AI agents.
 

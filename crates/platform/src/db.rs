@@ -85,6 +85,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "library_artwork_overrides",
         sql: include_str!("../migrations/0013_library_artwork_overrides.sql"),
     },
+    Migration {
+        version: 14,
+        name: "library_entry_targets",
+        sql: include_str!("../migrations/0014_library_entry_targets.sql"),
+    },
 ];
 
 const BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (

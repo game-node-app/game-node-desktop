@@ -57,6 +57,7 @@ fn verified() -> (LibraryMachine, (u64, u32, Vec<String>)) {
     });
     let op = machine.scan.as_ref().expect("scan running").op;
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![
@@ -104,6 +105,7 @@ fn nothing_is_looked_up_without_a_verified_session() {
         machine.handle(Input::SetAccess { access, now: NOW });
         let op = machine.scan.as_ref().unwrap().op;
         let effects = machine.handle(Input::ProviderScanned {
+            targets: Default::default(),
             op,
             provider: "steam".to_owned(),
             result: Ok(vec![record("620", "Portal 2", "/games/Portal 2")]),
@@ -270,6 +272,7 @@ fn a_rescan_that_adds_a_game_asks_only_about_the_new_id() {
     machine.handle(Input::ScanRequested);
     let op = machine.scan.as_ref().unwrap().op;
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![
@@ -296,6 +299,7 @@ fn an_uninstalled_game_is_not_looked_up() {
     });
     let op = machine.scan.as_ref().unwrap().op;
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![record("620", "Portal 2", "/g")]),
@@ -445,6 +449,7 @@ fn owned_only_and_shared_games_are_looked_up() {
     });
     let op = machine.scan.as_ref().unwrap().op;
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![]),
@@ -522,6 +527,7 @@ fn a_declared_field_is_the_lookup_uid_and_covers_every_entry_with_it() {
     let op = machine.scan.as_ref().expect("scan running").op;
 
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![]),
@@ -529,6 +535,7 @@ fn a_declared_field_is_the_lookup_uid_and_covers_every_entry_with_it() {
     });
     assert!(lookups(&effects).is_empty(), "no steam entry to ask about");
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "fixture".to_owned(),
         result: Ok(vec![
@@ -593,12 +600,14 @@ fn an_entry_without_the_declared_field_is_skipped() {
     });
     let op = machine.scan.as_ref().expect("scan running").op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![]),
         now: NOW,
     });
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "fixture".to_owned(),
         result: Ok(vec![record("app3", "No namespace", "/games/fixture")]),
@@ -619,12 +628,14 @@ fn a_second_entry_with_a_known_namespace_does_not_ask_again() {
     });
     let op = machine.scan.as_ref().expect("scan running").op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![]),
         now: NOW,
     });
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "fixture".to_owned(),
         result: Ok(vec![namespaced("app1", "ns1")]),
@@ -636,12 +647,14 @@ fn a_second_entry_with_a_known_namespace_does_not_ask_again() {
     machine.handle(Input::ScanRequested);
     let op = machine.scan.as_ref().expect("scan running").op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![]),
         now: NOW + 2,
     });
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "fixture".to_owned(),
         result: Ok(vec![namespaced("app1", "ns1"), namespaced("app2", "ns1")]),

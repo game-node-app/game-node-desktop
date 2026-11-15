@@ -30,6 +30,10 @@ pub struct StoredEntry {
     pub install_dir: String,
     pub fields: BTreeMap<String, String>,
     pub installed: bool,
+    /// The launch target the provider detected for this entry, if any (task 7.7). It is stored
+    /// apart from `fields` so a Struct/opaque field can never become an executable target.
+    #[serde(default)]
+    pub target: Option<super::target::DetectedTarget>,
     /// Found by the connected store account's owned catalog.
     #[serde(default)]
     pub owned: bool,
@@ -333,6 +337,17 @@ pub struct LastAccount {
     pub name: String,
 }
 
+/// What happened to an approval or repair of a detected target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetApproval {
+    /// The target was stored at this revision with the new decision.
+    Applied { revision: u64 },
+    /// The target changed since the caller read it; nothing was written.
+    Conflict { current: u64 },
+    /// The entry has no detected target any more.
+    Missing,
+}
+
 /// Library persistence. All calls may block; run them on the storage worker.
 ///
 /// `now` is unix seconds, passed in so this crate never reads the clock.
@@ -341,11 +356,33 @@ pub trait LibraryStore: Send + Sync {
 
     /// Records a completed scan of `provider` in one transaction: its entries in `records` are
     /// inserted or refreshed and installed, entries it no longer finds are marked uninstalled, and
-    /// the provider's state shows the success. Other providers are untouched.
-    fn save_scan(&self, provider: &str, records: &[Record], now: i64) -> Result<(), StorageError>;
+    /// the provider's state shows the success. `targets` carries the detected launch target of
+    /// each record id, if any; a target no longer reported stays stored but unavailable. Other
+    /// providers are untouched.
+    fn save_scan(
+        &self,
+        provider: &str,
+        records: &[Record],
+        targets: &std::collections::BTreeMap<String, super::target::TargetSpec>,
+        now: i64,
+    ) -> Result<(), StorageError>;
 
     /// Records that a scan of `provider` failed. Its entries are left as they were.
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError>;
+
+    /// Stores the user's approval (or repair) of `entry_key`'s detected target if its revision is
+    /// still `expected_revision`. A changed target is a conflict and writes nothing.
+    fn save_target_approval(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        approved: bool,
+        available: bool,
+        identity: Option<&str>,
+    ) -> Result<TargetApproval, StorageError> {
+        let _ = (entry_key, expected_revision, approved, available, identity);
+        Ok(TargetApproval::Missing)
+    }
 
     /// Applies an owned or shared catalog result for `provider`, replacing only the fact sets the
     /// update covers and leaving installed facts, matches and covers untouched.

@@ -482,6 +482,7 @@ fn entry(key: &str, name: &str, installed: bool, owned: bool, shared: bool) -> S
         },
         fields: Default::default(),
         installed,
+        target: None,
         owned,
         shared,
         first_seen: 1,

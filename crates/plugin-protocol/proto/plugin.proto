@@ -151,11 +151,35 @@ message DenialDetail {
   uint64 grant_revision = 3;
 }
 
+// A launch target a provider detected for one of its own games (API 1.6). It is additive to
+// `DeclareActions`: the legacy URI-only declaration keeps its bytes and semantics, and a
+// detected target is only registered, never started, by submitting it. An executable target is
+// relative to the record's install folder and needs the user's approval before Play can run it.
+message DetectedExecutable {
+  // Path relative to the record's install folder. Absolute paths, `..` and control characters
+  // are rejected by the host.
+  string path = 1;
+  // Literal arguments, in launch order. Never a shell string.
+  repeated string arguments = 2;
+  // Folder relative to the install folder; empty means the install folder itself.
+  string working_directory = 3;
+}
+
+message DetectedTarget {
+  oneof target {
+    // A URI the provider's own client handles.
+    string uri = 1;
+    DetectedExecutable executable = 2;
+  }
+}
+
 message DiscoveryRecord {
   string id = 1;
   string name = 2;
   string install_dir = 3;
   map<string, string> fields = 4;
+  // Optional typed target. Registration alone never starts a process.
+  DetectedTarget target = 5;
 }
 
 message DiscoveryResult {

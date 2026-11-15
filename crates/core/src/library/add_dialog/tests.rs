@@ -43,6 +43,7 @@ pub(crate) fn library() -> LibraryMachine {
     let (mut machine, _) = loaded(false, cache);
     let op = machine.scan.as_ref().unwrap().op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(games

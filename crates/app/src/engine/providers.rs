@@ -8,6 +8,44 @@ use gamenode_plugin_protocol::{
     proto::{AccountLoginOutcome, OperationDisposition, ProviderOperation},
 };
 
+/// The launch targets a provider reported for its own games, keyed by record id (task 7.7).
+///
+/// A target is only a candidate: nothing here starts a process, and a target that fails the shape
+/// checks is dropped with a warning, leaving the record's other facts intact. An executable target
+/// keeps the record's reported install folder as its root, so its path stays relative and the
+/// platform adapter can still check containment and file identity.
+fn detected_targets(
+    provider: &str,
+    records: &[gamenode_plugin_protocol::proto::DiscoveryRecord],
+) -> std::collections::BTreeMap<String, gamenode_core::library::TargetSpec> {
+    let mut targets = std::collections::BTreeMap::new();
+    for record in records {
+        let Some(detected) = record.target.as_ref().and_then(|target| target.target.as_ref())
+        else {
+            continue;
+        };
+        let spec = match detected {
+            gamenode_plugin_protocol::proto::detected_target::Target::Uri(uri) => {
+                gamenode_core::library::TargetSpec::Uri { uri: uri.clone() }
+            }
+            gamenode_plugin_protocol::proto::detected_target::Target::Executable(executable) => {
+                gamenode_core::library::TargetSpec::Executable {
+                    root: record.install_dir.clone(),
+                    path: executable.path.clone(),
+                    arguments: executable.arguments.clone(),
+                    working_directory: executable.working_directory.clone(),
+                }
+            }
+        };
+        if spec.validate_shape() {
+            targets.insert(record.id.clone(), spec);
+        } else {
+            tracing::warn!(provider, id = %record.id, "ignored an invalid detected launch target");
+        }
+    }
+    targets
+}
+
 /// This port is called only on provider storage workers. Waiting here preserves
 /// the Engine's database queue order without blocking a command or UI callback.
 pub(super) struct EngineAccounts(pub(super) std::sync::Weak<Shared>);
@@ -374,25 +412,41 @@ impl Engine {
                     let failed_provider = provider.clone();
                     let committed = completion
                         .commit(move |result, _| {
+                            let mut scanned = None;
                             let result =
                                 if result.disposition == OperationDisposition::Completed as i32 {
                                     result
                                         .discovery
                                         .filter(|d| d.provider_id == provider)
                                         .map(|d| {
-                                            gamenode_core::provider::record::finish_records(
-                                                &provider,
-                                                d.records
-                                                    .into_iter()
-                                                    .map(|r| gamenode_core::provider::RawRecord {
-                                                        id: Some(r.id),
-                                                        name: Some(r.name),
-                                                        install_dir: Some(r.install_dir),
-                                                        fields: r.fields.into_iter().collect(),
-                                                    })
-                                                    .collect(),
-                                                &found.manifest().exclude_ids,
-                                            )
+                                            // Targets are collected before the records are
+                                            // flattened, so a provider's typed target can never
+                                            // be mistaken for a template field.
+                                            let detected = detected_targets(&provider, &d.records);
+                                            let records =
+                                                gamenode_core::provider::record::finish_records(
+                                                    &provider,
+                                                    d.records
+                                                        .into_iter()
+                                                        .map(|r| {
+                                                            gamenode_core::provider::RawRecord {
+                                                                id: Some(r.id),
+                                                                name: Some(r.name),
+                                                                install_dir: Some(r.install_dir),
+                                                                fields: r.fields.into_iter().collect(),
+                                                            }
+                                                        })
+                                                        .collect(),
+                                                    &found.manifest().exclude_ids,
+                                                );
+                                            let targets = detected
+                                                .into_iter()
+                                                .filter(|(id, _)| {
+                                                    records.iter().any(|record| &record.id == id)
+                                                })
+                                                .collect();
+                                            scanned = Some(targets);
+                                            records
                                         })
                                         .ok_or_else(|| {
                                             "provider discovery returned no observations".into()
@@ -404,6 +458,7 @@ impl Engine {
                                 op,
                                 provider,
                                 result,
+                                targets: scanned.unwrap_or_default(),
                                 now: unix_now(),
                             });
                         })
@@ -413,6 +468,7 @@ impl Engine {
                             op,
                             provider: failed_provider,
                             result: Err("provider discovery superseded".into()),
+                            targets: Default::default(),
                             now: unix_now(),
                         });
                     }
@@ -421,6 +477,7 @@ impl Engine {
                     op,
                     provider,
                     result: Err("provider discovery unavailable".into()),
+                    targets: Default::default(),
                     now: unix_now(),
                 }),
             }

@@ -20,6 +20,7 @@ pub mod plugin_match;
 pub mod query;
 pub mod selection;
 pub mod store;
+pub mod target;
 pub mod view;
 
 pub use actions::{Actions, Availability, Reason, Why};
@@ -50,6 +51,7 @@ pub use store::{
     ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord, CatalogUpdate,
     ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, FavoriteRecord, GameRecord,
     LastAccount, LibraryCache, LibraryStore, ProviderScanState, StoreAccount, StoredEntry,
-    entry_key,
+    TargetApproval, entry_key,
 };
+pub use target::{DetectedTarget, TargetSpec};
 pub use view::{DetailView, EmptyState, LibraryView};

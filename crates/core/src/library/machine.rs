@@ -49,7 +49,11 @@ pub enum Access {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScanOutcome {
-    Scanned(Vec<Record>),
+    Scanned {
+        records: Vec<Record>,
+        /// The detected launch target of each record id, if any (task 7.7).
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
+    },
     /// The provider's roots could not be read. The message is for the log and the detail view.
     Failed(String),
 }
@@ -190,8 +194,17 @@ pub enum Input {
         op: u64,
         provider: String,
         result: Result<Vec<Record>, String>,
+        /// The detected launch target of each record id, if any (task 7.7).
+        #[allow(clippy::type_complexity)]
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
         /// Unix seconds.
         now: i64,
+    },
+    /// The user approved or repaired the detected target of one entry. The host writes the
+    /// target first and reports the stored value.
+    TargetReviewed {
+        entry_key: String,
+        target: super::target::DetectedTarget,
     },
     /// The answer to an [`Effect::SyncCatalog`]. `owned`/`shared` are `None` when that fact set
     /// was not attempted; `Err` keeps the previous set and records the category.
@@ -714,8 +727,16 @@ impl LibraryMachine {
                 op,
                 provider,
                 result,
+                targets,
                 now,
-            } => self.on_provider_scanned(op, provider, result, now),
+            } => self.on_provider_scanned(op, provider, result, targets, now),
+            Input::TargetReviewed { entry_key, target } => {
+                if let Some(entry) = self.entries.get_mut(&entry_key) {
+                    entry.target = Some(target);
+                    self.view_dirty = true;
+                }
+                vec![]
+            }
             Input::CatalogSynced {
                 op,
                 provider,
@@ -1259,6 +1280,7 @@ impl LibraryMachine {
                             install_dir: String::new(),
                             fields: record.fields.clone(),
                             installed: false,
+                            target: None,
                             owned: fact == CatalogFact::Owned,
                             shared: fact == CatalogFact::Shared,
                             first_seen: now,
@@ -1316,6 +1338,7 @@ impl LibraryMachine {
         op: u64,
         provider: String,
         result: Result<Vec<Record>, String>,
+        targets: std::collections::BTreeMap<String, super::target::TargetSpec>,
         now: i64,
     ) -> Vec<Effect> {
         let Some(run) = &mut self.scan else {
@@ -1327,7 +1350,7 @@ impl LibraryMachine {
         let finished = run.waiting.is_empty();
 
         let outcome = match result {
-            Ok(records) => ScanOutcome::Scanned(records),
+            Ok(records) => ScanOutcome::Scanned { records, targets },
             Err(message) => ScanOutcome::Failed(message),
         };
         self.merge_scan(&provider, &outcome, now);
@@ -1360,7 +1383,7 @@ impl LibraryMachine {
             ScanOutcome::Failed(message) => {
                 state.last_error = Some(message.clone());
             }
-            ScanOutcome::Scanned(records) => {
+            ScanOutcome::Scanned { records, targets } => {
                 state.last_success_at = Some(now);
                 state.last_error = None;
                 for entry in self
@@ -1369,6 +1392,11 @@ impl LibraryMachine {
                     .filter(|entry| entry.provider == provider)
                 {
                     entry.installed = false;
+                    // A target this scan no longer reports stays stored, so a later scan can
+                    // offer repair, but it cannot launch while it is unavailable.
+                    if let Some(target) = entry.target.take() {
+                        entry.target = Some(super::target::DetectedTarget::missing(&target, now));
+                    }
                 }
                 for record in records {
                     let key = entry_key(provider, &record.id);
@@ -1377,6 +1405,13 @@ impl LibraryMachine {
                     let (owned, shared) = existing
                         .map(|entry| (entry.owned, entry.shared))
                         .unwrap_or_default();
+                    let target = targets.get(&record.id).map(|spec| {
+                        super::target::DetectedTarget::reported(
+                            existing.and_then(|entry| entry.target.as_ref()),
+                            spec.clone(),
+                            now,
+                        )
+                    });
                     self.entries.insert(
                         key.clone(),
                         StoredEntry {
@@ -1387,6 +1422,7 @@ impl LibraryMachine {
                             install_dir: record.install_dir.clone(),
                             fields: record.fields.clone(),
                             installed: true,
+                            target,
                             owned,
                             shared,
                             first_seen,

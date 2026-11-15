@@ -20,6 +20,7 @@ fn entry(store_id: &str) -> StoredEntry {
         install_dir: format!("Game {store_id}"),
         fields: Default::default(),
         installed: true,
+        target: None,
         owned: false,
         shared: false,
         first_seen: 1,
@@ -707,6 +708,7 @@ async fn sync_with_gamenode_does_not_send_achievement_data() {
 fn owned_entry(store_id: &str) -> StoredEntry {
     StoredEntry {
         installed: false,
+        target: None,
         owned: true,
         ..entry(store_id)
     }

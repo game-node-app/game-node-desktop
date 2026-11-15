@@ -420,6 +420,7 @@ fn only_confirming_the_dialog_can_create_an_entry() {
     let lookups = step(
         &mut machine,
         Input::ProviderScanned {
+            targets: Default::default(),
             op,
             provider: "steam".to_owned(),
             result: Ok(vec![

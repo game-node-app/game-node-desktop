@@ -155,7 +155,13 @@ impl LibraryStore for FakeLibrary {
             .push(account_id.map(str::to_owned));
         Ok(self.cache.lock().unwrap().clone())
     }
-    fn save_scan(&self, provider: &str, records: &[Record], _now: i64) -> Result<(), StorageError> {
+    fn save_scan(
+        &self,
+        provider: &str,
+        records: &[Record],
+        _targets: &BTreeMap<String, gamenode_core::library::TargetSpec>,
+        _now: i64,
+    ) -> Result<(), StorageError> {
         self.pause();
         self.scans
             .lock()
@@ -382,6 +388,7 @@ fn cached_portal_2() -> StoredEntry {
         install_dir: "Portal 2".to_owned(),
         fields: Default::default(),
         installed: true,
+        target: None,
         owned: false,
         shared: false,
         first_seen: 1,
@@ -999,6 +1006,7 @@ async fn a_cover_burst_publishes_far_fewer_snapshots_and_keeps_the_last_cover() 
             install_dir: format!("Game {i}"),
             fields: Default::default(),
             installed: false,
+            target: None,
             owned: true,
             shared: false,
             first_seen: 1,

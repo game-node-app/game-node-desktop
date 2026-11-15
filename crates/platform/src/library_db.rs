@@ -99,7 +99,7 @@ fn read_catalog_error(provider: &str, column: &str, value: Option<String>) -> Op
 fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
     let mut stmt = conn.prepare(
         "SELECT key, provider, store_id, name, install_dir, fields_json, installed, owned,
-                family_shared, first_seen, last_seen
+                family_shared, first_seen, last_seen, target_json
          FROM library_entries ORDER BY key",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -119,11 +119,25 @@ fn load_entries(conn: &Connection) -> rusqlite::Result<Vec<StoredEntry>> {
             install_dir: row.get(4)?,
             fields,
             installed: row.get::<_, i64>(6)? != 0,
+            target: read_target(row.get::<_, Option<String>>(11)?),
             first_seen: row.get(9)?,
             last_seen: row.get(10)?,
         })
     })?;
     rows.collect()
+}
+
+/// A stored detected target, or `None` when the entry has none. An unreadable value is dropped
+/// with a warning: the entry stays usable and the next scan registers the target again.
+fn read_target(value: Option<String>) -> Option<gamenode_core::library::DetectedTarget> {
+    let value = value?;
+    match serde_json::from_str(&value) {
+        Ok(target) => Some(target),
+        Err(error) => {
+            tracing::warn!(%error, "ignored an unreadable detected target");
+            None
+        }
+    }
 }
 
 /// Which catalog fact set a phase covers. The SQL columns keep their historical
@@ -512,9 +526,36 @@ impl LibraryStore for SqliteLibraryStore {
         })
     }
 
-    fn save_scan(&self, provider: &str, records: &[Record], now: i64) -> Result<(), StorageError> {
+    fn save_scan(
+        &self,
+        provider: &str,
+        records: &[Record],
+        targets: &BTreeMap<String, gamenode_core::library::TargetSpec>,
+        now: i64,
+    ) -> Result<(), StorageError> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(failed)?;
+        // Targets the scan does not report stay stored but unavailable, so a later scan can offer
+        // repair and an unavailable target can never launch.
+        let existing = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT key, target_json FROM library_entries
+                     WHERE provider = ?1 AND target_json IS NOT NULL",
+                )
+                .map_err(failed)?;
+            let rows = stmt
+                .query_map([provider], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(failed)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(failed)?
+        };
+        let reported: BTreeSet<String> = records
+            .iter()
+            .filter(|record| targets.contains_key(&record.id))
+            .map(|record| entry_key(provider, &record.id))
+            .collect();
         tx.execute(
             "UPDATE library_entries SET installed = 0 WHERE provider = ?1",
             [provider],
@@ -524,27 +565,71 @@ impl LibraryStore for SqliteLibraryStore {
             let mut upsert = tx
                 .prepare(
                     "INSERT INTO library_entries
-                        (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)
+                        (key, provider, store_id, name, install_dir, fields_json, installed, first_seen, last_seen, target_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7, ?8)
                      ON CONFLICT(key) DO UPDATE SET
                         name = excluded.name,
                         install_dir = excluded.install_dir,
                         fields_json = excluded.fields_json,
                         installed = 1,
-                        last_seen = excluded.last_seen",
+                        last_seen = excluded.last_seen,
+                        target_json = excluded.target_json",
                 )
                 .map_err(failed)?;
+            let existing_targets: BTreeMap<&str, &str> = existing
+                .iter()
+                .map(|(key, json)| (key.as_str(), json.as_str()))
+                .collect();
             for record in records {
                 let fields = serde_json::to_string(&record.fields).map_err(failed)?;
+                let key = entry_key(provider, &record.id);
+                let prior = existing_targets
+                    .get(key.as_str())
+                    .and_then(|json| serde_json::from_str(json).ok());
+                let target = match targets.get(&record.id) {
+                    Some(spec) => Some(gamenode_core::library::DetectedTarget::reported(
+                        prior.as_ref(),
+                        spec.clone(),
+                        now,
+                    )),
+                    None => prior
+                        .as_ref()
+                        .map(|target| gamenode_core::library::DetectedTarget::missing(target, now)),
+                };
+                let target_json = target
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(failed)?;
                 upsert
                     .execute(params![
-                        entry_key(provider, &record.id),
-                        provider,
-                        record.id,
-                        record.name,
-                        record.install_dir,
-                        fields,
-                        now
+                        key, provider, record.id, record.name, record.install_dir, fields, now,
+                        target_json
+                    ])
+                    .map_err(failed)?;
+            }
+        }
+        {
+            let mut clear = tx
+                .prepare(
+                    "UPDATE library_entries SET target_json = ?1
+                     WHERE key = ?2 AND target_json IS NOT NULL",
+                )
+                .map_err(failed)?;
+            for (key, json) in &existing {
+                if reported.contains(key) {
+                    continue;
+                }
+                let Ok(target) =
+                    serde_json::from_str::<gamenode_core::library::DetectedTarget>(json)
+                else {
+                    continue;
+                };
+                let missing = gamenode_core::library::DetectedTarget::missing(&target, now);
+                clear
+                    .execute(params![
+                        serde_json::to_string(&missing).map_err(failed)?,
+                        key
                     ])
                     .map_err(failed)?;
             }
@@ -556,6 +641,52 @@ impl LibraryStore for SqliteLibraryStore {
         )
         .map_err(failed)?;
         tx.commit().map_err(failed)
+    }
+
+    fn save_target_approval(
+        &self,
+        entry_key: &str,
+        expected_revision: u64,
+        approved: bool,
+        available: bool,
+        identity: Option<&str>,
+    ) -> Result<gamenode_core::library::TargetApproval, StorageError> {
+        use gamenode_core::library::TargetApproval;
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let stored: Option<Option<String>> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(Some(json)) = stored else {
+            return Ok(TargetApproval::Missing);
+        };
+        let Ok(mut target) =
+            serde_json::from_str::<gamenode_core::library::DetectedTarget>(&json)
+        else {
+            return Ok(TargetApproval::Missing);
+        };
+        if target.revision != expected_revision {
+            return Ok(TargetApproval::Conflict {
+                current: target.revision,
+            });
+        }
+        target.approved = approved;
+        target.available = available;
+        target.identity = identity.map(str::to_owned);
+        tx.execute(
+            "UPDATE library_entries SET target_json = ?1 WHERE key = ?2",
+            params![serde_json::to_string(&target).map_err(failed)?, entry_key],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(TargetApproval::Applied {
+            revision: target.revision,
+        })
     }
 
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError> {

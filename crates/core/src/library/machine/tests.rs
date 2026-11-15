@@ -57,6 +57,7 @@ pub(crate) fn stored_with(
         install_dir: format!("/games/{name}"),
         fields: Default::default(),
         installed,
+        target: None,
         owned,
         shared,
         first_seen: 100,
@@ -143,6 +144,7 @@ pub(crate) fn scanned(
     now: i64,
 ) -> Vec<Effect> {
     machine.handle(Input::ProviderScanned {
+            targets: Default::default(),
         op,
         provider: provider.to_owned(),
         result: result.map_err(str::to_owned),
@@ -270,7 +272,10 @@ fn a_scan_adds_entries_and_persists_the_outcome() {
         effects,
         [Effect::PersistScan {
             provider: "steam".to_owned(),
-            outcome: ScanOutcome::Scanned(records),
+            outcome: ScanOutcome::Scanned {
+                records,
+                targets: Default::default()
+            },
             now: 50
         }]
     );

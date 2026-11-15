@@ -42,7 +42,7 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
 
     let cache = store.load_cache(None).unwrap();
@@ -78,13 +78,13 @@ fn a_rescan_updates_entries_adds_new_ones_and_keeps_first_seen() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
 
     let mut moved = record("620", "Portal 2");
     moved.install_dir = "/other/Portal 2".into();
     store
-        .save_scan("steam", &[moved, record("570", "Dota 2")], 200)
+        .save_scan("steam", &[moved, record("570", "Dota 2")], &BTreeMap::new(), 200)
         .unwrap();
 
     let cache = store.load_cache(None).unwrap();
@@ -100,7 +100,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_auto_matches(&[AutoMatch {
@@ -130,7 +130,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
     store.save_cover_ready(72, "72.jpg").unwrap();
 
     // Steam no longer lists it.
-    store.save_scan("steam", &[], 200).unwrap();
+    store.save_scan("steam", &[], &BTreeMap::new(), 200).unwrap();
     let cache = store.load_cache(Some("acct")).unwrap();
     assert_eq!(keys(&cache), [("steam:620", false)]);
     assert_eq!(cache.auto_matches.len(), 1);
@@ -139,7 +139,7 @@ fn an_uninstalled_game_is_kept_with_its_matches_and_returns_with_them() {
 
     // Reinstalled: same entry, same match and cover.
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 300)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 300)
         .unwrap();
     let cache = store.load_cache(Some("acct")).unwrap();
     assert_eq!(keys(&cache), [("steam:620", true)]);
@@ -153,10 +153,10 @@ fn a_failed_scan_keeps_the_previous_entries_and_only_marks_that_provider() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
-        .save_scan("gog", &[record("g1", "Witcher")], 100)
+        .save_scan("gog", &[record("g1", "Witcher")], &BTreeMap::new(), 100)
         .unwrap();
 
     store
@@ -171,7 +171,7 @@ fn a_failed_scan_keeps_the_previous_entries_and_only_marks_that_provider() {
     assert_eq!(gog.last_error, None);
 
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 200)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 200)
         .unwrap();
     let steam = store
         .load_cache(None)
@@ -198,7 +198,7 @@ fn a_scan_that_fails_part_way_changes_nothing() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     // Make the second insert fail, after the first has already been written.
     store
@@ -211,6 +211,7 @@ fn a_scan_that_fails_part_way_changes_nothing() {
     let result = store.save_scan(
         "steam",
         &[record("570", "Dota 2"), record("bad", "Bad")],
+        &BTreeMap::new(),
         200,
     );
     assert!(result.is_err());
@@ -472,7 +473,7 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
         })
         .unwrap();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 1)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 1)
         .unwrap();
     store
         .save_chosen_match(
@@ -566,7 +567,7 @@ fn nothing_stored_is_a_credential_or_a_callback_url() {
         })
         .unwrap();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 1)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 1)
         .unwrap();
     store
         .save_games(&[game(
@@ -655,7 +656,7 @@ fn catalog_fields_fill_missing_keys_and_survive_a_restart() {
     {
         let store = open(&dir).library_store();
         store
-            .save_scan("steam", &[record("620", "Portal 2")], 100)
+            .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
             .unwrap();
         store
             .save_catalog(
@@ -718,6 +719,7 @@ fn catalog_sync_replaces_its_facts_and_lets_owned_win_over_shared() {
         .save_scan(
             "steam",
             &[record("620", "Portal 2"), record("570", "Dota 2")],
+            &BTreeMap::new(),
             100,
         )
         .unwrap();
@@ -1022,7 +1024,7 @@ fn catalog_names_follow_installed_then_existing_then_catalog_precedence() {
 
     // Once installed, the installed scan's name wins over a catalog name.
     store
-        .save_scan("steam", &[record("730", "Installed name")], 400)
+        .save_scan("steam", &[record("730", "Installed name")], &BTreeMap::new(), 400)
         .unwrap();
     store
         .save_catalog(
@@ -1053,7 +1055,7 @@ fn save_scan_never_changes_owned_or_shared_facts() {
         .unwrap();
 
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 200)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 200)
         .unwrap();
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
@@ -1072,7 +1074,7 @@ fn save_scan_never_changes_owned_or_shared_facts() {
     );
 
     // A scan that no longer finds an entry only clears installed.
-    store.save_scan("steam", &[], 300).unwrap();
+    store.save_scan("steam", &[], &BTreeMap::new(), 300).unwrap();
     let cache = store.load_cache(None).unwrap();
     let portal = cache.entries.iter().find(|e| e.key == "steam:620").unwrap();
     assert_eq!(
@@ -1094,7 +1096,7 @@ fn clear_catalog_keeps_entries_matches_and_covers() {
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_auto_matches(&[AutoMatch {
@@ -1282,7 +1284,7 @@ fn unreadable_flags_and_error_categories_degrade_without_hiding_installed_games(
     let dir = TempDir::new().unwrap();
     let store = open(&dir).library_store();
     store
-        .save_scan("steam", &[record("620", "Portal 2")], 100)
+        .save_scan("steam", &[record("620", "Portal 2")], &BTreeMap::new(), 100)
         .unwrap();
     store
         .save_catalog(
@@ -1517,7 +1519,7 @@ fn installation_ids_are_random_durable_and_never_change_for_their_key() {
     }
     // A rescan, a match change or another request does not touch the ids.
     library
-        .save_scan("steam", &[record("620", "Portal 2 GOTY")], 2)
+        .save_scan("steam", &[record("620", "Portal 2 GOTY")], &BTreeMap::new(), 2)
         .unwrap();
     library
         .save_auto_matches(&[AutoMatch {

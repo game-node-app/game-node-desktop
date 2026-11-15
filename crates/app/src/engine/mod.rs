@@ -1137,6 +1137,7 @@ impl Engine {
             LibEffect::RunScan { op, provider } => {
                 let Some(found) = state.library.provider(&provider).cloned() else {
                     self.later(LibInput::ProviderScanned {
+                        targets: Default::default(),
                         op,
                         provider,
                         result: Err("unknown provider".to_owned()),
@@ -1152,6 +1153,7 @@ impl Engine {
                         self.scan_provider(runtime, found, op, provider);
                     } else {
                         self.later(LibInput::ProviderScanned {
+                            targets: Default::default(),
                             op,
                             provider,
                             result: Err("provider plugin is unavailable".to_owned()),
@@ -1189,6 +1191,7 @@ impl Engine {
                             .map_err(|error| error.to_string())
                     };
                     engine.library_input(LibInput::ProviderScanned {
+                        targets: Default::default(),
                         op,
                         provider,
                         result,
@@ -1201,7 +1204,9 @@ impl Engine {
                 outcome,
                 now,
             } => self.persist(move |store| match outcome {
-                ScanOutcome::Scanned(records) => store.save_scan(&provider, &records, now),
+                ScanOutcome::Scanned { records, targets } => {
+                    store.save_scan(&provider, &records, &targets, now)
+                }
                 ScanOutcome::Failed(error) => store.save_scan_failure(&provider, &error),
             }),
             // The account service validates the session (persisting a rotated cookie) and fetches

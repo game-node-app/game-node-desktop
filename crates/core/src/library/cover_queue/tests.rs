@@ -48,6 +48,7 @@ fn library(n: u64, tweak: impl FnOnce(&mut Vec<GameRecord>)) -> LibraryMachine {
     let (mut machine, _) = loaded(false, cache);
     let op = machine.scan.as_ref().unwrap().op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(records),
@@ -146,6 +147,7 @@ fn rescan(machine: &mut LibraryMachine, now: i64) -> Vec<Effect> {
     machine.handle(Input::ScanRequested);
     let op = machine.scan.as_ref().unwrap().op;
     machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![record("100", "G100", "/g")]),
@@ -219,6 +221,7 @@ fn a_failure_that_persisted_from_an_earlier_run_is_retried_after_a_scan() {
     machine.handle(Input::ScanRequested);
     let op = machine.scan.as_ref().unwrap().op;
     let effects = machine.handle(Input::ProviderScanned {
+        targets: Default::default(),
         op,
         provider: "steam".to_owned(),
         result: Ok(vec![record("100", "G100", "/g")]),

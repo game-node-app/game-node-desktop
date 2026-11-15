@@ -13,6 +13,40 @@ Protobuf generation uses the build-host compiler selected from the pinned
 vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
+## Required Cargo target location
+
+Always use the configured external `CARGO_TARGET_DIR`. In this Linux workspace
+the selected directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target`**. Never compile into
+Cargo's default repository `target/`, `/home`, or a target inside the user's
+home directory. Do not substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem
+or a target on the root filesystem. The selected target is on the persistent
+`/data/DADOS_LINUX` mount. If it is unavailable, stop and report the problem;
+do not invent another path or silently choose a fallback.
+
+Set the target before any Cargo build, check, test, Clippy, cross-compilation,
+or development/package launcher, and verify the effective location:
+
+```sh
+export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target
+cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
+```
+
+The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target` in this workspace. All Cargo
+examples below require this setup. For separate tool calls or fresh shells,
+pass the variable on **each invocation**, because an earlier export is not
+inherited:
+
+```sh
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target cargo test --locked -p gamenode-app
+```
+
+On native Windows, use the configured external Windows target outside the user
+profile; the Linux path above applies to Linux/WSL. Check launcher scripts for
+target overrides before running them. A launcher that forces a target inside
+the checkout must be corrected before use; it must not bypass this rule.
+Before handing back changes to this rule, reread this section and the matching
+section in `AGENTS.md`, and confirm that both retain the instruction.
+
 ## Linux (Ubuntu/Debian, native x86-64)
 
 Install native prerequisites:
@@ -360,8 +394,9 @@ process), then run from WSL:
 scripts/dev-windows-wsl.sh
 ```
 
-The launcher builds the Windows desktop and its bundled plugins under
-`target/windows-hmr`, verifies the plugins sit beside the host, prepares its
+The current launcher hard-codes `target/windows-hmr` and overrides
+`CARGO_TARGET_DIR`. Do not run it in this workspace until it honors the configured
+external target described above. Its existing flow verifies the plugins sit beside the host, prepares its
 backup assets, starts a local Vite server, and opens the Windows app. It forces the real Tauri bridge rather than the UI
 mock. It uses the same Windows Credential Manager entry and local application
 data as the installed app, so an existing session can be restored and changes

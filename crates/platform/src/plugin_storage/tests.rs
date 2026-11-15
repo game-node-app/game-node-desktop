@@ -202,6 +202,7 @@ fn approval(id: &str, installation: &str, kind: &str) -> FileApproval {
         game_id: "40".into(),
         kind: kind.into(),
         root: "/games/portal".into(),
+        volume_token: "opaque-volume-token".into(),
         root_volume: u64::MAX,
         root_node: 12345,
         operations: operation::READ | operation::WRITE,
@@ -338,6 +339,10 @@ fn a_version_2_store_gains_the_origin_column_and_old_approvals_count_as_the_user
     let mut upgraded = store(&dir);
     let old = upgraded.approval("old").unwrap().unwrap();
     assert_eq!(old.origin, ORIGIN_USER);
+    assert!(
+        old.volume_token.is_empty(),
+        "migration must never invent identity approval"
+    );
     let mut declared = approval("new", "inst-2", "save");
     declared.origin = ORIGIN_DECLARED.into();
     upgraded.save_approval(&declared).unwrap();
@@ -426,7 +431,7 @@ fn a_version_3_store_gains_the_remembered_confirmations_table() {
         let first = store(&dir);
         drop(first);
         let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
-        conn.execute_batch("DROP TABLE intent_approvals; PRAGMA user_version = 3;")
+        conn.execute_batch("DROP TABLE intent_approvals; ALTER TABLE file_roots DROP COLUMN volume_token; PRAGMA user_version = 3;")
             .unwrap();
     }
     let mut upgraded = store(&dir);
@@ -528,7 +533,7 @@ fn a_version_4_store_gains_the_save_profiles_table() {
         let first = store(&dir);
         drop(first);
         let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
-        conn.execute_batch("DROP TABLE save_profiles; PRAGMA user_version = 4;")
+        conn.execute_batch("DROP TABLE save_profiles; ALTER TABLE file_roots DROP COLUMN volume_token; PRAGMA user_version = 4;")
             .unwrap();
     }
     let mut upgraded = store(&dir);

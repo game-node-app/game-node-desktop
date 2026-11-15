@@ -280,6 +280,7 @@ pub(super) fn open_approval(
     op: u8,
 ) -> Result<Opened, Status> {
     let approval = standing_approval(files, feed, namespace, approval_id, op)?;
+    check_volume(&approval).map_err(file_status)?;
     let confined = Confined::open(&root_of(&approval), &files.reserved).map_err(file_status)?;
     Ok(Opened {
         approval,
@@ -328,13 +329,13 @@ pub(super) fn open_approval_inspect(
     path: Vec<String>,
 ) -> Result<Result<Opened, FileError>, Status> {
     let approval = standing_approval(files, feed, namespace, approval_id, 0)?;
-    Ok(
-        Confined::open(&root_of(&approval), &files.reserved).map(|confined| Opened {
+    Ok(check_volume(&approval)
+        .and_then(|()| Confined::open(&root_of(&approval), &files.reserved))
+        .map(|confined| Opened {
             approval,
             confined,
             path,
-        }),
-    )
+        }))
 }
 
 impl ResourceApi {
@@ -459,6 +460,7 @@ impl ResourceApi {
                         && approval.operations & wanted == wanted
                         && affected_keys(&files.overlapping(&feed, Path::new(&approval.root)))
                             == approval.affected
+                        && check_volume(&approval).is_ok()
                         && Confined::open(&root_of(&approval), &files.reserved).is_ok();
                     Ok(complete.then_some(approval))
                 }
@@ -581,6 +583,7 @@ impl ResourceApi {
                 .to_str()
                 .ok_or_else(|| Status::failed_precondition("that folder cannot be approved"))?
                 .to_owned(),
+            volume_token: String::new(),
             root_volume: root.identity.volume,
             root_node: root.identity.node,
             operations: wanted,
@@ -595,7 +598,16 @@ impl ResourceApi {
             .to_owned(),
         };
         self.in_namespace(&fresh, move |namespace| {
+            let token = gamenode_platform::volume::volume_info(Path::new(&approval.root))
+                .map(|info| info.volume_identity_token)
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| {
+                    Status::failed_precondition(
+                        "volume identity is unknown; folder cannot be approved",
+                    )
+                })?;
             let approval = FileApproval {
+                volume_token: token,
                 approved_at: namespace.now(),
                 ..approval
             };
@@ -883,4 +895,18 @@ impl ResourceApi {
             .await?;
         Ok(Response::new(answered))
     }
+}
+
+// Blocking; callers run in_namespace on a worker. Never refresh approval from observation.
+fn check_volume(approval: &FileApproval) -> Result<(), FileError> {
+    let current = gamenode_platform::volume::volume_info(Path::new(&approval.root));
+    if approval.volume_token.is_empty()
+        || !current.is_some_and(|info| {
+            !info.volume_identity_token.is_empty()
+                && info.volume_identity_token == approval.volume_token
+        })
+    {
+        return Err(FileError::RootChanged);
+    }
+    Ok(())
 }

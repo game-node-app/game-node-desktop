@@ -589,7 +589,7 @@ async fn inspecting_changes_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
+async fn describe_api_lists_inspection_methods_and_requires_a_resource() {
     let (fixture, _) = Fixture::emulator(INSPECT).await;
     let described = fixture.host.describe_api().await.unwrap();
     let served: Vec<_> = described
@@ -605,6 +605,8 @@ async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
     assert_eq!(
         served,
         [
+            ("Inspect", either.clone()),
+            ("WatchAvailability", either.clone()),
             ("GetSize", either.clone()),
             ("GetAccess", either.clone()),
             ("GetLastModified", either.clone()),
@@ -623,7 +625,7 @@ async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
             .await
             .unwrap_err()
             .code(),
-        Code::Unimplemented
+        Code::InvalidArgument
     );
     assert_eq!(
         client
@@ -634,6 +636,138 @@ async fn describe_api_lists_the_locations_methods_and_the_rest_is_not_served() {
             .await
             .unwrap_err()
             .code(),
-        Code::Unimplemented
+        Code::InvalidArgument
+    );
+}
+
+impl Fixture {
+    async fn inspect_volume(&self, handle: &str) -> Result<LocationInspectReply, Status> {
+        self.locations()
+            .inspect(LocationInspectRequest {
+                context: Some(self.context()),
+                approved_resource_handle: handle.into(),
+                ..Default::default()
+            })
+            .await
+            .map(tonic::Response::into_inner)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn volume_inspection_reports_separate_dimensions_and_missing_folders_preserve_profiles() {
+    let (fixture, saves) = Fixture::emulator(INSPECT).await;
+    let root = fixture.approve(INSTALLATION, "save", &saves).await;
+    let original = fixture
+        .inspect_volume(&root)
+        .await
+        .unwrap()
+        .location
+        .unwrap();
+    assert_eq!(
+        original.availability,
+        InspectionAvailability::Available as i32
+    );
+    assert!(!original.volume_identity_token.is_empty());
+    assert!(!original.interface_type.is_empty());
+    assert!(!original.attachment.is_empty());
+    assert!(!original.evidence.is_empty());
+    let created = fixture
+        .make(
+            "volume-profile",
+            profile("Keep", "rt", vec![directory(&root, "", &[])]),
+        )
+        .await
+        .unwrap();
+    let away = saves.with_extension("away");
+    std::fs::rename(&saves, &away).unwrap();
+    let missing = fixture
+        .inspect_volume(&root)
+        .await
+        .unwrap()
+        .location
+        .unwrap();
+    assert_eq!(missing.availability, InspectionAvailability::Missing as i32);
+    assert!(!saves.exists());
+    assert!(fixture.inspect_volume(&created.profile_id).await.is_ok());
+    std::fs::rename(&away, &saves).unwrap();
+    assert_eq!(
+        fixture
+            .inspect_volume(&root)
+            .await
+            .unwrap()
+            .location
+            .unwrap()
+            .volume_identity_token,
+        original.volume_identity_token
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replaced_volume_identity_cannot_inherit_scope_and_watch_reports_the_change() {
+    let (fixture, saves) = Fixture::emulator(INSPECT).await;
+    let root = fixture.approve(INSTALLATION, "save", &saves).await;
+    let mut stream = fixture
+        .locations()
+        .watch_availability(LocationAvailabilityWatchRequest {
+            context: Some(fixture.context()),
+            approved_resource_handle: root.clone(),
+            after_sequence: 0,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let first = stream.message().await.unwrap().unwrap();
+    assert_eq!(first.availability, InspectionAvailability::Available as i32);
+    // Simulate a platform observation whose identity differs from the persisted approval.
+    let caller = fixture.caller();
+    fixture
+        .storage
+        .run_for_host(
+            caller.namespace.as_ref().unwrap(),
+            caller.profile_epoch,
+            |namespace| {
+                let mut approval = namespace.approval_for(INSTALLATION, "save")?.unwrap();
+                approval.volume_token = "a-different-volume".into();
+                {
+                    let guard: crate::plugin_host::library::CommitGuard = Box::new(|| Ok(()));
+                    namespace.save_approval(&approval, &guard)
+                }
+            },
+        )
+        .await
+        .unwrap();
+    let event = tokio::time::timeout(StdDuration::from_secs(5), stream.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(event.sequence > first.sequence);
+    assert_eq!(
+        event.availability,
+        InspectionAvailability::Disconnected as i32
+    );
+    assert!(event.volume_identity_token.is_empty());
+    assert!(!fixture.size(&root, 0).await.unwrap().complete);
+    assert_eq!(
+        fixture
+            .inspect_volume(&root)
+            .await
+            .unwrap()
+            .location
+            .unwrap()
+            .capacity_bytes,
+        0
+    );
+    fixture
+        .api
+        .revoke_session_permission("fixture", cap::GAME_SAVES_INSPECT)
+        .await;
+    assert_eq!(
+        tokio::time::timeout(StdDuration::from_secs(5), stream.message())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
     );
 }

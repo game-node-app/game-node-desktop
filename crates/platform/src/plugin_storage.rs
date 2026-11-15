@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -220,6 +220,9 @@ impl DurableStore {
                  COMMIT;",
             )?;
         }
+        if version < 6 {
+            conn.execute_batch("BEGIN IMMEDIATE; ALTER TABLE file_roots ADD COLUMN volume_token TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 6; COMMIT;")?;
+        }
         Ok(Self { conn })
     }
 
@@ -340,6 +343,7 @@ pub struct FileApproval {
     pub kind: String,
     /// The canonical location, valid Unicode.
     pub root: String,
+    pub volume_token: String,
     pub root_volume: u64,
     pub root_node: u64,
     /// A combination of [`operation`] bits.
@@ -375,11 +379,12 @@ fn approval_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileApproval> {
         approved_at: row.get(9)?,
         revoked_at: row.get(10)?,
         origin: row.get(11)?,
+        volume_token: row.get(12)?,
     })
 }
 
 const APPROVAL_COLUMNS: &str = "id, installation_id, game_id, kind, root, root_volume, root_node, \
-     operations, affected, approved_at, revoked_at, origin";
+     operations, affected, approved_at, revoked_at, origin, volume_token";
 
 impl DurableStore {
     /// Records `approval`, replacing the earlier approval of the same installation and kind.
@@ -387,14 +392,14 @@ impl DurableStore {
         let affected = serde_json::to_string(&approval.affected).unwrap_or_else(|_| "[]".into());
         self.conn.execute(
             "INSERT INTO file_roots (id, installation_id, game_id, kind, root, root_volume,
-                 root_node, operations, affected, approved_at, revoked_at, origin)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 root_node, operations, affected, approved_at, revoked_at, origin, volume_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(installation_id, kind) DO UPDATE SET
                  id = excluded.id, game_id = excluded.game_id, root = excluded.root,
                  root_volume = excluded.root_volume, root_node = excluded.root_node,
                  operations = excluded.operations, affected = excluded.affected,
                  approved_at = excluded.approved_at, revoked_at = excluded.revoked_at,
-                 origin = excluded.origin",
+                 origin = excluded.origin, volume_token = excluded.volume_token",
             params![
                 approval.id,
                 approval.installation_id,
@@ -408,6 +413,7 @@ impl DurableStore {
                 approval.approved_at,
                 approval.revoked_at,
                 approval.origin,
+                approval.volume_token,
             ],
         )?;
         Ok(())

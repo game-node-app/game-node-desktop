@@ -584,7 +584,7 @@ message SaveProfileMutationReply { string profile_id = 1; uint64 revision = 2; M
 
 enum InspectionAvailability { INSPECTION_AVAILABILITY_UNSPECIFIED = 0; INSPECTION_AVAILABILITY_AVAILABLE = 1; INSPECTION_AVAILABILITY_UNMOUNTED = 2; INSPECTION_AVAILABILITY_DISCONNECTED = 3; INSPECTION_AVAILABILITY_INACCESSIBLE = 4; INSPECTION_AVAILABILITY_MISSING = 5; INSPECTION_AVAILABILITY_UNKNOWN = 6; }
 message LocationInspectRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string requested_dimensions = 3; uint32 max_entries = 4; }
-message LocationInspectReply { LocationDescription location = 1; repeated LocationObservation observations = 2; }
+message LocationInspectReply { LocationDescription location = 1; repeated LocationObservation observations = 2; repeated LocationDescription locations = 3; }
 message LocationSizeRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint32 max_entries = 3; }
 message LocationSizeReply { uint64 logical_bytes = 1; uint64 file_count = 2; uint64 directory_count = 3; bool complete = 4; InspectionAvailability availability = 5; }
 message LocationAccessRequest { ServiceContext context = 1; string approved_resource_handle = 2; repeated string entry_handles = 3; }
@@ -599,7 +599,7 @@ message LocationCompareRequest { ServiceContext context = 1; string before_snaps
 message LocationCompareReply { repeated LocationChange changes = 1; string next_cursor = 2; string status = 3; uint64 revision = 4; }
 message LocationAvailabilityWatchRequest { ServiceContext context = 1; string approved_resource_handle = 2; uint64 after_sequence = 3; }
 message LocationAvailabilityEvent { uint64 sequence = 1; string resource_id = 2; InspectionAvailability availability = 3; string volume_identity_token = 4; int64 observed_at = 5; }
-message LocationDescription { string resource_id = 1; InspectionAvailability availability = 2; string volume_identity_token = 3; string mount_point = 4; string network_state = 5; string media_type = 6; uint64 capacity_bytes = 7; uint64 free_bytes = 8; int64 observed_at = 9; }
+message LocationDescription { string resource_id = 1; InspectionAvailability availability = 2; string volume_identity_token = 3; string mount_point = 4; string network_state = 5; string media_type = 6; uint64 capacity_bytes = 7; uint64 free_bytes = 8; int64 observed_at = 9; string attachment = 10; string interface_type = 11; string evidence = 12; }
 message LocationObservation { string entry_handle = 1; string kind = 2; uint64 logical_bytes = 3; InspectionAvailability availability = 4; }
 message LocationAccessEntry { string entry_handle = 1; string read_only_state = 2; string effective_access = 3; InspectionAvailability availability = 4; }
 message LocationTimestamp { string entry_handle = 1; int64 modified_at = 2; string precision = 3; }

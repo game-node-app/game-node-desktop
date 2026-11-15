@@ -841,7 +841,31 @@ reads nothing.
 `Locations.GetSize`, `GetAccess` and `GetLastModified` describe an approved place from its **metadata
 alone**: they open no file for its content and change nothing to find out. `GetFingerprint` and
 `Compare` read the content, to say whether it changed (see [Fingerprints](#fingerprints)); they
-write nothing either. `Inspect` and `WatchAvailability` are not served yet (`UNIMPLEMENTED`).
+write nothing either. `Inspect` reports volume metadata and `WatchAvailability` observes its availability.
+
+`Inspect` returns `locations` for the individual folders of a profile; `location` is the single
+location or an aggregate availability with unknown volume dimensions when several folders exist.
+`network_state`, `attachment`, `interface_type` and `media_type` are independent, with `unknown`
+where evidence is absent. Linux uses mountinfo/statvfs and sysfs hints; Windows uses volume GUIDs,
+drive type and capacity, leaving physical interface and medium unknown. `evidence` identifies the
+source and limitations. No benchmark, SMART command, elevation or file write occurs. The optional
+`requested_dimensions` accepts availability, volume, locality, attachment, interface, media and
+capacity; an empty list returns all these inexpensive metadata dimensions. Size, access, dates and
+hashes have their own methods. `max_entries` does not trigger traversal in `Inspect`.
+
+Volume tokens are opaque hashes. Linux prefers the filesystem UUID and otherwise uses a
+boot-scoped mount instance; Windows uses the volume GUID. If identity cannot be established,
+access is refused. An unknown or changed identity never refreshes an approval automatically;
+legacy approvals without a recorded token need a new approval. The conservative Linux fallback
+also requires approval after reboot/remount. Replacement volumes disclose no capacity or mount
+metadata through the old approval. These observations do not delete registrations, profiles or history.
+
+`WatchAvailability` starts with current per-folder observations, polls on workers once per second,
+and emits only changes with stream-local increasing sequence numbers. It has a bounded queue
+(128 events) and 64 host-wide subscriptions; a consumer that exhausts the queue is disconnected
+and must inspect/resubscribe. There is no replay: `after_sequence` must be zero. Dropping the stream
+stops polling, and session/grant/approval revocation ends the stream. These are best-effort
+observations, not a record of every transient mount change.
 
 - **What a place is.** A handle the plugin already holds for a folder the user approved ([Files](#files)),
   or for a file or directory below it; or the id of one of the plugin's own [save profiles](#save-profiles),
@@ -863,8 +887,10 @@ write nothing either. `Inspect` and `WatchAvailability` are not served yet (`UNI
   `complete = false`. A place that cannot be inspected at all is reported through `availability`
   (`MISSING` for a folder that is gone, moved or replaced, `INACCESSIBLE` when the system will not let
   GameNode in) with zeros and `complete = false`, never as an empty folder. `UNMOUNTED` and
-  `DISCONNECTED` come with the volume metadata of task 13.5; until then a drive that is away looks
-  `MISSING`. Nothing is created in place of a missing folder.
+  `DISCONNECTED` are available through volume inspection: `Inspect` reports `DISCONNECTED` when
+  the approved identity is no longer present and `MISSING` when its volume is still present but
+  the folder is absent. The size/access/date methods retain their conservative `MISSING` answer.
+  Nothing is created in place of a missing folder.
 - **`GetLastModified`** lists, first, the place's own folder time under the handle that was asked
   about, then up to `max_entries` entries below it (default 100, at most 1,000), each with a handle
   for the next call and its modification time. `aggregate_latest_at` is the newest time among the

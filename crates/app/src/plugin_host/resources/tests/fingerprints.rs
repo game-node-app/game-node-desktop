@@ -650,6 +650,8 @@ async fn describe_api_lists_the_fingerprint_methods() {
     assert_eq!(
         served,
         [
+            "Inspect",
+            "WatchAvailability",
             "GetSize",
             "GetAccess",
             "GetLastModified",

@@ -12,7 +12,7 @@
 //! The walk is bounded (entries, time) and stops when the call is abandoned. A cut is reported as
 //! `complete = false`; a folder that is gone or unreadable is reported through `availability`,
 //! never as zero bytes. Sizes are logical bytes of the files, not allocated disk space.
-//! `Inspect`, `GetFingerprint`, `Compare` and `WatchAvailability` are not served yet.
+//! Volume inspection and availability watches are implemented in `volumes`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,6 +40,8 @@ use crate::plugin_host::saves::{self as saves, Directory};
 use crate::plugin_host::storage::Namespace;
 
 /// Entries a size walk visits when the request does not say, and the most it may be asked to.
+mod volumes;
+
 const DEFAULT_ENTRIES: usize = 10_000;
 const MAX_ENTRIES: usize = 100_000;
 /// Entries a timestamp or access answer lists when the request does not say, and the most.
@@ -57,6 +59,8 @@ const SCOPE: &str = "a folder the user approved for this plugin, or one of its s
 
 /// The `Locations` methods this build serves, for `DescribeApi`.
 pub const SERVED: &[Served] = &[
+    Served::new("Inspect", INSPECT_PERMISSIONS, false, SCOPE),
+    Served::new("WatchAvailability", INSPECT_PERMISSIONS, false, SCOPE),
     Served::new("GetSize", INSPECT_PERMISSIONS, false, SCOPE),
     Served::new("GetAccess", INSPECT_PERMISSIONS, false, SCOPE),
     Served::new("GetLastModified", INSPECT_PERMISSIONS, false, SCOPE),
@@ -1137,21 +1141,15 @@ fn access_entry(entry_handle: String, info: &AccessInfo) -> LocationAccessEntry 
     }
 }
 
-fn not_served(method: &str) -> Status {
-    Status::unimplemented(format!(
-        "Locations.{method} is not available in this GameNode build"
-    ))
-}
-
 #[tonic::async_trait]
 impl locations_server::Locations for ResourceApi {
     type WatchAvailabilityStream = BoxStream<LocationAvailabilityEvent>;
 
     async fn inspect(
         &self,
-        _request: Request<LocationInspectRequest>,
+        request: Request<LocationInspectRequest>,
     ) -> Result<Response<LocationInspectReply>, Status> {
-        Err(not_served("Inspect"))
+        self.inspect_location(request).await
     }
 
     async fn get_size(
@@ -1191,8 +1189,8 @@ impl locations_server::Locations for ResourceApi {
 
     async fn watch_availability(
         &self,
-        _request: Request<LocationAvailabilityWatchRequest>,
+        request: Request<LocationAvailabilityWatchRequest>,
     ) -> Result<Response<Self::WatchAvailabilityStream>, Status> {
-        Err(not_served("WatchAvailability"))
+        self.watch_location_availability(request).await
     }
 }

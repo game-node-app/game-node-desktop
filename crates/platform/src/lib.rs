@@ -42,3 +42,5 @@ pub mod uri;
 
 #[cfg(windows)]
 pub mod autostart;
+
+pub mod volume;

@@ -104,6 +104,7 @@ fn test_detail_view_serialization_and_artwork_omission() {
     let detail = DetailView {
         running: false,
         row,
+        detected_target: None,
         install_dir: "C:\\Games\\Cyberpunk 2077".into(),
         release_year: Some(2020),
         has_artwork: true,

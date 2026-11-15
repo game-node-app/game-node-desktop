@@ -10,6 +10,7 @@ mod batch;
 mod catalog;
 pub mod cover;
 mod cover_queue;
+pub mod custom_launch;
 pub mod favorites;
 pub mod launch;
 pub mod layout;
@@ -37,6 +38,7 @@ pub use add_run::{
 };
 pub use batch::{CollectionRunView, StatusRunView, UndoAddView, UndoState};
 pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
+pub use custom_launch::{CustomLaunchMutation, CustomLaunchRecipe};
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
 };

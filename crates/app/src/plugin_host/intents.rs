@@ -36,6 +36,7 @@ pub const MAX_PENDING_PER_PLUGIN: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operation {
     Launch,
+    CustomLaunch,
     Install,
     BackupRestore,
 }
@@ -45,6 +46,7 @@ impl Operation {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Launch => "launch",
+            Self::CustomLaunch => "custom_launch",
             Self::Install => "install",
             Self::BackupRestore => "backup_restore",
         }

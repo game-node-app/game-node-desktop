@@ -1,3 +1,7 @@
+## Delivery boundary
+
+The existing design remains the architecture reference for the complete third-party plugin program. The first release slice implements provider/catalog functionality only. User-confirmed game actions and plugin configuration are tracked in `third-party-plugin-actions-and-configuration`; custom launch and runtimes in `third-party-plugin-custom-launch-runtimes`; shared data and managed persistence in `third-party-plugin-data-and-persistence`. A contract in this broad design does not imply an endpoint is enabled: `DescribeApi` must advertise only implemented methods, and deferred handlers remain explicitly unavailable. See `delivery-split.md` for task ownership and sequencing.
+
 # Design
 
 ## Context

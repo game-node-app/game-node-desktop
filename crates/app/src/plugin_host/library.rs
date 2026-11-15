@@ -595,8 +595,59 @@ pub struct BackupHostContext {
     pub destination: String,
 }
 
+/// A worker-prepared custom target. Executable file identity is captured before confirmation and
+/// checked again by the adapter immediately before spawn.
+#[derive(Clone, Debug)]
+pub enum CustomLaunchDispatch {
+    Executable(gamenode_core::drm_free::CustomLaunchCommand),
+    Uri {
+        uri: url::Url,
+        arguments: Vec<String>,
+        environment: gamenode_core::drm_free::LaunchEnvironmentDelta,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait LibraryHost: Send + Sync {
+    /// Durable recipes stay under the authenticated plugin/profile namespace.
+    async fn custom_launch_recipe(
+        &self,
+        _owner_key: String,
+        _recipe_id: String,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, Status> {
+        Err(Status::unavailable("custom launch recipes are unavailable"))
+    }
+    async fn save_custom_launch_recipe(
+        &self,
+        _owner_key: String,
+        _recipe: gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        Err(Status::unavailable("custom launch recipes are unavailable"))
+    }
+    async fn remove_custom_launch_recipe(
+        &self,
+        _owner_key: String,
+        _recipe_id: String,
+        _expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        Err(Status::unavailable("custom launch recipes are unavailable"))
+    }
+    async fn prepare_custom_launch(
+        &self,
+        _recipe: gamenode_core::library::CustomLaunchRecipe,
+        _executable_path: Option<String>,
+        _working_directory_path: Option<String>,
+    ) -> Result<CustomLaunchDispatch, Status> {
+        Err(Status::unimplemented(
+            "custom launch is unavailable on this platform",
+        ))
+    }
+    async fn launch_custom(&self, _dispatch: CustomLaunchDispatch) -> Result<(), Status> {
+        Err(Status::unimplemented(
+            "custom launch is unavailable on this platform",
+        ))
+    }
+
     fn ports_supported(&self) -> bool {
         false
     }

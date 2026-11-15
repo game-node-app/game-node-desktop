@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status};
 
 mod artwork;
 mod backups;
+mod custom_launch;
 mod files;
 mod games;
 mod jobs;
@@ -195,6 +196,24 @@ pub const SERVED: &[Served] = &[
         OWN_NOTICES,
     ),
     Served::new("GamesRequestLaunch", cap::GAME_LAUNCH, false, OWN_OR_TARGET),
+    Served::new(
+        "GamesProposeCustomLaunch",
+        cap::GAME_CUSTOM_LAUNCH,
+        false,
+        OWN_OR_TARGET,
+    ),
+    Served::new(
+        "GamesRequestCustomLaunch",
+        cap::GAME_CUSTOM_LAUNCH,
+        false,
+        OWN_OR_TARGET,
+    ),
+    Served::new(
+        "GamesRemoveCustomLaunch",
+        cap::GAME_CUSTOM_LAUNCH,
+        false,
+        OWN_OR_TARGET,
+    ),
     Served::new(
         "GamesRequestInstall",
         cap::GAMES_INSTALL,
@@ -758,6 +777,27 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.request_launch(request).await
     }
 
+    async fn games_propose_custom_launch(
+        &self,
+        request: Request<CustomLaunchRequest>,
+    ) -> Result<Response<CustomLaunchReply>, Status> {
+        self.propose_custom_launch(request).await
+    }
+
+    async fn games_request_custom_launch(
+        &self,
+        request: Request<CustomLaunchRequest>,
+    ) -> Result<Response<CustomLaunchReply>, Status> {
+        self.request_custom_launch(request).await
+    }
+
+    async fn games_remove_custom_launch(
+        &self,
+        request: Request<CustomLaunchRemoveRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.remove_custom_launch(request).await
+    }
+
     async fn games_request_install(
         &self,
         request: Request<GameInstallRequest>,
@@ -974,9 +1014,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
         self.install_port(request).await
     }
     not_served! {
-        games_propose_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
-        games_request_custom_launch(CustomLaunchRequest) -> CustomLaunchReply;
-        games_remove_custom_launch(CustomLaunchRemoveRequest) -> MutationReply;
         runtimes_list(DomainListRequest) -> RuntimesListReply;
         runtimes_get(DomainGetRequest) -> RuntimeRecordReply;
         runtimes_watch(DomainWatchRequest) -> Self::RuntimesWatchStream;

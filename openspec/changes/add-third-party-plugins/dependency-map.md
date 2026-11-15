@@ -1,8 +1,26 @@
 # Dependency map
 
-This document summarizes relationships among the tasks in this change. The task checklist in [`tasks.md`](tasks.md) remains the source of truth for task status and requirements.
+This document summarizes task-level dependencies for the complete plugin program. The first release slice and follow-up ownership are defined in [`delivery-split.md`](delivery-split.md); each OpenSpec task checklist remains the source of truth for its assigned task status.
 
 For planning ranges and model suggestions, see [effort-estimates.md](effort-estimates.md).
+
+
+## Delivery-change dependencies
+
+```mermaid
+flowchart LR
+  MVP[Provider/catalog MVP]
+  ACT[Game actions and configuration]
+  RUN[Custom launch and runtimes]
+  DATA[Shared data and persistence]
+  MVP --> ACT
+  MVP --> DATA
+  ACT --> RUN
+  ACT -. "folder approval for 13.2" .-> DATA
+  RUN -. "runtime identity for 17.3" .-> DATA
+```
+
+See [`delivery-split.md`](delivery-split.md) for endpoint boundaries and source-task mapping. Most shared-data work can proceed alongside launch/runtime work after the MVP. Task 13.2 waits for folder approvals; task 17.3 waits for runtime identity.
 
 The checklist declares only a small number of task-level dependencies. The diagram groups all task IDs by section and shows the most relevant cross-task paths. **Solid edges** are stated in the change artifacts. **Dotted edges** are planning inferences from task scope or completion notes; they are not new requirements or blockers unless the task artifacts are updated to say so.
 

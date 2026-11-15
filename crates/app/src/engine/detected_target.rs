@@ -193,6 +193,7 @@ pub(super) fn launch(
                 .uri
                 .open(&url)
                 .map_err(|error| match error {
+                    gamenode_core::ports::UriError::Unsupported => LaunchError::Unsupported,
                     gamenode_core::ports::UriError::NoHandler => LaunchError::NoHandler,
                     gamenode_core::ports::UriError::Failed => LaunchError::Failed,
                 })

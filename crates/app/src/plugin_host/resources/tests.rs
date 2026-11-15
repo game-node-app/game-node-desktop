@@ -659,14 +659,28 @@ async fn a_session_may_hold_only_a_bounded_number_of_watches() {
 }
 
 #[tokio::test]
-async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_ones() {
+async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_routes() {
     let fixture = Fixture::new(&[cap::LIBRARY_READ]).await;
     let status = fixture
         .client()
-        .games_propose_custom_launch(CustomLaunchRequest::default())
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            ..CustomLaunchRequest::default()
+        })
         .await
         .unwrap_err();
-    assert_eq!(status.code(), Code::Unimplemented);
+    assert_eq!(status.code(), Code::PermissionDenied);
+    let status = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            recipe_id: "recipe-without-grant".into(),
+            recipe_revision: 1,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::PermissionDenied);
     let described = fixture.host.describe_api().await.unwrap();
     let resource: Vec<_> = described
         .methods
@@ -716,6 +730,9 @@ async fn unserved_methods_are_unimplemented_and_describe_api_lists_the_served_on
             ("NetworkFetch", 0),
             ("NotificationsPublish", 0),
             ("GamesRequestLaunch", 0),
+            ("GamesProposeCustomLaunch", 0),
+            ("GamesRequestCustomLaunch", 0),
+            ("GamesRemoveCustomLaunch", 0),
             ("GamesRequestInstall", 0),
             ("JobsGet", 0),
             ("JobsWatch", 0),

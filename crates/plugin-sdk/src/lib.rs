@@ -16,7 +16,9 @@ pub mod resources;
 pub mod utilities;
 
 pub use actions::Actions;
-pub use resources::{Cover, LibrarySnapshot, Outcome, Resources, Written, idempotency_key};
+pub use resources::{
+    Cover, CustomLaunchRecipe, LibrarySnapshot, Outcome, Resources, Written, idempotency_key,
+};
 pub use tonic::{Code, Status};
 pub use utilities::{
     Durability, Fetch, Fetched, Notice, Severity, StoredValue, StoredWrite, declared_location,

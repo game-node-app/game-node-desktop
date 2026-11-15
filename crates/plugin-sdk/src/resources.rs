@@ -69,6 +69,22 @@ pub struct Written {
     pub outcome: Outcome,
 }
 
+/// A proposed, typed custom launch recipe. Handles are opaque host-issued resource identifiers;
+/// they are never interpreted by the SDK as filesystem paths.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomLaunchRecipe {
+    pub game_id: String,
+    pub installation_id: String,
+    pub expected_revision: u64,
+    pub executable_handle: String,
+    pub uri: String,
+    pub argv: Vec<String>,
+    pub working_directory_handle: String,
+    pub environment_set: std::collections::BTreeMap<String, String>,
+    pub environment_unset: Vec<String>,
+    pub runtime_handle: String,
+}
+
 impl Written {
     /// Whether the entry now has the requested value, whether this call set it or not.
     pub fn is_done(&self) -> bool {
@@ -149,6 +165,79 @@ impl Resources {
             operation_id: String::new(),
             idempotency_key: key.to_owned(),
             expected_revision,
+        }
+    }
+
+    fn custom_launch_proposal(
+        context: &ServiceContext,
+        recipe: &CustomLaunchRecipe,
+        user_intent_id: &str,
+        key: &str,
+    ) -> CustomLaunchRequest {
+        CustomLaunchRequest {
+            context: Some(context.clone()),
+            game_id: recipe.game_id.clone(),
+            installation_id: recipe.installation_id.clone(),
+            expected_revision: recipe.expected_revision,
+            user_intent_id: user_intent_id.to_owned(),
+            idempotency_key: key.to_owned(),
+            executable_handle: recipe.executable_handle.clone(),
+            argv: recipe.argv.clone(),
+            working_directory_handle: recipe.working_directory_handle.clone(),
+            environment_set: recipe.environment_set.clone().into_iter().collect(),
+            environment_unset: recipe.environment_unset.clone(),
+            runtime_handle: recipe.runtime_handle.clone(),
+            recipe_id: String::new(),
+            recipe_revision: 0,
+            uri: recipe.uri.clone(),
+        }
+    }
+
+    fn custom_launch_execution(
+        context: &ServiceContext,
+        game_id: &str,
+        installation_id: &str,
+        expected_revision: u64,
+        recipe_id: &str,
+        recipe_revision: u64,
+        user_intent_id: &str,
+        key: &str,
+    ) -> CustomLaunchRequest {
+        CustomLaunchRequest {
+            context: Some(context.clone()),
+            game_id: game_id.to_owned(),
+            installation_id: installation_id.to_owned(),
+            expected_revision,
+            user_intent_id: user_intent_id.to_owned(),
+            idempotency_key: key.to_owned(),
+            executable_handle: String::new(),
+            argv: Vec::new(),
+            working_directory_handle: String::new(),
+            environment_set: Default::default(),
+            environment_unset: Vec::new(),
+            runtime_handle: String::new(),
+            recipe_id: recipe_id.to_owned(),
+            recipe_revision,
+            uri: String::new(),
+        }
+    }
+
+    fn custom_launch_removal(
+        context: &ServiceContext,
+        game_id: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        key: &str,
+    ) -> CustomLaunchRemoveRequest {
+        CustomLaunchRemoveRequest {
+            mutation: Some(MutationContext {
+                context: Some(context.clone()),
+                operation_id: String::new(),
+                idempotency_key: key.to_owned(),
+                expected_revision: recipe_revision,
+            }),
+            game_id: game_id.to_owned(),
+            recipe_id: recipe_id.to_owned(),
         }
     }
 
@@ -360,6 +449,77 @@ impl Resources {
             .try_into()
     }
 
+    /// Proposes a recipe for later custom execution. This never calls standard `game.launch` and
+    /// does not start a process; the host validates the typed handles and permission separately.
+    pub async fn propose_custom_launch(
+        &self,
+        recipe: &CustomLaunchRecipe,
+        user_intent_id: &str,
+        key: &str,
+    ) -> Result<CustomLaunchReply, Status> {
+        self.client
+            .clone()
+            .games_propose_custom_launch(timed(Self::custom_launch_proposal(
+                &self.context,
+                recipe,
+                user_intent_id,
+                key,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Requests execution of a previously proposed recipe revision. The request carries no
+    /// replacement executable, argv, cwd, runtime or environment payload, so the host can only
+    /// execute the immutable recipe it approved. A denied `game.custom_launch` grant stays a
+    /// `PERMISSION_DENIED` error; there is no fallback to standard launch.
+    pub async fn request_custom_launch(
+        &self,
+        game_id: &str,
+        installation_id: &str,
+        expected_revision: u64,
+        recipe_id: &str,
+        recipe_revision: u64,
+        user_intent_id: &str,
+        key: &str,
+    ) -> Result<CustomLaunchReply, Status> {
+        self.client
+            .clone()
+            .games_request_custom_launch(timed(Self::custom_launch_execution(
+                &self.context,
+                game_id,
+                installation_id,
+                expected_revision,
+                recipe_id,
+                recipe_revision,
+                user_intent_id,
+                key,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Removes one of this caller's recipes at the revision it last read.
+    pub async fn remove_custom_launch(
+        &self,
+        game_id: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        key: &str,
+    ) -> Result<MutationReply, Status> {
+        self.client
+            .clone()
+            .games_remove_custom_launch(timed(Self::custom_launch_removal(
+                &self.context,
+                game_id,
+                recipe_id,
+                recipe_revision,
+                key,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
     // ---- Matching (`matching.read`, `matching.write`) ----
 
     /// Searches the GameNode catalog by title: one page of at most `page_size` candidates (0: the
@@ -514,5 +674,97 @@ impl Resources {
             .await?
             .into_inner()
             .try_into()
+    }
+}
+
+#[cfg(test)]
+mod custom_launch_tests {
+    use super::*;
+    #[test]
+    fn proposal_preserves_typed_custom_launch_fields() {
+        let context = ServiceContext {
+            provider_id: "fixture".into(),
+            ..Default::default()
+        };
+        let recipe = CustomLaunchRecipe {
+            game_id: "620".into(),
+            installation_id: "steam:620".into(),
+            expected_revision: 12,
+            executable_handle: "exec-handle".into(),
+            uri: "game://open".into(),
+            argv: vec!["--literal value".into(), "$(not-a-shell)".into()],
+            working_directory_handle: "cwd-handle".into(),
+            environment_set: [("A".into(), "value with spaces".into())].into(),
+            environment_unset: vec!["B".into()],
+            runtime_handle: "runtime-handle".into(),
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
+
+        assert_eq!(request.context.as_ref(), Some(&context));
+        assert_eq!(request.game_id, "620");
+        assert_eq!(request.installation_id, "steam:620");
+        assert_eq!(request.expected_revision, 12);
+        assert_eq!(request.executable_handle, "exec-handle");
+        assert_eq!(request.uri, "game://open");
+        assert_eq!(request.argv, recipe.argv);
+        assert_eq!(request.working_directory_handle, "cwd-handle");
+        assert_eq!(
+            request.environment_set.get("A").map(String::as_str),
+            Some("value with spaces")
+        );
+        assert_eq!(request.environment_unset, ["B"]);
+        assert_eq!(request.runtime_handle, "runtime-handle");
+        assert!(request.recipe_id.is_empty());
+        assert_eq!(request.recipe_revision, 0);
+        assert_eq!(request.user_intent_id, "intent");
+        assert_eq!(request.idempotency_key, "key");
+    }
+
+    #[test]
+    fn execution_uses_only_the_approved_recipe_reference() {
+        let context = ServiceContext::default();
+        let request = Resources::custom_launch_execution(
+            &context,
+            "620",
+            "steam:620",
+            12,
+            "recipe-1",
+            4,
+            "intent",
+            "key",
+        );
+
+        assert_eq!(request.context.as_ref(), Some(&context));
+        assert_eq!(request.game_id, "620");
+        assert_eq!(request.installation_id, "steam:620");
+        assert_eq!(request.expected_revision, 12);
+        assert_eq!(request.recipe_id, "recipe-1");
+        assert_eq!(request.recipe_revision, 4);
+        assert_eq!(request.user_intent_id, "intent");
+        assert_eq!(request.idempotency_key, "key");
+        assert!(request.executable_handle.is_empty());
+        assert!(request.uri.is_empty());
+        assert!(request.argv.is_empty());
+        assert!(request.working_directory_handle.is_empty());
+        assert!(request.environment_set.is_empty());
+        assert!(request.environment_unset.is_empty());
+        assert!(request.runtime_handle.is_empty());
+    }
+
+    #[test]
+    fn removal_binds_recipe_revision_and_idempotency_key() {
+        let context = ServiceContext {
+            provider_id: "fixture".into(),
+            ..Default::default()
+        };
+        let request = Resources::custom_launch_removal(&context, "620", "recipe-1", 4, "key");
+        let mutation = request.mutation.expect("removal must be revision guarded");
+
+        assert_eq!(request.game_id, "620");
+        assert_eq!(request.recipe_id, "recipe-1");
+        assert_eq!(mutation.context.as_ref(), Some(&context));
+        assert_eq!(mutation.expected_revision, 4);
+        assert_eq!(mutation.idempotency_key, "key");
     }
 }

@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 15;
+pub const CURRENT_SCHEMA_VERSION: u32 = 16;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -94,6 +94,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 15,
         name: "library_organization",
         sql: include_str!("../migrations/0010_library_organization.sql"),
+    },
+    Migration {
+        version: 16,
+        name: "plugin_custom_launch_recipes",
+        sql: include_str!("../migrations/0016_plugin_custom_launch_recipes.sql"),
     },
 ];
 
@@ -390,6 +395,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
     }
@@ -486,13 +492,13 @@ mod tests {
         }
     }
 
-    const V15_OK: Migration = Migration {
-        version: 16,
+    const V16_OK: Migration = Migration {
+        version: 17,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V15_BAD: Migration = Migration {
-        version: 16,
+    const V16_BAD: Migration = Migration {
+        version: 17,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -524,7 +530,8 @@ mod tests {
             MIGRATIONS[12],
             MIGRATIONS[13],
             MIGRATIONS[14],
-            V15_OK,
+            MIGRATIONS[15],
+            V16_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -545,7 +552,8 @@ mod tests {
                 (13, "library_artwork_overrides".into()),
                 (14, "library_entry_targets".into()),
                 (15, "library_organization".into()),
-                (16, "add_notes".into())
+                (16, "plugin_custom_launch_recipes".into()),
+                (17, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -592,11 +600,12 @@ mod tests {
                 MIGRATIONS[12],
                 MIGRATIONS[13],
                 MIGRATIONS[14],
-                V15_BAD,
+                MIGRATIONS[15],
+                V16_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 16 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 17 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -617,6 +626,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -653,19 +663,20 @@ mod tests {
                     MIGRATIONS[12],
                     MIGRATIONS[13],
                     MIGRATIONS[14],
-                    V15_OK,
+                    MIGRATIONS[15],
+                    V16_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 15
+        let err = open(&path).unwrap_err(); // this build only knows schema 16
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 16,
-                supported: 15
+                found: 17,
+                supported: 16
             }
         );
         assert_eq!(
@@ -687,7 +698,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 15,
+                found: 16,
                 supported: 7
             }
         );
@@ -734,6 +745,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
         for table in [
@@ -769,7 +781,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 15,
+                found: 16,
                 supported: 1
             }
         );
@@ -794,7 +806,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V15_OK
+            ..V16_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -842,6 +854,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
 
@@ -978,6 +991,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
 
@@ -1181,6 +1195,7 @@ mod tests {
                 (13, "library_artwork_overrides".to_string()),
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
+                (16, "plugin_custom_launch_recipes".to_string()),
             ]
         );
 
@@ -1427,10 +1442,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 15);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(15, "library_organization".to_owned()))
+            Some(&(16, "plugin_custom_launch_recipes".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1530,10 +1545,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 15);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(15, "library_organization".to_owned()))
+            Some(&(16, "plugin_custom_launch_recipes".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1646,6 +1661,7 @@ mod tests {
                 "manual_registrations",
                 "playtime_sessions",
                 "playtime_totals",
+                "plugin_custom_launch_recipes",
                 "port_catalog_snapshot",
                 "port_install_jobs",
                 "port_installations",

@@ -1,6 +1,8 @@
 //! Worker-only executable inspection and direct Windows launch.
+#[cfg(any(windows, test))]
+use gamenode_core::drm_free::LaunchEnvironmentDelta;
 use gamenode_core::drm_free::{
-    Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
+    CustomLaunchCommand, Evidence, InstallationHost, LaunchEnvironment, LocalError, Registration,
 };
 
 /// Adds a port's provenance environment to the command that launches it (design D7).
@@ -9,6 +11,88 @@ use gamenode_core::drm_free::{
 #[cfg(any(windows, test))]
 fn apply_environment(command: &mut std::process::Command, environment: &LaunchEnvironment) {
     command.envs(environment);
+}
+
+#[cfg(any(windows, test))]
+fn apply_environment_delta(
+    command: &mut std::process::Command,
+    environment: &LaunchEnvironmentDelta,
+) -> Result<(), LocalError> {
+    if !environment.validate() {
+        return Err(LocalError::InvalidTarget);
+    }
+    command.env_clear();
+    for (key, value) in std::env::vars_os().filter(|(key, _)| safe_game_environment_key(key)) {
+        command.env(key, value);
+    }
+    command.envs(&environment.set);
+    for key in &environment.unset {
+        command.env_remove(key);
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn safe_game_environment_key(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy();
+    #[cfg(windows)]
+    {
+        matches!(
+            key.to_ascii_uppercase().as_str(),
+            "PATH"
+                | "PATHEXT"
+                | "SYSTEMROOT"
+                | "WINDIR"
+                | "TEMP"
+                | "TMP"
+                | "USERPROFILE"
+                | "HOMEDRIVE"
+                | "HOMEPATH"
+                | "APPDATA"
+                | "LOCALAPPDATA"
+                | "PROGRAMDATA"
+                | "COMSPEC"
+                | "NUMBER_OF_PROCESSORS"
+                | "PROCESSOR_ARCHITECTURE"
+                | "PROCESSOR_IDENTIFIER"
+                | "PROCESSOR_LEVEL"
+                | "PROCESSOR_REVISION"
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        key == "PATH"
+            || key == "HOME"
+            || key == "USER"
+            || key == "LOGNAME"
+            || key == "LANG"
+            || key == "DISPLAY"
+            || key == "WAYLAND_DISPLAY"
+            || key.starts_with("LC_")
+            || key.starts_with("XDG_")
+            || key == "DBUS_SESSION_BUS_ADDRESS"
+    }
+}
+
+#[cfg(any(windows, test))]
+fn custom_command(
+    executable: &str,
+    arguments: &[String],
+    working_directory: &str,
+    environment: &LaunchEnvironmentDelta,
+) -> Result<std::process::Command, LocalError> {
+    if executable.is_empty()
+        || executable.contains('\0')
+        || working_directory.is_empty()
+        || working_directory.contains('\0')
+        || arguments.iter().any(|argument| argument.contains('\0'))
+    {
+        return Err(LocalError::InvalidTarget);
+    }
+    let mut command = std::process::Command::new(executable);
+    command.args(arguments).current_dir(working_directory);
+    apply_environment_delta(&mut command, environment)?;
+    Ok(command)
 }
 #[derive(Default)]
 pub struct WindowsInstallations;
@@ -129,6 +213,30 @@ impl WindowsInstallations {
         command
             .spawn()
             .map_err(|e| LocalError::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Starts a fully resolved custom executable after repeating identity checks on the worker.
+    #[cfg(windows)]
+    fn spawn_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        let path = canonical(&request.executable)?;
+        validate(&path)?;
+        if identity(&path)? != request.file_identity {
+            return Err(LocalError::InvalidTarget);
+        }
+        let working = canonical(&request.working_directory)?;
+        if !working.is_dir() {
+            return Err(LocalError::InvalidTarget);
+        }
+        let mut command = custom_command(
+            &path.to_string_lossy(),
+            &request.arguments,
+            &working.to_string_lossy(),
+            &request.environment,
+        )?;
+        command
+            .spawn()
+            .map_err(|error| LocalError::Failed(error.to_string()))?;
         Ok(())
     }
 }
@@ -275,6 +383,17 @@ impl InstallationHost for WindowsInstallations {
         #[cfg(windows)]
         {
             self.spawn(registration, environment)
+        }
+    }
+    fn launch_custom(&self, request: &CustomLaunchCommand) -> Result<(), LocalError> {
+        #[cfg(not(windows))]
+        {
+            let _ = request;
+            Err(LocalError::Unsupported)
+        }
+        #[cfg(windows)]
+        {
+            self.spawn_custom(request)
         }
     }
     fn evidence(&self, registration: &Registration) -> Result<Vec<Evidence>, LocalError> {
@@ -502,6 +621,73 @@ pub fn pick_save_location(folder: bool) -> Result<Option<String>, LocalError> {
         return pick_file(false);
     }
     pick_folder(None)
+}
+
+#[cfg(test)]
+mod custom_launch_tests {
+    use super::*;
+
+    #[test]
+    fn spawned_fixture_receives_literal_arguments_cwd_and_environment_delta() {
+        let directory = tempfile::tempdir().unwrap();
+        let interpreter = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("Python is available to the repository tooling");
+        assert!(interpreter.status.success());
+        let interpreter = String::from_utf8(interpreter.stdout).unwrap();
+        let interpreter = interpreter.trim();
+        let script = "import json,os,sys; print(json.dumps({'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
+        let arguments = vec![
+            "-c".into(),
+            script.into(),
+            "space and & literal".into(),
+            "$(not-a-shell)".into(),
+        ];
+        let environment = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("GAMENODE_TEST_SET".into(), "one value".into())]),
+            unset: ["PATH".into()].into(),
+        };
+        let output = custom_command(
+            interpreter,
+            &arguments,
+            &directory.path().to_string_lossy(),
+            &environment,
+        )
+        .unwrap()
+        .output()
+        .expect("fixture process should start without a shell");
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["argv"],
+            serde_json::json!(["space and & literal", "$(not-a-shell)"])
+        );
+        assert_eq!(result["cwd"], directory.path().to_string_lossy().as_ref());
+        assert_eq!(result["set"], "one value");
+        assert_eq!(result["unset"], true);
+    }
+
+    #[test]
+    fn invalid_environment_deltas_are_rejected_before_process_creation() {
+        let invalid_name = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("BAD=KEY".into(), "value".into())]),
+            unset: Default::default(),
+        };
+        assert!(!invalid_name.validate());
+        assert!(custom_command("python3", &[], ".", &invalid_name).is_err());
+
+        let credential_name = LaunchEnvironmentDelta {
+            set: LaunchEnvironment::from([("STEAM_SESSION".into(), "value".into())]),
+            unset: Default::default(),
+        };
+        assert!(!credential_name.validate());
+    }
 }
 
 fn pick_folder(initial: Option<&str>) -> Result<Option<String>, LocalError> {

@@ -407,6 +407,42 @@ pub trait LibraryStore: Send + Sync {
         Ok(TargetApproval::Missing)
     }
 
+    /// One plugin-owned recipe, scoped by a host-derived owner key.
+    fn custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+    ) -> Result<Option<super::custom_launch::CustomLaunchRecipe>, StorageError> {
+        let _ = (owner_key, recipe_id);
+        Err(StorageError::Failed(
+            "custom launch recipes are unavailable in this store".into(),
+        ))
+    }
+
+    /// Persists a new host-issued recipe or reports the already-stored revision.
+    fn save_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe: &super::custom_launch::CustomLaunchRecipe,
+    ) -> Result<super::custom_launch::CustomLaunchMutation, StorageError> {
+        let _ = (owner_key, recipe);
+        Err(StorageError::Failed(
+            "custom launch recipes are unavailable in this store".into(),
+        ))
+    }
+
+    fn remove_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+        expected_revision: u64,
+    ) -> Result<super::custom_launch::CustomLaunchMutation, StorageError> {
+        let _ = (owner_key, recipe_id, expected_revision);
+        Err(StorageError::Failed(
+            "custom launch recipes are unavailable in this store".into(),
+        ))
+    }
+
     /// Applies an owned or shared catalog result for `provider`, replacing only the fact sets the
     /// update covers and leaving installed facts, matches and covers untouched.
     fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError>;

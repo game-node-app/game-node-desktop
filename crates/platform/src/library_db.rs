@@ -802,6 +802,115 @@ impl LibraryStore for SqliteLibraryStore {
         })
     }
 
+    fn custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, StorageError> {
+        let conn = self.conn();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        json.map(|json| serde_json::from_str(&json).map_err(failed))
+            .transpose()
+    }
+
+    fn save_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe: &gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, StorageError> {
+        use gamenode_core::library::CustomLaunchMutation;
+        if owner_key.is_empty() || !recipe.validate() {
+            return Err(failed("invalid custom launch recipe"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe.recipe_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = current.map_or(1, |revision| revision.saturating_add(1));
+        if recipe.revision != expected {
+            return Ok(match current {
+                Some(current) => CustomLaunchMutation::Conflict { current },
+                None => CustomLaunchMutation::Conflict { current: 0 },
+            });
+        }
+        tx.execute(
+            "INSERT INTO plugin_custom_launch_recipes
+                (owner_key, recipe_id, installation_id, revision, recipe_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner_key, recipe_id) DO UPDATE SET
+                installation_id = excluded.installation_id,
+                revision = excluded.revision,
+                recipe_json = excluded.recipe_json",
+            params![
+                owner_key,
+                recipe.recipe_id,
+                recipe.installation_id,
+                i64::try_from(recipe.revision).map_err(failed)?,
+                serde_json::to_string(recipe).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(CustomLaunchMutation::Applied {
+            revision: recipe.revision,
+        })
+    }
+
+    fn remove_custom_launch_recipe(
+        &self,
+        owner_key: &str,
+        recipe_id: &str,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, StorageError> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2",
+                params![owner_key, recipe_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(CustomLaunchMutation::Missing);
+        };
+        if current != expected_revision {
+            return Ok(CustomLaunchMutation::Conflict { current });
+        }
+        tx.execute(
+            "DELETE FROM plugin_custom_launch_recipes
+             WHERE owner_key = ?1 AND recipe_id = ?2 AND revision = ?3",
+            params![
+                owner_key,
+                recipe_id,
+                i64::try_from(expected_revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(CustomLaunchMutation::Applied {
+            revision: expected_revision,
+        })
+    }
+
     fn save_scan_failure(&self, provider: &str, error: &str) -> Result<(), StorageError> {
         self.conn()
             .execute(

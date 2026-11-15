@@ -1,6 +1,6 @@
 # Estimativa de esforço — add-third-party-plugins
 
-Estimativa de planejamento para as **73 tarefas ainda pendentes** no checklist consultado em 2026-11-15 (55/128 concluídas). O arquivo [tasks.md](tasks.md) continua sendo a fonte de verdade; esta tabela não altera prioridades nem dependências.
+Estimativa de planejamento para as **73 tarefas pendentes do programa**, agora distribuídas entre um MVP (22 tarefas abertas) e três follow-ups (51 tarefas abertas). A tabela conserva as faixas originais por tarefa; [`delivery-split.md`](delivery-split.md) define a ordem, o escopo e a propriedade atual.
 
 ## Como interpretar
 

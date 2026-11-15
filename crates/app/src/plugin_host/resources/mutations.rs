@@ -123,7 +123,7 @@ impl Mutations {
 
 // Provider-free extensions share an empty provider id; their authenticated namespace,
 // not that alias, owns mutation receipts.
-fn mutation_owner(caller: &ResourceCaller) -> String {
+pub(super) fn mutation_owner(caller: &ResourceCaller) -> String {
     caller
         .namespace
         .as_ref()

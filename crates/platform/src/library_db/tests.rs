@@ -2135,3 +2135,75 @@ fn artwork_overrides_are_guarded_by_a_revision_and_report_the_file_they_replace(
         }]
     );
 }
+
+#[test]
+fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
+    use gamenode_core::library::{CustomLaunchMutation, CustomLaunchRecipe};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        game_id: 620,
+        installation_id: "install-1".into(),
+        base_target_revision: 1,
+        executable_handle: "approved-executable-handle".into(),
+        uri: String::new(),
+        arguments: vec!["--profile".into(), "a profile & literal".into()],
+        working_directory_handle: "approved-directory-handle".into(),
+        runtime_handle: String::new(),
+        environment_set: BTreeMap::from([("GAME_MODE".into(), "custom".into())]),
+        environment_unset: Default::default(),
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-a/profile-1", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .custom_launch_recipe("plugin-b/profile-1", "recipe-1")
+            .unwrap(),
+        None,
+        "another plugin cannot read this recipe"
+    );
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-a/profile-1", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Conflict { current: 1 }
+    );
+    assert_eq!(
+        store
+            .remove_custom_launch_recipe("plugin-a/profile-1", "recipe-1", 0)
+            .unwrap(),
+        CustomLaunchMutation::Conflict { current: 1 }
+    );
+    drop(store);
+    drop(db);
+
+    let reopened = SqliteSettingsStore::open(&path).unwrap().library_store();
+    assert_eq!(
+        reopened
+            .custom_launch_recipe("plugin-a/profile-1", "recipe-1")
+            .unwrap(),
+        Some(recipe.clone()),
+        "recipe and literal argv survive restarting the store"
+    );
+    assert_eq!(
+        reopened
+            .remove_custom_launch_recipe("plugin-a/profile-1", "recipe-1", 1)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        reopened
+            .custom_launch_recipe("plugin-a/profile-1", "recipe-1")
+            .unwrap(),
+        None
+    );
+}

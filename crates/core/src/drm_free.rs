@@ -232,6 +232,81 @@ pub enum LocalError {
 /// carries the map instead of `Registration`. Recipe arguments keep their order: the user's own
 /// arguments follow them.
 pub type LaunchEnvironment = std::collections::BTreeMap<String, String>;
+/// Explicit launch-time environment changes. Unset keys override `set` validation and may not
+/// overlap it; inherited variables stay untouched unless named here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchEnvironmentDelta {
+    pub set: LaunchEnvironment,
+    pub unset: std::collections::BTreeSet<String>,
+}
+
+impl LaunchEnvironmentDelta {
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty() && self.unset.is_empty()
+    }
+
+    pub fn validate(&self) -> bool {
+        let valid_key = |key: &str| {
+            let upper = key.to_ascii_uppercase();
+            !key.is_empty()
+                && key.len() <= 256
+                && key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && key
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                && !key.contains('=')
+                && !key.chars().any(|ch| ch == '\0' || ch.is_control())
+                && ![
+                    "TOKEN",
+                    "COOKIE",
+                    "SECRET",
+                    "PASSWORD",
+                    "CREDENTIAL",
+                    "AUTHORIZATION",
+                    "SESSION",
+                    "API_KEY",
+                    "ACCESS_KEY",
+                    "PRIVATE_KEY",
+                ]
+                .iter()
+                .any(|sensitive| upper.contains(sensitive))
+        };
+        let count = self.set.len() + self.unset.len();
+        let bytes = self
+            .set
+            .iter()
+            .map(|(key, value)| key.len().saturating_add(value.len()))
+            .chain(self.unset.iter().map(String::len))
+            .sum::<usize>();
+        let names: std::collections::BTreeSet<_> = self
+            .set
+            .keys()
+            .chain(self.unset.iter())
+            .map(|key| key.to_ascii_lowercase())
+            .collect();
+        count <= 128
+            && bytes <= 64 * 1024
+            && names.len() == count
+            && self.set.iter().all(|(key, value)| {
+                valid_key(key) && !value.chars().any(|ch| ch == '\0') && !self.unset.contains(key)
+            })
+            && self.unset.iter().all(|key| valid_key(key))
+    }
+}
+
+/// Fully resolved executable command passed by a trusted host adapter. Plugin-facing opaque
+/// handles must be resolved and approved before one of these values is constructed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomLaunchCommand {
+    pub executable: String,
+    pub file_identity: String,
+    pub arguments: Vec<String>,
+    pub working_directory: String,
+    pub environment: LaunchEnvironmentDelta,
+}
 /// Every method may block and must run on a worker.
 pub trait InstallationHost: Send + Sync {
     fn inspect(&self, executable: &str) -> Result<Registration, LocalError>;
@@ -248,6 +323,11 @@ pub trait InstallationHost: Send + Sync {
     ) -> Result<(), LocalError> {
         let _ = environment;
         self.launch(registration)
+    }
+    /// Executes a host-resolved custom command. Adapters that cannot apply every field must
+    /// reject it explicitly instead of silently dropping arguments, cwd or environment changes.
+    fn launch_custom(&self, _command: &CustomLaunchCommand) -> Result<(), LocalError> {
+        Err(LocalError::Unsupported)
     }
     fn validate_registration(
         &self,

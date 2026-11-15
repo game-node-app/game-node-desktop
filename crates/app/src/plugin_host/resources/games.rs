@@ -34,6 +34,8 @@ struct Action {
     expected_revision: Option<u64>,
     intent: String,
     key: String,
+    custom_recipe: Option<gamenode_core::library::CustomLaunchRecipe>,
+    custom_dispatch: Option<crate::plugin_host::library::CustomLaunchDispatch>,
 }
 
 /// How the request was authorized before its job started.
@@ -62,6 +64,27 @@ fn not_found() -> Status {
 }
 
 impl ResourceApi {
+    pub(super) async fn request_custom_action(
+        &self,
+        request: CustomLaunchRequest,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+        custom_dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    ) -> Result<JobReply, Status> {
+        self.request_action(Action {
+            context: request.context,
+            permission: cap::GAME_CUSTOM_LAUNCH,
+            operation: Operation::CustomLaunch,
+            game_id: request.game_id,
+            installation_id: request.installation_id,
+            expected_revision: Some(request.expected_revision),
+            intent: request.user_intent_id,
+            key: request.idempotency_key,
+            custom_recipe: Some(recipe),
+            custom_dispatch: Some(custom_dispatch),
+        })
+        .await
+    }
+
     pub(super) async fn request_launch(
         &self,
         request: Request<GameLaunchRequest>,
@@ -77,6 +100,8 @@ impl ResourceApi {
                 expected_revision: Some(request.expected_revision),
                 intent: request.user_intent_id,
                 key: request.idempotency_key,
+                custom_recipe: None,
+                custom_dispatch: None,
             })
             .await?;
         Ok(Response::new(GameLaunchReply {
@@ -101,6 +126,8 @@ impl ResourceApi {
             expected_revision: None,
             intent: request.user_intent_id,
             key: request.idempotency_key,
+            custom_recipe: None,
+            custom_dispatch: None,
         })
         .await
         .map(Response::new)
@@ -177,7 +204,10 @@ impl ResourceApi {
             ));
         }
         let host = self.library.host().ok_or_else(unavailable)?;
-        let launching = action.operation == Operation::Launch;
+        let launching = matches!(
+            action.operation,
+            Operation::Launch | Operation::CustomLaunch
+        );
         let fingerprint = if launching {
             host.launch_fingerprint(entry_key.clone()).await?
         } else {
@@ -193,6 +223,16 @@ impl ResourceApi {
             operation: action.operation,
             target_revision: fingerprint,
         };
+        let custom_recipe_id = action
+            .custom_recipe
+            .as_ref()
+            .map(|recipe| recipe.recipe_id.as_str())
+            .unwrap_or_default();
+        let custom_recipe_revision = action
+            .custom_recipe
+            .as_ref()
+            .map(|recipe| recipe.revision.to_string())
+            .unwrap_or_default();
         let hash = request_hash(&[
             "game-action",
             action.operation.as_str(),
@@ -200,6 +240,8 @@ impl ResourceApi {
             &action.installation_id,
             &action.expected_revision.unwrap_or(0).to_string(),
             &action.intent,
+            custom_recipe_id,
+            &custom_recipe_revision,
         ]);
 
         // Retries and first requests are decided together, so a retry never spends a second
@@ -241,6 +283,8 @@ impl ResourceApi {
             action.installation_id.clone(),
             action.operation,
         );
+        let custom_recipe = action.custom_recipe.clone();
+        let custom_dispatch = action.custom_dispatch.clone();
         let permission = action.permission;
         let run = work(move |ctx| async move {
             api.run_action(
@@ -253,6 +297,8 @@ impl ResourceApi {
                 binding,
                 (&game_arg, &installation_arg),
                 operation,
+                custom_recipe,
+                custom_dispatch,
             )
             .await
         });
@@ -298,6 +344,8 @@ impl ResourceApi {
         binding: Binding,
         names: (&str, &str),
         operation: Operation,
+        custom_recipe: Option<gamenode_core::library::CustomLaunchRecipe>,
+        custom_dispatch: Option<crate::plugin_host::library::CustomLaunchDispatch>,
     ) -> Outcome {
         if let Authorized::Ask(pending) = authorized {
             let verdict = tokio::select! {
@@ -340,7 +388,7 @@ impl ResourceApi {
             Ok(found) => found,
             Err(status) => return Outcome::failed(code_word(&status), "the game is not available"),
         };
-        if operation == Operation::Launch {
+        if matches!(operation, Operation::Launch | Operation::CustomLaunch) {
             match host.launch_fingerprint(entry_key.clone()).await {
                 Ok(current) if current == binding.target_revision => {}
                 Ok(_) => {
@@ -358,14 +406,37 @@ impl ResourceApi {
         if ctx.check().is_err() {
             return Outcome::cancelled("cancelled before it was started");
         }
-        match host
-            .open_entry(entry_key, operation == Operation::Install)
-            .await
+        if operation == Operation::CustomLaunch
+            && let Some(recipe) = custom_recipe.as_ref()
+            && recipe.uri.is_empty()
         {
+            let Some(dispatch) = custom_dispatch.as_ref() else {
+                return Outcome::failed("unavailable", "the custom launch recipe is unavailable");
+            };
+            if let Err(status) = self
+                .revalidate_custom_handles(caller, &context, recipe, dispatch)
+                .await
+            {
+                return Outcome::stopped(&status);
+            }
+        }
+        let dispatch = if operation == Operation::CustomLaunch {
+            match custom_dispatch {
+                Some(dispatch) => host.launch_custom(dispatch).await,
+                None => Err(tonic::Status::failed_precondition(
+                    "custom launch recipe is unavailable",
+                )),
+            }
+        } else {
+            host.open_entry(entry_key, operation == Operation::Install)
+                .await
+        };
+        match dispatch {
             Ok(()) => Outcome::succeeded(
                 "opened",
                 match operation {
                     Operation::Launch => "the game was started",
+                    Operation::CustomLaunch => "the custom game launch was started",
                     Operation::Install => "the provider's install flow was opened",
                     Operation::BackupRestore => unreachable!("restores use the backup adapter"),
                 },

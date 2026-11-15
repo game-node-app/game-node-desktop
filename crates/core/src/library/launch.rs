@@ -67,6 +67,7 @@ pub fn open_action(
         ActionError::Fill(_) => LaunchError::Incomplete,
     })?;
     opener.open(&uri).map_err(|error| match error {
+        UriError::Unsupported => LaunchError::Unsupported,
         UriError::NoHandler => LaunchError::NoHandler,
         UriError::Failed => LaunchError::Failed,
     })

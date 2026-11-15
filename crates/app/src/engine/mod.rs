@@ -1809,6 +1809,166 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    async fn custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.custom_launch_recipe(&owner_key, &recipe_id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read custom launch recipe"))
+    }
+
+    async fn save_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.save_custom_launch_recipe(&owner_key, &recipe))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not save custom launch recipe"))
+    }
+
+    async fn remove_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_custom_launch_recipe(&owner_key, &recipe_id, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove custom launch recipe"))
+    }
+
+    async fn prepare_custom_launch(
+        &self,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+        executable_path: Option<String>,
+        working_directory_path: Option<String>,
+    ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, tonic::Status> {
+        let engine = self.engine()?;
+        let ports = engine.shared.ports.clone();
+        tokio::task::spawn_blocking(move || {
+            use crate::plugin_host::library::CustomLaunchDispatch;
+            use gamenode_core::drm_free::CustomLaunchCommand;
+            if !recipe.validate() {
+                return Err(tonic::Status::invalid_argument(
+                    "invalid custom launch recipe",
+                ));
+            }
+            if !recipe.uri.is_empty() {
+                let uri = url::Url::parse(&recipe.uri)
+                    .map_err(|_| tonic::Status::invalid_argument("invalid launch URI"))?;
+                let environment = recipe.environment();
+                return Ok(CustomLaunchDispatch::Uri {
+                    uri,
+                    arguments: recipe.arguments,
+                    environment,
+                });
+            }
+            if !recipe.runtime_handle.is_empty() {
+                return Err(tonic::Status::unimplemented(
+                    "approved external runtime resolution is unavailable",
+                ));
+            }
+            let executable = executable_path.ok_or_else(|| {
+                tonic::Status::permission_denied("executable handle is unavailable")
+            })?;
+            let installations = ports.installations.ok_or_else(|| {
+                tonic::Status::unimplemented("custom executable launch is unavailable")
+            })?;
+            let registration = installations
+                .inspect(&executable)
+                .map_err(|error| match error {
+                    gamenode_core::drm_free::LocalError::Unsupported => {
+                        tonic::Status::unimplemented("custom executable launch is unavailable")
+                    }
+                    gamenode_core::drm_free::LocalError::InvalidTarget => {
+                        tonic::Status::failed_precondition(
+                            "approved executable changed or is invalid",
+                        )
+                    }
+                    _ => tonic::Status::unavailable("could not inspect approved executable"),
+                })?;
+            let working_directory =
+                working_directory_path.unwrap_or_else(|| registration.working_directory.clone());
+            let environment = recipe.environment();
+            let command = CustomLaunchCommand {
+                executable: registration.executable,
+                file_identity: registration.file_identity,
+                arguments: recipe.arguments,
+                working_directory,
+                environment,
+            };
+            Ok(CustomLaunchDispatch::Executable(command))
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch preparation worker stopped"))?
+    }
+
+    async fn launch_custom(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    ) -> Result<(), tonic::Status> {
+        let engine = self.engine()?;
+        let ports = engine.shared.ports.clone();
+        tokio::task::spawn_blocking(move || {
+            use crate::plugin_host::library::CustomLaunchDispatch;
+            use gamenode_core::ports::UriError;
+            match dispatch {
+                CustomLaunchDispatch::Uri {
+                    uri,
+                    arguments,
+                    environment,
+                } => ports
+                    .uri
+                    .open_custom(&uri, &arguments, "", &environment)
+                    .map_err(|error| match error {
+                        UriError::NoHandler => tonic::Status::failed_precondition(
+                            "no application handles this launch URI",
+                        ),
+                        UriError::Unsupported => tonic::Status::unimplemented(
+                            "the URI handler cannot apply custom launch fields",
+                        ),
+                        UriError::Failed => tonic::Status::unavailable("the launch URI failed"),
+                    }),
+                CustomLaunchDispatch::Executable(command) => {
+                    let installations = ports.installations.ok_or_else(|| {
+                        tonic::Status::unimplemented("custom executable launch is unavailable")
+                    })?;
+                    installations
+                        .launch_custom(&command)
+                        .map_err(|error| match error {
+                            gamenode_core::drm_free::LocalError::Unsupported => {
+                                tonic::Status::unimplemented(
+                                    "custom executable launch is unavailable",
+                                )
+                            }
+                            gamenode_core::drm_free::LocalError::InvalidTarget => {
+                                tonic::Status::failed_precondition(
+                                    "approved executable changed or is invalid",
+                                )
+                            }
+                            _ => tonic::Status::unavailable("custom executable launch failed"),
+                        })
+                }
+            }
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("custom launch worker stopped"))?
+    }
+
     fn ports_supported(&self) -> bool {
         self.engine()
             .ok()

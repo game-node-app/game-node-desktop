@@ -1,6 +1,6 @@
 import React from 'react';
 import { IconBooks, IconExternalLink, IconPlus, IconX } from '@tabler/icons-react';
-import type { CatalogResult } from '../../api';
+import { artworkAssetUrl, coverAssetUrl, type CatalogResult } from '../../api';
 import { Button, GameCover, IconButton, KeyValueRow } from '../../components/ui';
 import { useI18n } from '../../i18n';
 
@@ -37,7 +37,10 @@ export const CatalogDetail: React.FC<CatalogDetailProps> = ({
       className="flex h-full shrink-0 flex-col overflow-y-auto border-l border-border-subtle bg-secondary"
     >
       <div className="relative h-[196px] w-full shrink-0 overflow-hidden bg-surface">
-        <GameCover src={result.coverUrl} title={result.title} />
+        <GameCover
+          src={result.hasArtwork ? artworkAssetUrl(result.gameId) : coverAssetUrl(result.coverFile)}
+          title={result.title}
+        />
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent to-secondary"

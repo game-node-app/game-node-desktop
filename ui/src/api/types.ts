@@ -153,6 +153,9 @@ export interface SuggestionView {
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'error' | 'offline';
 
 export interface CatalogResult {
+  /** Downloaded images served by the local asset protocol. */
+  coverFile?: string | null;
+  hasArtwork?: boolean;
   gameId: number;
   title: string;
   year: number | null;
@@ -1335,6 +1338,7 @@ export type LibraryInput =
   | { useSuggestion: { key: string; gameId: number; now: number } }
   | { catalogSearch: string }
   | 'catalogClear'
+  | { catalogFocus: number | null }
   | { openAddForGame: { gameId: number; title: string; coverUrl?: string | null } }
   | { removeEntry: { key: string; allowRediscovery: boolean } }
   | 'resetExcluded';

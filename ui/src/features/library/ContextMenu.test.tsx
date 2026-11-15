@@ -107,6 +107,33 @@ describe('ContextMenu', () => {
     expect(screen.queryByTestId('context-menu-remove')).not.toBeInTheDocument();
   });
 
+  it('anchors at the pointer near the footer without correcting for a menu height', () => {
+    const target = row();
+    const library = makeLibrary({
+      rows: [target],
+      selected: ['steam:1'],
+      detail: detailFor(target),
+      actions: singleActions,
+    });
+    // jsdom is 1024x768: y=731 is inside the viewport, but the old
+    // `viewportHeight - 420` bound would have pulled the menu up to y=348.
+    openContextMenu(120, 731, 'steam:1');
+    renderControls(<ContextMenu />, library);
+
+    const anchor = screen.getByTestId('library-context-menu-anchor');
+    expect(anchor.style.position).toBe('fixed');
+    expect(anchor.style.left).toBe('120px');
+    expect(anchor.style.top).toBe('731px');
+    expect(anchor.style.width).toBe('0px');
+    expect(anchor.style.height).toBe('0px');
+
+    // Past the right edge the menu width still keeps the whole dropdown on screen.
+    act(() => openContextMenu(5000, 731, 'steam:1'));
+    expect(screen.getByTestId('library-context-menu-anchor').style.left).toBe(
+      `${window.innerWidth - 280 - 8}px`,
+    );
+  });
+
   it('opens the install folder and the GameNode page for the single entry', async () => {
     const folderSpy = vi.spyOn(commands, 'openInstallFolder').mockResolvedValue(undefined);
     const pageSpy = vi.spyOn(commands, 'openGameNodePage').mockResolvedValue(undefined);

@@ -98,6 +98,16 @@ export const CatalogView: React.FC = () => {
   const incomplete =
     displayStatus === 'ready' && library?.catalog.incomplete === true;
   const selectedResult = catalogSelectedResult(results, selectedGameId);
+  const artworkGameId =
+    destination === 'catalog' ? selectedResult?.gameId ?? null : null;
+  useEffect(() => {
+    if (artworkGameId == null) return;
+    void commands.libraryInput({ catalogFocus: artworkGameId }).catch(handleSearchError);
+    return () => {
+      void commands.libraryInput({ catalogFocus: null }).catch(handleSearchError);
+    };
+  }, [artworkGameId, handleSearchError]);
+
   const focusedIndex = results.findIndex(
     (result) => result.gameId === focusedGameId,
   );

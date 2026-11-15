@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import {
   commands,
+  coverAssetUrl,
+  artworkAssetUrl,
   createDefaultFilters,
   type CatalogResult,
   type LibraryView,
@@ -21,7 +23,8 @@ function result(overrides: Partial<CatalogResult> = {}): CatalogResult {
     gameId: 1,
     title: 'Aster Vale',
     year: 2018,
-    coverUrl: 'https://covers.test/aster.jpg',
+    coverUrl: '//images.igdb.com/igdb/image/upload/t_thumb/aster.jpg',
+    coverFile: '1.jpg',
     inLibrary: false,
     localKey: null,
     ...overrides,
@@ -294,6 +297,7 @@ describe('CatalogView', () => {
               title: 'Brass Meridian',
               year: null,
               coverUrl: null,
+              coverFile: null,
             }),
           ],
         }),
@@ -327,6 +331,7 @@ describe('CatalogView', () => {
     ).toHaveAttribute('aria-label', 'Brass Meridian');
 
     const cover = within(first).getByRole('img', { name: 'Aster Vale' });
+    expect(cover).toHaveAttribute('src', coverAssetUrl('1.jpg'));
     expect(cover).toHaveAttribute('loading', 'lazy');
     expect(cover).toHaveAttribute('decoding', 'async');
 
@@ -489,7 +494,7 @@ describe('CatalogView', () => {
         openAddForGame: {
           gameId: 1,
           title: 'Aster Vale',
-          coverUrl: 'https://covers.test/aster.jpg',
+          coverUrl: '//images.igdb.com/igdb/image/upload/t_thumb/aster.jpg',
         },
       }),
     );
@@ -560,7 +565,7 @@ describe('CatalogView', () => {
         openAddForGame: {
           gameId: 1,
           title: 'Aster Vale',
-          coverUrl: 'https://covers.test/aster.jpg',
+          coverUrl: '//images.igdb.com/igdb/image/upload/t_thumb/aster.jpg',
         },
       }),
     );
@@ -628,7 +633,9 @@ describe('CatalogView', () => {
     await waitFor(() =>
       expect(uiStore.state.activeDestination).toBe('library'),
     );
-    const sent = inputs(input);
+    const sent = inputs(input).filter(
+      (item) => !(typeof item === 'object' && 'catalogFocus' in item),
+    );
     expect(sent).toEqual([
       { setSearch: '' },
       { setScope: 'all' },
@@ -683,5 +690,40 @@ describe('CatalogView', () => {
       'placeholder',
       'Buscar no catálogo do GameNode',
     );
+  });
+});
+
+
+it('loads catalog artwork for the detail selection and releases it on close', async () => {
+  const input = spyInput();
+  const catalog = makeCatalog({
+    query: 'aster', status: 'ready', results: [result()],
+  });
+  const view = renderCatalog(<CatalogView />, library(catalog));
+  fireEvent.click(screen.getByTestId('game-tile-catalog:1'));
+  expect(inputs(input)).toContainEqual({ catalogFocus: 1 });
+  expect(within(screen.getByTestId('catalog-detail')).getByRole('img'))
+    .toHaveAttribute('src', coverAssetUrl('1.jpg'));
+  view.update(library({ ...catalog, results: [result({ hasArtwork: true })] }));
+  await waitFor(() => {
+    const artwork = within(screen.getByTestId('catalog-detail')).getByRole('img');
+    expect(artwork).toHaveAttribute('src', artworkAssetUrl(1));
+    expect(artwork).toHaveAttribute('loading', 'lazy');
+    expect(artwork).toHaveAttribute('decoding', 'async');
+  });
+  fireEvent.click(screen.getByTestId('catalog-detail-close'));
+  expect(inputs(input).at(-1)).toEqual({ catalogFocus: null });
+});
+
+it('updates a placeholder when the downloaded catalog cover arrives', async () => {
+  const catalog = makeCatalog({
+    query: 'aster', status: 'ready', results: [result({ coverFile: null })],
+  });
+  const view = renderCatalog(<CatalogView />, library(catalog));
+  const tile = screen.getByTestId('catalog-tile-1');
+  expect(within(tile).queryByRole('img')).not.toBeInTheDocument();
+  view.update(library({ ...catalog, results: [result()] }));
+  await waitFor(() => {
+    expect(within(tile).getByRole('img')).toHaveAttribute('src', coverAssetUrl('1.jpg'));
   });
 });

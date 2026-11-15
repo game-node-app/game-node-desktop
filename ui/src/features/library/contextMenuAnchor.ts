@@ -13,6 +13,64 @@ export interface ContextMenuPoint {
   y: number;
 }
 
+/** Space kept between a pointer-anchored menu and the viewport edges, in CSS pixels. */
+export const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
+
+/** Inline style of the fixed, zero-size element the menu is positioned against. */
+export interface ContextMenuAnchorStyle {
+  position: 'fixed';
+  left: string;
+  top: string;
+  width: 0;
+  height: 0;
+}
+
+export interface ContextMenuAnchorInput {
+  x: number;
+  y: number;
+  /** Rendered menu width; the menu grows to the right from the anchor. */
+  menuWidth: number;
+  /** Viewport size; defaults to the runtime window. */
+  viewport?: { width: number; height: number };
+}
+
+function viewportSize(): { width: number; height: number } {
+  return {
+    width: typeof window !== 'undefined' ? window.innerWidth : 0,
+    height: typeof window !== 'undefined' ? window.innerHeight : 0,
+  };
+}
+
+/** Keeps `value` inside `[minimum, maximum]`, preferring `minimum` when the bounds cross. */
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(value, maximum));
+}
+
+/**
+ * The fixed zero-size anchor style for a menu opened at viewport coordinates `(x, y)`.
+ *
+ * The dropdown starts at `bottom-start`; the menu's flip and size middlewares choose the
+ * side and available height. Never subtract a guessed menu height,
+ * because that moves the menu away from the pointer and leaves a gap under tall or short menus.
+ * Horizontally the menu grows to the right, so the menu width is subtracted to keep the whole
+ * dropdown on screen. Both axes keep a margin from the viewport edges.
+ */
+export function contextMenuAnchorStyle({
+  x,
+  y,
+  menuWidth,
+  viewport = viewportSize(),
+}: ContextMenuAnchorInput): ContextMenuAnchorStyle {
+  const margin = CONTEXT_MENU_VIEWPORT_MARGIN;
+  return {
+    position: 'fixed',
+    left: `${clamp(x, margin, viewport.width - menuWidth - margin)}px`,
+    top: `${clamp(y, margin, viewport.height - margin)}px`,
+    width: 0,
+    height: 0,
+  };
+}
+
 /**
  * The context-menu anchor for a focused element: the centre of its rectangle, so a keyboard
  * open (Shift+F10 or the ContextMenu key) never lands at the viewport origin. Without an

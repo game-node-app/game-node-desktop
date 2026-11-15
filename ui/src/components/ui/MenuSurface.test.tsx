@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { Menu } from '@mantine/core';
-import { MenuSurface } from './MenuSurface';
+import { MENU_SURFACE_MIDDLEWARES, MenuSurface } from './MenuSurface';
 import {
   menuClassNames,
   menuItemDangerClass,
@@ -10,6 +10,20 @@ import {
   popoverClassNames,
 } from './menuClasses';
 import { renderUi } from './testUtils';
+
+type SizeApply = (args: {
+  availableHeight: number;
+  elements: { floating: HTMLElement };
+}) => void;
+
+/** Narrows the exported constant's `size` entry to its apply callback. */
+function menuSizeApply(): SizeApply {
+  const size = MENU_SURFACE_MIDDLEWARES.size;
+  if (!size || typeof size !== 'object' || !size.apply) {
+    throw new Error('MenuSurface must configure a size middleware with apply');
+  }
+  return size.apply as SizeApply;
+}
 
 function renderSurface() {
   return renderUi(
@@ -112,6 +126,104 @@ describe('MenuSurface', () => {
     expect(menuClassNames.itemSection?.split(' ')).not.toContain('ml-auto');
     expect(popoverClassNames.dropdown).toContain('rounded-popover');
     expect(popoverClassNames.dropdown).toContain('shadow-popover');
+  });
+
+  it('scrolls long menus inside the window without squashing rows', () => {
+    renderSurface();
+    const dropdown = screen.getByRole('menu');
+    expect(dropdown).toHaveClass(
+      'max-h-[calc(100vh-16px)]',
+      'overflow-y-auto',
+      'overscroll-contain',
+      'flex',
+      'flex-col',
+    );
+
+    // A constrained flex column must scroll rather than compress its children.
+    for (const className of [
+      menuClassNames.item,
+      menuClassNames.label,
+      menuClassNames.divider,
+    ]) {
+      expect(className?.split(' ')).toContain('shrink-0');
+    }
+  });
+
+  it('keeps the dropdown clear of the viewport edges by 8px', () => {
+    expect(MENU_SURFACE_MIDDLEWARES.flip).toEqual({
+      padding: 8,
+      fallbackStrategy: 'bestFit',
+    });
+    expect(MENU_SURFACE_MIDDLEWARES.shift).toEqual({ padding: 8 });
+    expect(MENU_SURFACE_MIDDLEWARES.size).toMatchObject({
+      padding: { top: 8, bottom: 8 },
+    });
+  });
+
+  it('applies the default height cap to the rendered dropdown', async () => {
+    renderSurface();
+    const dropdown = screen.getByRole('menu');
+
+    // The default size middleware writes a height, never a max-width: a fixed
+    // 260–280 px menu must keep its authored width.
+    await waitFor(() => expect(dropdown.style.maxHeight).not.toBe(''));
+    expect(dropdown.style.maxWidth).toBe('');
+  });
+
+  it('caps only the menu height so fixed widths are not squeezed', () => {
+    const apply = menuSizeApply();
+    const floating = document.createElement('div');
+    floating.style.width = '260px';
+
+    apply({ availableHeight: 240, elements: { floating } });
+
+    expect(floating.style.maxHeight).toBe('240px');
+    expect(floating.style.maxWidth).toBe('');
+    expect(floating.style.width).toBe('260px');
+
+    // A cramped viewport must not produce a negative height, and an existing
+    // max-width authored by a caller must survive.
+    floating.style.maxWidth = '280px';
+    apply({ availableHeight: -12, elements: { floating } });
+
+    expect(floating.style.maxHeight).toBe('0px');
+    expect(floating.style.maxWidth).toBe('280px');
+    expect(floating.style.width).toBe('260px');
+  });
+
+  it('lets a caller replace the default middlewares', async () => {
+    const customMiddlewares = {
+      flip: false,
+      shift: false,
+      size: {
+        apply({ elements }: { elements: { floating: HTMLElement } }) {
+          elements.floating.style.maxHeight = '123px';
+        },
+      },
+    };
+
+    renderUi(
+      <MenuSurface
+        opened
+        onClose={() => undefined}
+        middlewares={customMiddlewares}
+        withinPortal={false}
+        transitionProps={{ duration: 0 }}
+      >
+        <Menu.Target>
+          <button type="button">Open menu</button>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Item>Item</Menu.Item>
+        </Menu.Dropdown>
+      </MenuSurface>,
+    );
+
+    const dropdown = screen.getByRole('menu');
+    // Only the caller's size middleware runs, so its sentinel height proves
+    // the default middlewares were replaced rather than merged in.
+    await waitFor(() => expect(dropdown.style.maxHeight).toBe('123px'));
+    expect(dropdown.style.maxWidth).toBe('');
   });
 
   it('forwards caller class names alongside the preset', () => {

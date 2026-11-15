@@ -394,6 +394,8 @@ pub enum Input {
     },
     /// Reset the catalog view to its idle state and invalidate any request in flight.
     CatalogClear,
+    /// The catalog detail panel selection; None releases its artwork focus.
+    CatalogFocus(Option<u64>),
     /// Open the Add to GameNode dialog for one catalog game, recording the metadata the dialog
     /// needs. No local library row is created.
     OpenAddForGame {
@@ -919,7 +921,7 @@ impl LibraryMachine {
 
     fn plan_artwork(&mut self) -> Vec<Effect> {
         let game_id = if self.access == Access::Verified && matches!(self.phase, Phase::Ready) {
-            self.selected_game()
+            self.catalog.focused_game.or_else(|| self.selected_game())
         } else {
             None
         };
@@ -938,7 +940,9 @@ impl LibraryMachine {
                 self.artwork_cache.push_back(cached);
             }
         }
-        if !self.layout.detail_open || self.artwork_attempted {
+        if (self.catalog.focused_game.is_none() && !self.layout.detail_open)
+            || self.artwork_attempted
+        {
             return vec![];
         }
         let Some(game_id) = game_id else {
@@ -1080,6 +1084,11 @@ impl LibraryMachine {
             Input::CatalogSearch(query) => self.catalog_search(query),
             Input::CatalogSearchDone { op, query, result } => {
                 self.on_catalog_search_done(op, query, result)
+            }
+            Input::CatalogFocus(game_id) => {
+                self.catalog.focused_game =
+                    game_id.filter(|id| self.catalog.games.iter().any(|game| game.id == *id));
+                vec![]
             }
             Input::CatalogClear => {
                 self.catalog_clear();

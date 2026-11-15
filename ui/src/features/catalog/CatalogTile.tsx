@@ -16,7 +16,7 @@ export interface CatalogTileProps {
 
 /**
  * One catalog result on the shared presentational `GameTile`. The tile keeps
- * the library geometry, remote lazy cover, selection/focus rings and hover
+ * the library geometry, cached lazy cover, selection/focus rings and hover
  * surface. Catalog-only facts are a local overlay and the tile's `meta` slot,
  * so the shared primitive stays free of catalog-specific props. The projected
  * `Row` is inert presentation: the tile renders the release year instead of
@@ -51,7 +51,6 @@ export const CatalogTile: React.FC<CatalogTileProps> = ({
     >
       <GameTile
         row={catalogResultRow(result)}
-        coverUrl={result.coverUrl}
         selected={selected}
         focused={focused}
         meta={year}

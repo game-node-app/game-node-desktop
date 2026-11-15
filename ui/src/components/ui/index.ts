@@ -47,8 +47,8 @@ export { GameRow, GAME_ROW_LAYOUT } from './GameRow';
 export type { GameRowProps } from './GameRow';
 export { GameCover } from './GameCover';
 export type { GameCoverProps } from './GameCover';
-export { MenuSurface } from './MenuSurface';
-export type { MenuSurfaceProps } from './MenuSurface';
+export { MENU_SURFACE_MIDDLEWARES, MenuSurface } from './MenuSurface';
+export type { MenuSurfaceMiddlewares, MenuSurfaceProps } from './MenuSurface';
 export {
   menuClassNames,
   menuItemDangerClass,

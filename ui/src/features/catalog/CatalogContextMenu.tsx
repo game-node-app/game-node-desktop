@@ -1,12 +1,12 @@
 import React, { useEffect } from 'react';
 import { Menu } from '@mantine/core';
 import { IconBooks, IconExternalLink, IconPlus } from '@tabler/icons-react';
-import type { CatalogResult } from '../../api';
+import { coverAssetUrl, type CatalogResult } from '../../api';
 import { GameCover, MenuSurface } from '../../components/ui';
 import { useI18n } from '../../i18n';
+import { contextMenuAnchorStyle } from '../library/contextMenuAnchor';
 
 const MENU_WIDTH = 280;
-const MENU_HEIGHT = 240;
 
 export interface CatalogContextMenuProps {
   /** The result the menu acts on; `null` renders nothing. */
@@ -48,10 +48,7 @@ export const CatalogContextMenu: React.FC<CatalogContextMenuProps> = ({
 
   if (!result) return null;
 
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 800;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 600;
-  const posX = Math.max(8, Math.min(x, viewportWidth - MENU_WIDTH - 16));
-  const posY = Math.max(8, Math.min(y, viewportHeight - MENU_HEIGHT));
+  const anchorStyle = contextMenuAnchorStyle({ x, y, menuWidth: MENU_WIDTH });
 
   const run = (action: (target: CatalogResult) => void) => () => {
     onClose();
@@ -74,16 +71,7 @@ export const CatalogContextMenu: React.FC<CatalogContextMenuProps> = ({
     >
       {/* Zero-size anchor at the right-click or keyboard-open coordinates. */}
       <Menu.Target>
-        <div
-          aria-hidden="true"
-          style={{
-            position: 'fixed',
-            left: `${posX}px`,
-            top: `${posY}px`,
-            width: 0,
-            height: 0,
-          }}
-        />
+        <div data-testid="catalog-context-menu-anchor" aria-hidden="true" style={anchorStyle} />
       </Menu.Target>
 
       <Menu.Dropdown
@@ -92,7 +80,7 @@ export const CatalogContextMenu: React.FC<CatalogContextMenuProps> = ({
       >
         <div className="flex items-center gap-[10px] px-[10px] py-[8px]">
           <div className="flex h-[32px] w-[24px] shrink-0 items-center justify-center overflow-hidden rounded-xs bg-surface">
-            <GameCover src={result.coverUrl} title={result.title} />
+            <GameCover src={coverAssetUrl(result.coverFile)} title={result.title} />
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-semibold text-text-primary">

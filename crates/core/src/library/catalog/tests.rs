@@ -364,3 +364,95 @@ fn open_add_for_a_game_keeps_known_metadata_when_the_input_omits_it() {
     );
     assert_eq!(game.cover_file.as_deref(), Some("42.jpg"));
 }
+
+#[test]
+fn catalog_covers_use_the_bounded_download_queue_and_publish_local_files() {
+    let mut machine = verified(LibraryCache::default());
+    let (op, query) = search(&mut machine, "aster").unwrap();
+    let games = (100..106)
+        .map(|id| GameSummary {
+            cover_url: Some(format!(
+                "//images.igdb.com/igdb/image/upload/t_thumb/co{id}.jpg"
+            )),
+            ..summary(id, "Aster", None)
+        })
+        .collect();
+    let effects = machine.handle(Input::CatalogSearchDone {
+        op,
+        query,
+        result: Ok(page(games)),
+    });
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::FetchCover { .. }))
+            .count(),
+        4
+    );
+    assert!(
+        machine
+            .view()
+            .unwrap()
+            .catalog
+            .results
+            .iter()
+            .all(|game| game.cover_file.is_none())
+    );
+    let effects = machine.handle(Input::CoverDone {
+        game_id: 100,
+        result: Ok("100.jpg".into()),
+        now: 10,
+    });
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::FetchCover { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        machine.view().unwrap().catalog.results[0]
+            .cover_file
+            .as_deref(),
+        Some("100.jpg")
+    );
+}
+
+#[test]
+fn catalog_artwork_follows_selection_and_ignores_late_answers() {
+    let mut machine = verified(LibraryCache::default());
+    machine.handle(Input::SetDetailOpen(false));
+    let (op, query) = search(&mut machine, "aster").unwrap();
+    machine.handle(Input::CatalogSearchDone {
+        op,
+        query,
+        result: Ok(page(vec![
+            summary(100, "Aster", None),
+            summary(101, "Aster II", None),
+        ])),
+    });
+    let effects = machine.handle(Input::CatalogFocus(Some(100)));
+    let op = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::FetchArtwork { op, game_id: 100 } => Some(*op),
+            _ => None,
+        })
+        .unwrap();
+    assert!(machine.handle(Input::CatalogFocus(Some(100))).is_empty());
+    machine.handle(Input::CatalogFocus(Some(101)));
+    machine.handle(Input::ArtworkDone {
+        op,
+        game_id: 100,
+        result: Ok(Some(vec![1, 2, 3])),
+    });
+    assert!(!machine.view().unwrap().catalog.results[0].has_artwork);
+    assert!(machine.handle(Input::CatalogFocus(Some(100))).is_empty());
+    assert!(machine.view().unwrap().catalog.results[0].has_artwork);
+    assert!(machine.artwork_for(100).is_some());
+    machine.handle(Input::CatalogFocus(None));
+    assert!(machine.artwork_for(100).is_none());
+    assert!(machine.handle(Input::CatalogFocus(Some(999))).is_empty());
+    machine.handle(Input::CatalogClear);
+    assert!(machine.catalog.focused_game.is_none());
+}

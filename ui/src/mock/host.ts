@@ -1249,6 +1249,7 @@ export function createMockHost(options: {
 
   // The catalog view's raw state. Results keep only catalog metadata; membership and the local
   // key are recomputed on every update, so an add or undo flips them without another search.
+  let catalogFocus: number | null = null;
   let catalogQuery = '';
   let catalogStatus: CatalogStatus = 'idle';
   let catalogResults: typeof MOCK_CATALOG_GAMES = [];
@@ -1377,6 +1378,8 @@ export function createMockHost(options: {
         title: game.title,
         year: game.year,
         coverUrl: game.coverUrl,
+        coverFile: `mock-${(game.gameId - 1) % 12}.svg`,
+        hasArtwork: catalogFocus === game.gameId,
         inLibrary:
           accountLibraryGameIds.has(game.gameId) ||
           rows.some(
@@ -1391,6 +1394,7 @@ export function createMockHost(options: {
 
   /** The mock search is asynchronous like the engine's: 250 ms, latest operation wins. */
   function catalogSearch(query: string) {
+    catalogFocus = null;
     catalogQuery = query;
     const trimmed = query.trim();
     const operation = ++catalogOperation;
@@ -2775,6 +2779,8 @@ export function createMockHost(options: {
         moveFocus(input.move.direction, input.move.extend);
       } else if ('useSuggestion' in input) {
         useSuggestion(input.useSuggestion.key, input.useSuggestion.gameId);
+      } else if ('catalogFocus' in input) {
+        catalogFocus = input.catalogFocus;
       } else if ('catalogSearch' in input) {
         catalogSearch(input.catalogSearch);
       } else if ('openAddForGame' in input) {

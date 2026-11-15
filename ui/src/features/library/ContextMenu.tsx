@@ -40,6 +40,7 @@ import {
 import { closeContextMenu, pushToast, uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { AchievementListModal } from './AchievementListModal';
+import { contextMenuAnchorStyle } from './contextMenuAnchor';
 import { ENTRY_STATUSES, entryRegistrationId, isDrmFreeKey } from './detail/format';
 import { summarizeSelection } from './detail/multiSelection';
 import { formatI18n, formatReason, formatStatus } from './formatters';
@@ -135,10 +136,11 @@ export const ContextMenu: React.FC = () => {
 
   // Position adjustments to prevent overflow. Right-click coordinates arrive from the row
   // handler; the keyboard helper supplies the focused row's centre instead of (0, 0).
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 800;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 600;
-  const posX = Math.max(8, Math.min(contextMenu.x, viewportWidth - MENU_WIDTH - 16));
-  const posY = Math.max(8, Math.min(contextMenu.y, viewportHeight - 420));
+  const anchorStyle = contextMenuAnchorStyle({
+    x: contextMenu.x,
+    y: contextMenu.y,
+    menuWidth: MENU_WIDTH,
+  });
 
   const close = () => closeContextMenu();
 
@@ -267,16 +269,7 @@ export const ContextMenu: React.FC = () => {
     >
       {/* Zero-size anchor at the right-click / keyboard-open coordinates. */}
       <Menu.Target>
-        <div
-          aria-hidden
-          style={{
-            position: 'fixed',
-            left: `${posX}px`,
-            top: `${posY}px`,
-            width: 0,
-            height: 0,
-          }}
-        />
+        <div data-testid="library-context-menu-anchor" aria-hidden style={anchorStyle} />
       </Menu.Target>
 
       <Menu.Dropdown data-testid="library-context-menu" aria-label="Game actions">
@@ -438,7 +431,13 @@ export const ContextMenu: React.FC = () => {
               />
             </Menu.Item>
 
-            <Menu.Sub opened={statusOpen} onChange={setStatusOpen} position="right-start" offset={4}>
+            <Menu.Sub
+              opened={statusOpen}
+              onChange={setStatusOpen}
+              position="right-start"
+              offset={4}
+              floatingStrategy="fixed"
+            >
               <Menu.Sub.Target>
                 <Menu.Item
                   data-testid="context-menu-change-status"
@@ -515,6 +514,7 @@ export const ContextMenu: React.FC = () => {
             onChange={setCollectionsOpen}
             position="right-start"
             offset={4}
+            floatingStrategy="fixed"
           >
             <Menu.Sub.Target>
               <Menu.Item

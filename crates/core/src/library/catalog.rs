@@ -37,6 +37,8 @@ pub struct CatalogResult {
     pub title: String,
     pub year: Option<i32>,
     pub cover_url: Option<String>,
+    pub cover_file: Option<String>,
+    pub has_artwork: bool,
     /// The account library cache has an entry for this game.
     pub in_library: bool,
     /// The first local library row whose match is this game.
@@ -59,6 +61,7 @@ pub struct CatalogView {
 /// `localKey` can be recomputed after an add, undo or account-library refresh.
 #[derive(Debug, Default)]
 pub(super) struct CatalogSession {
+    pub(super) focused_game: Option<u64>,
     pub(super) query: String,
     pub(super) status: CatalogStatus,
     pub(super) op: Option<u64>,
@@ -93,6 +96,7 @@ impl LibraryMachine {
         self.catalog.query = query;
         self.catalog.status = CatalogStatus::Loading;
         self.catalog.op = Some(op);
+        self.catalog.focused_game = None;
         self.catalog.games.clear();
         self.catalog.incomplete = false;
         vec![Effect::CatalogSearch { op, query: trimmed }]
@@ -118,14 +122,23 @@ impl LibraryMachine {
                 self.catalog.games = games;
                 self.catalog.incomplete = page.complete == Some(false);
                 self.catalog.status = CatalogStatus::Ready;
-                if changed.is_empty() {
-                    vec![]
-                } else {
-                    vec![Effect::PersistMatches {
+                let mut effects = Vec::new();
+                if !changed.is_empty() {
+                    effects.push(Effect::PersistMatches {
                         games: changed,
                         matches: Vec::new(),
-                    }]
+                    });
                 }
+                effects.extend(
+                    self.plan_option_covers(
+                        self.catalog
+                            .games
+                            .iter()
+                            .map(|game| game.id)
+                            .collect::<Vec<_>>(),
+                    ),
+                );
+                effects
             }
             Err(_) => {
                 self.catalog.games.clear();
@@ -206,6 +219,11 @@ impl LibraryMachine {
                     title: game.name.clone(),
                     year: game.release_year,
                     cover_url: game.cover_url.clone(),
+                    cover_file: self
+                        .games
+                        .get(&game.id)
+                        .and_then(|record| record.cover_file.clone()),
+                    has_artwork: self.artwork_for(game.id).is_some(),
                     in_library: self
                         .account_library
                         .as_ref()

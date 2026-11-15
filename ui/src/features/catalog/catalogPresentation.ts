@@ -113,7 +113,7 @@ export function catalogFocusTarget(
 /**
  * A `Row`-shaped projection for the shared presentational `GameTile`. Catalog
  * results have no local library entry, so every library-only fact stays false;
- * the remote cover arrives through `GameTile`'s `coverUrl` prop. `status` is
+ * the cached cover arrives through `Row.coverFile`. `status` is
  * only a type-valid placeholder: `CatalogTile` supplies the `meta` slot and the
  * accessible name, so no match dot, match text or playtime is ever rendered.
  */
@@ -134,7 +134,7 @@ export function catalogResultRow(result: CatalogResult): Row {
     status: {
       matched: { gameId: result.gameId, source: 'automatic' },
     },
-    coverFile: null,
+    coverFile: result.coverFile ?? null,
     releaseYear: result.year,
     addedAt: 0,
     isFavorite: false,

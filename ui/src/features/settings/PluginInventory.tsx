@@ -3,7 +3,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuth } from '../../api/useSnapshot';
-import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginInfo, type PluginUpdateReview } from '../../api';
+import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginUpdateReview } from '../../api';
+import { AppModal } from '../../components/AppModal';
 import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
@@ -20,13 +21,22 @@ function statusLabel(status: PluginInfo['status'], t: (key: string) => string): 
   return t(`plugins.status.${status}`);
 }
 
+function scopeChoiceKey(pluginId: string, profileId: string, permissionId: string, scope: unknown): string {
+  return `${pluginId}:${profileId}:${permissionId}:${JSON.stringify(scope)}`;
+}
+
 export const PluginInventory: React.FC = () => {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [review, setReview] = useState<PluginUpdateReview | null>(null);
+  const [importReview, setImportReview] = useState<PluginImportReview | null>(null);
+  const [archivePath, setArchivePath] = useState('');
+  const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
+  const [managementError, setManagementError] = useState(false);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const updateEventRevision = useRef(0);
   const auth = useAuth().auth;
@@ -54,7 +64,7 @@ export const PluginInventory: React.FC = () => {
   });
   const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
   const managedPluginId = selectedPlugin?.publisherFingerprint ? selectedPlugin.pluginId : null;
-  useQuery({
+  const { data: permissionSnapshot } = useQuery({
     queryKey: pluginQueryKeys.permissions(managedPluginId ?? '', profileId ?? ''),
     queryFn: async () => {
       if (!managedPluginId || !profileId) throw new Error('plugin permission profile is unavailable');
@@ -70,6 +80,9 @@ export const PluginInventory: React.FC = () => {
     enabled: managedPluginId !== null,
   });
   const periodicChecks = updatePreferences?.periodicChecks ?? false;
+  const managed = Boolean(selectedPlugin?.publisherFingerprint);
+  const canManageRuntime = managed && selectedPlugin?.runtimeAvailable === true && profileId !== null;
+  const canManageAccount = managed && profileId !== null;
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -157,6 +170,77 @@ export const PluginInventory: React.FC = () => {
     } finally { setBusy(false); }
   };
 
+  const reviewImport = async () => {
+    setBusy(true);
+    setManagementError(false);
+    setImportReview(null);
+    try { setImportReview(await commands.pluginImportReview(archivePath.trim())); }
+    catch { setManagementError(true); }
+    finally { setBusy(false); }
+  };
+
+  const installImport = async () => {
+    if (!importReview) return;
+    setBusy(true);
+    setManagementError(false);
+    try {
+      await commands.pluginImportInstall(importReview.token);
+      setImportReview(null);
+      setArchivePath('');
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
+    } catch { setManagementError(true); }
+    finally { setBusy(false); }
+  };
+
+  const savePermissions = async (snapshot: PluginPermissionSnapshot) => {
+    if (!profileId || snapshot.profileId !== profileId) return;
+    const decisions = snapshot.requestedPermissions.flatMap((request) => request.allowed_scopes.map((scope) => {
+      const key = scopeChoiceKey(snapshot.pluginId, profileId, request.permission_id, scope);
+      const persisted = snapshot.effectiveGrants.some((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope) && grant.state === 'granted');
+      return { permission_id: request.permission_id, scope, granted: scopeChoices[key] ?? persisted };
+    }));
+    setBusy(true);
+    setUpdateError(false);
+    try {
+      const saved = await commands.pluginPermissionsReplace(snapshot.pluginId, profileId, snapshot.grantRevision, decisions);
+      setScopeChoices({});
+      queryClient.setQueryData(pluginQueryKeys.permissions(snapshot.pluginId, profileId), saved);
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
+    } catch {
+      setManagementError(true);
+      setScopeChoices({});
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(snapshot.pluginId, profileId) });
+    } finally { setBusy(false); }
+  };
+
+  const setPluginEnabled = async (pluginId: string, enabled: boolean) => {
+    setBusy(true);
+    setManagementError(false);
+    try {
+      if (enabled) await commands.pluginEnable(pluginId);
+      else await commands.pluginDisable(pluginId);
+      await refreshPluginHostState(pluginId);
+    } catch {
+      setManagementError(true);
+      await refreshPluginHostState(pluginId);
+    } finally { setBusy(false); }
+  };
+
+  const removePlugin = async () => {
+    if (!selectedPlugin) return;
+    setBusy(true);
+    setManagementError(false);
+    try {
+      await commands.pluginRemove(selectedPlugin.pluginId);
+      setConfirmRemove(false);
+      setSelectedPluginId(null);
+      await refreshPluginHostState(selectedPlugin.pluginId);
+    } catch {
+      setManagementError(true);
+      await refreshPluginHostState(selectedPlugin.pluginId);
+    } finally { setBusy(false); }
+  };
+
   const stateClass = (status: PluginInfo['status']) => status === 'installed'
     ? settingsPillSuccess
     : status === 'missing' || status === 'failed' || status === 'incompatible'
@@ -166,6 +250,43 @@ export const PluginInventory: React.FC = () => {
   return (
     <section aria-label={t('plugins.inventoryTitle')}>
       <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.inventoryDescription')}</p>
+      <div className={`${settingsCard} mb-compact`}>
+        <form aria-label={t('plugins.import.title')} onSubmit={(event) => { event.preventDefault(); void reviewImport(); }}>
+          <label className="block text-sm">
+            <span className={settingsRowTitle}>{t('plugins.import.title')}</span>
+            <input className="mt-1 w-full rounded-sm border border-border-subtle bg-raised px-sm py-1" value={archivePath} onChange={(event) => setArchivePath(event.currentTarget.value)} placeholder={t('plugins.import.path')} aria-label={t('plugins.import.path')} />
+          </label>
+          {profileId === null && <p className={`${settingsRowDescription} mt-compact`} role="status">{t('plugins.signInRequired')}</p>}
+          <button type="submit" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy || !archivePath.trim() || profileId === null}>{t('plugins.import.review')}</button>
+        </form>
+        {importReview && <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.import.reviewTitle')}>
+          <h3 className={settingsRowTitle}>{importReview.name} {importReview.version}</h3>
+          <p className={settingsRowDescription}>{t('plugins.identifier')}: {importReview.pluginId}</p>
+          <p className={settingsRowDescription}>{t('plugins.import.fingerprint')}: {importReview.publisherFingerprint}</p>
+          {importReview.pinnedFingerprint && <p className={settingsRowDescription}>{t('plugins.import.previousFingerprint')}: {importReview.pinnedFingerprint}</p>}
+          <div className={settingsRowDescription}>
+            <p>{t('plugins.import.permissions')}:</p>
+            {importReview.requestedPermissions.length ? (
+              <ul className="ml-4 list-disc">
+                {importReview.requestedPermissions.map((permission) => (
+                  <li key={permission.id}>
+                    {permission.id} · {permission.scope} · {permission.required ? t('plugins.import.required') : t('plugins.import.optional')} · {permission.reason}
+                  </li>
+                ))}
+              </ul>
+            ) : <p>—</p>}
+          </div>
+          <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: {importReview.nativeAccess.join(', ') || '—'}</p>
+          <p className={settingsRowDescription}>{t('plugins.import.license')}: {importReview.license}; {importReview.licenseFiles.join(', ') || '—'}</p>
+          <p className={settingsRowDescription}>{t('plugins.import.compatibility')}: {t(`plugins.import.${importReview.compatibility}`)} {importReview.compatibilityReason ?? ''}</p>
+          {importReview.trust !== 'trusted' ? <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || profileId === null || importReview.compatibility !== 'compatible'} onClick={() => {
+            setBusy(true);
+            setManagementError(false);
+            void commands.pluginImportConfirmPublisher(importReview.token, importReview.publisherFingerprint).then(setImportReview).catch(() => setManagementError(true)).finally(() => setBusy(false));
+          }}>{importReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}</button> : null}
+          <button type="button" className="ml-compact mt-compact rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible'} onClick={() => void installImport()}>{t('plugins.import.install')}</button>
+        </article>}
+      </div>
       <div className={`${settingsCard} mb-compact`}>
         <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.updates.description')}</p>
         <label className="flex items-center gap-compact text-sm">
@@ -205,7 +326,7 @@ export const PluginInventory: React.FC = () => {
             </div>
           </div>
         ))}
-        {updateError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.updates.failed')}</p>}
+        {(updateError || managementError) && <p className="mt-compact text-sm text-warning" role="alert">{t(managementError ? 'plugins.management.failed' : 'plugins.updates.failed')}</p>}
         {review && (
           <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.updates.reviewTitle')}>
             <h3 className={settingsRowTitle}>{t('plugins.updates.reviewTitle')}: {review.installedVersion} → {review.candidateVersion}</h3>
@@ -247,7 +368,11 @@ export const PluginInventory: React.FC = () => {
                 type="button"
                 aria-pressed={selectedPlugin?.pluginId === plugin.pluginId}
                 className={`flex w-full flex-col items-start gap-1 rounded-sm border px-sm py-compact text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${selectedPlugin?.pluginId === plugin.pluginId ? 'border-brand bg-accent-subtle' : 'border-border-subtle bg-raised hover:bg-[#2e2e2e]'}`}
-                onClick={() => setSelectedPluginId(plugin.pluginId)}
+                onClick={() => {
+                  setScopeChoices({});
+                  setManagementError(false);
+                  setSelectedPluginId(plugin.pluginId);
+                }}
               >
                 <span className={settingsRowTitle}>{providerLabel(plugin.providerId, plugin.name, t)}</span>
                 <span className="flex flex-wrap gap-1">
@@ -266,8 +391,33 @@ export const PluginInventory: React.FC = () => {
               </div>
               <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
               <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
+              {managed && selectedPlugin.version && <p className={settingsRowDescription}>{t('plugins.import.version')}: {selectedPlugin.version}</p>}
+              {managed && selectedPlugin.runtimeAvailable === false && <p className={settingsRowDescription} role="status">{t('plugins.import.restartRequired')}</p>}
+              {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}
+              {(canManageRuntime || canManageAccount) && <div className="mt-compact flex flex-wrap gap-compact">
+                {canManageRuntime && (selectedPlugin.enabled ? <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, false)}>{t('plugins.disable')}</button> : <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || selectedPlugin.status === 'incompatible'} onClick={() => void setPluginEnabled(selectedPlugin.pluginId, true)}>{t('plugins.enable')}</button>)}
+                {canManageAccount && <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => setConfirmRemove(true)}>{t('plugins.remove')}</button>}
+              </div>}
+              {managed && profileId && permissionSnapshot && permissionSnapshot.pluginId === selectedPlugin.pluginId && <div className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.permissionScopes')}>
+                <p className={settingsRowTitle}>{t('plugins.permissionScopes')}</p>
+                {permissionSnapshot.requestedPermissions.map((request) => <fieldset key={request.permission_id} className="mt-compact">
+                  <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''}</legend>
+                  {request.allowed_scopes.map((scope) => {
+                    const key = scopeChoiceKey(permissionSnapshot.pluginId, profileId!, request.permission_id, scope);
+                    const active = permissionSnapshot.effectiveGrants.some((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope) && grant.state === 'granted');
+                    return <label key={key} className="flex items-center gap-compact py-1 text-sm">
+                      <input type="checkbox" disabled={!canManageRuntime || busy} checked={scopeChoices[key] ?? active} onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setScopeChoices((current) => ({ ...current, [key]: checked }));
+                      }} />
+                      <span>{scope.scope}{'category' in scope ? ` · ${scope.category}` : 'value' in scope ? ` · ${scope.value}` : ''}</span>
+                    </label>;
+                  })}
+                </fieldset>)}
+                <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={!canManageRuntime || busy} onClick={() => void savePermissions(permissionSnapshot)}>{t('plugins.permissions.save')}</button>
+              </div>}
               <div>
-                <p className={settingsRowDescription}>{t('plugins.grants')}</p>
+                <p className={settingsRowDescription}>{selectedPlugin.source === 'official' ? t('plugins.grants') : t('plugins.import.permissions')}</p>
                 <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>
                   {selectedPlugin.capabilities.map((grant) => (
                     <li key={grant} className={settingsPill}>{grant}</li>
@@ -293,6 +443,22 @@ export const PluginInventory: React.FC = () => {
           )}
         </div>
       )}
+      <AppModal.Root opened={confirmRemove} onClose={() => setConfirmRemove(false)}>
+        <AppModal.Overlay />
+        <AppModal.Content className="max-w-md bg-[var(--settings-bg-base)] p-md">
+          <AppModal.Header>
+            <AppModal.Title>{t('plugins.remove')}</AppModal.Title>
+            <AppModal.CloseButton aria-label={t('plugins.cancel')} />
+          </AppModal.Header>
+          <AppModal.Body>
+            <p className={settingsRowDescription}>{t('plugins.removeConfirm')}</p>
+            <div className="flex justify-end gap-compact">
+              <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" onClick={() => setConfirmRemove(false)}>{t('plugins.cancel')}</button>
+              <button type="button" className="rounded-sm border border-warning px-sm py-1 text-sm" disabled={busy} onClick={() => void removePlugin()}>{t('plugins.remove')}</button>
+            </div>
+          </AppModal.Body>
+        </AppModal.Content>
+      </AppModal.Root>
     </section>
   );
 };

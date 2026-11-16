@@ -1302,8 +1302,36 @@ export interface PluginInfo {
   capabilities: string[];
   session: 'active' | 'stopped';
   nativeAccess: string[];
+  version?: string;
+  enabled?: boolean;
+  runtimeAvailable?: boolean;
   /** The pinned publisher of a third-party plugin; absent for the bundled ones. */
   publisherFingerprint?: string;
+}
+
+export interface PluginImportReview {
+  token: string;
+  pluginId: string;
+  providerId?: string;
+  name: string;
+  version: string;
+  publisherKeyId: string;
+  publisherFingerprint: string;
+  pinnedFingerprint?: string;
+  trust: 'trusted' | 'untrusted' | 'changed';
+  license: string;
+  licenseFiles: string[];
+  licenseNotices: string[];
+  permissionIds: string[];
+  requestedPermissions: Array<{
+    id: string;
+    required: boolean;
+    scope: string;
+    reason: string;
+  }>;
+  nativeAccess: string[];
+  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  compatibilityReason?: string;
 }
 
 /** Host-owned effective permission state for the currently active account profile. */
@@ -1312,6 +1340,11 @@ export interface PluginPermissionSnapshot {
   publisherFingerprint: string;
   profileId: string;
   grantRevision: number;
+  requestedPermissions: Array<{
+    permission_id: string;
+    required: boolean;
+    allowed_scopes: PluginGrantScope[];
+  }>;
   /** Rust grant records retain their serialized snake_case protocol fields. */
   effectiveGrants: Array<{
     permission_id: string;
@@ -1319,6 +1352,19 @@ export interface PluginPermissionSnapshot {
     scope: Record<string, unknown>;
     state: 'granted' | 'denied' | 'unsupported';
   }>;
+}
+
+export type PluginGrantScope =
+  | { scope: 'own-creator'; category: 'runtime' | 'library-root' | 'save-profile' }
+  | { scope: 'public-category'; category: 'runtime' | 'library-root' | 'save-profile' }
+  | { scope: 'selected-records'; category: 'runtime' | 'library-root' | 'save-profile'; record_ids: string[] }
+  | { scope: 'declared'; value: string }
+  | { scope: 'own-private-namespace' };
+
+export interface PluginPermissionDecision {
+  permission_id: string;
+  scope: PluginGrantScope;
+  granted: boolean;
 }
 
 /** Host-owned configuration availability; no plugin preference values are included. */

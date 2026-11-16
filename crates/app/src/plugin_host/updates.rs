@@ -190,12 +190,51 @@ pub struct PluginUpdatePreferences {
     pub periodic_checks: bool,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginImportReview {
+    pub token: String,
+    pub plugin_id: String,
+    pub provider_id: Option<String>,
+    pub name: String,
+    pub version: String,
+    pub publisher_key_id: String,
+    pub publisher_fingerprint: String,
+    pub pinned_fingerprint: Option<String>,
+    pub trust: String,
+    pub license: String,
+    pub license_files: Vec<String>,
+    pub license_notices: Vec<String>,
+    pub permission_ids: Vec<String>,
+    pub requested_permissions: Vec<ImportPermissionReview>,
+    pub native_access: Vec<String>,
+    pub compatibility: String,
+    pub compatibility_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPermissionReview {
+    pub id: String,
+    pub required: bool,
+    pub scope: String,
+    pub reason: String,
+}
+
 struct PendingCandidate {
     work: UpdateWorkDir,
     version: String,
     installed_version: String,
     publisher_key: [u8; 32],
     review: UpdateReview,
+}
+
+struct PendingImport {
+    _work: UpdateWorkDir,
+    package_path: PathBuf,
+    publisher_key: [u8; 32],
+    review: PluginImportReview,
+    created_at: std::time::Instant,
 }
 
 /// User-facing updater. Periodic checks only fetch and authenticate feed metadata. Package
@@ -206,7 +245,7 @@ pub struct PluginUpdateService {
     packages: ManagedPackageLifecycle,
     verifier: UpdateIndexVerifier,
     client: std::sync::Arc<FetchClient>,
-    private_dir: PathBuf,
+    trust_dir: PathBuf,
     preferences_path: PathBuf,
     available_path: PathBuf,
     preferences: std::sync::Arc<std::sync::Mutex<PluginUpdatePreferences>>,
@@ -214,6 +253,7 @@ pub struct PluginUpdateService {
     indexes: std::sync::Arc<std::sync::Mutex<HashMap<String, VerifiedUpdateIndex>>>,
     checks: std::sync::Arc<AsyncMutex<()>>,
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
+    imports: std::sync::Arc<AsyncMutex<HashMap<String, PendingImport>>>,
     lifecycle: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>>,
     >,
@@ -228,6 +268,9 @@ impl PluginUpdateService {
         let client = FetchClient::new().map_err(|error| error.to_string())?;
         let private_dir = paths.private_dir();
         fs::create_dir_all(&private_dir).map_err(|error| error.to_string())?;
+        let trust_dir =
+            super::profile::PluginStateLayout::new(paths.plugin_data_dir().join("state"))
+                .trust_dir();
         let preferences_path = private_dir.join("plugin-update-preferences.json");
         let preferences = read_preferences(&preferences_path)?;
         let available_path = private_dir.join("plugin-updates-cache.json");
@@ -237,7 +280,7 @@ impl PluginUpdateService {
             registry,
             verifier,
             client: std::sync::Arc::new(client),
-            private_dir,
+            trust_dir,
             preferences_path,
             available_path,
             preferences: std::sync::Arc::new(std::sync::Mutex::new(preferences)),
@@ -245,6 +288,7 @@ impl PluginUpdateService {
             indexes: Default::default(),
             checks: Default::default(),
             pending: Default::default(),
+            imports: Default::default(),
             lifecycle: Default::default(),
         })
     }
@@ -257,6 +301,257 @@ impl PluginUpdateService {
             .lifecycle
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
+    }
+
+    /// Stages and validates a user-selected local archive without executing plugin code.
+    pub async fn import_review(&self, archive_path: PathBuf) -> Result<PluginImportReview, String> {
+        const MAX_PENDING_IMPORTS: usize = 8;
+        const IMPORT_REVIEW_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+        let mut imports = self.imports.lock().await;
+        imports.retain(|_, pending| pending.created_at.elapsed() < IMPORT_REVIEW_TTL);
+        if imports.len() >= MAX_PENDING_IMPORTS {
+            return Err("too many plugin packages are awaiting review".into());
+        }
+        let work = tokio::task::spawn_blocking(UpdateWorkDir::create)
+            .await
+            .map_err(|_| "plugin import staging worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let staged = work.path.join("package");
+        let work_path = work.path.clone();
+        let staged_for_worker = staged.clone();
+        let (publisher_key, manifest) = tokio::task::spawn_blocking(move || {
+            let metadata =
+                fs::symlink_metadata(&archive_path).map_err(|error| error.to_string())?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err("selected plugin package is not a regular file".to_owned());
+            }
+            let key = package_archive_key(&archive_path)
+                .map_err(|error| format!("selected plugin archive: {error}"))?;
+            let archive_copy = work_path.join("selected.gnplugin");
+            fs::copy(&archive_path, &archive_copy)
+                .map_err(|error| format!("could not stage selected plugin archive: {error}"))?;
+            stage_package_archive(&archive_copy, &staged_for_worker, &key)
+                .map_err(|error| format!("selected plugin archive failed validation: {error}"))?;
+            let manifest_path = staged_for_worker.join("plugin.json");
+            let manifest_bytes = fs::read(manifest_path)
+                .map_err(|error| format!("validated plugin manifest is unavailable: {error}"))?;
+            let manifest = Manifest::parse_json(&manifest_bytes)
+                .map_err(|error| error.to_string())?
+                .manifest()
+                .clone();
+            Ok::<_, String>((key, manifest))
+        })
+        .await
+        .map_err(|_| "plugin import validation worker failed".to_owned())??;
+        let report = self
+            .packages
+            .inspect_candidate(&staged, publisher_key, EmulationPolicy::RequireNative)
+            .await
+            .map_err(|error| format!("staged plugin package is invalid: {error}"))?;
+        super::grants::manifest_permission_requests(&report.manifest.permissions)
+            .map_err(|error| format!("plugin declares unsupported permission scopes: {error}"))?;
+        let (compatibility, compatibility_reason) = match report.selected_target() {
+            Ok(_) => ("compatible".to_owned(), None),
+            Err(error) => ("incompatible".to_owned(), Some(error.to_string())),
+        };
+        let private_dir = self.trust_dir.clone();
+        let plugin_id = manifest.id.clone();
+        let key = publisher_key;
+        let (trust, publisher_fingerprint, pinned_fingerprint) =
+            tokio::task::spawn_blocking(move || {
+                let trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                    .map_err(|error| format!("publisher trust store is unavailable: {error}"))?;
+                match trust
+                    .inspect(&plugin_id, &key)
+                    .map_err(|error| format!("publisher trust status is unavailable: {error}"))?
+                {
+                    super::publisher_trust::KeyStatus::Trusted { fingerprint } => {
+                        Ok::<_, String>(("trusted".to_owned(), fingerprint, None))
+                    }
+                    super::publisher_trust::KeyStatus::Untrusted {
+                        presented_fingerprint,
+                    } => Ok(("untrusted".to_owned(), presented_fingerprint, None)),
+                    super::publisher_trust::KeyStatus::Changed {
+                        pinned_fingerprint,
+                        presented_fingerprint,
+                    } => Ok((
+                        "changed".to_owned(),
+                        presented_fingerprint,
+                        Some(pinned_fingerprint),
+                    )),
+                }
+            })
+            .await
+            .map_err(|_| "plugin trust worker failed".to_owned())??;
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+        let token = nonce
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let review = PluginImportReview {
+            token: token.clone(),
+            plugin_id: manifest.id.clone(),
+            provider_id: manifest.provider_id.clone(),
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            publisher_key_id: manifest.publisher.key_id.clone(),
+            publisher_fingerprint,
+            pinned_fingerprint,
+            trust,
+            license: manifest.license.expression.clone(),
+            license_files: manifest.license.files.clone(),
+            license_notices: manifest.license.notices.clone(),
+            permission_ids: manifest
+                .permissions
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+            requested_permissions: manifest
+                .permissions
+                .iter()
+                .map(|item| ImportPermissionReview {
+                    id: item.id.clone(),
+                    required: item.required,
+                    scope: item.scope.clone(),
+                    reason: item.reason.clone(),
+                })
+                .collect(),
+            native_access: manifest.native_access.clone(),
+            compatibility,
+            compatibility_reason,
+        };
+        imports.insert(
+            token,
+            PendingImport {
+                _work: work,
+                package_path: staged,
+                publisher_key,
+                review: review.clone(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        Ok(review)
+    }
+
+    /// Pins or explicitly re-trusts the exact key fingerprint shown by the staged review.
+    pub async fn import_confirm_publisher(
+        &self,
+        token: &str,
+        confirmed_fingerprint: &str,
+    ) -> Result<PluginImportReview, String> {
+        self.lifecycle()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let mut imports = self.imports.lock().await;
+        let pending = imports
+            .get_mut(token)
+            .ok_or_else(|| "plugin import review expired".to_owned())?;
+        if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            imports.remove(token);
+            return Err("plugin import review expired".into());
+        }
+        if pending.review.publisher_fingerprint != confirmed_fingerprint {
+            return Err("publisher fingerprint confirmation does not match".into());
+        }
+        let private_dir = self.trust_dir.clone();
+        let plugin_id = pending.review.plugin_id.clone();
+        let publisher_key = pending.publisher_key;
+        let fingerprint = confirmed_fingerprint.to_owned();
+        let trust_status = pending.review.trust.clone();
+        let pinned = tokio::task::spawn_blocking(move || {
+            let mut trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .map_err(|error| error.to_string())?;
+            match trust
+                .inspect(&plugin_id, &publisher_key)
+                .map_err(|error| error.to_string())?
+            {
+                super::publisher_trust::KeyStatus::Trusted {
+                    fingerprint: current,
+                } if current == fingerprint => Ok(current),
+                super::publisher_trust::KeyStatus::Untrusted { .. }
+                    if trust_status == "untrusted" =>
+                {
+                    trust
+                        .confirm_first_key(&plugin_id, &publisher_key, &fingerprint)
+                        .map_err(|error| error.to_string())
+                }
+                super::publisher_trust::KeyStatus::Changed { .. } if trust_status == "changed" => {
+                    trust
+                        .retrust_key(&plugin_id, &publisher_key, &fingerprint)
+                        .map_err(|error| error.to_string())
+                }
+                _ => Err("publisher trust changed; review the package again".to_owned()),
+            }
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())??;
+        pending.review.trust = "trusted".into();
+        pending.review.pinned_fingerprint = None;
+        pending.review.publisher_fingerprint = pinned;
+        Ok(pending.review.clone())
+    }
+
+    /// Imports a reviewed, compatible package as the selected version but leaves account
+    /// activation disabled. No process is registered or executed by this operation.
+    pub async fn import_install(&self, token: &str) -> Result<String, String> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .require_active_profile()
+            .map_err(|error| error.message().to_owned())?;
+        let mut imports = self.imports.lock().await;
+        let pending = imports
+            .get(token)
+            .ok_or_else(|| "plugin import review expired".to_owned())?;
+        if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            imports.remove(token);
+            return Err("plugin import review expired".into());
+        }
+        if pending.review.compatibility != "compatible" {
+            return Err("incompatible plugin packages cannot be imported".into());
+        }
+        if pending.review.trust != "trusted" {
+            return Err("confirm the publisher fingerprint before importing".into());
+        }
+        let registry = self.registry.clone();
+        let plugin_lookup = pending.review.plugin_id.clone();
+        let already_installed =
+            tokio::task::spawn_blocking(move || registry.active(&plugin_lookup))
+                .await
+                .map_err(|_| "plugin registry worker failed".to_owned())?
+                .map_err(|error| error.to_string())?
+                .is_some();
+        if already_installed {
+            return Err("plugin is already installed; use its update review to replace it".into());
+        }
+        let private_dir = self.trust_dir.clone();
+        let package_id = pending.review.plugin_id.clone();
+        let key = pending.publisher_key;
+        let key_is_pinned = tokio::task::spawn_blocking(move || {
+            super::publisher_trust::PublisherTrustStore::open(private_dir)
+                .and_then(|trust| trust.is_pinned(&package_id, &key))
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())??;
+        if !key_is_pinned {
+            return Err("publisher trust changed; review the package again".into());
+        }
+        let package_path = pending.package_path.clone();
+        self.packages
+            .install_candidate(package_path, key, EmulationPolicy::RequireNative, true)
+            .await
+            .map_err(|error| error.to_string())?;
+        let pending = imports.remove(token).expect("pending import still exists");
+        let plugin_id = pending.review.plugin_id.clone();
+        drop(pending);
+        Ok(plugin_id)
     }
 
     pub async fn permission_snapshot(
@@ -290,6 +585,140 @@ impl PluginUpdateService {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
+    }
+
+    /// Read-only inventory of active signed package versions. Filesystem inspection and package
+    /// validation stay on workers; this list never executes package code.
+    pub async fn managed_inventory(&self) -> Result<Vec<super::PluginInfo>, String> {
+        let registry = self.registry.clone();
+        let active = tokio::task::spawn_blocking(move || registry.active_versions())
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let mut inventory = Vec::new();
+        for installed in active {
+            let package_path = installed.package_path.clone();
+            let publisher_key =
+                match tokio::task::spawn_blocking(move || package_key(&package_path))
+                    .await
+                    .map_err(|_| "plugin manifest worker failed".to_owned())?
+                {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
+            let trust_dir = self.trust_dir.clone();
+            let plugin_id = installed.plugin_id.clone();
+            let key = publisher_key;
+            let trusted = tokio::task::spawn_blocking(move || {
+                super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                    .and_then(|trust| trust.is_pinned(&plugin_id, &key))
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|_| "publisher trust worker failed".to_owned())??;
+            if !trusted {
+                continue;
+            }
+            let report = match self
+                .packages
+                .inspect_candidate(
+                    &installed.package_path,
+                    publisher_key,
+                    EmulationPolicy::RequireNative,
+                )
+                .await
+            {
+                Ok(report)
+                    if report.manifest.id == installed.plugin_id
+                        && report.manifest.version == installed.version =>
+                {
+                    report
+                }
+                _ => continue,
+            };
+            let compatibility = report.selected_target().is_ok();
+            let manifest = report.manifest;
+            let (enabled, runtime_available) = match self.lifecycle() {
+                Some(lifecycle) if lifecycle.is_registered(&installed.plugin_id) => (
+                    self.plugin_enabled(installed.plugin_id.clone()).await.ok(),
+                    Some(true),
+                ),
+                _ => (None, Some(false)),
+            };
+            let fingerprint = self
+                .publisher_fingerprint(&installed.plugin_id, &publisher_key)
+                .await?;
+            inventory.push(super::PluginInfo {
+                provider_id: manifest
+                    .provider_id
+                    .clone()
+                    .unwrap_or_else(|| manifest.id.clone()),
+                plugin_id: manifest.id,
+                name: manifest.name,
+                source: "community".into(),
+                status: if compatibility {
+                    "installed"
+                } else {
+                    "incompatible"
+                }
+                .into(),
+                capabilities: manifest
+                    .permissions
+                    .iter()
+                    .map(|permission| permission.id.clone())
+                    .collect(),
+                session: "stopped".into(),
+                native_access: manifest.native_access,
+                version: Some(installed.version),
+                enabled,
+                runtime_available,
+                publisher_fingerprint: Some(fingerprint),
+            });
+        }
+        Ok(inventory)
+    }
+
+    async fn plugin_enabled(&self, plugin_id: String) -> Result<bool, String> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
+        lifecycle
+            .enabled(plugin_id)
+            .await
+            .map_err(|error| error.message().to_owned())
+    }
+
+    fn lifecycle(&self) -> Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>> {
+        self.lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn publisher_fingerprint(
+        &self,
+        plugin_id: &str,
+        publisher_key: &[u8; 32],
+    ) -> Result<String, String> {
+        let trust_dir = self.trust_dir.clone();
+        let plugin_id = plugin_id.to_owned();
+        let publisher_key = *publisher_key;
+        tokio::task::spawn_blocking(move || {
+            let trust = super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                .map_err(|error| error.to_string())?;
+            match trust
+                .inspect(&plugin_id, &publisher_key)
+                .map_err(|error| error.to_string())?
+            {
+                super::publisher_trust::KeyStatus::Trusted { fingerprint } => Ok(fingerprint),
+                _ => Err("publisher key is no longer trusted".to_owned()),
+            }
+        })
+        .await
+        .map_err(|_| "publisher trust worker failed".to_owned())?
     }
 
     pub fn set_periodic_checks(&self, enabled: bool) -> Result<PluginUpdatePreferences, String> {
@@ -336,7 +765,7 @@ impl PluginUpdateService {
                 continue;
             };
             let key = decode_publisher_key(&current.manifest.publisher.public_key)?;
-            let trust = super::publisher_trust::PublisherTrustStore::open(&self.private_dir)
+            let trust = super::publisher_trust::PublisherTrustStore::open(&self.trust_dir)
                 .map_err(|error| error.to_string())?;
             if !trust
                 .is_pinned(&installed.plugin_id, &key)
@@ -563,7 +992,46 @@ impl PluginUpdateService {
 }
 
 pub(crate) fn package_key(path: &Path) -> Result<[u8; 32], String> {
-    let bytes = fs::read(path.join("plugin.json")).map_err(|error| error.to_string())?;
+    let manifest_path = path.join("plugin.json");
+    let metadata = fs::symlink_metadata(&manifest_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4 * 1024 * 1024
+    {
+        return Err("plugin manifest is not a bounded regular file".into());
+    }
+    let bytes = fs::read(manifest_path).map_err(|error| error.to_string())?;
+    let manifest = Manifest::parse_json(&bytes).map_err(|error| error.to_string())?;
+    decode_publisher_key(&manifest.manifest().publisher.public_key)
+}
+
+fn package_archive_key(path: &Path) -> Result<[u8; 32], String> {
+    use std::io::Read as _;
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > gamenode_platform::plugin_packages::MAX_COMPRESSED_BYTES
+    {
+        return Err("selected plugin archive is not a bounded regular file".into());
+    }
+    let mut archive =
+        zip::ZipArchive::new(fs::File::open(path).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    if archive.len() > gamenode_platform::plugin_packages::MAX_ENTRIES {
+        return Err("plugin archive contains too many entries".into());
+    }
+    let manifest_file = archive
+        .by_name("plugin.json")
+        .map_err(|error| error.to_string())?;
+    if manifest_file.size() > 4 * 1024 * 1024 {
+        return Err("plugin manifest exceeds the metadata size limit".into());
+    }
+    let mut bytes = Vec::with_capacity(manifest_file.size() as usize);
+    manifest_file
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("plugin manifest exceeds the metadata size limit".into());
+    }
     let manifest = Manifest::parse_json(&bytes).map_err(|error| error.to_string())?;
     decode_publisher_key(&manifest.manifest().publisher.public_key)
 }
@@ -1004,6 +1472,7 @@ mod tests {
             "version": version,
             "api": {"min": "1.6.0", "max": "1.6.0"},
             "targets": [{"os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin"}],
+            "permissions": [{"id": "storage.persist", "required": false, "scope": "own-provider", "reason": "Store plugin preferences"}],
             "publisher": {
                 "key_id": "fixture-key",
                 "public_key": base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref())
@@ -1200,5 +1669,76 @@ mod tests {
                 .version,
             "2.0.0"
         );
+    }
+
+    #[tokio::test]
+    async fn local_import_review_shows_signed_scopes_and_requires_exact_trust_without_installing() {
+        let base = tempfile::tempdir().unwrap();
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[41; 32]).unwrap();
+        let package = base.path().join("signed-package");
+        signed_package(&package, "1.0.0", &key);
+        let archive_path = base.path().join("selected.gnplugin");
+        let mut archive = ZipWriter::new(fs::File::create(&archive_path).unwrap());
+        add_tree(&mut archive, &package, &package);
+        archive.finish().unwrap();
+
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("data"));
+        fs::create_dir_all(paths.plugin_data_dir().join("state")).unwrap();
+        let updates = PluginUpdateService::open(&paths).unwrap();
+        let api = super::super::provider::ProviderApi::default();
+        api.profiles().update(Some("account-one"), true);
+        let state =
+            super::super::profile::PluginStateLayout::new(paths.plugin_data_dir().join("state"));
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let processes = super::super::process::ProviderProcesses::new_for_lifecycle(
+            api.clone(),
+            base.path().join("provider.sock"),
+            vec![],
+            state.clone(),
+        )
+        .unwrap();
+        updates.set_lifecycle(std::sync::Arc::new(
+            super::super::runtime::ThirdPartyPluginLifecycle::new(
+                api.clone(),
+                processes,
+                state,
+                registry.clone(),
+                ManagedPackageLifecycle::new(registry),
+            ),
+        ));
+        let review = updates.import_review(archive_path).await.unwrap();
+        assert_eq!(review.plugin_id, "org.example.update");
+        assert_eq!(review.trust, "untrusted");
+        assert_eq!(
+            review.requested_permissions,
+            [ImportPermissionReview {
+                id: "storage.persist".into(),
+                required: false,
+                scope: "own-provider".into(),
+                reason: "Store plugin preferences".into(),
+            }]
+        );
+
+        api.profiles().update(None, true);
+        assert!(
+            updates
+                .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+                .await
+                .is_err()
+        );
+        api.profiles().update(Some("account-one"), true);
+        assert!(
+            updates
+                .import_confirm_publisher(&review.token, &"0".repeat(64))
+                .await
+                .is_err()
+        );
+        let trusted = updates
+            .import_confirm_publisher(&review.token, &review.publisher_fingerprint)
+            .await
+            .unwrap();
+        assert_eq!(trusted.trust, "trusted");
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        assert!(registry.active("org.example.update").unwrap().is_none());
     }
 }

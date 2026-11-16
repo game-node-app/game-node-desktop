@@ -377,16 +377,46 @@ pub async fn remove_entry(
 #[tauri::command]
 pub async fn plugin_inventory(
     engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
 ) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
     let engine = engine.inner().clone();
-    tokio::task::spawn_blocking(move || {
+    let mut inventory = tokio::task::spawn_blocking(move || {
         crate::plugin_host::inventory(|id| {
             let (_, connected) = engine.provider_health(id);
             (engine.provider_availability(id), connected)
         })
     })
     .await
-    .map_err(|_| "plugin inventory worker failed".to_owned())
+    .map_err(|_| "plugin inventory worker failed".to_owned())?;
+    inventory.extend(updates.managed_inventory().await?);
+    Ok(inventory)
+}
+
+#[tauri::command]
+pub async fn plugin_import_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    archive_path: String,
+) -> Result<crate::plugin_host::updates::PluginImportReview, String> {
+    updates.import_review(archive_path.into()).await
+}
+
+#[tauri::command]
+pub async fn plugin_import_confirm_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    confirmed_fingerprint: String,
+) -> Result<crate::plugin_host::updates::PluginImportReview, String> {
+    updates
+        .import_confirm_publisher(&token, &confirmed_fingerprint)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_import_install(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+) -> Result<String, String> {
+    updates.import_install(&token).await
 }
 
 #[tauri::command]
@@ -396,6 +426,53 @@ pub async fn plugin_permission_snapshot(
 ) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
     updates
         .permission_snapshot(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_permissions_replace(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+    expected_profile_id: String,
+    expected_revision: u64,
+    decisions: Vec<crate::plugin_host::grants::PermissionDecision>,
+) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
+    lifecycle
+        .replace_permissions(plugin_id, expected_profile_id, expected_revision, decisions)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_enable(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+) -> Result<(), String> {
+    lifecycle
+        .enable(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_disable(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+) -> Result<(), String> {
+    lifecycle
+        .disable(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_remove(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    plugin_id: String,
+) -> Result<(), String> {
+    lifecycle
+        .remove(plugin_id)
         .await
         .map_err(|error| error.message().to_owned())
 }

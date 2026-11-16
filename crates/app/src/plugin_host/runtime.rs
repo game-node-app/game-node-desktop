@@ -184,6 +184,7 @@ pub struct PluginPermissionSnapshot {
     pub publisher_fingerprint: String,
     pub profile_id: String,
     pub grant_revision: u64,
+    pub requested_permissions: Vec<super::grants::PermissionRequest>,
     pub effective_grants: Vec<super::grants::EffectiveGrant>,
 }
 
@@ -227,6 +228,17 @@ impl ThirdPartyPluginLifecycle {
         .map_err(|_| Status::internal("plugin activation worker failed"))?
     }
 
+    pub fn require_active_profile(&self) -> Result<(), Status> {
+        self.api.profiles().require().map(|_| ())
+    }
+
+    pub fn is_registered(&self, plugin_id: &str) -> bool {
+        self.api
+            .third_party_provider_ids_for_plugin(plugin_id)
+            .len()
+            == 1
+    }
+
     pub async fn enable(&self, plugin_id: String) -> Result<(), Status> {
         self.set_enabled(plugin_id, true).await
     }
@@ -258,6 +270,9 @@ impl ThirdPartyPluginLifecycle {
                 "registered plugin identity changed",
             ));
         }
+        let requested_permissions = self
+            .managed_permission_requests(&plugin_id, &publisher_fingerprint)
+            .await?;
         let profile_epoch = profile.epoch();
         let identity = super::grants::PluginIdentity {
             plugin_id: registered_plugin_id.clone(),
@@ -287,7 +302,128 @@ impl ThirdPartyPluginLifecycle {
             publisher_fingerprint,
             profile_id: profile.profile_id().to_owned(),
             grant_revision,
+            requested_permissions,
             effective_grants,
+        })
+    }
+
+    /// Atomically replaces permissions only for the active account and the declarations in the
+    /// currently trusted package. The caller's profile id and grant revision fence stale UI writes.
+    pub async fn replace_permissions(
+        &self,
+        plugin_id: String,
+        expected_profile_id: String,
+        expected_revision: u64,
+        decisions: Vec<super::grants::PermissionDecision>,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profile = self.api.profiles().require()?;
+        if profile.profile_id() != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "plugin has no unique registered third-party provider",
+            ));
+        };
+        let (registered_plugin_id, publisher_fingerprint) = self
+            .api
+            .third_party_identity(provider_id)
+            .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+        if registered_plugin_id != plugin_id {
+            return Err(Status::failed_precondition("plugin identity changed"));
+        }
+        let requests = self
+            .managed_permission_requests(&plugin_id, &publisher_fingerprint)
+            .await?;
+        let profile_epoch = profile.epoch();
+        let identity = super::grants::PluginIdentity {
+            plugin_id: plugin_id.clone(),
+            publisher_fingerprint,
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let state = self.state.clone();
+        let account = profile.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut grants = state
+                .open_grants(&account)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            if grants.revision(&identity) != expected_revision {
+                return Err(Status::aborted(
+                    "plugin grants changed; refresh and try again",
+                ));
+            }
+            grants
+                .replace_grants(identity, &requests, &decisions)
+                .map_err(|error| {
+                    Status::invalid_argument(format!("plugin permission decision: {error}"))
+                })
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))??;
+        if !self.api.profiles().is_current(profile_epoch) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed while saving permissions",
+            ));
+        }
+        self.permission_snapshot(plugin_id).await
+    }
+
+    async fn managed_permission_requests(
+        &self,
+        plugin_id: &str,
+        registered_fingerprint: &str,
+    ) -> Result<Vec<super::grants::PermissionRequest>, Status> {
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.to_owned();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&lookup_id))
+            .await
+            .map_err(|_| Status::internal("plugin package worker failed"))?
+            .map_err(|_| Status::internal("plugin package state is unavailable"))?
+            .ok_or_else(|| Status::failed_precondition("plugin package is not installed"))?;
+        let package_path = installed.package_path.clone();
+        let package_id = installed.plugin_id.clone();
+        let trust_dir = self.state.trust_dir();
+        let (publisher_key, fingerprint) = tokio::task::spawn_blocking(move || {
+            let key = super::updates::package_key(&package_path)
+                .map_err(|_| Status::failed_precondition("plugin package manifest is invalid"))?;
+            let trust = super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                .map_err(|_| Status::internal("plugin publisher trust is unavailable"))?;
+            let status = trust
+                .inspect(&package_id, &key)
+                .map_err(|_| Status::internal("plugin publisher trust is invalid"))?;
+            let fingerprint = match status {
+                super::publisher_trust::KeyStatus::Trusted { fingerprint } => fingerprint,
+                _ => return Err(Status::permission_denied("plugin publisher is not trusted")),
+            };
+            Ok::<_, Status>((key, fingerprint))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin publisher worker failed"))??;
+        if fingerprint != registered_fingerprint {
+            return Err(Status::failed_precondition(
+                "plugin publisher does not match its registration",
+            ));
+        }
+        let report = self
+            .packages
+            .inspect_candidate(
+                &installed.package_path,
+                publisher_key,
+                gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|_| Status::failed_precondition("plugin package validation failed"))?;
+        if report.manifest.id != installed.plugin_id || report.manifest.version != installed.version
+        {
+            return Err(Status::failed_precondition(
+                "plugin manifest does not match the installed package",
+            ));
+        }
+        super::grants::manifest_permission_requests(&report.manifest.permissions).map_err(|error| {
+            Status::failed_precondition(format!(
+                "plugin permission scopes are unsupported: {error}"
+            ))
         })
     }
 
@@ -622,29 +758,37 @@ impl ThirdPartyPluginLifecycle {
 
     pub async fn remove(&self, plugin_id: String) -> Result<(), Status> {
         let _mutation = self.mutation.lock().await;
-        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
-        if provider_ids.is_empty() {
-            return Err(Status::not_found("third-party plugin is not registered"));
-        }
-        if let Ok(profile) = self.api.profiles().require() {
-            let state = self.state.clone();
-            let plugin = plugin_id.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut activation = state.open_activation(&profile).map_err(|error| {
-                    Status::internal(format!("plugin activation state: {error}"))
-                })?;
-                activation
-                    .set_enabled(&plugin, false)
-                    .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
-            })
+        let profile = self.api.profiles().require()?;
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&lookup_id))
             .await
-            .map_err(|_| Status::internal("plugin activation worker failed"))??;
+            .map_err(|_| Status::internal("plugin package worker failed"))?
+            .map_err(|_| Status::internal("plugin package state is unavailable"))?;
+        if installed.is_none() {
+            return Err(Status::not_found("third-party plugin is not installed"));
         }
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let state = self.state.clone();
+        let account = profile.clone();
+        let plugin = plugin_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut activation = state
+                .open_activation(&account)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))?;
+            activation
+                .set_enabled(&plugin, false)
+                .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin activation worker failed"))??;
         for provider_id in &provider_ids {
             self.api.disconnect(provider_id).await;
             self.processes.stop_provider(provider_id).await;
         }
-        self.api.unregister_third_party_plugin(&plugin_id).await?;
+        if !provider_ids.is_empty() {
+            self.api.unregister_third_party_plugin(&plugin_id).await?;
+        }
         self.packages
             .remove_plugin(plugin_id.clone())
             .await
@@ -1170,10 +1314,7 @@ mod managed_runtime_tests {
     }
 
     #[tokio::test]
-    async fn permission_snapshot_returns_persisted_grant_revision_and_effective_grants() {
-        use super::super::grants::{
-            GrantScope, PermissionDecision, PermissionRequest, PermissionState,
-        };
+    async fn permission_snapshot_requires_the_installed_signed_package_for_scope_choices() {
         use super::super::provider::{RegistrationKind, RegistrationOrigin};
 
         let temp = tempfile::tempdir().unwrap();
@@ -1194,45 +1335,14 @@ mod managed_runtime_tests {
         })
         .unwrap();
         let state = PluginStateLayout::new(temp.path().join("state"));
-        let profile = api.profiles().require().unwrap();
-        let identity = super::super::grants::PluginIdentity {
-            plugin_id: plugin_id.into(),
-            publisher_fingerprint: fingerprint.clone(),
-            profile_id: profile.profile_id().to_owned(),
-        };
-        let scope = GrantScope::Declared {
-            value: "provider session".into(),
-        };
-        let revision = state
-            .open_grants(&profile)
-            .unwrap()
-            .replace_grants(
-                identity,
-                &[PermissionRequest {
-                    permission_id: cap::CONTEXT.into(),
-                    required: true,
-                    allowed_scopes: [scope.clone()].into(),
-                }],
-                &[PermissionDecision {
-                    permission_id: cap::CONTEXT.into(),
-                    scope,
-                    granted: true,
-                }],
-            )
-            .unwrap();
         let lifecycle = permission_lifecycle(temp.path(), api, state);
 
-        let snapshot = lifecycle
+        let error = lifecycle
             .permission_snapshot(plugin_id.into())
             .await
-            .unwrap();
-        assert_eq!(snapshot.plugin_id, plugin_id);
-        assert_eq!(snapshot.publisher_fingerprint, fingerprint);
-        assert_eq!(snapshot.profile_id, profile.profile_id());
-        assert_eq!(snapshot.grant_revision, revision);
-        assert_eq!(snapshot.effective_grants.len(), 1);
-        assert_eq!(snapshot.effective_grants[0].permission_id, cap::CONTEXT);
-        assert_eq!(snapshot.effective_grants[0].state, PermissionState::Granted);
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(error.message(), "plugin package is not installed");
     }
 
     #[tokio::test]
@@ -1271,6 +1381,41 @@ mod managed_runtime_tests {
                 .code(),
             tonic::Code::FailedPrecondition
         );
+    }
+
+    #[tokio::test]
+    async fn removal_requires_an_active_profile_but_can_remove_a_not_yet_registered_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let package = temp.path().join("package");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("payload"), b"not executed").unwrap();
+        let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
+            temp.path().join("registry"),
+        )
+        .unwrap();
+        registry
+            .install_verified("org.example.imported", "1.0.0", &package, true)
+            .unwrap();
+        let lifecycle = permission_lifecycle(temp.path(), api.clone(), state);
+
+        assert_eq!(
+            lifecycle
+                .remove("org.example.imported".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable
+        );
+        assert!(registry.active("org.example.imported").unwrap().is_some());
+
+        api.profiles().update(Some("account-one"), true);
+        lifecycle
+            .remove("org.example.imported".into())
+            .await
+            .unwrap();
+        assert!(registry.active("org.example.imported").unwrap().is_none());
     }
 
     #[test]

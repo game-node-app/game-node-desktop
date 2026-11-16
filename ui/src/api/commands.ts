@@ -10,6 +10,8 @@ import type {
   LibraryInput,
   PluginInfo,
   PluginPermissionSnapshot,
+  PluginPermissionDecision,
+  PluginImportReview,
   PluginConfigurationState,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
@@ -132,6 +134,12 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+  pluginImportReview: (archivePath: string) =>
+    safeInvoke<PluginImportReview>('plugin_import_review', { archivePath }),
+  pluginImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
+    safeInvoke<PluginImportReview>('plugin_import_confirm_publisher', { token, confirmedFingerprint }),
+  pluginImportInstall: (token: string) =>
+    safeInvoke<string>('plugin_import_install', { token }),
 
   pluginPermissionSnapshot: (pluginId: string) =>
     safeInvoke<PluginPermissionSnapshot>(
@@ -142,9 +150,25 @@ export const commands = {
         publisherFingerprint: '',
         profileId: '',
         grantRevision: 0,
+        requestedPermissions: [],
         effectiveGrants: [],
       }),
     ),
+
+  pluginPermissionsReplace: (
+    pluginId: string,
+    expectedProfileId: string,
+    expectedRevision: number,
+    decisions: PluginPermissionDecision[],
+  ) => safeInvoke<PluginPermissionSnapshot>('plugin_permissions_replace', {
+    pluginId,
+    expectedProfileId,
+    expectedRevision,
+    decisions,
+  }),
+  pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
+  pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
+  pluginRemove: (pluginId: string) => safeInvoke<void>('plugin_remove', { pluginId }),
 
   pluginConfigurationState: (pluginId: string) =>
     safeInvoke<PluginConfigurationState>(

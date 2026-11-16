@@ -661,7 +661,7 @@ pub fn permission_id(category: &DomainCategory, operation: Operation) -> String 
     )
 }
 
-fn permission_category(permission: &str) -> Option<(DomainCategory, Operation)> {
+pub(crate) fn permission_category(permission: &str) -> Option<(DomainCategory, Operation)> {
     [
         DomainCategory::Runtime,
         DomainCategory::LibraryRoot,
@@ -679,6 +679,49 @@ fn permission_category(permission: &str) -> Option<(DomainCategory, Operation)> 
         .map(move |operation| (category.clone(), operation))
     })
     .find(|(category, operation)| self::permission_id(category, *operation) == permission)
+}
+
+/// Convert the permission declaration in the verified package manifest to the exact typed scope
+/// choices the host can enforce. The manifest's scope remains a declaration; it never supplies a
+/// permission id or a host grant directly.
+pub(crate) fn manifest_permission_requests(
+    manifest: &[super::package::PermissionRequest],
+) -> Result<Vec<PermissionRequest>, GrantError> {
+    manifest
+        .iter()
+        .map(|request| {
+            let allowed_scopes =
+                if request.id == gamenode_plugin_protocol::capability::STORAGE_PERSIST {
+                    if request.scope != "own-provider" {
+                        return Err(GrantError::InvalidScope);
+                    }
+                    BTreeSet::from([GrantScope::OwnPrivateNamespace])
+                } else if let Some((category, _)) = permission_category(&request.id) {
+                    let scope = match request.scope.as_str() {
+                        "own-provider" => GrantScope::OwnCreator { category },
+                        "published-category" => GrantScope::PublicCategory { category },
+                        _ => return Err(GrantError::InvalidScope),
+                    };
+                    BTreeSet::from([scope])
+                } else if is_known_permission(&request.id) {
+                    if !valid_identity_part(&request.scope, 512) {
+                        return Err(GrantError::InvalidScope);
+                    }
+                    BTreeSet::from([GrantScope::Declared {
+                        value: request.scope.clone(),
+                    }])
+                } else if request.required {
+                    return Err(GrantError::RequiredPermissionUnsupported);
+                } else {
+                    BTreeSet::new()
+                };
+            Ok(PermissionRequest {
+                permission_id: request.id.clone(),
+                required: request.required,
+                allowed_scopes,
+            })
+        })
+        .collect()
 }
 
 fn is_known_permission(permission: &str) -> bool {
@@ -1305,5 +1348,45 @@ mod tests {
         }
         assert!(!gamenode_plugin_protocol::capability::KNOWN.contains(&"library.roots.write"));
         assert!(!gamenode_plugin_protocol::capability::KNOWN.contains(&"game.runtime.write"));
+    }
+
+    #[test]
+    fn manifest_requests_map_only_to_host_supported_typed_scopes() {
+        let domain = permission_id(&DomainCategory::Runtime, Operation::Read);
+        let requests = manifest_permission_requests(&[
+            super::super::package::PermissionRequest {
+                id: domain.clone(),
+                required: false,
+                scope: "published-category".into(),
+                reason: "test".into(),
+            },
+            super::super::package::PermissionRequest {
+                id: gamenode_plugin_protocol::capability::STORAGE_PERSIST.into(),
+                required: false,
+                scope: "own-provider".into(),
+                reason: "test".into(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            requests[0].allowed_scopes,
+            BTreeSet::from([GrantScope::PublicCategory {
+                category: DomainCategory::Runtime,
+            }])
+        );
+        assert_eq!(
+            requests[1].allowed_scopes,
+            BTreeSet::from([GrantScope::OwnPrivateNamespace])
+        );
+        let malformed = super::super::package::PermissionRequest {
+            id: domain,
+            required: false,
+            scope: "any-record".into(),
+            reason: "test".into(),
+        };
+        assert_eq!(
+            manifest_permission_requests(&[malformed]),
+            Err(GrantError::InvalidScope)
+        );
     }
 }

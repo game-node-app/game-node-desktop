@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MantineProvider } from '@mantine/core';
 import { appTheme } from '../../AppProviders';
 import {
@@ -85,6 +86,22 @@ describe('PluginInventory', () => {
     expect(screen.getByText(/not sandboxed/i)).toBeInTheDocument();
     expect(screen.getByText(/Process session: Active/)).toBeInTheDocument();
     expect(JSON.stringify(plugin)).not.toMatch(/token|cookie|password|credentialValue/i);
+    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+  });
+
+  it('keeps community inventory read-only while signed out', async () => {
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', pluginId: 'org.example.community',
+      publisherFingerprint: `SHA256:${'c'.repeat(64)}`, runtimeAvailable: true,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    renderInventory();
+    expect(await screen.findByText('Sign in to manage community plugins.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
   });
 
   it('lets the user select a plugin and inspect its identity and permissions', async () => {
@@ -192,6 +209,111 @@ describe('PluginInventory', () => {
     });
   });
 
+  it('reviews a staged package, requires exact publisher trust, and installs without starting it', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    const staged = {
+      token: 'review-token', pluginId: 'org.example.community', name: 'Community', version: '1.0.0',
+      publisherKeyId: 'key-1', publisherFingerprint: 'SHA256:abc', trust: 'untrusted' as const,
+      license: 'MIT', licenseFiles: ['LICENSE'], licenseNotices: [], permissionIds: ['library.read'],
+      requestedPermissions: [{ id: 'library.read', required: false, scope: 'selected-game', reason: 'Read selected game data' }],
+      nativeAccess: [], compatibility: 'compatible' as const,
+    };
+    const importReview = vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
+    const confirm = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...staged, trust: 'trusted' });
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    renderInventory('en', 'account-import');
+
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/community.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+    expect(await screen.findByRole('article', { name: 'Review plugin package' })).toHaveTextContent('SHA256:abc');
+    expect(screen.getByRole('article', { name: 'Review plugin package' })).toHaveTextContent('library.read · selected-game · optional · Read selected game data');
+    fireEvent.click(screen.getByRole('button', { name: 'Trust this publisher' }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith('review-token', 'SHA256:abc'));
+    fireEvent.click(screen.getByRole('button', { name: 'Install without starting' }));
+    await waitFor(() => expect(install).toHaveBeenCalledWith('review-token'));
+    expect(importReview).toHaveBeenCalledWith('/packages/community.zip');
+  });
+
+  it('shows the old fingerprint and requires explicit re-trust when a publisher key changes', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    const changed = {
+      token: 'changed-token', pluginId: 'org.example.changed', name: 'Changed', version: '2.0.0',
+      publisherKeyId: 'key-2', publisherFingerprint: 'SHA256:new', pinnedFingerprint: 'SHA256:old',
+      trust: 'changed' as const, license: 'MIT', licenseFiles: [], licenseNotices: [],
+      requestedPermissions: [],
+      permissionIds: [], nativeAccess: [], compatibility: 'compatible' as const,
+    };
+    vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(changed);
+    const retrust = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...changed, trust: 'trusted', pinnedFingerprint: undefined });
+    renderInventory('en', 'account-import');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/changed.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+
+    expect(await screen.findByText('Previously trusted fingerprint: SHA256:old')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Re-trust this changed publisher key' }));
+    await waitFor(() => expect(retrust).toHaveBeenCalledWith('changed-token', 'SHA256:new'));
+  });
+
+  it('saves only manifest-declared scopes with the cached account and grant revision', async () => {
+    const managed: PluginInfo = {
+      ...plugin, pluginId: 'org.example.community', source: 'community',
+      publisherFingerprint: `SHA256:${'a'.repeat(64)}`, runtimeAvailable: true, enabled: false,
+    };
+    const permissionSnapshot: PluginPermissionSnapshot = {
+      pluginId: managed.pluginId, publisherFingerprint: managed.publisherFingerprint!,
+      profileId: 'account-one', grantRevision: 12,
+      requestedPermissions: [{
+        permission_id: 'library.root.read', required: false,
+        allowed_scopes: [{ scope: 'own-creator', category: 'library-root' }],
+      }],
+      effectiveGrants: [],
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockResolvedValue(permissionSnapshot);
+    const replace = vi.spyOn(commands, 'pluginPermissionsReplace').mockResolvedValue({ ...permissionSnapshot, grantRevision: 13 });
+    renderInventory('en', 'account-one');
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /own-creator.*library-root/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save permission choices' }));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(
+      managed.pluginId,
+      'account-one',
+      12,
+      [{ permission_id: 'library.root.read', scope: { scope: 'own-creator', category: 'library-root' }, granted: true }],
+    ));
+  });
+
+  it('uses the shared removal modal with Escape and invokes stop-before-remove lifecycle command', async () => {
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', pluginId: 'org.example.community',
+      publisherFingerprint: `SHA256:${'d'.repeat(64)}`, runtimeAvailable: true, enabled: false,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockResolvedValue({
+      pluginId: managed.pluginId, publisherFingerprint: managed.publisherFingerprint!,
+      profileId: 'account-one', grantRevision: 1, requestedPermissions: [], effectiveGrants: [],
+    });
+    const remove = vi.spyOn(commands, 'pluginRemove').mockResolvedValue(undefined);
+    renderInventory('en', 'account-one');
+
+    const trigger = await screen.findByRole('button', { name: 'Remove' });
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await userEvent.setup().keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    fireEvent.click(trigger);
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(managed.pluginId));
+  });
+
   it('caches host permission revisions and configuration metadata without plugin preferences', async () => {
     const managed: PluginInfo = {
       ...plugin,
@@ -204,6 +326,7 @@ describe('PluginInventory', () => {
       publisherFingerprint: managed.publisherFingerprint!,
       profileId: 'account-one',
       grantRevision: 7,
+      requestedPermissions: [],
       effectiveGrants: [],
     };
     const configuration: PluginConfigurationState = {
@@ -240,6 +363,7 @@ describe('PluginInventory', () => {
       publisherFingerprint: managed.publisherFingerprint!,
       profileId: 'account-two',
       grantRevision: 11,
+      requestedPermissions: [],
       effectiveGrants: [],
     };
     const savedConfiguration: PluginConfigurationState = {

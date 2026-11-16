@@ -549,12 +549,30 @@ impl ProviderProcesses {
             .env("GAMENODE_PLUGIN_OPERATION_ID", "initialization")
             .env("GAMENODE_PLUGIN_SESSION_CREDENTIAL", &launch.credential)
             .env_remove("GAMENODE_PLUGIN_USER_INTENT_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_GAME_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_INSTALLATION_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_PROFILE_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_REVISION")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         if let Some(extension) = extension.as_ref() {
             command.env("GAMENODE_PLUGIN_USER_INTENT_ID", &extension.intent_id);
+            command
+                .env("GAMENODE_PLUGIN_TARGET_GAME_ID", &extension.target.game_id)
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_INSTALLATION_ID",
+                    &extension.target.installation_id,
+                )
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_PROFILE_ID",
+                    &extension.target.profile_id,
+                )
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_REVISION",
+                    &extension.target.revision,
+                );
         }
         #[cfg(target_os = "linux")]
         command.process_group(0);

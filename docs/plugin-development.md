@@ -21,8 +21,13 @@ When Core starts an extension from a game's **Start with extension** action, it 
 `GAMENODE_PLUGIN_USER_INTENT_ID`. Read it with `Launch::user_intent_id()` and pass it unchanged to
 `Actions::launch_game` or `Actions::install_game`. It is single-use, expires after 60 seconds and
 is bound to that extension, account profile, game, installation, operation and launch target.
-The session's host-selected target is authoritative; an extension cannot substitute another
-installation. Provider sessions and extensions started without this Core action receive no intent.
+Core also supplies `GAMENODE_PLUGIN_TARGET_GAME_ID`,
+`GAMENODE_PLUGIN_TARGET_INSTALLATION_ID`, `GAMENODE_PLUGIN_TARGET_PROFILE_ID` and
+`GAMENODE_PLUGIN_TARGET_REVISION`. Use `Launch::selected_target()` or
+`Session::open_extension_from_launch()` to open the session for that host-selected target. The host
+checks the submitted target exactly; an extension cannot substitute another installation.
+Provider sessions and extensions started without this Core action receive neither the target nor
+the intent environment values.
 
 `OpenSession` authenticates the package identity and negotiates the protocol before the plugin
 opens `ProviderHost.Exchange`. API 1.1–1.5 clients keep using `api_major` and `api_minor`; an
@@ -377,7 +382,9 @@ install flow. Rules and limits are under "Launching and installing" in
 
 - Declare `game.launch` and/or `games.install`. Each answers with a job: follow it as described under
   Jobs. A launch needs the `expected_revision` you read in `LibraryEntry.revision`; if it changed,
-  read the entry again.
+  read the entry again. A Core-started extension uses the numeric revision in its host-selected
+  `TargetGameContext` instead; it is bound to the launch target and does not require whole-library
+  read permission.
 - Send nothing about *how* to start: no executable, URI or arguments. Use `game.custom_launch` and an
   approved recipe for that. If it is denied, you may call the standard launch yourself as a
   fallback; the host will not do it for you.

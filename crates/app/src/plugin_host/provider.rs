@@ -873,6 +873,17 @@ impl ProviderApi {
         }
     }
 
+    /// Requests a graceful shutdown of the process that owns a terminal one-shot extension job.
+    pub(crate) fn request_shutdown_session(&self, session_id: &str) {
+        let provider_id = lock(&self.state)
+            .sessions
+            .get(session_id)
+            .map(|session| session.provider.registration.provider_id.clone());
+        if let Some(provider_id) = provider_id {
+            self.request_shutdown(&provider_id);
+        }
+    }
+
     /// Registration is host-owned composition, never a plugin RPC.
     pub fn register(&self, registration: Registration) -> Result<(), Status> {
         if registration.provider_id.is_empty()
@@ -1090,7 +1101,11 @@ impl ProviderApi {
         )
         .map_err(|_| Status::invalid_argument("invalid session scope"))?;
         let extension_session = hello.session_kind == SessionKind::Extension as i32;
-        if hello.session_kind != pending.session_kind || hello.target_game != pending.target_game {
+        let legacy_provider_scope = pending.session_kind == SessionKind::Provider as i32
+            && hello.session_kind == SessionKind::Unspecified as i32;
+        if (!legacy_provider_scope && hello.session_kind != pending.session_kind)
+            || hello.target_game != pending.target_game
+        {
             return Err(Status::permission_denied(
                 "session scope does not match the host-selected launch",
             ));

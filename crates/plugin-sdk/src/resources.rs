@@ -190,6 +190,7 @@ impl Resources {
             recipe_id: String::new(),
             recipe_revision: 0,
             uri: recipe.uri.clone(),
+            content_id: String::new(),
         }
     }
 
@@ -219,6 +220,7 @@ impl Resources {
             recipe_id: recipe_id.to_owned(),
             recipe_revision,
             uri: String::new(),
+            content_id: String::new(),
         }
     }
 

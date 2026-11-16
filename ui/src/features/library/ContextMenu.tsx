@@ -96,23 +96,34 @@ export const ContextMenu: React.FC = () => {
   const summary = summarizeSelection(selected, rows);
   const row = rows.find((candidate) => candidate.key === entryKey) ?? null;
   const detail = library?.detail && library.detail.row.key === entryKey ? library.detail : null;
+  const playAvailable = library?.actions?.play === 'available';
+  const installAvailable = library?.actions?.install === 'available';
 
   useEffect(() => {
     if (!isOpen || !row || isMulti || getMatchedGameId(row.status) == null) {
-      setExtensionActions({ play: [], install: [] });
+      if (extensionActions.play.length > 0 || extensionActions.install.length > 0) {
+        setExtensionActions({ play: [], install: [] });
+      }
       return;
     }
     let cancelled = false;
     const load = async () => {
       const [play, install] = await Promise.all([
-        row.installed && library?.actions?.play === 'available'
+        row.installed && playAvailable
           ? commands.availablePluginExtensions('play')
           : Promise.resolve([]),
-        !row.installed && library?.actions?.install === 'available'
+        !row.installed && installAvailable
           ? commands.availablePluginExtensions('install')
           : Promise.resolve([]),
       ]);
-      if (!cancelled) setExtensionActions({ play, install });
+      // The common no-extension result is already the initial state; avoid a needless
+      // asynchronous render for every ordinary library menu opening.
+      if (
+        !cancelled &&
+        (play.length > 0 || install.length > 0 || extensionActions.play.length > 0 || extensionActions.install.length > 0)
+      ) {
+        setExtensionActions({ play, install });
+      }
     };
     void load().catch(() => {
       if (!cancelled) setExtensionActions({ play: [], install: [] });
@@ -120,7 +131,7 @@ export const ContextMenu: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, isMulti, row?.key, row?.installed, row?.status, library?.actions]);
+  }, [isOpen, isMulti, row?.key, row?.installed, row?.status, playAvailable, installAvailable]);
 
   useEffect(() => {
     if (!isOpen) {

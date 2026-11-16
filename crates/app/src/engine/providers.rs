@@ -225,18 +225,6 @@ impl Engine {
             .game_id
             .ok_or_else(|| tonic::Status::failed_precondition("the game is not matched"))?
             .to_string();
-        if operation == crate::plugin_host::intents::Operation::Launch {
-            let state = self.lock();
-            let entry = state
-                .library
-                .entry(entry_key)
-                .ok_or_else(|| tonic::Status::not_found("the selected game is unavailable"))?;
-            if entry.target.as_ref().is_none_or(|target| !target.ready()) {
-                return Err(tonic::Status::failed_precondition(
-                    "the detected launch target is not approved and available",
-                ));
-            }
-        }
         let target_revision = match operation {
             crate::plugin_host::intents::Operation::Launch => {
                 feed.host()

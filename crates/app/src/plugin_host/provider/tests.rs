@@ -1135,7 +1135,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         origin: RegistrationOrigin::ThirdParty {
             publisher_fingerprint: "ef".repeat(32),
         },
-        capabilities: vec![cap::GAME_CUSTOM_LAUNCH.into()],
+        capabilities: vec![cap::CONTEXT.into(), cap::GAME_CUSTOM_LAUNCH.into()],
         shared_catalog: false,
         services: Arc::new(Services::default()),
     })
@@ -1172,7 +1172,10 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         &[cap::GAME_CUSTOM_LAUNCH],
     )
     .await;
-    assert!(mismatched.is_err(), "the plugin cannot replace Core's target");
+    assert!(
+        mismatched.is_err(),
+        "the plugin cannot replace Core's target"
+    );
     let session = gamenode_plugin_sdk::Session::open_extension(
         gamenode_plugin_sdk::Launch {
             endpoint: endpoint.clone(),

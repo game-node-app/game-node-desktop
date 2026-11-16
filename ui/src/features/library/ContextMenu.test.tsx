@@ -107,6 +107,36 @@ describe('ContextMenu', () => {
     expect(screen.queryByTestId('context-menu-remove')).not.toBeInTheDocument();
   });
 
+  it('starts the selected trusted extension for the selected game and operation', async () => {
+    const target = row({ gamenode: { status: 'playing', collectionIds: [], entryId: 'entry-1' } });
+    const library = makeLibrary({
+      rows: [target],
+      selected: ['steam:1'],
+      detail: detailFor(target),
+      actions: singleActions,
+    });
+    const extension = {
+      providerId: 'extension:org.example.helper',
+      pluginId: 'org.example.helper',
+      kind: 'extension' as const,
+      name: 'Helper',
+      source: 'community' as const,
+      status: 'installed' as const,
+      capabilities: [],
+      session: 'stopped' as const,
+      nativeAccess: [],
+      publisherFingerprint: 'a'.repeat(64),
+    };
+    vi.spyOn(commands, 'availablePluginExtensions').mockResolvedValue([extension]);
+    const start = vi.spyOn(commands, 'startExtensionAction').mockResolvedValue(undefined);
+    open(library);
+
+    const parent = await screen.findByTestId('context-menu-start-with-extension');
+    fireEvent.click(parent);
+    fireEvent.click(await screen.findByTestId('context-menu-extension-org.example.helper-play'));
+    await waitFor(() => expect(start).toHaveBeenCalledWith('steam:1', 'org.example.helper', 'play'));
+  });
+
   it('anchors at the pointer near the footer without correcting for a menu height', () => {
     const target = row();
     const library = makeLibrary({

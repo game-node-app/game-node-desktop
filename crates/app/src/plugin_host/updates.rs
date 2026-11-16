@@ -259,6 +259,19 @@ impl PluginUpdateService {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
     }
 
+    pub async fn permission_snapshot(
+        &self,
+        plugin_id: String,
+    ) -> Result<super::runtime::PluginPermissionSnapshot, tonic::Status> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("managed plugin runtime is unavailable"))?;
+        lifecycle.permission_snapshot(plugin_id).await
+    }
+
     pub fn preferences(&self) -> PluginUpdatePreferences {
         self.preferences
             .lock()

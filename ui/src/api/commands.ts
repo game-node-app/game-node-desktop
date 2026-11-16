@@ -9,6 +9,7 @@ import type {
   LaunchKind,
   LibraryInput,
   PluginInfo,
+  PluginPermissionSnapshot,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
   PluginUpdateReview,
@@ -130,6 +131,19 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+
+  pluginPermissionSnapshot: (pluginId: string) =>
+    safeInvoke<PluginPermissionSnapshot>(
+      'plugin_permission_snapshot',
+      { pluginId },
+      () => ({
+        pluginId,
+        publisherFingerprint: '',
+        profileId: '',
+        grantRevision: 0,
+        effectiveGrants: [],
+      }),
+    ),
 
   pluginUpdatePreferences: () =>
     safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),

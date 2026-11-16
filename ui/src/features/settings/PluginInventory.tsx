@@ -1,8 +1,10 @@
 import { providerLabel } from '../../i18n/providerLabel';
-import React, { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { useAuth } from '../../api/useSnapshot';
 import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginInfo, type PluginUpdateReview } from '../../api';
+import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import {
@@ -14,55 +16,101 @@ import {
   settingsRowTitle,
 } from './settingsClasses';
 
-const inventoryQueryKey = ['plugin-inventory'] as const;
-
 function statusLabel(status: PluginInfo['status'], t: (key: string) => string): string {
   return t(`plugins.status.${status}`);
 }
 
 export const PluginInventory: React.FC = () => {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
-  const [updates, setUpdates] = useState<AvailablePluginUpdate[]>([]);
   const [review, setReview] = useState<PluginUpdateReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
-  const [periodicChecks, setPeriodicChecks] = useState(false);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const updateEventRevision = useRef(0);
+  const auth = useAuth().auth;
+  const profileId = typeof auth === 'object' && auth !== null && 'signedIn' in auth
+    ? auth.signedIn.user.id
+    : null;
   const { data: updatePreferences } = useQuery({
-    queryKey: ['plugin-update-preferences'],
+    queryKey: pluginQueryKeys.updatePreferences,
     queryFn: commands.pluginUpdatePreferences,
   });
-  const { data: savedUpdates } = useQuery({
-    queryKey: ['plugin-update-available'],
-    queryFn: commands.pluginUpdateAvailable,
+  const { data: updates = [] } = useQuery({
+    queryKey: pluginQueryKeys.availableUpdates,
+    queryFn: async () => {
+      const eventRevisionAtStart = updateEventRevision.current;
+      const available = await commands.pluginUpdateAvailable();
+      return eventRevisionAtStart === updateEventRevision.current
+        ? available
+        : queryClient.getQueryData<AvailablePluginUpdate[]>(pluginQueryKeys.availableUpdates) ?? available;
+    },
   });
   const { data = [], isPending, isError } = useQuery({
-    queryKey: inventoryQueryKey,
+    queryKey: pluginQueryKeys.inventory,
     queryFn: commands.pluginInventory,
     staleTime: 30_000,
   });
   const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
-
-  useEffect(() => {
-    if (updatePreferences) setPeriodicChecks(updatePreferences.periodicChecks);
-  }, [updatePreferences]);
-
-  useEffect(() => {
-    if (savedUpdates) setUpdates(savedUpdates);
-  }, [savedUpdates]);
+  const managedPluginId = selectedPlugin?.publisherFingerprint ? selectedPlugin.pluginId : null;
+  useQuery({
+    queryKey: pluginQueryKeys.permissions(managedPluginId ?? '', profileId ?? ''),
+    queryFn: async () => {
+      if (!managedPluginId || !profileId) throw new Error('plugin permission profile is unavailable');
+      const snapshot = await commands.pluginPermissionSnapshot(managedPluginId);
+      if (snapshot.profileId !== profileId) throw new Error('plugin permission profile changed');
+      return snapshot;
+    },
+    enabled: managedPluginId !== null && profileId !== null,
+  });
+  const periodicChecks = updatePreferences?.periodicChecks ?? false;
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
+    let active = true;
     let unlisten: UnlistenFn | undefined;
-    void listen<AvailablePluginUpdate[]>('plugin:update-available', (event) => setUpdates(event.payload))
-      .then((dispose) => { unlisten = dispose; });
-    return () => { unlisten?.(); };
-  }, []);
+    void listen<AvailablePluginUpdate[]>('plugin:update-available', (event) => {
+      const eventRevision = ++updateEventRevision.current;
+      void queryClient.cancelQueries({ queryKey: pluginQueryKeys.availableUpdates }).then(() => {
+        if (eventRevision === updateEventRevision.current) {
+          queryClient.setQueryData(pluginQueryKeys.availableUpdates, event.payload);
+        }
+      });
+    }).then((dispose) => {
+      if (active) unlisten = dispose;
+      else dispose();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [queryClient]);
+
+  const refreshPluginHostState = async (pluginId?: string) => {
+    const refreshes = [
+      queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory }),
+      queryClient.invalidateQueries({ queryKey: pluginQueryKeys.availableUpdates }),
+    ];
+    if (pluginId) {
+      if (profileId) {
+        refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(pluginId, profileId) }));
+      }
+      refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.configuration(pluginId) }));
+    }
+    await Promise.all(refreshes);
+  };
 
   const checkUpdates = async () => {
     setBusy(true);
     setUpdateError(false);
-    try { setUpdates(await commands.pluginUpdateCheck()); }
+    const eventRevisionAtStart = updateEventRevision.current;
+    try {
+      const available = await commands.pluginUpdateCheck();
+      if (eventRevisionAtStart === updateEventRevision.current) {
+        queryClient.setQueryData(pluginQueryKeys.availableUpdates, available);
+      }
+    }
     catch { setUpdateError(true); }
     finally { setBusy(false); }
   };
@@ -82,16 +130,26 @@ export const PluginInventory: React.FC = () => {
     setUpdateError(false);
     try {
       await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
-      setUpdates((current) => current.filter((update) => update.pluginId !== review.pluginId));
       setReview(null);
-    } catch { setUpdateError(true); }
+      await refreshPluginHostState(review.pluginId);
+    } catch {
+      setUpdateError(true);
+      await refreshPluginHostState(review.pluginId);
+    }
     finally { setBusy(false); }
   };
 
   const declineUpdate = async () => {
     if (!review) return;
-    await commands.pluginUpdateDecline(review.pluginId);
-    setReview(null);
+    setBusy(true);
+    setUpdateError(false);
+    try {
+      await commands.pluginUpdateDecline(review.pluginId);
+      setReview(null);
+    } catch {
+      setUpdateError(true);
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.availableUpdates });
+    } finally { setBusy(false); }
   };
 
   const stateClass = (status: PluginInfo['status']) => status === 'installed'
@@ -109,12 +167,20 @@ export const PluginInventory: React.FC = () => {
           <input
             type="checkbox"
             checked={periodicChecks}
+            disabled={savingPreferences || !updatePreferences}
             onChange={(event) => {
               const enabled = event.currentTarget.checked;
-              setPeriodicChecks(enabled);
+              setSavingPreferences(true);
+              setUpdateError(false);
               void commands.pluginUpdateSetPeriodicChecks(enabled)
-                .then((saved) => setPeriodicChecks(saved.periodicChecks))
-                .catch(() => { setPeriodicChecks(!enabled); setUpdateError(true); });
+                .then((saved) => {
+                  queryClient.setQueryData(pluginQueryKeys.updatePreferences, saved);
+                })
+                .catch(() => {
+                  setUpdateError(true);
+                  void queryClient.invalidateQueries({ queryKey: pluginQueryKeys.updatePreferences });
+                })
+                .finally(() => setSavingPreferences(false));
             }}
           />
           <span>{t('plugins.updates.optIn')}</span>

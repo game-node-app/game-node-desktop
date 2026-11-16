@@ -1,11 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { appTheme } from '../../AppProviders';
-import { commands, type PluginInfo } from '../../api';
+import { commands, type AvailablePluginUpdate, type PluginInfo } from '../../api';
 import { I18nProvider } from '../../i18n';
 import { PluginInventory } from './PluginInventory';
+
+const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }));
 
 const plugin: PluginInfo = {
   providerId: 'steam',
@@ -32,7 +35,11 @@ function renderInventory(locale = 'en') {
 }
 
 describe('PluginInventory', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    listenMock.mockReset();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
 
   it.each([
     ['en', 'Linux Package Manager'],
@@ -139,7 +146,9 @@ describe('PluginInventory', () => {
     const approve = vi.spyOn(commands, 'pluginUpdateApprove').mockResolvedValue('2.0.0');
     renderInventory();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: /Check periodically/ }));
+    const periodicCheckbox = await screen.findByRole('checkbox', { name: /Check periodically/ });
+    await waitFor(() => expect(periodicCheckbox).toBeEnabled());
+    fireEvent.click(periodicCheckbox);
     await waitFor(() => expect(setPeriodic).toHaveBeenCalledWith(true));
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates now' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Review version 2.0.0' }));
@@ -147,5 +156,57 @@ describe('PluginInventory', () => {
     expect(screen.getByText(/New permissions and wider scopes stay denied/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Approve update' }));
     await waitFor(() => expect(approve).toHaveBeenCalledWith(plugin.pluginId, '2.0.0'));
+  });
+
+  it('keeps the saved opt-in authoritative when persistence fails', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: true });
+    vi.spyOn(commands, 'pluginUpdateSetPeriodicChecks').mockRejectedValue(new Error('disk full'));
+    renderInventory();
+
+    const periodicCheckbox = await screen.findByRole('checkbox', { name: /Check periodically/ });
+    await waitFor(() => expect(periodicCheckbox).toBeChecked());
+    fireEvent.click(periodicCheckbox);
+
+    await waitFor(() => {
+      expect(periodicCheckbox).toBeChecked();
+      expect(screen.getByText(/Could not check or review this update/)).toBeInTheDocument();
+    });
+  });
+
+  it('does not let a stale check response overwrite a newer host update event', async () => {
+    let publishUpdate: ((event: { payload: AvailablePluginUpdate[] }) => void) | undefined;
+    listenMock.mockImplementation(async (event: string, callback: (event: { payload: AvailablePluginUpdate[] }) => void) => {
+      if (event === 'plugin:update-available') publishUpdate = callback;
+      return () => { publishUpdate = undefined; };
+    });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    let finishCheck!: (updates: AvailablePluginUpdate[]) => void;
+    vi.spyOn(commands, 'pluginUpdateCheck').mockImplementation(() => new Promise((resolve) => {
+      finishCheck = resolve;
+    }));
+    renderInventory();
+
+    const checkButton = await screen.findByRole('button', { name: 'Check for updates now' });
+    await waitFor(() => expect(publishUpdate).toBeDefined());
+    fireEvent.click(checkButton);
+    await waitFor(() => expect(commands.pluginUpdateCheck).toHaveBeenCalled());
+
+    const newest: AvailablePluginUpdate[] = [{
+      pluginId: plugin.pluginId, name: plugin.name, installedVersion: '1.0.0', versions: ['3.0.0'],
+    }];
+    act(() => publishUpdate?.({ payload: newest }));
+    expect(await screen.findByRole('button', { name: 'Review version 3.0.0' })).toBeInTheDocument();
+
+    await act(async () => {
+      finishCheck([{ ...newest[0], versions: ['2.0.0'] }]);
+    });
+    expect(screen.getByRole('button', { name: 'Review version 3.0.0' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review version 2.0.0' })).not.toBeInTheDocument();
   });
 });

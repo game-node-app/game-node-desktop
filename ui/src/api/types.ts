@@ -1306,6 +1306,28 @@ export interface PluginInfo {
   publisherFingerprint?: string;
 }
 
+/** Host-owned effective permission state for the currently active account profile. */
+export interface PluginPermissionSnapshot {
+  pluginId: string;
+  publisherFingerprint: string;
+  profileId: string;
+  grantRevision: number;
+  /** Rust grant records retain their serialized snake_case protocol fields. */
+  effectiveGrants: Array<{
+    permission_id: string;
+    required: boolean;
+    scope: Record<string, unknown>;
+    state: 'granted' | 'denied' | 'unsupported';
+  }>;
+}
+
+/** Host-owned configuration availability; no plugin preference values are included. */
+export interface PluginConfigurationState {
+  pluginId: string;
+  available: boolean;
+  revision: string | null;
+}
+
 export interface Snapshot {
   localGames: LocalView;
   playtimeError: boolean;

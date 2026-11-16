@@ -176,6 +176,17 @@ pub struct ThirdPartyPluginLifecycle {
     mutation: tokio::sync::Mutex<()>,
 }
 
+/// Host-owned permission state for one installed third-party provider in the active account.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPermissionSnapshot {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub profile_id: String,
+    pub grant_revision: u64,
+    pub effective_grants: Vec<super::grants::EffectiveGrant>,
+}
+
 impl ThirdPartyPluginLifecycle {
     pub fn new(
         api: ProviderApi,
@@ -213,6 +224,62 @@ impl ThirdPartyPluginLifecycle {
 
     pub async fn disable(&self, plugin_id: String) -> Result<(), Status> {
         self.set_enabled(plugin_id, false).await
+    }
+
+    /// Reads the persisted permission decisions for one registered provider in the active
+    /// account. Disk access runs on a blocking worker, and a profile switch during that read
+    /// invalidates the result rather than returning another account's grants.
+    pub async fn permission_snapshot(
+        &self,
+        plugin_id: String,
+    ) -> Result<PluginPermissionSnapshot, Status> {
+        let profile = self.api.profiles().require()?;
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "plugin has no unique registered third-party provider",
+            ));
+        };
+        let (registered_plugin_id, publisher_fingerprint) = self
+            .api
+            .third_party_identity(provider_id)
+            .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+        if registered_plugin_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+        let profile_epoch = profile.epoch();
+        let identity = super::grants::PluginIdentity {
+            plugin_id: registered_plugin_id.clone(),
+            publisher_fingerprint: publisher_fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let state = self.state.clone();
+        let account = profile.clone();
+        let (grant_revision, effective_grants) = tokio::task::spawn_blocking(move || {
+            let grants = state
+                .open_grants(&account)
+                .map_err(|error| Status::internal(format!("plugin grants unavailable: {error}")))?;
+            Ok::<_, Status>((
+                grants.revision(&identity),
+                grants.effective_grants(&identity),
+            ))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin permission worker failed"))??;
+        if !self.api.profiles().is_current(profile_epoch) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed while reading permissions",
+            ));
+        }
+        Ok(PluginPermissionSnapshot {
+            plugin_id: registered_plugin_id,
+            publisher_fingerprint,
+            profile_id: profile.profile_id().to_owned(),
+            grant_revision,
+            effective_grants,
+        })
     }
 
     /// Atomically activates an already-installed candidate only after its supervised process
@@ -935,6 +1002,179 @@ impl ProviderRuntime for HostedProviders {
 #[cfg(test)]
 mod managed_runtime_tests {
     use super::*;
+
+    #[derive(Default)]
+    struct PermissionSnapshotServices;
+
+    #[tonic::async_trait]
+    impl super::super::provider::HostServices for PermissionSnapshotServices {
+        async fn context(
+            &self,
+            _lease: super::super::provider::Lease,
+        ) -> Result<gamenode_plugin_protocol::proto::ProviderContext, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn account(
+            &self,
+            _lease: super::super::provider::Lease,
+            _action: gamenode_plugin_protocol::proto::account_request::Action,
+        ) -> Result<gamenode_plugin_protocol::proto::AccountReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn secret(
+            &self,
+            _lease: super::super::provider::Lease,
+            _request: gamenode_plugin_protocol::proto::SecretRequest,
+        ) -> Result<gamenode_plugin_protocol::proto::SecretReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn login(
+            &self,
+            _lease: super::super::provider::Lease,
+            _request: gamenode_plugin_protocol::proto::LoginRequest,
+        ) -> Result<gamenode_plugin_protocol::proto::LoginReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn actions(
+            &self,
+            _lease: super::super::provider::Lease,
+            _actions: gamenode_plugin_protocol::proto::ActionDeclaration,
+        ) -> Result<gamenode_plugin_protocol::proto::ActionReply, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+    }
+
+    fn permission_lifecycle(
+        root: &std::path::Path,
+        api: ProviderApi,
+        state: PluginStateLayout,
+    ) -> ThirdPartyPluginLifecycle {
+        let registry =
+            gamenode_platform::plugin_registry::PluginPackageRegistry::at(root.join("registry"))
+                .unwrap();
+        let processes = ProviderProcesses::new_for_lifecycle(
+            api.clone(),
+            root.join("provider.sock"),
+            vec![],
+            state.clone(),
+        )
+        .unwrap();
+        ThirdPartyPluginLifecycle::new(
+            api,
+            processes,
+            state,
+            registry.clone(),
+            ManagedPackageLifecycle::new(registry),
+        )
+    }
+
+    #[tokio::test]
+    async fn permission_snapshot_returns_persisted_grant_revision_and_effective_grants() {
+        use super::super::grants::{
+            GrantScope, PermissionDecision, PermissionRequest, PermissionState,
+        };
+        use super::super::provider::{RegistrationKind, RegistrationOrigin};
+
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        api.profiles().update(Some("account-one"), true);
+        let plugin_id = "org.example.community";
+        let fingerprint = "cd".repeat(32);
+        api.register(Registration {
+            provider_id: "community".into(),
+            plugin_id: plugin_id.into(),
+            kind: RegistrationKind::Provider,
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: fingerprint.clone(),
+            },
+            capabilities: vec![cap::CONTEXT.into()],
+            shared_catalog: false,
+            services: Arc::new(PermissionSnapshotServices),
+        })
+        .unwrap();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let profile = api.profiles().require().unwrap();
+        let identity = super::super::grants::PluginIdentity {
+            plugin_id: plugin_id.into(),
+            publisher_fingerprint: fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let scope = GrantScope::Declared {
+            value: "provider session".into(),
+        };
+        let revision = state
+            .open_grants(&profile)
+            .unwrap()
+            .replace_grants(
+                identity,
+                &[PermissionRequest {
+                    permission_id: cap::CONTEXT.into(),
+                    required: true,
+                    allowed_scopes: [scope.clone()].into(),
+                }],
+                &[PermissionDecision {
+                    permission_id: cap::CONTEXT.into(),
+                    scope,
+                    granted: true,
+                }],
+            )
+            .unwrap();
+        let lifecycle = permission_lifecycle(temp.path(), api, state);
+
+        let snapshot = lifecycle
+            .permission_snapshot(plugin_id.into())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.plugin_id, plugin_id);
+        assert_eq!(snapshot.publisher_fingerprint, fingerprint);
+        assert_eq!(snapshot.profile_id, profile.profile_id());
+        assert_eq!(snapshot.grant_revision, revision);
+        assert_eq!(snapshot.effective_grants.len(), 1);
+        assert_eq!(snapshot.effective_grants[0].permission_id, cap::CONTEXT);
+        assert_eq!(snapshot.effective_grants[0].state, PermissionState::Granted);
+    }
+
+    #[tokio::test]
+    async fn permission_snapshot_requires_active_profile_and_unique_third_party_provider() {
+        use super::super::provider::{RegistrationKind, RegistrationOrigin};
+
+        let temp = tempfile::tempdir().unwrap();
+        let api = ProviderApi::default();
+        let state = PluginStateLayout::new(temp.path().join("state"));
+        let lifecycle = permission_lifecycle(temp.path(), api.clone(), state.clone());
+        assert_eq!(
+            lifecycle
+                .permission_snapshot("org.example.community".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable
+        );
+
+        api.profiles().update(Some("account-one"), true);
+        api.register(Registration {
+            provider_id: "official".into(),
+            plugin_id: "org.example.official".into(),
+            kind: RegistrationKind::Provider,
+            origin: RegistrationOrigin::Official,
+            capabilities: vec![cap::CONTEXT.into()],
+            shared_catalog: false,
+            services: Arc::new(PermissionSnapshotServices),
+        })
+        .unwrap();
+        assert_eq!(
+            lifecycle
+                .permission_snapshot("org.example.official".into())
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
+    }
 
     #[test]
     fn managed_process_config_uses_the_selected_signed_provider_target() {

@@ -390,6 +390,17 @@ pub async fn plugin_inventory(
 }
 
 #[tauri::command]
+pub async fn plugin_permission_snapshot(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
+    updates
+        .permission_snapshot(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
 pub async fn plugin_update_preferences(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
 ) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
@@ -408,7 +419,12 @@ pub async fn plugin_update_set_periodic_checks(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     enabled: bool,
 ) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {
-    updates.set_periodic_checks(enabled)
+    // Persisting this preference performs filesystem I/O. Keep it off Tauri's async command
+    // executor so a slow disk cannot block IPC handling or the UI runtime.
+    let updates = updates.inner().clone();
+    tokio::task::spawn_blocking(move || updates.set_periodic_checks(enabled))
+        .await
+        .map_err(|_| "plugin update preferences worker failed".to_owned())?
 }
 
 #[tauri::command]

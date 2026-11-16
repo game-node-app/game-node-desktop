@@ -2,7 +2,12 @@
 use super::*;
 use crate::plugin_host::jobs::JobOwner;
 
-const GRANTS: &[&str] = &[cap::TOOLS_READ, cap::TOOLS_APPLY, cap::TOOLS_REMOVE];
+const GRANTS: &[&str] = &[
+    cap::GAME_LAUNCH,
+    cap::TOOLS_READ,
+    cap::TOOLS_APPLY,
+    cap::TOOLS_REMOVE,
+];
 async fn setup() -> (Fixture, Arc<FakeHost>, u64) {
     let f = Fixture::new(GRANTS).await;
     f.library(&[

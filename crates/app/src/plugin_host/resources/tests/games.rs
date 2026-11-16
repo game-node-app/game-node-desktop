@@ -62,6 +62,25 @@ impl Fixture {
         (fixture, host, dialog)
     }
 
+    async fn extension_game(
+        grants: &[&'static str],
+        target: TargetGameContext,
+        dialog: Option<Dialog>,
+    ) -> (Self, Arc<FakeHost>, Option<Arc<Dialog>>) {
+        let fixture = Fixture::start_with_target(grants, true, None, Some(target)).await;
+        fixture.library(&[
+            ("steam:1", Some(5), "Selected Steam game"),
+            ("steam:2", Some(6), "Other Steam game"),
+            ("manual:1", Some(9), "Manual game"),
+        ]);
+        let host = fixture.with_host();
+        let dialog = dialog.map(Arc::new);
+        if let Some(dialog) = &dialog {
+            fixture.intents.set_prompter(dialog.clone());
+        }
+        (fixture, host, dialog)
+    }
+
     /// The revision of the fixture's own entry, as the host holds it.
     async fn revision(&self) -> u64 {
         let own = Scope {
@@ -112,26 +131,51 @@ impl Fixture {
 
     /// What the host binds an intent to for the fixture's own entry.
     fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
+        self.binding_for(operation, target_revision, "3", INSTALLATION)
+    }
+
+    fn binding_for(
+        &self,
+        operation: Operation,
+        target_revision: u64,
+        game_id: &str,
+        installation_id: &str,
+    ) -> Binding {
+        let permission = match operation {
+            Operation::Launch => cap::GAME_LAUNCH,
+            Operation::CustomLaunch => cap::GAME_CUSTOM_LAUNCH,
+            Operation::Install => cap::GAMES_INSTALL,
+            Operation::BackupRestore => cap::BACKUPS_RESTORE,
+        };
         let caller = self
             .api
-            .authorize_resource(Some(&self.context()), GRANTS[0])
+            .authorize_resource(Some(&self.context()), permission)
             .unwrap();
         Binding {
             plugin_id: "fixture.plugin".into(),
             publisher_fingerprint: "ab".repeat(32),
             profile_epoch: caller.profile_epoch,
-            game_id: "3".into(),
-            installation_id: INSTALLATION.into(),
+            game_id: game_id.into(),
+            installation_id: installation_id.into(),
             operation,
             target_revision,
         }
     }
 
     fn game_owner(&self) -> JobOwner {
+        let permission = [
+            cap::GAME_LAUNCH,
+            cap::GAME_CUSTOM_LAUNCH,
+            cap::GAMES_INSTALL,
+            cap::BACKUPS_RESTORE,
+        ]
+        .into_iter()
+        .find(|permission| self.capabilities.contains(permission))
+        .expect("game fixture needs an action grant");
         JobOwner::of(
             &self
                 .api
-                .authorize_resource(Some(&self.context()), GRANTS[0])
+                .authorize_resource(Some(&self.context()), permission)
                 .unwrap(),
         )
         .unwrap()
@@ -708,4 +752,203 @@ async fn an_extension_session_reaches_only_its_target_and_reading_the_library_ad
             .action_target(&caller, &fixture.context(), "", INSTALLATION)
             .is_ok()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extension_custom_overlay_targets_selected_steam_without_read_or_provider_identity() {
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "steam-target-r1".into(),
+    };
+    let (fixture, host, _) =
+        Fixture::extension_game(&[cap::GAME_CUSTOM_LAUNCH], target, None).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let context = fixture.context();
+    assert_eq!(context.session_kind(), SessionKind::Extension);
+    assert!(context.provider_id.is_empty());
+    assert_eq!(
+        context.target_game.as_ref().unwrap().installation_id,
+        "id-steam:1"
+    );
+    assert_eq!(
+        fixture.list("").await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    assert_eq!(
+        fixture
+            .client()
+            .games_request_launch(GameLaunchRequest {
+                context: Some(context.clone()),
+                game_id: "5".into(),
+                installation_id: "id-steam:1".into(),
+                expected_revision: revision,
+                user_intent_id: String::new(),
+                idempotency_key: "normal-without-grant".into(),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let proposal = CustomLaunchRequest {
+        context: Some(context.clone()),
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        expected_revision: revision,
+        idempotency_key: "extension-custom-proposal".into(),
+        uri: "steam://rungameid/5".into(),
+        ..CustomLaunchRequest::default()
+    };
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(host.custom_launch_recipes.lock().unwrap().len(), 1);
+    let stored = host
+        .custom_launch_recipes
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (stored.game_id, stored.installation_id.as_str()),
+        (5, "id-steam:1")
+    );
+
+    let mut forged_provider = proposal.clone();
+    forged_provider.context.as_mut().unwrap().provider_id = "steam".into();
+    forged_provider.idempotency_key = "forged-provider".into();
+    assert!(
+        fixture
+            .client()
+            .games_propose_custom_launch(forged_provider)
+            .await
+            .is_err()
+    );
+    let mut other_game = proposal;
+    other_game.game_id = "6".into();
+    other_game.installation_id = "id-steam:2".into();
+    other_game.idempotency_key = "other-steam-game".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_propose_custom_launch(other_game)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+
+    let intent = fixture
+        .intents
+        .issue(fixture.binding_for(Operation::CustomLaunch, 1, "5", "id-steam:1"))
+        .unwrap();
+    let request = CustomLaunchRequest {
+        context: Some(context),
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        expected_revision: revision,
+        user_intent_id: intent,
+        idempotency_key: "extension-custom-execution".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.recipe_revision,
+        ..CustomLaunchRequest::default()
+    };
+    let executed = fixture
+        .client()
+        .games_request_custom_launch(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let replay = fixture
+        .client()
+        .games_request_custom_launch(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.job_id, executed.job_id);
+    assert_eq!(
+        fixture.ended(&executed.job_id).await.state(),
+        JobState::Succeeded
+    );
+    let mut reused_intent = request;
+    reused_intent.idempotency_key = "extension-custom-reuse-intent".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_request_custom_launch(reused_intent)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+    assert!(host.opened.lock().unwrap().is_empty());
+    let steam_scope = Scope {
+        own_provider: "steam".into(),
+        read_all: false,
+        provider_filter: None,
+    };
+    let (_, selected_steam_entry) = fixture.feed.target(&steam_scope, "id-steam:1").unwrap();
+    assert_eq!(selected_steam_entry.name, "Selected Steam game");
+    assert_eq!(selected_steam_entry.game_id, Some(5));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "steam-target-r1".into(),
+    };
+    let (fixture, host, _) = Fixture::extension_game(&[cap::GAME_LAUNCH], target, None).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    let custom_proposal = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "without-custom-grant".into(),
+            uri: "steam://rungameid/5".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(custom_proposal.code(), Code::PermissionDenied);
+
+    let intent = fixture
+        .intents
+        .issue(fixture.binding_for(Operation::Launch, 1, "5", "id-steam:1"))
+        .unwrap();
+    let launched = fixture
+        .client()
+        .games_request_launch(GameLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            user_intent_id: intent,
+            idempotency_key: "normal-launch".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&launched.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(*host.opened.lock().unwrap(), [("steam:1".into(), false)]);
+    assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
 }

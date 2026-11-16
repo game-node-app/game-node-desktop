@@ -167,12 +167,22 @@ impl Fixture {
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
+        let extension_session = target.is_some();
         let mut capabilities = vec![cap::CONTEXT];
         capabilities.extend_from_slice(grants);
+        let registration_id = if extension_session {
+            crate::plugin_host::provider::extension_registration_id("fixture.plugin")
+        } else {
+            "fixture".into()
+        };
         api.register(Registration {
-            provider_id: "fixture".into(),
+            provider_id: registration_id.clone(),
             plugin_id: "fixture.plugin".into(),
-            kind: crate::plugin_host::provider::RegistrationKind::Provider,
+            kind: if extension_session {
+                crate::plugin_host::provider::RegistrationKind::Extension
+            } else {
+                crate::plugin_host::provider::RegistrationKind::Provider
+            },
             origin: RegistrationOrigin::ThirdParty {
                 publisher_fingerprint: "ab".repeat(32),
             },
@@ -181,7 +191,7 @@ impl Fixture {
             services: Arc::new(NoServices),
         })
         .unwrap();
-        let launch = api.begin_launch("fixture").unwrap();
+        let launch = api.begin_launch(&registration_id).unwrap();
         let credential = launch
             .credential
             .as_bytes()
@@ -207,7 +217,7 @@ impl Fixture {
                 min_api_minor: cap::THIRD_PARTY_API_MINOR,
                 max_api_major: 1,
                 max_api_minor: gamenode_plugin_protocol::API_MINOR,
-                session_kind: if target.is_some() {
+                session_kind: if extension_session {
                     SessionKind::Extension
                 } else {
                     SessionKind::Unspecified
@@ -221,7 +231,7 @@ impl Fixture {
         let session = Session::open_with_options(
             client_launch,
             "fixture.plugin",
-            "fixture",
+            if extension_session { "" } else { "fixture" },
             "1.0",
             &capabilities,
             options,

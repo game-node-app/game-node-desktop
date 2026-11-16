@@ -4,7 +4,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [x] 1.1 **Source 7.8.** Implement game.custom_launch recipe propose/request/remove with alternate executable/URI, argument vectors, working directory, approved external runtime handles and environment set/unset; verify actual worker-spawned fixture processes receive every field and incapable adapters/URI handlers fail explicitly rather than ignoring environment.
 
-- [ ] 1.2 **Source 7.9.** Implement per-game/profile plugin-owned overlays for official, third-party and manual games, with independent normal/custom grants and one-use host user intents; verify an extension can target a selected Steam game without provider impersonation, broad library reads or modification of official state.
+- [x] 1.2 **Source 7.9.** Implement per-game/profile plugin-owned overlays for official, third-party and manual games, with independent normal/custom grants and one-use host user intents; verify an extension can target a selected Steam game without provider impersonation, broad library reads or modification of official state.
 
 - [ ] 1.3 **Source 7.10.** Fence approvals to recipe/base-target/resource revisions, sanitize child environment and associate wrapper/child process attribution with the original game; verify revocation and changed recipes block new launches without killing running games, leaking session credentials or silently switching routes.
 

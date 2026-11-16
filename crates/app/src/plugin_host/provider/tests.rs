@@ -377,6 +377,55 @@ async fn signing_out_closes_the_window_before_ending_the_plugin_session() {
     assert!(!h.api.connected("fixture"));
 }
 
+async fn assert_managed_stop_closes_window(stop_plugin: bool) {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, old_host) = open_configuration_window(&mut h).await;
+    let processes = crate::plugin_host::process::ProviderProcesses::new(
+        h.api.clone(),
+        h._temp.path().join("unused-plugin-endpoint"),
+        vec![],
+    )
+    .unwrap();
+    let stop = tokio::spawn(async move {
+        if stop_plugin {
+            processes.stop_plugin("fixture.plugin").await;
+        } else {
+            processes.stop_provider("fixture").await;
+        }
+    });
+
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    stop.await.unwrap();
+
+    h.api.disconnect("fixture").await;
+    assert!(matches!(
+        old_host.get_permissions().await,
+        Err(gamenode_plugin_sdk::DetailedError::Unauthenticated)
+    ));
+}
+
+#[tokio::test]
+async fn disabling_or_removing_through_provider_stop_closes_configuration_first() {
+    // Disable and removal use stop_provider; the persisted lifecycle then disconnects the
+    // session, so a stale plugin-side configuration context cannot keep using its grants.
+    assert_managed_stop_closes_window(false).await;
+}
+
+#[tokio::test]
+async fn update_through_plugin_stop_closes_configuration_first() {
+    // Staged update uses stop_plugin, which routes each registered provider through the same
+    // close-before-stop path before replacing the process configuration.
+    assert_managed_stop_closes_window(true).await;
+}
+
 #[tokio::test]
 async fn configure_reuses_one_host_handle_for_open_focus_and_close() {
     let mut h = Harness::third_party_config("account").await;

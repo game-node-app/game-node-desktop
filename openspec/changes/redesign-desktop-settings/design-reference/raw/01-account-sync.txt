@@ -1,0 +1,43 @@
+# S1 · Conta e sincronização — frame 5373:3197, modal 5373:3436
+F [Título do painel] col gap4
+ T "Conta e sincronização" 22/600 color/text/primary
+ T "Sua conta GameNode e o que este PC envia para ela." 13/400 color/text/secondary
+F [Card: identidade] 662x82 col FH bg=color/secondary bd1=color/border/subtle r10
+ F row gap14 p16 ai:center FH
+  ELL [avatar] 48x48 bg=GRADIENT_LINEAR[#F15025 0%, #872C13 100%]  + initial (render avatar image when available; else initial 18/600 text/primary)
+  F col gap3 FH
+   T "cassi" 16/600 color/text/primary                      # username (fixture)
+   F row gap6 ai:center
+    I icon/lock 12:color/text-dimmed
+    T "Sessão salva no cofre do Windows" 12/400 color/text-dimmed     # session storage method
+  C <Pill Tone=Success> "Conectado" icons=icon/circle-check
+  C <Button Variant=Secondary Size=SM> 115x32 "Abrir perfil" icons=icon/external-link
+  C <Button Variant=Ghost Size=SM> 71x32 "Sair" icons=icon/logout
+F [Card: Tempo de jogo e sincronização] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] 660x37 row p14/16/10/16 > T "Tempo de jogo e sincronização" 11/600 color/text/muted ls0.8 upper
+ F [settingsRow] row gap16 p14/16 ai:center bdT1=color/border/subtle
+  F col gap3 FH
+   T "Sincronizar com o GameNode" 14/500 color/text/primary
+   T "O tempo de jogo da loja é enviado à sua conta. Desligado, a biblioteca continua funcionando só neste PC." 12/400 color/text-dimmed lh17 XH(400)
+  C <Switch State=On> 34x20
+ F [settingsRow]
+  F col gap3: T "Fonte do tempo de jogo" 14/500; T "Use o contador da loja quando existir, ou sempre o contador interno do GameNode." 12/400 text-dimmed lh17
+  F [segmented] 119x34 row gap2 p3 bg=color/bg/canvas bd1=color/border/subtle r8
+   F 47x26 row p0/12 ai:center bg=color/bg/raised r5 > T "Loja" 12/600 color/text/primary        # active
+   F 62x26 row p0/12 ai:center r5 > T "Interno" 12/400 color/text/secondary
+ F [settingsRow] 65h
+  F col gap3: T "Última sincronização" 14/500; T "248 jogos · 3 lojas · nenhum erro" 12/400 text-dimmed
+  F row gap10 ai:center
+   T "há 2 min" 12/400 color/text-dimmed
+   C <Button Variant=Secondary Size=SM> 158x32 "Sincronizar agora" icons=icon/refresh
+F [Card: O que é sincronizado (NOVO)] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "O que é sincronizado" 11/600 text/muted ls0.8 upper
+ F row gap24 p14/16 bdT1=color/border/subtle
+  F col gap8 FH
+   F row gap8 ai:center > I icon/circle-check 14:color/success; T "Tempo de jogo e última sessão" 12/400 color/text-default
+   F row gap8 ai:center > I icon/circle-check 14:color/success; T "Status e coleções escolhidos" 12/400 color/text-default
+  F col gap8 FH
+   F row gap8 ai:center > I icon/circle-x 14:color/text/muted; T "Arquivos de save" 12/400 color/text-dimmed
+   F row gap8 ai:center > I icon/circle-x 14:color/text/muted; T "Caminhos e executáveis locais" 12/400 color/text-dimmed
+F [Card: Privacidade (NOVO)]                 # OUT OF SCOPE — do not render
+ F [settingsRow] "Mostrar “Jogando agora” no perfil" / "Seus amigos no GameNode veem o jogo em execução enquanto ele estiver aberto." C <Switch State=Off>

@@ -1,0 +1,52 @@
+# S2 · Lojas — frame 5374:3847, modal 5374:4086
+F [Título do painel] row gap12 ai:max FH
+ F col gap4 FH
+  T "Lojas" 22/600 color/text/primary
+  T "Contas de loja conectadas a este PC. O GameNode nunca vê suas senhas." 13/400 color/text/secondary
+F [Card: Steam] col FH bg=color/secondary bd1=color/border/subtle r10
+ F row gap14 p16 ai:center FH
+  F [icon box] 40x40 row jc:center ai:center bg=color/bg/raised bd1=color/border/subtle r8 > I icon/brand-steam 20:color/text/primary
+  F col gap3 FH
+   T "Steam" 16/600 color/text/primary
+   T "Conta cassi · sincronizado há 2 min" 12/400 color/text-dimmed
+  C <Pill Tone=Success> "Conectado" icons=icon/circle-check
+  C <Button Variant=Secondary Size=SM> "Sincronizar agora" icons=icon/refresh
+  F [overflow] 30x30 row jc:center ai:center bd1=color/border/subtle r6 > I icon/dots 16:color/text/secondary     # opens Menu with remaining actions
+ F [stats] row gap8 p0/16/14/16 FH
+  F 204x56 col gap2 p10 FH bg=color/bg/canvas bd1=color/border/subtle r6 > T "164" 16/600 color/text/primary; T "na biblioteca" 11/400 color/text-dimmed
+  F 204x56 ... > T "11" 16/600; T "compartilhados pela família" 11/400       # only when provider declares shared access; label from sharedLabel
+  F 204x56 ... > T "29" 16/600; T "instalados neste PC" 11/400
+ F [settingsRow] row gap14 p12/16 ai:center bdT1=color/border/subtle
+  F col gap3 FH
+   F row gap8 > T "Incluir jogos compartilhados pela família" 14/500 color/text/primary; [badge NOVO — annotation]
+   T "Mostra os jogos da Família Steam com o selo “Compartilhado”." 12/400 color/text-dimmed
+  C <Switch State=On>
+F [Card: Epic Games Store] col FH bg=color/secondary bd1=color/warning r10        # expired session → warning border
+ F row gap14 p16 ai:center
+  F [icon box] 40x40 bg=color/bg/raised bd1=color/border/subtle r8 > I icon/device-gamepad-2 20:color/text/primary
+  F col gap3 FH
+   T "Epic Games Store" 16/600 color/text/primary
+   T "O login expirou. Exibindo sua biblioteca salva (52 jogos)." 12/400 color/text-dimmed
+  C <Pill Tone=Warning> "Sessão expirada" icons=icon/alert-triangle
+  C <Button Variant=Primary Size=SM> 137x32 "Entrar de novo" icons=icon/external-link
+ F [settingsRow] row gap14 p12/16 bdT1=color/border/subtle
+  F col gap3 FH > T "Remover login salvo" 14/500; T "Os jogos instalados permanecem na sua biblioteca." 12/400 text-dimmed
+  C <Button Variant=Ghost Size=SM> "Remover" icons=icon/trash
+F [Card: Armazenamento de credenciais] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Armazenamento de credenciais" 11/600 text/muted ls0.8 upper
+ F row gap14 p14/16 ai:center bdT1=color/border/subtle
+  I icon/lock 18:color/text/secondary
+  F col gap3 FH
+   T "Gerenciador de Credenciais do Windows" 14/500 color/text/primary
+   T "Os logins das lojas ficam cifrados pelo Windows, nunca em arquivos do GameNode." 12/400 color/text-dimmed lh17 XH(400)
+  C <Pill Tone=Success> "Disponível" icons=icon/lock
+F [Card: Detectadas neste PC] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Detectadas neste PC" 11/600 text/muted ls0.8 upper
+ F row gap14 p12/16 ai:center bdT1=color/border/subtle
+  I icon/brand-steam 18:color/text/secondary
+  F col gap3 FH > T "Steam" 14/500 text/primary; T "C:\Program Files (x86)\Steam · 4 bibliotecas" 12/400 text-dimmed
+  C <Pill Tone=Neutral> "Detectada" icons=icon/check
+ F row gap14 p12/16 ai:center bdT1=color/border/subtle
+  I icon/device-gamepad-2 18:color/text/secondary
+  F col gap3 FH > T "Epic Games Launcher" 14/500; T "C:\Program Files\Epic Games" 12/400 text-dimmed
+  C <Pill Tone=Neutral> "Detectada" icons=icon/check

@@ -1,0 +1,20 @@
+# S8 · Geral — frame 5377:7917, modal 5377:8156
+F [Título do painel] col gap4 > T "Geral" 22/600; T "Inicialização, aparência da biblioteca e idioma." 13/400 text/secondary
+F [Card: Inicialização] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Inicialização" 11/600 upper
+ F [settingsRow] "Iniciar com o Windows" / "Mantém o contador de tempo ativo desde o login." C <Switch State=On>
+ F [settingsRow] "Iniciar minimizado na bandeja" (no help text) C <Switch State=Off>
+ F [settingsRow] "Fechar a janela minimiza para a bandeja" / "O GameNode continua contando o tempo de jogo em segundo plano." C <Switch State=On>
+F [Card: Biblioteca] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Biblioteca" 11/600 upper
+ F [settingsRow] "Visualização padrão" segmented [T "Grade" active][T "Lista"]       # segments p0/12
+ F [settingsRow] "Tamanho das capas" segmented [T "P"][T "M" active][T "G"]
+ F [settingsRow] "Abrir em" F [select] 180x32 row gap6 p0/10 bg=bg/canvas bd1=border/subtle r6 > T "Todos os jogos" 13/400 text/primary FH; I icon/chevron-down 14:text-dimmed
+ F [settingsRow] "Mostrar barra de status" C <Switch State=On>
+F [Card: Idioma e atalhos] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Idioma e atalhos" 11/600 upper
+ F [settingsRow] "Idioma" / "Reinicia a interface sem fechar jogos em execução." select 180x32 "Português (Brasil)"
+ F [settingsRow] "Atalhos de teclado" / "Ctrl+K, Ctrl+F, Ctrl+, e outros."
+  F row gap10 ai:center
+   C <Kbd> "?"
+   C <Button Variant=Secondary Size=SM> "Ver atalhos" icons=icon/keyboard

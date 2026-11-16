@@ -1,0 +1,30 @@
+# S7 · Sobre — frame 5376:7732, modal 5376:7971
+F [Título do painel] col gap4 > T "Sobre" 22/600; T "Versão, diagnóstico e licenças." 13/400 text/secondary
+F [Card: versão] row gap18 p20 ai:center bg=color/secondary bd1=color/border/subtle r10
+ C brand/gamenode-wordmark 83x32                        # existing GameNode wordmark/logo asset
+ F col gap4 FH
+  T "GameNode Desktop 0.9.0" 16/600 color/text/primary
+  T "Build 2026.11.10 · canal Estável · Windows 11 x64" 12/400 color/text-dimmed     # IN SCOPE: "Build {date} · {os} {arch}" — channel is OUT
+ F col gap6 ai:max > C <Pill> "Atualizado"; C <Button Secondary SM> "Procurar atualizações"      # OUT OF SCOPE (updater)
+F [Card: Diagnóstico] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Diagnóstico" 11/600 upper
+ F row gap14 p14/16 ai:center bdT1
+  I icon/terminal-2 18:color/text/secondary
+  F col gap3 FH > T "Log recente" 14/500; T "Últimas 500 linhas, sem dados de login." 12/400 text-dimmed
+  C <Button Variant=Secondary Size=SM> "Mostrar log recente" icons=icon/file-text
+  C <Button Variant=Ghost Size=SM> "Abrir pasta de logs" icons=icon/folder-open
+ F row gap14 p14/16 ai:center bdT1
+  I icon/cpu 18:color/text/secondary
+  F col gap3 FH > T "Informações do sistema" 14/500 [NOVO annotation]; T "Versão, plugins e lojas detectadas, para anexar em um relato de problema." 12/400 text-dimmed lh17
+  C <Button Variant=Secondary Size=SM> "Copiar" icons=icon/copy
+F [Card: Licenças] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Licenças" 11/600 upper
+ F row gap14 p14/16 ai:center bdT1
+  I icon/file-text 18:color/text/secondary
+  F col gap3 FH > T "Avisos de licença" 14/500; T "O GameNode Desktop inclui software de código aberto." 12/400 text-dimmed
+  C <Button Variant=Secondary Size=SM> "Mostrar avisos de licença" icons=icon/file-text
+F [links] row gap20 ai:center p0/4
+ F row gap4 ai:center > T "Site do GameNode" 12/500 color/primary; I icon/external-link 12:color/primary
+ F row gap4 > T "Termos de uso" 12/500 primary; I icon/external-link 12
+ F row gap4 > T "Privacidade" 12/500 primary; I icon/external-link 12
+ F row gap4 > T "Relatar um problema" 12/500 primary; I icon/external-link 12

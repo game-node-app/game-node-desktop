@@ -1,0 +1,55 @@
+# Shared shell + navigation (identical on S1–S8). Figma frame 5373:3436 (inside 5373:3197).
+# Window frame 1440x900 = library background + overlay; modal sits at (240,90).
+REC [Overlay] 1440x900 bg=#0000009E
+F [Settings · FloatingModal] 960x720 col XX bg=color/bg/canvas bd1=#333333 r12 sh(0,24,64,0,#00000099) clip
+ F [Barra de título] 958x48 row gap10 p0/10/0/14 ai:center FX bg=color/bg/sidebar bd0/0/1/0=color/border/subtle
+  I icon/dots-vertical 16:color/text/muted
+  I icon/settings 16:color/text/secondary
+  T "Configurações" 14/600 color/text/primary HH
+  F [spacer] 698x1 FX
+  C <Kbd> 30x18 HX "Esc" p0/5 bg=color/bg/raised bd1=color/border/subtle r4 (label 11/500 color/text/secondary)
+  F [Frame] 32x32 row jc:center ai:center XX r6
+   I icon/x 16:color/text/secondary
+ F [Corpo] 958x670 row FF
+  F [Navegação] 232x670 col gap16 p12 XF bg=color/bg/sidebar bd0/1/0/0=color/border/subtle
+   F [Buscar configurações (NOVO)] 207x32 row gap8 p0/10/0/10 ai:center FX bg=color/bg/canvas bd1=color/border/subtle r6
+    I icon/search 14:color/text-dimmed
+    T "Buscar configurações" 12/400 color/text-dimmed FH        # placeholder
+   F [Conta] col gap2 FH
+    F [label] row p0/10/4/10
+     T "Conta" 10/600 color/text/muted ls0.8 upper
+    C <Nav item State=Active> 207x32 "Conta e sincronização" icons=icon/user
+   F [Biblioteca] col gap2 FH
+    F [label] row p0/10/4/10 > T "Biblioteca" 10/600 color/text/muted ls0.8 upper
+    C <Nav item State=Default> 207x32 "Lojas" icons=icon/device-gamepad-2
+     I icon/alert-triangle 14:color/warning       # trailing attention marker (expired / credential error / persist failed)
+    C <Nav item State=Default> 207x32 "Jogos DRM-free" icons=icon/folder
+    C <Nav item State=Default> 207x32 "Backups" icons=icon/archive
+   F [Aplicativo] col gap2 FH
+    F [label] row p0/10/4/10 > T "Aplicativo" 10/600 color/text/muted ls0.8 upper
+    C <Nav item State=Default> 207x32 "Geral" icons=icon/settings
+     F [badge NOVO] 37x13 p1/5 bg=accent/subtle r3 > T "NOVO" 9/700 color/primary ls0.6     # DESIGN ANNOTATION — never ship
+    C <Nav item State=Default> 207x32 "Ferramentas" icons=icon/tool
+    C <Nav item State=Default> 207x32 "Plugins" icons=icon/puzzle count="3"
+    C <Nav item State=Default> 207x32 "Sobre" icons=icon/info-circle
+   F [spacer] FF
+   T "GameNode Desktop 0.9.0" 11/400 color/text/muted HH        # footer: "GameNode Desktop {version}"
+  F [Área de conteúdo] 726x670 col FF (relative; children below overlay the bottom)
+   F [Painel] 726x670 col gap20 p28/32/32/32 FF clip (scrolls)
+    F [Título do painel] col gap4 FH          # S2/S3/S6 use row gap12 ai:max with a trailing action
+     T "<Título>" 22/600 color/text/primary
+     T "<Descrição>" 13/400 color/text/secondary
+    ...cards (see per-screen dumps)
+   REC [Fade de rolagem] 726x56 pinned bottom bg=GRADIENT_LINEAR[#0B0B0B00 0%, #0B0B0B 100%]   # pointer-events none
+   F [Barra de alterações não salvas] 726x56 pinned bottom (only S4; see 04-backups.txt)
+
+# Card pattern (every card on every screen)
+F [Card: <título>] 662xH col FH bg=color/secondary bd1=color/border/subtle r10 clip
+ F [header] 660x37 row p14/16/10/16 ai:center        # 56h variant: row gap12 p12/16 with trailing Button SM
+  T "<TÍTULO>" 11/600 color/text/muted ls0.8 upper
+ F [settingsRow] row gap16 p14/16/14/16 ai:center FH bd1/0/0/0=color/border/subtle    # (first row under header also has the top border)
+  F [text] col gap3 FH
+   T "<Rótulo>" 14/500 color/text/primary
+   T "<Ajuda>" 12/400 color/text-dimmed lh17 XH(400)      # max width 400
+  <control>                                                # Switch / Segmented / Select / Button SM / field
+# Compact settingsRow (S2/S3 lists): row gap14 p12/16 — same text styles; label 13/500 on S3 folder rows.

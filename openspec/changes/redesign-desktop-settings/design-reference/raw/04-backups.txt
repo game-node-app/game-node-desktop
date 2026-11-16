@@ -1,0 +1,46 @@
+# S4 · Backups — frame 5375:5208, modal 5375:5447. Shows the PENDING-CHANGES state.
+F [Título do painel] col gap4 > T "Backups" 22/600; T "Proteção local dos saves para jogos DRM-free." 13/400 text/secondary
+F [Card: Proteção automática] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Proteção automática" 11/600 upper
+ F [settingsRow — changed] row gap16 p14/16 ai:center bdT1
+  ELL [alterado] 6x6 bg=color/primary            # changed-dot, leading, vertically centered on the label block (row padding-left stays 16; dot sits in a 20px gutter)
+  F col gap3 FH
+   T "Proteger saves automaticamente" 14/500 color/text/primary
+   T "Cria uma cópia local após cada sessão de jogo nos jogos com pasta de saves conhecida." 12/400 text-dimmed lh17 XH(400)
+  C <Switch State=On>
+ F [settingsRow — changed]
+  ELL [alterado] 6x6 bg=color/primary
+  F col gap3 FH
+   T "Destino dos backups" 14/500
+   T "Antes: %LOCALAPPDATA%\GameNode\backups" 12/400 text-dimmed lh17        # "Antes: {saved value}" replaces help text while changed
+  F [field] 230x32 row gap6 p0/10 ai:center bg=color/bg/canvas bd1=color/primary r6     # border primary = changed/focused; default border/subtle
+   I icon/folder 14:color/text-dimmed
+   T "E:\Backups\GameNode" 12/400 color/text/primary ellipsis
+  C <Button Variant=Secondary Size=SM> "Escolher pasta…"
+ F [settingsRow]
+  F col gap3 > F row gap8 > T "Cópias mantidas por jogo" 14/500; [NOVO annotation]; T "As mais antigas são apagadas primeiro." 12/400 text-dimmed
+  F [select] 140x32 row gap6 p0/10 ai:center bg=color/bg/canvas bd1=color/border/subtle r6
+   T "12 cópias" 13/400 color/text/primary FH          # fixture; options are 5/10/20/50 (RETENTION_OPTIONS)
+   I icon/chevron-down 14:color/text-dimmed
+ F [settingsRow] "Limite de espaço" / "Avisa antes de passar do limite." select "5 GB"      # OUT OF SCOPE — do not render
+F [Card: Uso do espaço (NOVO)] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Uso do espaço" 11/600 upper
+ F col gap10 p0/16/14/16
+  F row ai:center
+   T "2,3 GB de 5 GB" 14/600 color/text/primary FH       # IN SCOPE: total only → "2,3 GB" (+ "· N cópias"). "de 5 GB" is OUT
+   T "46%" 12/400 color/text-dimmed                       # OUT OF SCOPE (quota percent)
+  F [bar] 6h bg=color/bg/raised r3 > fill bg=color/primary   # OUT OF SCOPE (quota bar)
+  F [game row] row gap10 ai:center
+   REC [cover] 18x24 r2           # cover thumbnail via gamenode-asset:// (gradient is placeholder)
+   T "Distant Skies: Recompiled" 13/400 color/text-default FH ellipsis
+   T "860 MB · 12 cópias" 12/400 color/text-dimmed
+  F [game row] "Glass Garden: Enhanced" "610 MB · 12 cópias"
+  F [game row] "Rune & Rail" "420 MB · 8 cópias"
+REC [Fade de rolagem] 726x56 (above the unsaved bar)
+F [Barra de alterações não salvas] 726x56 row gap10 p0/20 ai:center pinned bottom of content area bg=color/bg/raised bdT1=#3A3A3A
+ I icon/info-circle 16:color/primary
+ F col gap1 FH
+  T "Alterações não salvas" 13/600 color/text/primary
+  T "2 configurações alteradas" 11/400 color/text-dimmed
+ C <Button Variant=Ghost Size=SM> "Reverter" icons=icon/arrow-back-up
+ C <Button Variant=Primary Size=SM> "Salvar alterações" icons=icon/check

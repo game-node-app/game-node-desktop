@@ -1,0 +1,29 @@
+# S5 · Ferramentas — frame 5375:6321, modal 5375:6560
+F [Título do painel] col gap4 > T "Ferramentas" 22/600; T "Ferramentas de terceiros que o GameNode instala e atualiza por jogo." 13/400 text/secondary
+F [Card: Ferramentas suportadas] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] > T "Ferramentas suportadas" 11/600 upper
+ F row gap14 p14/16 ai:center bdT1
+  F [icon box] 40x40 row jc:center ai:center bg=accent/subtle r8 > I icon/bolt 20:color/primary
+  F col gap3 FH
+   T "OptiScaler" 15/500 color/text/primary
+   T "Upscaling FSR, XeSS e DLSS em jogos compatíveis. Instale pelo painel do jogo." 12/400 text-dimmed lh17 XH(360)
+  C <Pill Tone=Success> "Em 2 jogos" icons=icon/circle-check       # neutral "Não instalado" when 0 (not drawn)
+  C <Button Variant=Secondary Size=SM> "Ver jogos"
+ F [settingsRow] "Procurar atualizações automaticamente" [NOVO annotation] / "Avisa quando houver versão estável nova; nada é instalado sem confirmação." C <Switch State=On>
+ F [settingsRow] "Canal padrão" / "Usado ao instalar em um jogo novo."
+  F [segmented] row gap2 p3 bg=bg/canvas bd1=border/subtle r8 > [p0/12 bg=bg/raised r5 T "Estável" 12/600 text/primary][p0/12 r5 T "Nightly" 12/400 text/secondary]
+F [Card: Cache de downloads] col FH bg=color/secondary bd1=color/border/subtle r10
+ F [header] 660x56 row gap12 p12/16 ai:center
+  T "Cache de downloads" 11/600 upper FH
+  C <Button Variant=Secondary Size=SM> "Limpar cache" icons=icon/trash
+ F col gap10 p0/16/14/16
+  F row ai:center
+   T "312 MB · 4 versões em cache" 14/600 color/text/primary FH
+   T "Limpar o cache nunca remove ferramentas instaladas." 12/400 color/text-dimmed
+  F [version row] row gap10 p8/0 ai:center bdT1=color/border/subtle
+   I icon/package 16:color/text/secondary
+   T "OptiScaler 0.7.4" 13/400 color/text-default FH
+   C <Pill Tone=Success> "Em uso"
+   T "38 MB · verificado SHA-256" 12/400 color/text-dimmed
+  F [version row] "OptiScaler 0.7.3" (no pill) "37 MB · verificado SHA-256"
+  F [version row] "OptiScaler nightly 2026-11-02" C <Pill Tone=Warning> "Nightly" "41 MB"

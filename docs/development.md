@@ -44,7 +44,7 @@ Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 ## Required Cargo target location
 
 Always use the configured external `CARGO_TARGET_DIR`. In this Linux workspace
-the selected directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target`**. Never compile into
+the selected directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes`**. Never compile into
 Cargo's default repository `target/`, `/home`, or a target inside the user's
 home directory. Do not substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem
 or a target on the root filesystem. The selected target is on the persistent
@@ -55,17 +55,17 @@ Set the target before any Cargo build, check, test, Clippy, cross-compilation,
 or development/package launcher, and verify the effective location:
 
 ```sh
-export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target
+export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
 
-The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target` in this workspace. All Cargo
+The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes` in this workspace. All Cargo
 examples below require this setup. For separate tool calls or fresh shells,
 pass the variable on **each invocation**, because an earlier export is not
 inherited:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target cargo test --locked -p gamenode-app
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes cargo test --locked -p gamenode-app
 ```
 
 On native Windows, use the configured external Windows target outside the user
@@ -130,7 +130,7 @@ Every Cargo check in this workflow must use the external target configured in
 shell's `export` does not carry into a new tool invocation. For example:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes \
   cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 

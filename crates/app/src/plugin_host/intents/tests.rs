@@ -192,6 +192,7 @@ fn request() -> ConfirmationRequest {
         game_name: "Game".into(),
         operation: Operation::Launch,
         details: vec![],
+        launch_plan: None,
     }
 }
 

@@ -12,10 +12,9 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 - [x] 1.4 **Source 7.11.** Build immutable typed LaunchPlan resolution and versioned canonical approval fingerprints, binding source/package/component identities, effective target/argv/cwd/env and resource/grant revisions; verify plan substitution, replay, expiry and changed known mod/runtime components cannot dispatch through an old approval, with hashing/revalidation off the UI thread.
 
 
-- [ ] 1.5 **Source 10.6.** Add per-game launch recipe selection and explicit return to detected default using the shared host launch-plan review for runtime/emulator, mod-loader/layer and custom target/parameter changes; verify unchanged approved Play needs no repeated prompt and changed/revoked plans require an actionable choice in both locales.
+- [x] 1.6 **Source 10.7.** Implement the shared Launch plan / Plano de lançamento review with source provenance, ordered known components, complete literal arguments/paths/environment delta and differences; verify Cancel default, Run once, exact-recipe remembered approval, explicit secret reveal, accessibility, denied-request no-bypass behavior and scope-not-safety wording in en/pt-BR.
 
-
-- [ ] 1.6 **Source 10.7.** Implement the shared Launch plan / Plano de lançamento review with source provenance, ordered known components, complete literal arguments/paths/environment delta and differences; verify Cancel default, Run once, exact-recipe remembered approval, explicit secret reveal, accessibility, denied-request no-bypass behavior and scope-not-safety wording in en/pt-BR.
+- [x] 1.5 **Source 10.6 (depends on 1.6).** Add per-game launch recipe selection and explicit return to detected default using the shared host launch-plan review for runtime/emulator, mod-loader/layer and custom target/parameter changes; verify unchanged approved Play needs no repeated prompt and changed/revoked plans require an actionable choice in both locales.
 
 
 - [ ] 1.7 **Source 11.8.** Add equivalent safe Go/Rust launch-consent fixtures for emulators/runtimes, known mod layers and environment-only customization; verify both clients use host review and cannot replace approved fields or treat launch consent as installation/write permission.

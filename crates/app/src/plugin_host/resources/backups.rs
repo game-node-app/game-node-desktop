@@ -911,6 +911,7 @@ impl ResourceApi {
                     game_name: frozen.game_name.clone(),
                     operation: Operation::BackupRestore,
                     details,
+                    launch_plan: None,
                 };
                 let answer = tokio::select! {
                     answer = api.intents.confirm(confirmation) => answer,

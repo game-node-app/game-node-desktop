@@ -87,6 +87,8 @@ pub struct ConfirmationRequest {
     pub operation: Operation,
     /// Host-resolved restore paths and snapshot identity; never a plugin explanation.
     pub details: Vec<String>,
+    /// Exact resolved launch details when this confirmation covers a launch plan.
+    pub launch_plan: Option<super::launch_plan::LaunchPlanReview>,
 }
 
 /// The user's answer.

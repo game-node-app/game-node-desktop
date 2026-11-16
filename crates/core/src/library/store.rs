@@ -443,6 +443,64 @@ pub trait LibraryStore: Send + Sync {
         ))
     }
 
+    /// Lists recipes owned by one authenticated plugin for an installation.
+    fn custom_launch_recipes(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+    ) -> Result<Vec<super::custom_launch::CustomLaunchRecipe>, StorageError> {
+        let _ = (owner_key, game_id);
+        Ok(Vec::new())
+    }
+
+    /// The user's active custom launch choice. No row means the detected target is active.
+    fn launch_recipe_selection(
+        &self,
+        entry_key: &str,
+    ) -> Result<Option<super::custom_launch::LaunchRecipeSelection>, StorageError> {
+        let _ = entry_key;
+        Ok(None)
+    }
+
+    /// Persists a user-selected recipe only while its game target and recipe revisions match.
+    fn save_launch_recipe_selection(
+        &self,
+        selection: &super::custom_launch::LaunchRecipeSelection,
+        expected_target_revision: u64,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (selection, expected_target_revision);
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
+    /// Explicitly returns the entry to its detected default, using target revision CAS.
+    fn clear_launch_recipe_selection(
+        &self,
+        entry_key: &str,
+        expected_target_revision: u64,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (entry_key, expected_target_revision);
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
+    /// Records remembered user approval for the currently selected, exact plan.
+    fn approve_launch_recipe_plan(
+        &self,
+        entry_key: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+        fingerprint: &str,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (
+            entry_key,
+            recipe_id,
+            recipe_revision,
+            expected_target_revision,
+            fingerprint,
+        );
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
     /// Lists this plugin owner's approved runtime resources.
     fn runtime_resources(
         &self,

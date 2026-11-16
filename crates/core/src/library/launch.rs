@@ -27,6 +27,10 @@ pub enum LaunchError {
     /// The store client is not installed or registered.
     #[error("the store application is not available")]
     NoHandler,
+    /// A selected custom recipe, its approval or one of its resources changed or was revoked.
+    /// The user can choose another recipe or explicitly return to the detected default.
+    #[error("the selected custom launch recipe needs attention")]
+    RecipeNeedsAttention,
     #[error("the link could not be opened")]
     Failed,
 }

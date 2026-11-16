@@ -14,6 +14,7 @@ fn request() -> ConfirmationRequest {
         game_name: "Game <b>one</b>".into(),
         operation: Operation::Install,
         details: vec![],
+        launch_plan: None,
     }
 }
 

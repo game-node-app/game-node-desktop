@@ -181,6 +181,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         ..Default::default()
     };
+    plugin_api.providers.set_state_layout(
+        gamenode_app::plugin_host::profile::PluginStateLayout::new(paths.plugin_data_dir()),
+    );
     #[cfg(target_os = "linux")]
     let plugin_api_server = match gamenode_app::plugin_host::PluginApiServer::start(
         runtime.handle(),
@@ -387,6 +390,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.set_plugin_profiles(plugin_api.providers.profiles());
     // Plugins read the library through a host-owned projection the engine keeps current.
     engine.set_library_feed(plugin_api.library.clone());
+    if let Some(server) = plugin_api_server.as_ref() {
+        engine.set_selected_launch_api(server.resource_api());
+    }
 
     let mut builder = tauri::Builder::default();
     builder = gamenode_app::protocol::register_asset_protocol(
@@ -448,6 +454,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::activate_entry,
         commands::open_entry,
         commands::review_detected_target,
+        commands::launch_recipe_choices,
+        commands::select_launch_recipe,
+        commands::use_detected_default,
         commands::repair_detected_target,
         commands::launch_selected,
         commands::dismiss_launch,

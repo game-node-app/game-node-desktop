@@ -816,6 +816,7 @@ struct FakeHost {
     launch_target: std::sync::atomic::AtomicU64,
     custom_launch_recipes:
         Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
+    launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
     custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
 }
 
@@ -956,6 +957,10 @@ impl LibraryHost for FakeHost {
         Ok(self.launch_target.load(Ordering::SeqCst))
     }
 
+    async fn launch_target_revision(&self, _entry_key: String) -> Result<u64, Status> {
+        Ok(1)
+    }
+
     async fn custom_launch_recipe(
         &self,
         owner_key: String,
@@ -1007,6 +1012,41 @@ impl LibraryHost for FakeHost {
         let revision = current.revision.saturating_add(1);
         recipes.remove(&key);
         Ok(CustomLaunchMutation::Applied { revision })
+    }
+
+    async fn launch_recipe_selection(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, Status> {
+        Ok(self
+            .launch_recipe_selections
+            .lock()
+            .unwrap()
+            .get(&entry_key)
+            .cloned())
+    }
+
+    async fn approve_launch_recipe_plan(
+        &self,
+        entry_key: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        target_revision: u64,
+        fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, Status> {
+        use gamenode_core::library::LaunchRecipeSelectionWrite;
+        let mut selections = self.launch_recipe_selections.lock().unwrap();
+        let Some(selection) = selections.get_mut(&entry_key) else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        if selection.recipe_id != recipe_id
+            || selection.recipe_revision != recipe_revision
+            || selection.base_target_revision != target_revision
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        selection.approved_plan_fingerprint = fingerprint;
+        Ok(LaunchRecipeSelectionWrite::Applied)
     }
 
     async fn prepare_custom_launch(

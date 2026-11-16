@@ -471,6 +471,143 @@ async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn user_play_reviews_selected_recipe_remembers_exact_plan_and_never_falls_back() {
+    let (fixture, host, dialog) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE_AND_REMEMBER])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+
+    let profiles = fixture.api.profiles();
+    let layout = crate::plugin_host::profile::PluginStateLayout::new(
+        fixture.plugin_data.join("host-launch-profile"),
+    );
+    profiles.set_state_layout(layout.clone());
+    let profile = profiles.current().unwrap();
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "host-selected-game".into(),
+    };
+    let request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [scope.clone()].into(),
+    };
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(
+            identity.clone(),
+            &[request],
+            &[crate::plugin_host::grants::PermissionDecision {
+                permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+                scope,
+                granted: true,
+            }],
+        )
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled(&identity.plugin_id, true)
+        .unwrap();
+
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "host-play-recipe".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let resolver = profiles
+        .resolver("fixture.plugin", &"ab".repeat(32), None)
+        .unwrap();
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "fixture:3".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "fixture:3".into(),
+            owner_key: resolver.library_recipe_owner_key(),
+            plugin_id: identity.plugin_id.clone(),
+            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+            recipe_id: recipe.recipe_id,
+            recipe_revision: recipe.recipe_revision,
+            base_target_revision: 1,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap()
+    );
+    let shown = dialog.as_ref().unwrap().shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    let reviewed = shown[0].launch_plan.as_ref().unwrap();
+    assert_eq!(reviewed.source_id, "fixture");
+    assert_eq!(reviewed.target, "steam://rungameid/3");
+    assert!(!reviewed.fingerprint.is_empty());
+
+    // The exact same plan uses the user-approved fingerprint and does not prompt again.
+    assert!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(dialog.as_ref().unwrap().shown.lock().unwrap().len(), 1);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // A changed detected target invalidates the selected recipe and blocks all dispatch.
+    host.launch_target.store(2, Ordering::SeqCst);
+    assert_eq!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // Revoking custom-launch permission after approval is also fail-closed.
+    let revoked_request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [crate::plugin_host::grants::GrantScope::Declared {
+            value: "host-selected-game".into(),
+        }]
+        .into(),
+    };
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity, &[revoked_request], &[])
+        .unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    assert_eq!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn custom_launch_recipe_removal_during_confirmation_blocks_dispatch() {
     let (dialog, gate) = held(&[APPROVE]);
     let (fixture, host, dialog) =

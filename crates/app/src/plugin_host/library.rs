@@ -718,6 +718,26 @@ pub trait LibraryHost: Send + Sync {
     ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
         Err(Status::unavailable("custom launch recipes are unavailable"))
     }
+    async fn launch_recipe_selection(
+        &self,
+        _entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, Status> {
+        Err(Status::unavailable(
+            "launch recipe selections are unavailable",
+        ))
+    }
+    async fn approve_launch_recipe_plan(
+        &self,
+        _entry_key: String,
+        _recipe_id: String,
+        _recipe_revision: u64,
+        _target_revision: u64,
+        _fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, Status> {
+        Err(Status::unavailable(
+            "launch recipe selections are unavailable",
+        ))
+    }
     async fn prepare_custom_launch(
         &self,
         _recipe: gamenode_core::library::CustomLaunchRecipe,
@@ -863,6 +883,14 @@ pub trait LibraryHost: Send + Sync {
     async fn launch_fingerprint(&self, entry_key: String) -> Result<u64, Status> {
         let _ = entry_key;
         Ok(0)
+    }
+
+    /// The revision of the detected target as shown by the user's launch selector.
+    async fn launch_target_revision(&self, entry_key: String) -> Result<u64, Status> {
+        let _ = entry_key;
+        Err(Status::failed_precondition(
+            "detected launch target changed",
+        ))
     }
 
     /// Stores the display-name override of `entry_key` if `expected_revision` is current,

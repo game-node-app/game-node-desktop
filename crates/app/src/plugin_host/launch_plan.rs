@@ -7,6 +7,172 @@ use gamenode_core::library::{
 };
 use tonic::Status;
 
+/// Plain, host-resolved data shown by the shared launch-plan review. Environment values are
+/// included for exact review and remain masked in the UI until the user explicitly reveals them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchPlanReview {
+    pub source_id: String,
+    pub requester_plugin_id: String,
+    pub requester_publisher: String,
+    pub requester_package_version: String,
+    pub target: String,
+    pub components: Vec<LaunchPlanReviewComponent>,
+    pub arguments: Vec<String>,
+    pub working_directory: String,
+    pub environment_set: std::collections::BTreeMap<String, String>,
+    pub environment_unset: Vec<String>,
+    pub differences: Vec<String>,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchPlanReviewComponent {
+    pub kind: String,
+    pub id: String,
+    pub owner_plugin_id: String,
+    pub owner_publisher: String,
+    pub version: String,
+    pub revision: u64,
+}
+
+pub fn review(plan: &LaunchPlan, fingerprint: String) -> LaunchPlanReview {
+    let target = match &plan.target {
+        LaunchPlanTarget::Detected { fingerprint } => {
+            format!("Detected target (revision {fingerprint})")
+        }
+        LaunchPlanTarget::Uri { uri, handler } => handler.as_ref().map_or_else(
+            || uri.clone(),
+            |handler| format!("{uri} (handler: {handler})"),
+        ),
+        LaunchPlanTarget::Executable {
+            path,
+            file_identity,
+        } => format!("{path} (file identity: {file_identity})"),
+    };
+    let mut differences = Vec::new();
+    if !plan.recipe_id.is_empty() {
+        differences.push("recipe-selected".into());
+    }
+    if !matches!(&plan.target, LaunchPlanTarget::Detected { .. }) {
+        differences.push("custom-target".into());
+    }
+    if !plan.components.is_empty() {
+        differences.push("known-components".into());
+    }
+    if !plan.arguments.is_empty() {
+        differences.push("custom-arguments".into());
+    }
+    if !plan.working_directory.is_empty() {
+        differences.push("custom-working-directory".into());
+    }
+    if !plan.environment.is_empty() {
+        differences.push("environment-changes".into());
+    }
+    LaunchPlanReview {
+        source_id: plan.source_id.clone(),
+        requester_plugin_id: plan.requester_plugin_id.clone(),
+        requester_publisher: plan.requester_publisher.clone(),
+        requester_package_version: plan.requester_package_version.clone(),
+        target,
+        components: plan
+            .components
+            .iter()
+            .map(|component| LaunchPlanReviewComponent {
+                kind: component.kind.clone(),
+                id: component.id.clone(),
+                owner_plugin_id: component.owner_plugin_id.clone(),
+                owner_publisher: component.owner_publisher.clone(),
+                version: component.version.clone(),
+                revision: component.revision,
+            })
+            .collect(),
+        arguments: plan.arguments.clone(),
+        working_directory: plan.working_directory.clone(),
+        environment_set: plan.environment.set.clone(),
+        environment_unset: plan.environment.unset.iter().cloned().collect(),
+        differences,
+        fingerprint,
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use gamenode_core::drm_free::LaunchEnvironmentDelta;
+
+    #[test]
+    fn review_preserves_provenance_component_order_literals_and_environment_changes() {
+        let plan = LaunchPlan {
+            version: gamenode_core::library::LAUNCH_PLAN_VERSION,
+            game_id: "620".into(),
+            installation_id: "install-1".into(),
+            profile_id: "profile-1".into(),
+            source_id: "steam".into(),
+            requester_plugin_id: "org.example.launcher".into(),
+            requester_publisher: "ab".repeat(32),
+            requester_package_version: "2.1.0".into(),
+            target_revision: 4,
+            recipe_id: "recipe-1".into(),
+            recipe_revision: 3,
+            grant_revision: 7,
+            target: LaunchPlanTarget::Executable {
+                path: "C:\\Games\\Portal 2\\Portal2.exe".into(),
+                file_identity: "volume:file-id".into(),
+            },
+            components: vec![
+                LaunchPlanComponent {
+                    kind: "runtime".into(),
+                    id: "proton".into(),
+                    owner_plugin_id: "org.example.runtime".into(),
+                    owner_publisher: "cd".repeat(32),
+                    version: "9.0".into(),
+                    revision: 2,
+                },
+                LaunchPlanComponent {
+                    kind: "mod-layer".into(),
+                    id: "compat-layer".into(),
+                    owner_plugin_id: "org.example.mods".into(),
+                    owner_publisher: "ef".repeat(32),
+                    version: "1.4".into(),
+                    revision: 5,
+                },
+            ],
+            resources: vec![],
+            arguments: vec!["--profile".into(), "a profile & literal".into()],
+            working_directory: "C:\\Games\\Portal 2".into(),
+            environment: LaunchEnvironmentDelta {
+                set: [("GAME_MODE".into(), "custom".into())].into(),
+                unset: ["OLD_MODE".into()].into(),
+            },
+        };
+        let fingerprint = format!("v1:{}", "aa".repeat(32));
+        let review = review(&plan, fingerprint.clone());
+        assert_eq!(review.source_id, "steam");
+        assert_eq!(review.requester_package_version, "2.1.0");
+        assert_eq!(review.arguments, plan.arguments);
+        assert_eq!(review.working_directory, plan.working_directory);
+        assert_eq!(review.environment_set["GAME_MODE"], "custom");
+        assert_eq!(review.environment_unset, ["OLD_MODE"]);
+        assert_eq!(
+            review
+                .components
+                .iter()
+                .map(|part| part.id.as_str())
+                .collect::<Vec<_>>(),
+            ["proton", "compat-layer"]
+        );
+        assert_eq!(review.fingerprint, fingerprint);
+        assert!(
+            review
+                .differences
+                .iter()
+                .any(|line| line == "custom-target")
+        );
+    }
+}
+
 pub(super) fn resolve(
     caller: &ResourceCaller,
     entry: &Projected,

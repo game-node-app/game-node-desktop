@@ -218,7 +218,7 @@ impl ResourceApi {
         } else {
             0
         };
-        let plan_fingerprint = if launching {
+        let (plan_fingerprint, launch_plan_review) = if launching {
             let plan = super::super::launch_plan::resolve(
                 &caller,
                 &entry,
@@ -227,12 +227,17 @@ impl ResourceApi {
                 action.custom_dispatch.as_ref(),
                 &action.custom_resources,
             )?;
-            tokio::task::spawn_blocking(move || plan.fingerprint())
-                .await
-                .map_err(|_| Status::internal("launch plan fingerprint worker failed"))?
-                .map_err(|_| Status::failed_precondition("the launch plan is invalid"))?
+            tokio::task::spawn_blocking(move || {
+                let fingerprint = plan
+                    .fingerprint()
+                    .map_err(|_| Status::failed_precondition("the launch plan is invalid"))?;
+                let review = super::super::launch_plan::review(&plan, fingerprint.clone());
+                Ok::<_, Status>((fingerprint, Some(review)))
+            })
+            .await
+            .map_err(|_| Status::internal("launch plan fingerprint worker failed"))??
         } else {
-            String::new()
+            (String::new(), None)
         };
         let game = entry.game_id.map(|id| id.to_string()).unwrap_or_default();
         let recipe_revision = action
@@ -311,6 +316,7 @@ impl ResourceApi {
                 .unwrap_or_else(|| entry.name.clone()),
             operation: action.operation,
             details: vec![],
+            launch_plan: launch_plan_review,
         };
         let (game_arg, installation_arg, operation) = (
             action.game_id.clone(),

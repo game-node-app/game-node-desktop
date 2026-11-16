@@ -89,6 +89,7 @@ struct State {
 /// Host-owned source of the active plugin profile.
 pub struct PluginProfiles {
     state: Mutex<State>,
+    layout: Mutex<Option<PluginStateLayout>>,
     changes: watch::Sender<Option<ProfileContext>>,
 }
 
@@ -99,6 +100,7 @@ impl Default for PluginProfiles {
                 epoch: 1,
                 ..State::default()
             }),
+            layout: Mutex::new(None),
             changes: watch::Sender::new(None),
         }
     }
@@ -113,6 +115,11 @@ impl std::fmt::Debug for PluginProfiles {
 }
 
 impl PluginProfiles {
+    /// Supplies the host-owned root for profile-scoped plugin grants and activation.
+    pub fn set_state_layout(&self, layout: PluginStateLayout) {
+        *lock(&self.layout) = Some(layout);
+    }
+
     /// Applies who is signed in. `account_id` is the verified account, or the cached last account
     /// while a restored session is unverified; `None` after sign-out or a rejected session.
     pub fn update(&self, account_id: Option<&str>, verified: bool) -> ProfileTransition {
@@ -188,6 +195,62 @@ impl PluginProfiles {
             profile.epoch,
         )
         .map_err(|_| Status::invalid_argument("invalid plugin identity"))
+    }
+
+    /// Authenticated plugin identities known in the active profile's grant store.
+    pub fn identities(&self) -> Result<Vec<PluginIdentity>, Status> {
+        let profile = self.require()?;
+        let layout = lock(&self.layout)
+            .clone()
+            .ok_or_else(|| Status::unavailable("plugin state layout is unavailable"))?;
+        let grants = layout
+            .open_grants(&profile)
+            .map_err(|_| Status::unavailable("plugin grants are unavailable"))?;
+        Ok(grants.identities())
+    }
+
+    /// Whether an authenticated plugin identity is enabled in the active account profile.
+    pub fn is_enabled(&self, plugin_id: &str) -> Result<bool, Status> {
+        let profile = self.require()?;
+        let layout = lock(&self.layout)
+            .clone()
+            .ok_or_else(|| Status::unavailable("plugin state layout is unavailable"))?;
+        let activation = layout
+            .open_activation(&profile)
+            .map_err(|_| Status::unavailable("plugin activation state is unavailable"))?;
+        Ok(activation.is_enabled(plugin_id))
+    }
+
+    /// Current host-consented permissions for a package identity in the active profile.
+    /// Used only for host actions explicitly initiated by the user, never to construct a plugin
+    /// RPC context or elevate a plugin request.
+    pub fn granted_permissions(
+        &self,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+    ) -> Result<(u64, std::collections::BTreeSet<String>), Status> {
+        use crate::plugin_host::grants::PermissionState;
+
+        let profile = self.require()?;
+        let layout = lock(&self.layout)
+            .clone()
+            .ok_or_else(|| Status::unavailable("plugin state layout is unavailable"))?;
+        let grants = layout
+            .open_grants(&profile)
+            .map_err(|_| Status::unavailable("plugin grants are unavailable"))?;
+        let identity = crate::plugin_host::grants::PluginIdentity {
+            plugin_id: plugin_id.to_owned(),
+            publisher_fingerprint: publisher_fingerprint.to_owned(),
+            profile_id: profile.profile_id,
+        };
+        let revision = grants.revision(&identity);
+        let permissions = grants
+            .effective_grants(&identity)
+            .into_iter()
+            .filter(|grant| grant.state == PermissionState::Granted)
+            .map(|grant| grant.permission_id)
+            .collect();
+        Ok((revision, permissions))
     }
 
     /// Notified with the new profile (or `None`) after every change.

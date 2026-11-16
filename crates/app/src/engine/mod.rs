@@ -64,6 +64,26 @@ pub enum GameNodePageError {
     Browser,
 }
 
+/// A recipe the authenticated plugin profile currently exposes for a matched library game.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecipeOption {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub recipe_id: String,
+    pub recipe_revision: u64,
+}
+
+/// Selection state shown beside one library entry's detected launch target.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecipeChoices {
+    pub target_revision: u64,
+    pub detected_default_available: bool,
+    pub selected: Option<gamenode_core::library::LaunchRecipeSelection>,
+    pub recipes: Vec<LaunchRecipeOption>,
+}
+
 /// The shortest time between snapshots published for cover completions.
 const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -202,6 +222,8 @@ struct Shared {
     providers: Mutex<Option<Arc<dyn crate::plugin_host::runtime::ProviderRuntime>>>,
     /// Third-party plugin profiles follow the signed-in GameNode account.
     plugin_profiles: Mutex<Option<Arc<crate::plugin_host::profile::PluginProfiles>>>,
+    /// Shared host resource adapter used for user-initiated custom Play selections.
+    selected_launch_api: Mutex<Option<Arc<crate::plugin_host::resources::ResourceApi>>>,
     /// The library projection plugins read through `ResourceHost`.
     library_feed: Mutex<Option<Arc<crate::plugin_host::library::LibraryFeed>>>,
     /// Serialize checks and catalog commits without delaying account cancellation.
@@ -301,6 +323,7 @@ impl Engine {
             storage: StorageWorker::new(),
             providers: Mutex::new(None),
             plugin_profiles: Mutex::new(None),
+            selected_launch_api: Mutex::new(None),
             library_feed: Mutex::new(None),
             provider_checks: Mutex::new(std::collections::HashMap::new()),
             catalog_syncs: Mutex::new(std::collections::HashMap::new()),
@@ -604,6 +627,14 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(feed);
         let state = self.lock();
         self.sync_library_feed(&state);
+    }
+
+    pub fn set_selected_launch_api(&self, api: Arc<crate::plugin_host::resources::ResourceApi>) {
+        *self
+            .shared
+            .selected_launch_api
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(api);
     }
 
     /// Reads the last signed-in account, then the stored session and, if there is one,
@@ -986,6 +1017,214 @@ impl Engine {
         self.open_entry_then(entry_key, kind, |_| {});
     }
 
+    /// Loads active recipe choices for a matched game without blocking the UI thread.
+    pub async fn launch_recipe_choices(
+        &self,
+        entry_key: String,
+    ) -> Result<LaunchRecipeChoices, String> {
+        let (game_id, target_revision, detected_default_available) = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            let game_id = state.library.match_status(entry).game_id().ok_or_else(|| {
+                "choose a GameNode game before selecting a launch recipe".to_owned()
+            })?;
+            let target = entry.target.as_ref();
+            (
+                game_id,
+                target.map_or(0, |target| target.revision),
+                target.is_some_and(|target| target.available),
+            )
+        };
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            let selection = store
+                .launch_recipe_selection(&entry_key)
+                .map_err(|error| error.to_string())?;
+            let identities = profiles.identities().map_err(|error| error.to_string())?;
+            let mut recipes = Vec::new();
+            for identity in identities {
+                if !profiles
+                    .is_enabled(&identity.plugin_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    continue;
+                }
+                let resolver = profiles
+                    .resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)
+                    .map_err(|error| error.to_string())?;
+                let owner_key = resolver.library_recipe_owner_key();
+                for recipe in store
+                    .custom_launch_recipes(&owner_key, game_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    if recipe.base_target_revision == target_revision && recipe.validate() {
+                        recipes.push(LaunchRecipeOption {
+                            plugin_id: identity.plugin_id.clone(),
+                            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+                            recipe_id: recipe.recipe_id,
+                            recipe_revision: recipe.revision,
+                        });
+                    }
+                }
+            }
+            recipes.sort_by(|left, right| {
+                (&left.plugin_id, &left.recipe_id).cmp(&(&right.plugin_id, &right.recipe_id))
+            });
+            Ok(LaunchRecipeChoices {
+                target_revision,
+                detected_default_available,
+                selected: selection,
+                recipes,
+            })
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
+    /// Selects an authenticated plugin recipe only while its game and detected target revisions
+    /// still match the current library entry.
+    pub async fn select_launch_recipe(
+        &self,
+        entry_key: String,
+        plugin_id: String,
+        publisher_fingerprint: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+    ) -> Result<(), String> {
+        let (game_id, target_revision) = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            let game_id = state.library.match_status(entry).game_id().ok_or_else(|| {
+                "choose a GameNode game before selecting a launch recipe".to_owned()
+            })?;
+            let target_revision = entry.target.as_ref().map_or(0, |target| target.revision);
+            (game_id, target_revision)
+        };
+        if target_revision != expected_target_revision || target_revision == 0 {
+            return Err("the detected target changed; refresh launch choices".into());
+        }
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            use gamenode_core::library::{LaunchRecipeSelection, LaunchRecipeSelectionWrite};
+
+            let identity = profiles
+                .identities()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|identity| {
+                    identity.plugin_id == plugin_id
+                        && identity.publisher_fingerprint == publisher_fingerprint
+                })
+                .ok_or_else(|| {
+                    "plugin identity is not authenticated for this profile".to_owned()
+                })?;
+            if !profiles
+                .is_enabled(&identity.plugin_id)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("the recipe's plugin is disabled".into());
+            }
+            let resolver = profiles
+                .resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)
+                .map_err(|error| error.to_string())?;
+            let owner_key = resolver.library_recipe_owner_key();
+            let recipe = store
+                .custom_launch_recipes(&owner_key, game_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|recipe| {
+                    recipe.recipe_id == recipe_id
+                        && recipe.revision == recipe_revision
+                        && recipe.base_target_revision == expected_target_revision
+                        && recipe.validate()
+                })
+                .ok_or_else(|| {
+                    "the selected recipe changed or is no longer available".to_owned()
+                })?;
+            let selection = LaunchRecipeSelection {
+                entry_key: entry_key.clone(),
+                owner_key,
+                plugin_id: identity.plugin_id,
+                publisher_fingerprint: identity.publisher_fingerprint,
+                recipe_id: recipe.recipe_id,
+                recipe_revision: recipe.revision,
+                base_target_revision: expected_target_revision,
+                approved_plan_fingerprint: String::new(),
+            };
+            match store
+                .save_launch_recipe_selection(&selection, expected_target_revision)
+                .map_err(|error| error.to_string())?
+            {
+                LaunchRecipeSelectionWrite::Applied => Ok(()),
+                LaunchRecipeSelectionWrite::Conflict => {
+                    Err("the detected target or recipe changed; refresh launch choices".into())
+                }
+                LaunchRecipeSelectionWrite::RecipeMissing => {
+                    Err("the selected recipe is no longer available".into())
+                }
+            }
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
+    /// Clears a custom recipe so the detected default is selected explicitly.
+    pub async fn use_detected_default(
+        &self,
+        entry_key: String,
+        expected_target_revision: u64,
+    ) -> Result<(), String> {
+        let current_revision = {
+            let state = self.lock();
+            let entry = state
+                .library
+                .entry(&entry_key)
+                .ok_or_else(|| "library entry is unavailable".to_owned())?;
+            entry.target.as_ref().map_or(0, |target| target.revision)
+        };
+        if current_revision != expected_target_revision {
+            return Err("the detected target changed; refresh launch choices".into());
+        }
+        let store = self.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            match store
+                .clear_launch_recipe_selection(&entry_key, expected_target_revision)
+                .map_err(|error| error.to_string())?
+            {
+                gamenode_core::library::LaunchRecipeSelectionWrite::Applied => Ok(()),
+                gamenode_core::library::LaunchRecipeSelectionWrite::Conflict => {
+                    Err("the detected target changed; refresh launch choices".into())
+                }
+                gamenode_core::library::LaunchRecipeSelectionWrite::RecipeMissing => {
+                    Err("library entry is unavailable".into())
+                }
+            }
+        })
+        .await
+        .map_err(|_| "launch recipe worker stopped".to_owned())?
+    }
+
     /// [`open_entry`](Self::open_entry) that also reports how it ended to `done`, which runs
     /// exactly once: on the worker when the link was handled, or at once when nothing was
     /// started (the same opening is already under way, the game is already running, or the
@@ -1020,49 +1259,102 @@ impl Engine {
         state.launch_seq += 1;
         let seq = state.launch_seq;
         state.launch = Some(LaunchStatus {
-            entry_key,
+            entry_key: entry_key.clone(),
             kind,
             state: LaunchState::Opening,
         });
         self.publish(&mut state);
         let (engine, opener) = (self.clone(), self.shared.ports.uri.clone());
-        self.shared.runtime.spawn_blocking(move || {
-            let result = if kind == LaunchKind::Play
-                && let Some(target) = entry.target.as_ref()
-            {
-                detected_target::launch(&engine, &entry, target)
-            } else if provider.is_manual_executable() {
-                if kind != LaunchKind::Play {
-                    Err(gamenode_core::library::LaunchError::Unsupported)
-                } else {
-                    engine
-                        .shared
-                        .ports
-                        .local_games
-                        .as_ref()
-                        .zip(engine.shared.ports.installations.as_ref())
-                        .ok_or(gamenode_core::library::LaunchError::Unsupported)
-                        .and_then(|(store, host)| {
-                            let registrations = store
-                                .registrations()
-                                .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
-                            let registration = registrations
-                                .iter()
-                                .find(|r| r.key() == entry.key && !r.removed)
-                                .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
-                            let environment = engine.port_launch_environment(&registration.id);
-                            gamenode_core::library::launch::launch_manual_with_environment(
-                                &**host,
-                                &provider,
-                                &entry.record(),
-                                registration,
-                                &environment,
-                                kind,
-                            )
-                        })
-                }
+        self.shared.runtime.spawn(async move {
+            let selection_store = engine.shared.ports.library.clone();
+            let selection_key = entry_key.clone();
+            let selection = if kind == LaunchKind::Play {
+                tokio::task::spawn_blocking(move || {
+                    selection_store.launch_recipe_selection(&selection_key)
+                })
+                .await
+                .map_err(|_| gamenode_core::library::LaunchError::Failed)
+                .and_then(|result| result.map_err(|_| gamenode_core::library::LaunchError::Failed))
             } else {
-                open_action(&*opener, &provider, &entry.record(), kind)
+                Ok(None)
+            };
+            let run_detected = {
+                let engine = engine.clone();
+                let opener = opener.clone();
+                let entry = entry.clone();
+                let provider = provider.clone();
+                move || {
+                    if kind == LaunchKind::Play
+                        && let Some(target) = entry.target.as_ref()
+                    {
+                        detected_target::launch(&engine, &entry, target)
+                    } else if provider.is_manual_executable() {
+                        if kind != LaunchKind::Play {
+                            Err(gamenode_core::library::LaunchError::Unsupported)
+                        } else {
+                            engine
+                                .shared
+                                .ports
+                                .local_games
+                                .as_ref()
+                                .zip(engine.shared.ports.installations.as_ref())
+                                .ok_or(gamenode_core::library::LaunchError::Unsupported)
+                                .and_then(|(store, host)| {
+                                    let registrations = store
+                                        .registrations()
+                                        .map_err(|_| gamenode_core::library::LaunchError::Failed)?;
+                                    let registration = registrations
+                                        .iter()
+                                        .find(|r| r.key() == entry.key && !r.removed)
+                                        .ok_or(gamenode_core::library::LaunchError::Incomplete)?;
+                                    let environment =
+                                        engine.port_launch_environment(&registration.id);
+                                    gamenode_core::library::launch::launch_manual_with_environment(
+                                        &**host,
+                                        &provider,
+                                        &entry.record(),
+                                        registration,
+                                        &environment,
+                                        kind,
+                                    )
+                                })
+                        }
+                    } else {
+                        open_action(&*opener, &provider, &entry.record(), kind)
+                    }
+                }
+            };
+            let result = match selection {
+                Err(error) => Err(error),
+                Ok(Some(_)) => {
+                    let api = engine
+                        .shared
+                        .selected_launch_api
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match api {
+                        Some(api) => match api.launch_selected_recipe(entry_key).await {
+                            Ok(true) => Ok(()),
+                            Ok(false) => Ok(()),
+                            Err(status) => Err(match status.code() {
+                                tonic::Code::Unimplemented => {
+                                    gamenode_core::library::LaunchError::Unsupported
+                                }
+                                tonic::Code::FailedPrecondition
+                                | tonic::Code::PermissionDenied
+                                | tonic::Code::NotFound => {
+                                    gamenode_core::library::LaunchError::RecipeNeedsAttention
+                                }
+                                _ => gamenode_core::library::LaunchError::Failed,
+                            }),
+                        },
+                        None => Err(gamenode_core::library::LaunchError::RecipeNeedsAttention),
+                    }
+                }
+                Ok(None) => tokio::task::spawn_blocking(run_detected)
+                    .await
+                    .unwrap_or(Err(gamenode_core::library::LaunchError::Failed)),
             };
             let mut state = engine.lock();
             let outcome = result.clone().map_err(OpenError::Launch);
@@ -1960,6 +2252,42 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         .map_err(|_| tonic::Status::internal("could not remove custom launch recipe"))
     }
 
+    async fn launch_recipe_selection(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.launch_recipe_selection(&entry_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read launch recipe selection"))
+    }
+
+    async fn approve_launch_recipe_plan(
+        &self,
+        entry_key: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        target_revision: u64,
+        fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.approve_launch_recipe_plan(
+                &entry_key,
+                &recipe_id,
+                recipe_revision,
+                target_revision,
+                &fingerprint,
+            )
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remember launch plan"))
+    }
+
     async fn prepare_custom_launch(
         &self,
         recipe: gamenode_core::library::CustomLaunchRecipe,
@@ -1989,7 +2317,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                 });
             }
             if let Some(runtime) = runtime {
-                if !recipe.executable_handle.is_empty() {
+                if !recipe.executable_handle.is_empty() || recipe.executable.is_some() {
                     return Err(tonic::Status::invalid_argument(
                         "a runtime recipe cannot also select a direct executable",
                     ));
@@ -2676,6 +3004,17 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         .map_err(|_| tonic::Status::unavailable("the library is not available"))?
     }
 
+    async fn launch_target_revision(&self, entry_key: String) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let state = engine.lock();
+        state
+            .library
+            .entry(&entry_key)
+            .and_then(|entry| entry.target.as_ref())
+            .map(|target| target.revision)
+            .ok_or_else(|| tonic::Status::failed_precondition("detected launch target changed"))
+    }
+
     async fn open_entry(&self, entry_key: String, install: bool) -> Result<(), tonic::Status> {
         use gamenode_core::library::LaunchError;
         let engine = self.engine()?;
@@ -2703,6 +3042,11 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
             Err(OpenError::Launch(LaunchError::Incomplete)) => Err(
                 tonic::Status::failed_precondition("the game is missing data the provider needs"),
             ),
+            Err(OpenError::Launch(LaunchError::RecipeNeedsAttention)) => {
+                Err(tonic::Status::failed_precondition(
+                    "the selected launch recipe needs attention; review it or use the detected default",
+                ))
+            }
             Err(OpenError::Launch(LaunchError::NoHandler)) => Err(
                 tonic::Status::failed_precondition("the store application is not available"),
             ),

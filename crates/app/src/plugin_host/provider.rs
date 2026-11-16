@@ -618,6 +618,11 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 }
 
 impl ProviderApi {
+    /// Configures the private on-disk root used by the active plugin profile.
+    pub fn set_state_layout(&self, layout: super::profile::PluginStateLayout) {
+        self.profiles.set_state_layout(layout);
+    }
+
     fn scope_denial(&self, context: &ServiceContext, permission: &str) -> Option<Status> {
         let state = lock(&self.state);
         let session = state.sessions.get(&context.session_id)?;

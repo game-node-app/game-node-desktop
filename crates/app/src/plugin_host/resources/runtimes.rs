@@ -253,6 +253,7 @@ impl ResourceApi {
         caller: &ResourceCaller,
         reference: ApprovedFileReference,
         target: Option<(u64, String)>,
+        host_initiated: bool,
     ) -> Result<ResolvedRuntimePath, Status> {
         if !reference.validate() {
             return Err(Status::failed_precondition(
@@ -262,7 +263,7 @@ impl ResourceApi {
         let files = self.files.clone();
         let feed = self.library.clone();
         let reference_for_open = reference.clone();
-        self.in_namespace(caller, move |namespace| {
+        let resolve = move |namespace: &mut crate::plugin_host::storage::Namespace<'_>| {
             let opened = super::files::open_approval(
                 &files,
                 &feed,
@@ -317,8 +318,12 @@ impl ResourceApi {
                     revision: opened.approval.approved_at.max(1) as u64,
                 },
             })
-        })
-        .await
+        };
+        if host_initiated {
+            self.in_host_namespace(caller, resolve).await
+        } else {
+            self.in_namespace(caller, resolve).await
+        }
     }
 
     async fn runtime_proto(
@@ -352,7 +357,7 @@ impl ResourceApi {
     pub(super) async fn resolve_runtime_launch(
         &self,
         caller: &ResourceCaller,
-        context: &ServiceContext,
+        context: Option<&ServiceContext>,
         game_id: u64,
         installation_id: &str,
         runtime_id: &str,
@@ -361,8 +366,14 @@ impl ResourceApi {
         if !valid_id(runtime_id) {
             return Err(Status::invalid_argument("runtime id is required"));
         }
-        self.providers
-            .authorize_resource(Some(context), cap::FILES_READ)?;
+        if let Some(context) = context {
+            self.providers
+                .authorize_resource(Some(context), cap::FILES_READ)?;
+        } else if !caller.has(cap::FILES_READ) {
+            return Err(Status::permission_denied(
+                "file read permission is required",
+            ));
+        }
         let owner = mutation_owner(caller);
         let host = self.library.host().ok_or_else(unavailable)?;
         let runtime = host
@@ -376,7 +387,7 @@ impl ResourceApi {
             ));
         }
         let executable = self
-            .resolve_reference_path(caller, runtime.executable.clone(), None)
+            .resolve_reference_path(caller, runtime.executable.clone(), None, context.is_none())
             .await?;
         let mut resources = vec![executable.resource.clone()];
         let mut content_path = None;
@@ -422,12 +433,15 @@ impl ResourceApi {
                     caller,
                     binding.content,
                     Some((game_id, installation_id.to_owned())),
+                    context.is_none(),
                 )
                 .await?;
             resources.push(content.resource);
             content_path = Some(content.path);
         }
-        self.authorize_commit(context, cap::FILES_READ, caller.grant_revision)?;
+        if let Some(context) = context {
+            self.authorize_commit(context, cap::FILES_READ, caller.grant_revision)?;
+        }
         Ok(crate::plugin_host::library::ResolvedRuntimeLaunch {
             runtime_id: runtime.id,
             version: runtime.version,

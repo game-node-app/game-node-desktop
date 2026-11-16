@@ -10,9 +10,10 @@ use gamenode_core::game_api::{AccountEntry, Collection};
 use gamenode_core::library::{
     AccountLibrary, ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord,
     CatalogUpdate, ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, EntryStatus,
-    FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout, LibraryStore,
-    ProviderScanState, RuntimeContentBinding, RuntimeMutation, RuntimeResource, SavedView,
-    SavedViewPayload, StoreAccount, StoredEntry, entry_key,
+    FavoriteRecord, GameRecord, LastAccount, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+    LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, RuntimeContentBinding,
+    RuntimeMutation, RuntimeResource, SavedView, SavedViewPayload, StoreAccount, StoredEntry,
+    entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -936,6 +937,243 @@ impl LibraryStore for SqliteLibraryStore {
         Ok(CustomLaunchMutation::Applied {
             revision: expected_revision,
         })
+    }
+
+    fn custom_launch_recipes(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+    ) -> Result<Vec<gamenode_core::library::CustomLaunchRecipe>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 ORDER BY recipe_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([owner_key], |row| row.get::<_, String>(0))
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let recipe: gamenode_core::library::CustomLaunchRecipe =
+                serde_json::from_str(&json).map_err(failed)?;
+            Ok((recipe.game_id == game_id).then_some(recipe))
+        })
+        .collect::<Result<Vec<_>, StorageError>>()
+        .map(|recipes| recipes.into_iter().flatten().collect())
+    }
+
+    fn launch_recipe_selection(
+        &self,
+        entry_key: &str,
+    ) -> Result<Option<LaunchRecipeSelection>, StorageError> {
+        self.conn()
+            .query_row(
+                "SELECT entry_key, owner_key, plugin_id, publisher_fingerprint, recipe_id,
+                        recipe_revision, base_target_revision, approved_plan_fingerprint
+                 FROM library_launch_recipe_selection WHERE entry_key = ?1",
+                [entry_key],
+                |row| {
+                    Ok(LaunchRecipeSelection {
+                        entry_key: row.get(0)?,
+                        owner_key: row.get(1)?,
+                        plugin_id: row.get(2)?,
+                        publisher_fingerprint: row.get(3)?,
+                        recipe_id: row.get(4)?,
+                        recipe_revision: row.get::<_, i64>(5)? as u64,
+                        base_target_revision: row.get::<_, i64>(6)? as u64,
+                        approved_plan_fingerprint: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(failed)
+    }
+
+    fn save_launch_recipe_selection(
+        &self,
+        selection: &LaunchRecipeSelection,
+        expected_target_revision: u64,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let entry: Option<(String, Option<String>)> = tx
+            .query_row(
+                "SELECT li.installation_id, le.target_json
+                 FROM library_installations li
+                 JOIN library_entries le ON le.key = li.entry_key
+                 WHERE li.entry_key = ?1",
+                [&selection.entry_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some((installation_id, target_json)) = entry else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let Some(target_json) = target_json else {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        };
+        let target: gamenode_core::library::DetectedTarget =
+            serde_json::from_str(&target_json).map_err(failed)?;
+        if target.revision != expected_target_revision
+            || selection.base_target_revision != expected_target_revision
+            || selection.entry_key.is_empty()
+            || selection.owner_key.is_empty()
+            || selection.plugin_id.is_empty()
+            || selection.publisher_fingerprint.is_empty()
+            || selection.recipe_id.is_empty()
+            || selection.recipe_revision == 0
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        let recipe_json: Option<String> = tx
+            .query_row(
+                "SELECT recipe_json FROM plugin_custom_launch_recipes
+                 WHERE owner_key = ?1 AND recipe_id = ?2 AND installation_id = ?3
+                       AND revision = ?4",
+                params![
+                    selection.owner_key,
+                    selection.recipe_id,
+                    installation_id,
+                    selection.recipe_revision as i64,
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(recipe_json) = recipe_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let recipe: gamenode_core::library::CustomLaunchRecipe =
+            serde_json::from_str(&recipe_json).map_err(failed)?;
+        if recipe.installation_id != installation_id
+            || recipe.base_target_revision != expected_target_revision
+            || !recipe.validate()
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        tx.execute(
+            "INSERT INTO library_launch_recipe_selection
+                 (entry_key, owner_key, plugin_id, publisher_fingerprint, recipe_id,
+                  recipe_revision, base_target_revision, approved_plan_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')
+             ON CONFLICT(entry_key) DO UPDATE SET
+                 owner_key = excluded.owner_key,
+                 plugin_id = excluded.plugin_id,
+                 publisher_fingerprint = excluded.publisher_fingerprint,
+                 recipe_id = excluded.recipe_id,
+                 recipe_revision = excluded.recipe_revision,
+                 base_target_revision = excluded.base_target_revision,
+                 approved_plan_fingerprint = ''",
+            params![
+                selection.entry_key,
+                selection.owner_key,
+                selection.plugin_id,
+                selection.publisher_fingerprint,
+                selection.recipe_id,
+                selection.recipe_revision as i64,
+                selection.base_target_revision as i64,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    fn clear_launch_recipe_selection(
+        &self,
+        entry_key: &str,
+        expected_target_revision: u64,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let target_json: Option<Option<String>> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(target_json) = target_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        match target_json {
+            Some(target_json) => {
+                let target: gamenode_core::library::DetectedTarget =
+                    serde_json::from_str(&target_json).map_err(failed)?;
+                if target.revision != expected_target_revision {
+                    return Ok(LaunchRecipeSelectionWrite::Conflict);
+                }
+            }
+            None if expected_target_revision != 0 => {
+                return Ok(LaunchRecipeSelectionWrite::Conflict);
+            }
+            None => {}
+        }
+        tx.execute(
+            "DELETE FROM library_launch_recipe_selection WHERE entry_key = ?1",
+            [entry_key],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    fn approve_launch_recipe_plan(
+        &self,
+        entry_key: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+        fingerprint: &str,
+    ) -> Result<LaunchRecipeSelectionWrite, StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let selection: Option<(u64, u64)> = tx
+            .query_row(
+                "SELECT recipe_revision, base_target_revision
+                 FROM library_launch_recipe_selection
+                 WHERE entry_key = ?1 AND recipe_id = ?2",
+                params![entry_key, recipe_id],
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some((current_recipe_revision, base_revision)) = selection else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let target_json: Option<String> = tx
+            .query_row(
+                "SELECT target_json FROM library_entries WHERE key = ?1",
+                [entry_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?
+            .flatten();
+        let Some(target_json) = target_json else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        let target: gamenode_core::library::DetectedTarget =
+            serde_json::from_str(&target_json).map_err(failed)?;
+        if current_recipe_revision != recipe_revision
+            || base_revision != expected_target_revision
+            || target.revision != expected_target_revision
+            || fingerprint.is_empty()
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        tx.execute(
+            "UPDATE library_launch_recipe_selection SET approved_plan_fingerprint = ?2
+             WHERE entry_key = ?1",
+            params![entry_key, fingerprint],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(LaunchRecipeSelectionWrite::Applied)
     }
 
     fn runtime_resources(&self, owner_key: &str) -> Result<Vec<RuntimeResource>, StorageError> {

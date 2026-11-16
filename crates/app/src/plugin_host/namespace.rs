@@ -107,6 +107,11 @@ impl ExternalNamespaceResolver {
         self.owner(OwnerKind::Storage, false)
     }
 
+    /// Stable library-store key for this plugin and active account profile.
+    pub(crate) fn library_recipe_owner_key(&self) -> String {
+        format!("namespace:{:?}", self.storage_owner().key())
+    }
+
     /// Owner for jobs submitted by this plugin in the current profile session.
     pub fn job_owner(&self) -> NamespaceOwner {
         self.owner(OwnerKind::Job, false)

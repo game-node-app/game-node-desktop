@@ -61,6 +61,13 @@ pub(super) struct ResolvedLaunchPath {
     pub resource: gamenode_core::library::LaunchPlanResource,
 }
 
+struct ResolvedSelectedRecipe {
+    dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    fingerprint: String,
+    review: super::super::launch_plan::LaunchPlanReview,
+    game_name: String,
+}
+
 pub(super) fn resolve_handle_path(
     files: std::sync::Arc<crate::plugin_host::files::FileAccess>,
     feed: std::sync::Arc<crate::plugin_host::library::LibraryFeed>,
@@ -116,6 +123,150 @@ pub(super) fn resolve_handle_path(
     }
 }
 
+async fn capture_recipe_file(
+    api: &ResourceApi,
+    caller: &crate::plugin_host::provider::ResourceCaller,
+    handle: String,
+    installation_id: String,
+    directory: bool,
+) -> Result<gamenode_core::library::ApprovedFileReference, Status> {
+    let files = api.files.clone();
+    let feed = api.library.clone();
+    let session = caller.session_id.clone();
+    api.in_namespace(caller, move |namespace| {
+        let opened = super::files::open_handle(
+            &files,
+            &feed,
+            namespace,
+            &session,
+            &handle,
+            gamenode_platform::plugin_storage::operation::READ,
+        )?;
+        if opened.approval.installation_id != installation_id
+            || !matches!(opened.approval.kind.as_str(), "installation" | "prefix")
+        {
+            return Err(Status::permission_denied(
+                "the handle is not approved for this game installation",
+            ));
+        }
+        let entry = opened
+            .confined
+            .stat(&opened.path)
+            .map_err(super::files::file_status)?;
+        if opened.path.is_empty() || entry.directory != directory {
+            return Err(Status::failed_precondition(
+                "the approved launch file changed type",
+            ));
+        }
+        let reference = gamenode_core::library::ApprovedFileReference {
+            approval_id: opened.approval.id,
+            relative_path: opened.path,
+        };
+        if reference.validate() {
+            Ok(reference)
+        } else {
+            Err(Status::invalid_argument(
+                "invalid approved launch reference",
+            ))
+        }
+    })
+    .await
+}
+
+async fn resolve_recipe_file(
+    api: &ResourceApi,
+    caller: &crate::plugin_host::provider::ResourceCaller,
+    handle: &str,
+    reference: Option<&gamenode_core::library::ApprovedFileReference>,
+    installation_id: &str,
+    directory: bool,
+) -> Result<ResolvedLaunchPath, Status> {
+    let handle = if handle.is_empty() {
+        let reference = reference
+            .filter(|reference| reference.validate())
+            .ok_or_else(|| Status::failed_precondition("approved launch reference is missing"))?;
+        api.files.seal_handle(
+            &caller.session_id,
+            &reference.approval_id,
+            &reference.relative_path,
+        )
+    } else {
+        handle.to_owned()
+    };
+    let resolve = resolve_handle_path(
+        api.files.clone(),
+        api.library.clone(),
+        caller.session_id.clone(),
+        handle,
+        installation_id.to_owned(),
+        directory,
+    );
+    api.in_namespace(caller, resolve).await
+}
+
+async fn resolve_recipe_reference_for_host(
+    api: &ResourceApi,
+    caller: &crate::plugin_host::provider::ResourceCaller,
+    reference: &gamenode_core::library::ApprovedFileReference,
+    installation_id: &str,
+    directory: bool,
+) -> Result<ResolvedLaunchPath, Status> {
+    if !reference.validate() {
+        return Err(Status::failed_precondition(
+            "approved launch reference is invalid",
+        ));
+    }
+    let files = api.files.clone();
+    let feed = api.library.clone();
+    let reference = reference.clone();
+    let installation_id = installation_id.to_owned();
+    api.in_host_namespace(caller, move |namespace| {
+        let opened = super::files::open_approval(
+            &files,
+            &feed,
+            namespace,
+            &reference.approval_id,
+            reference.relative_path.clone(),
+            gamenode_platform::plugin_storage::operation::READ,
+        )?;
+        if opened.approval.installation_id != installation_id
+            || !matches!(opened.approval.kind.as_str(), "installation" | "prefix")
+        {
+            return Err(Status::permission_denied(
+                "the approved file no longer matches this game installation",
+            ));
+        }
+        let root = std::fs::canonicalize(&opened.approval.root)
+            .map_err(|_| Status::failed_precondition("approved launch root changed"))?;
+        let mut requested = root.clone();
+        for part in &opened.path {
+            requested.push(part);
+        }
+        let canonical = std::fs::canonicalize(&requested)
+            .map_err(|_| Status::failed_precondition("approved launch file changed"))?;
+        if !canonical.starts_with(&root)
+            || (directory && !canonical.is_dir())
+            || (!directory && !canonical.is_file())
+        {
+            return Err(Status::permission_denied(
+                "the approved launch file is outside its game folder",
+            ));
+        }
+        let path = canonical
+            .to_str()
+            .ok_or_else(|| Status::failed_precondition("launch path is not valid Unicode"))?
+            .to_owned();
+        Ok(ResolvedLaunchPath {
+            path,
+            resource: gamenode_core::library::LaunchPlanResource {
+                id: format!("file-approval:{}", opened.approval.id),
+                revision: opened.approval.approved_at.max(1) as u64,
+            },
+        })
+    })
+    .await
+}
+
 fn recipe_id() -> Result<String, Status> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| Status::internal("no source of randomness"))?;
@@ -143,6 +294,277 @@ fn outcome(mutation: CustomLaunchMutation, id: &str) -> MutationReply {
 }
 
 impl ResourceApi {
+    /// Executes the recipe selected for a user-initiated Play. A stored selection never falls
+    /// through to the detected default: stale identity, permissions, files, runtime bindings or
+    /// recipe revisions fail closed and leave the selector available for repair.
+    pub async fn launch_selected_recipe(&self, entry_key: String) -> Result<bool, Status> {
+        use crate::plugin_host::intents::{ConfirmationRequest, Operation, Verdict};
+
+        let store = self
+            .library
+            .host()
+            .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?;
+        let selected = store.launch_recipe_selection(entry_key.clone()).await?;
+        let Some(selected) = selected else {
+            return Ok(false);
+        };
+
+        let plan = self
+            .resolve_selected_recipe_plan(&entry_key, &selected)
+            .await?;
+        let already_approved = !selected.approved_plan_fingerprint.is_empty()
+            && selected.approved_plan_fingerprint == plan.fingerprint;
+        let remember = if already_approved {
+            false
+        } else {
+            match self
+                .intents
+                .confirm(ConfirmationRequest {
+                    plugin_id: selected.plugin_id.clone(),
+                    publisher_fingerprint: selected.publisher_fingerprint.clone(),
+                    game_name: plan.game_name.clone(),
+                    operation: Operation::CustomLaunch,
+                    details: vec![],
+                    launch_plan: Some(plan.review.clone()),
+                })
+                .await?
+            {
+                Verdict::Approved { remember } => remember,
+                Verdict::Declined => return Ok(false),
+                Verdict::TimedOut => {
+                    return Err(Status::deadline_exceeded("launch review timed out"));
+                }
+            }
+        };
+
+        // Consent can take minutes. Rebuild everything from current grants, recipe records,
+        // target and file approvals before dispatch, and require the same canonical plan.
+        let current = self
+            .resolve_selected_recipe_plan(&entry_key, &selected)
+            .await?;
+        if current.fingerprint != plan.fingerprint {
+            return Err(Status::failed_precondition(
+                "the launch plan changed during review; review the updated plan",
+            ));
+        }
+        if remember {
+            let library = self
+                .library
+                .host()
+                .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?;
+            match library
+                .approve_launch_recipe_plan(
+                    entry_key,
+                    selected.recipe_id.clone(),
+                    selected.recipe_revision,
+                    selected.base_target_revision,
+                    current.fingerprint.clone(),
+                )
+                .await?
+            {
+                gamenode_core::library::LaunchRecipeSelectionWrite::Applied => {}
+                _ => {
+                    return Err(Status::failed_precondition(
+                        "the selected recipe changed before its approval could be remembered",
+                    ));
+                }
+            }
+        }
+        self.library
+            .host()
+            .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?
+            .launch_custom(current.dispatch)
+            .await?;
+        Ok(true)
+    }
+
+    async fn resolve_selected_recipe_plan(
+        &self,
+        entry_key: &str,
+        selected: &gamenode_core::library::LaunchRecipeSelection,
+    ) -> Result<ResolvedSelectedRecipe, Status> {
+        use gamenode_plugin_protocol::capability as cap;
+
+        let recipe_store = self
+            .library
+            .host()
+            .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?;
+        if recipe_store
+            .launch_recipe_selection(entry_key.to_owned())
+            .await?
+            .as_ref()
+            != Some(selected)
+        {
+            return Err(Status::failed_precondition(
+                "the launch selection changed; review the current selection",
+            ));
+        }
+        let profiles = self.providers.profiles();
+        let identity = profiles
+            .identities()?
+            .into_iter()
+            .find(|identity| {
+                identity.plugin_id == selected.plugin_id
+                    && identity.publisher_fingerprint == selected.publisher_fingerprint
+            })
+            .ok_or_else(|| Status::failed_precondition("the recipe owner is unavailable"))?;
+        if !profiles.is_enabled(&identity.plugin_id)? {
+            return Err(Status::permission_denied("the recipe owner is disabled"));
+        }
+        let (grant_revision, grants) =
+            profiles.granted_permissions(&identity.plugin_id, &identity.publisher_fingerprint)?;
+        if !grants.contains(cap::GAME_CUSTOM_LAUNCH) {
+            return Err(Status::permission_denied(
+                "custom launch permission is no longer granted",
+            ));
+        }
+        let resolver =
+            profiles.resolver(&identity.plugin_id, &identity.publisher_fingerprint, None)?;
+        if resolver.library_recipe_owner_key() != selected.owner_key {
+            return Err(Status::permission_denied("the recipe owner changed"));
+        }
+        let recipe = recipe_store
+            .custom_launch_recipe(selected.owner_key.clone(), selected.recipe_id.clone())
+            .await?
+            .ok_or_else(|| Status::failed_precondition("the selected recipe was removed"))?;
+        if recipe.recipe_id != selected.recipe_id
+            || recipe.revision != selected.recipe_revision
+            || recipe.base_target_revision != selected.base_target_revision
+            || recipe.game_id == 0
+            || recipe.installation_id.is_empty()
+        {
+            return Err(Status::failed_precondition(
+                "the selected recipe changed; choose it again or use the detected default",
+            ));
+        }
+        if !recipe.executable_handle.is_empty()
+            || !recipe.working_directory_handle.is_empty()
+            || (recipe.uri.is_empty()
+                && recipe.runtime_handle.is_empty()
+                && recipe.executable.is_none())
+        {
+            return Err(Status::failed_precondition(
+                "the recipe needs to be saved again with current file approvals before Play",
+            ));
+        }
+        let projection = self
+            .library
+            .target(
+                &Scope {
+                    own_provider: String::new(),
+                    read_all: true,
+                    provider_filter: None,
+                },
+                &recipe.installation_id,
+            )
+            .filter(|(_, entry)| entry.game_id == Some(recipe.game_id))
+            .map(|(_, entry)| entry)
+            .ok_or_else(|| Status::failed_precondition("the selected game is unavailable"))?;
+        let launch_fingerprint = recipe_store
+            .launch_fingerprint(entry_key.to_owned())
+            .await?;
+        let target_revision = recipe_store
+            .launch_target_revision(entry_key.to_owned())
+            .await?;
+        if target_revision != selected.base_target_revision
+            || recipe.base_launch_fingerprint != launch_fingerprint
+        {
+            return Err(Status::failed_precondition(
+                "the detected target changed; choose another recipe or use the detected default",
+            ));
+        }
+        let caller = crate::plugin_host::provider::ResourceCaller {
+            session_id: "host-user-play".into(),
+            provider_id: String::new(),
+            package_version: recipe.requester_package_version.clone(),
+            grants,
+            grant_revision,
+            profile_epoch: profiles.epoch(),
+            namespace: Some(resolver),
+        };
+        let needs_files = recipe.executable.is_some()
+            || recipe.working_directory.is_some()
+            || !recipe.runtime_handle.is_empty();
+        if needs_files && !caller.has(cap::FILES_READ) {
+            return Err(Status::permission_denied(
+                "file read permission is no longer granted",
+            ));
+        }
+        let runtime = if recipe.runtime_handle.is_empty() {
+            None
+        } else {
+            Some(
+                self.resolve_runtime_launch(
+                    &caller,
+                    None,
+                    recipe.game_id,
+                    &recipe.installation_id,
+                    &recipe.runtime_handle,
+                    &recipe.content_id,
+                )
+                .await?,
+            )
+        };
+        let mut resources = runtime
+            .as_ref()
+            .map(|runtime| runtime.resources.clone())
+            .unwrap_or_default();
+        let executable = if let Some(reference) = recipe.executable.as_ref() {
+            let resolved = resolve_recipe_reference_for_host(
+                self,
+                &caller,
+                reference,
+                &recipe.installation_id,
+                false,
+            )
+            .await?;
+            resources.push(resolved.resource);
+            Some(resolved.path)
+        } else {
+            None
+        };
+        let working_directory = if let Some(reference) = recipe.working_directory.as_ref() {
+            let resolved = resolve_recipe_reference_for_host(
+                self,
+                &caller,
+                reference,
+                &recipe.installation_id,
+                true,
+            )
+            .await?;
+            resources.push(resolved.resource);
+            Some(resolved.path)
+        } else {
+            None
+        };
+        let dispatch = recipe_store
+            .prepare_custom_launch(recipe.clone(), executable, working_directory, runtime)
+            .await?;
+        let plan = super::super::launch_plan::resolve(
+            &caller,
+            &projection,
+            target_revision,
+            Some(&recipe),
+            Some(&dispatch),
+            &resources,
+        )?;
+        let (fingerprint, review) = tokio::task::spawn_blocking(move || {
+            let fingerprint = plan
+                .fingerprint()
+                .map_err(|_| Status::failed_precondition("the launch plan is invalid"))?;
+            let review = super::super::launch_plan::review(&plan, fingerprint.clone());
+            Ok::<_, Status>((fingerprint, review))
+        })
+        .await
+        .map_err(|_| Status::unavailable("launch plan worker stopped"))??;
+        Ok(ResolvedSelectedRecipe {
+            dispatch,
+            fingerprint,
+            review,
+            game_name: projection.display_name.unwrap_or_else(|| projection.name),
+        })
+    }
+
     pub(super) async fn revalidate_custom_handles(
         &self,
         caller: &crate::plugin_host::provider::ResourceCaller,
@@ -172,7 +594,7 @@ impl ResourceApi {
             let resolved = self
                 .resolve_runtime_launch(
                     caller,
-                    context,
+                    Some(context),
                     recipe.game_id,
                     &recipe.installation_id,
                     &recipe.runtime_handle,
@@ -187,24 +609,22 @@ impl ResourceApi {
                     "the approved runtime or content binding changed before launch",
                 ));
             }
-            let working_directory = if recipe.working_directory_handle.is_empty() {
+            let working_directory = if recipe.working_directory_handle.is_empty()
+                && recipe.working_directory.is_none()
+            {
                 None
             } else {
                 self.providers
                     .authorize_resource(Some(context), cap::FILES_READ)?;
-                let working = self
-                    .in_namespace(
-                        caller,
-                        resolve_handle_path(
-                            self.files.clone(),
-                            self.library.clone(),
-                            caller.session_id.clone(),
-                            recipe.working_directory_handle.clone(),
-                            recipe.installation_id.clone(),
-                            true,
-                        ),
-                    )
-                    .await?;
+                let working = resolve_recipe_file(
+                    self,
+                    caller,
+                    &recipe.working_directory_handle,
+                    recipe.working_directory.as_ref(),
+                    &recipe.installation_id,
+                    true,
+                )
+                .await?;
                 resources.push(working.resource);
                 Some(working.path)
             };
@@ -240,7 +660,11 @@ impl ResourceApi {
             }
         }
         let is_uri = !recipe.uri.is_empty();
-        if recipe.executable_handle.is_empty() && recipe.working_directory_handle.is_empty() {
+        if recipe.executable_handle.is_empty()
+            && recipe.executable.is_none()
+            && recipe.working_directory_handle.is_empty()
+            && recipe.working_directory.is_none()
+        {
             return Ok(Vec::new());
         }
         let mut resources = Vec::new();
@@ -258,19 +682,15 @@ impl ResourceApi {
                     ));
                 }
             };
-            let executable = self
-                .in_namespace(
-                    caller,
-                    resolve_handle_path(
-                        self.files.clone(),
-                        self.library.clone(),
-                        caller.session_id.clone(),
-                        recipe.executable_handle.clone(),
-                        recipe.installation_id.clone(),
-                        false,
-                    ),
-                )
-                .await?;
+            let executable = resolve_recipe_file(
+                self,
+                caller,
+                &recipe.executable_handle,
+                recipe.executable.as_ref(),
+                &recipe.installation_id,
+                false,
+            )
+            .await?;
             if executable.path != command.executable {
                 return Err(Status::failed_precondition(
                     "approved executable handle changed during confirmation",
@@ -278,20 +698,16 @@ impl ResourceApi {
             }
             resources.push(executable.resource);
         }
-        if !recipe.working_directory_handle.is_empty() {
-            let working_directory = self
-                .in_namespace(
-                    caller,
-                    resolve_handle_path(
-                        self.files.clone(),
-                        self.library.clone(),
-                        caller.session_id.clone(),
-                        recipe.working_directory_handle.clone(),
-                        recipe.installation_id.clone(),
-                        true,
-                    ),
-                )
-                .await?;
+        if !recipe.working_directory_handle.is_empty() || recipe.working_directory.is_some() {
+            let working_directory = resolve_recipe_file(
+                self,
+                caller,
+                &recipe.working_directory_handle,
+                recipe.working_directory.as_ref(),
+                &recipe.installation_id,
+                true,
+            )
+            .await?;
             let approved_working_directory = match dispatch {
                 crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
                 | crate::plugin_host::library::CustomLaunchDispatch::Runtime { command, .. } => {
@@ -353,24 +769,60 @@ impl ResourceApi {
             .library
             .host()
             .ok_or_else(|| Status::unavailable("custom launch recipes are unavailable"))?;
-        let target_revision = host.launch_fingerprint(_entry_key.clone()).await?;
+        let base_target_revision = host.launch_target_revision(_entry_key.clone()).await?;
+        let base_launch_fingerprint = host.launch_fingerprint(_entry_key.clone()).await?;
+        let executable = if request.executable_handle.is_empty() {
+            None
+        } else {
+            self.providers
+                .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+            Some(
+                capture_recipe_file(
+                    self,
+                    &caller,
+                    request.executable_handle.clone(),
+                    entry.installation_id.clone(),
+                    false,
+                )
+                .await?,
+            )
+        };
+        let working_directory = if request.working_directory_handle.is_empty() {
+            None
+        } else {
+            self.providers
+                .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+            Some(
+                capture_recipe_file(
+                    self,
+                    &caller,
+                    request.working_directory_handle.clone(),
+                    entry.installation_id.clone(),
+                    true,
+                )
+                .await?,
+            )
+        };
         let recipe = CustomLaunchRecipe {
             recipe_id: recipe_id()?,
             revision: 1,
+            requester_package_version: caller.package_version.clone(),
             game_id,
             installation_id: entry.installation_id,
-            base_target_revision: target_revision,
-            executable_handle: request.executable_handle,
+            base_target_revision,
+            base_launch_fingerprint,
+            executable_handle: String::new(),
+            executable,
             content_id: request.content_id,
             uri: request.uri,
             arguments: request.argv,
-            working_directory_handle: request.working_directory_handle,
+            working_directory_handle: String::new(),
+            working_directory,
             runtime_handle: request.runtime_handle,
             environment_set: request.environment_set.into_iter().collect(),
             environment_unset: request.environment_unset.into_iter().collect(),
         };
-        if !recipe.validate()
-            || (!recipe.runtime_handle.is_empty() && !recipe.executable_handle.is_empty())
+        if !recipe.validate() || (!recipe.runtime_handle.is_empty() && recipe.executable.is_some())
         {
             return Err(Status::invalid_argument("invalid custom launch recipe"));
         }
@@ -444,11 +896,13 @@ impl ResourceApi {
             .custom_launch_recipe(mutation_owner(&caller), request.recipe_id.clone())
             .await?
             .ok_or_else(|| Status::not_found("custom launch recipe not found"))?;
-        let target_revision = host.launch_fingerprint(entry_key).await?;
+        let launch_fingerprint = host.launch_fingerprint(entry_key.clone()).await?;
+        let target_revision = host.launch_target_revision(entry_key).await?;
         if recipe.revision != request.recipe_revision
             || recipe.game_id.to_string() != request.game_id
             || recipe.installation_id != request.installation_id
             || recipe.base_target_revision != target_revision
+            || recipe.base_launch_fingerprint != launch_fingerprint
         {
             return Err(Status::aborted("custom launch recipe revision changed"));
         }
@@ -458,7 +912,7 @@ impl ResourceApi {
             Some(
                 self.resolve_runtime_launch(
                     &caller,
-                    context,
+                    Some(context),
                     recipe.game_id,
                     &recipe.installation_id,
                     &recipe.runtime_handle,
@@ -477,60 +931,51 @@ impl ResourceApi {
                 // to their separate read grant and approval.
                 self.providers
                     .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-                let executable_handle = recipe.executable_handle.clone();
-                let executable = self
-                    .in_namespace(
-                        &caller,
-                        resolve_handle_path(
-                            self.files.clone(),
-                            self.library.clone(),
-                            caller.session_id.clone(),
-                            executable_handle,
-                            recipe.installation_id.clone(),
-                            false,
-                        ),
-                    )
-                    .await?;
+                let executable = resolve_recipe_file(
+                    self,
+                    &caller,
+                    &recipe.executable_handle,
+                    recipe.executable.as_ref(),
+                    &recipe.installation_id,
+                    false,
+                )
+                .await?;
                 plan_resources.push(executable.resource.clone());
-                let working = if recipe.working_directory_handle.is_empty() {
+                let working = if recipe.working_directory_handle.is_empty()
+                    && recipe.working_directory.is_none()
+                {
                     None
                 } else {
-                    let resolved = self
-                        .in_namespace(
-                            &caller,
-                            resolve_handle_path(
-                                self.files.clone(),
-                                self.library.clone(),
-                                caller.session_id.clone(),
-                                recipe.working_directory_handle.clone(),
-                                recipe.installation_id.clone(),
-                                true,
-                            ),
-                        )
-                        .await?;
+                    let resolved = resolve_recipe_file(
+                        self,
+                        &caller,
+                        &recipe.working_directory_handle,
+                        recipe.working_directory.as_ref(),
+                        &recipe.installation_id,
+                        true,
+                    )
+                    .await?;
                     plan_resources.push(resolved.resource.clone());
                     Some(resolved)
                 };
                 (Some(executable.path), working.map(|path| path.path))
             } else {
-                let working = if recipe.working_directory_handle.is_empty() {
+                let working = if recipe.working_directory_handle.is_empty()
+                    && recipe.working_directory.is_none()
+                {
                     None
                 } else {
                     self.providers
                         .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-                    let resolved = self
-                        .in_namespace(
-                            &caller,
-                            resolve_handle_path(
-                                self.files.clone(),
-                                self.library.clone(),
-                                caller.session_id.clone(),
-                                recipe.working_directory_handle.clone(),
-                                recipe.installation_id.clone(),
-                                true,
-                            ),
-                        )
-                        .await?;
+                    let resolved = resolve_recipe_file(
+                        self,
+                        &caller,
+                        &recipe.working_directory_handle,
+                        recipe.working_directory.as_ref(),
+                        &recipe.installation_id,
+                        true,
+                    )
+                    .await?;
                     plan_resources.push(resolved.resource.clone());
                     Some(resolved)
                 };

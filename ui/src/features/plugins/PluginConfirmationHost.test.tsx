@@ -29,15 +29,31 @@ function emit(name: string, payload: unknown) {
 }
 
 const FINGERPRINT = 'ab'.repeat(32);
+const LAUNCH_PLAN = {
+  sourceId: 'steam',
+  requesterPluginId: 'org.example.launcher',
+  requesterPublisher: FINGERPRINT,
+  requesterPackageVersion: '1.0.0',
+  target: 'C:\\Games\\Portal 2\\Portal2.exe',
+  components: [],
+  arguments: ['--profile', 'a profile & literal'],
+  workingDirectory: 'C:\\Games\\Portal 2',
+  environmentSet: { GAME_MODE: 'custom-value' },
+  environmentUnset: ['OLD_MODE'],
+  differences: ['recipe-selected', 'custom-target'],
+  fingerprint: `v1:${'cd'.repeat(32)}`,
+};
 
 function confirmation(overrides: Partial<PluginConfirmation> = {}): PluginConfirmation {
+  const operation = overrides.operation ?? 'launch';
   return {
     id: 'c1',
     pluginId: 'org.example.launcher',
     publisherFingerprint: FINGERPRINT,
     gameName: 'Space Game',
-    operation: 'launch',
+    operation,
     timeoutSeconds: 300,
+    launchPlan: operation === 'launch' || operation === 'custom_launch' ? LAUNCH_PLAN : undefined,
     ...overrides,
   };
 }
@@ -69,12 +85,38 @@ describe('PluginConfirmationHost', () => {
     vi.restoreAllMocks();
   });
 
+  it.each(['en', 'pt-BR'])('shows the complete launch review and masks values until revealed in %s', async (locale) => {
+    renderHost(locale);
+    await ready();
+    act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation()));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent(locale === 'en' ? 'Launch plan' : 'Plano de lançamento');
+    expect(dialog).toHaveTextContent(locale === 'en' ? 'Source' : 'Origem');
+    expect(dialog).toHaveTextContent('--profile');
+    expect(dialog).toHaveTextContent('a profile & literal');
+    expect(dialog).toHaveTextContent(locale === 'en' ? 'Changes from the detected default' : 'Alterações em relação ao padrão detectado');
+    expect(dialog).toHaveTextContent('••••••');
+    expect(dialog).not.toHaveTextContent('custom-value');
+    fireEvent.click(screen.getByRole('button', {
+      name: locale === 'en' ? 'Reveal environment values' : 'Revelar valores do ambiente',
+    }));
+    expect(dialog).toHaveTextContent('custom-value');
+    expect(screen.getByRole('checkbox').closest('label')).toHaveTextContent(locale === 'en'
+      ? 'Remember approval for this exact launch plan'
+      : 'Lembrar a aprovação deste plano de lançamento exato');
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', {
+      name: locale === 'en' ? 'Run once' : 'Executar uma vez',
+    }));
+    expect(answer).toHaveBeenCalledWith('c1', true, true);
+  });
+
   it.each(['en', 'pt-BR'])('reviews full restore targets without a remembered approval in %s', async (locale) => {
     renderHost(locale);
     await ready();
     const target = 'C:\\Saves\\<slot>.sav';
     act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation({
-      operation: 'backup_restore', details: ['Saves', 'snapshot-1', target],
+      operation: 'backup_restore', details: ['Saves', 'snapshot-1', target], launchPlan: undefined,
     })));
     const dialog = await screen.findByRole('alertdialog');
     expect(dialog).toHaveTextContent(target);
@@ -92,13 +134,19 @@ describe('PluginConfirmationHost', () => {
     act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation()));
 
     const dialog = await screen.findByRole('alertdialog');
-    expect(dialog).toHaveTextContent('Let a plugin start a game?');
-    expect(dialog).toHaveTextContent('The plugin org.example.launcher wants to start Space Game.');
+    expect(dialog).toHaveTextContent('Launch plan');
+    expect(dialog).toHaveTextContent('Review the exact launch plan requested by org.example.launcher for Space Game.');
     expect(dialog).toHaveTextContent('ab:ab:ab:ab…ab:ab');
     expect(dialog).toHaveTextContent('does not certify');
+    expect(dialog).toHaveTextContent('C:\\Games\\Portal 2\\Portal2.exe');
+    expect(dialog).toHaveTextContent('--profile');
+    expect(dialog).toHaveTextContent('••••••');
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
     // Remembering is off unless the user turns it on.
     expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByRole('checkbox').closest('label')).toHaveTextContent('Remember approval for this exact launch plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal environment values' }));
+    expect(dialog).toHaveTextContent('custom-value');
   });
 
   it('answers yes with what the user chose to remember, and no never remembers', async () => {
@@ -106,7 +154,7 @@ describe('PluginConfirmationHost', () => {
     await ready();
     act(() => emit(PLUGIN_CONFIRMATION_EVENT, confirmation()));
     fireEvent.click(await screen.findByRole('checkbox'));
-    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Run once' }));
     expect(answer).toHaveBeenCalledWith('c1', true, true);
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 

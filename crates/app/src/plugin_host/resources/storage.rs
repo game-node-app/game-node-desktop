@@ -49,6 +49,22 @@ impl ResourceApi {
             .await
     }
 
+    /// Runs host-initiated user actions in the same private namespace without pretending they
+    /// came from a live plugin session. The caller must be built from the current profile's
+    /// authenticated identity and grants.
+    pub(super) async fn in_host_namespace<T: Send + 'static>(
+        &self,
+        caller: &ResourceCaller,
+        work: impl FnOnce(&mut Namespace<'_>) -> Result<T, Status> + Send + 'static,
+    ) -> Result<T, Status> {
+        let resolver = caller.namespace.clone().ok_or_else(|| {
+            Status::failed_precondition("official providers use trusted host adapters")
+        })?;
+        self.storage
+            .run_for_host(&resolver, caller.profile_epoch, work)
+            .await
+    }
+
     pub(super) async fn get_stored(
         &self,
         request: Request<StorageGetRequest>,

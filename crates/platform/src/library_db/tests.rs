@@ -2147,13 +2147,17 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
     let recipe = CustomLaunchRecipe {
         recipe_id: "recipe-1".into(),
         revision: 1,
+        requester_package_version: "1.0".into(),
         game_id: 620,
         installation_id: "install-1".into(),
         base_target_revision: 1,
+        base_launch_fingerprint: 9,
         executable_handle: "approved-executable-handle".into(),
+        executable: None,
         uri: String::new(),
         arguments: vec!["--profile".into(), "a profile & literal".into()],
         working_directory_handle: "approved-directory-handle".into(),
+        working_directory: None,
         runtime_handle: String::new(),
         content_id: String::new(),
         environment_set: BTreeMap::from([("GAME_MODE".into(), "custom".into())]),
@@ -2207,6 +2211,128 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_silently() {
+    use gamenode_core::library::{
+        CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,
+        LaunchRecipeSelectionWrite, TargetSpec,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([(
+                "620".into(),
+                TargetSpec::Executable {
+                    root: r"C:\Games\Portal 2".into(),
+                    path: "Portal2.exe".into(),
+                    arguments: vec![],
+                    working_directory: String::new(),
+                },
+            )]),
+            100,
+        )
+        .unwrap();
+    let target = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.key == "steam:620")
+        .unwrap()
+        .target
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO library_installations (entry_key, installation_id) VALUES ('steam:620', 'install-1')",
+            [],
+        )
+        .unwrap();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "1.0".into(),
+        game_id: 620,
+        installation_id: "install-1".into(),
+        base_target_revision: target.revision,
+        base_launch_fingerprint: 9,
+        executable_handle: "approved-executable-handle".into(),
+        executable: None,
+        uri: String::new(),
+        arguments: vec!["--custom".into()],
+        working_directory_handle: String::new(),
+        working_directory: None,
+        runtime_handle: String::new(),
+        content_id: String::new(),
+        environment_set: Default::default(),
+        environment_unset: Default::default(),
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-owner", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    let selection = LaunchRecipeSelection {
+        entry_key: "steam:620".into(),
+        owner_key: "plugin-owner".into(),
+        plugin_id: "example.launcher".into(),
+        publisher_fingerprint: "publisher-key-fingerprint".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.revision,
+        base_target_revision: target.revision,
+        approved_plan_fingerprint: String::new(),
+    };
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision + 1)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Conflict
+    );
+    drop(store);
+    drop(db);
+
+    let reopened = SqliteSettingsStore::open(&path).unwrap();
+    let store = reopened.library_store();
+    assert_eq!(
+        store.launch_recipe_selection("steam:620").unwrap(),
+        Some(selection)
+    );
+    assert_eq!(
+        store
+            .remove_custom_launch_recipe("plugin-owner", "recipe-1", 1)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .launch_recipe_selection("steam:620")
+            .unwrap()
+            .unwrap()
+            .recipe_id,
+        "recipe-1",
+        "a removed recipe stays selected and unavailable until the user chooses a route"
+    );
+    assert_eq!(
+        store
+            .clear_launch_recipe_selection("steam:620", target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(store.launch_recipe_selection("steam:620").unwrap(), None);
 }
 
 #[test]

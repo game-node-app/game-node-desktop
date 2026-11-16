@@ -12,6 +12,15 @@ import { useI18n } from '../../i18n';
 import { settingsButtonPrimary, settingsButtonSecondary } from '../settings/settingsClasses';
 import { PlainModalScrollArea } from '../settings/PlainModalScrollArea';
 
+const launchDifferenceKeys: Record<string, string> = {
+  'recipe-selected': 'plugins.confirm.difference.recipe',
+  'custom-target': 'plugins.confirm.difference.target',
+  'known-components': 'plugins.confirm.difference.components',
+  'custom-arguments': 'plugins.confirm.difference.arguments',
+  'custom-working-directory': 'plugins.confirm.difference.workingDirectory',
+  'environment-changes': 'plugins.confirm.difference.environment',
+};
+
 /** What is asked, in the user's language. Everything the plugin supplied is shown as text. */
 export const PluginConfirmationDialog: React.FC<{
   confirmation: PluginConfirmation;
@@ -20,7 +29,10 @@ export const PluginConfirmationDialog: React.FC<{
 }> = ({ confirmation, waiting, onAnswer }) => {
   const { t } = useI18n();
   const [remember, setRemember] = useState(false);
+  const [revealEnvironment, setRevealEnvironment] = useState(false);
   const launching = confirmation.operation === 'launch';
+  const customLaunching = confirmation.operation === 'custom_launch';
+  const launchPlan = confirmation.launchPlan;
   const restoring = confirmation.operation === 'backup_restore';
   const game = confirmation.gameName || t('plugins.confirm.unnamedGame');
   const fingerprint = shortFingerprint(confirmation.publisherFingerprint);
@@ -28,6 +40,7 @@ export const PluginConfirmationDialog: React.FC<{
   // A new request starts with remembering off.
   useEffect(() => {
     setRemember(false);
+    setRevealEnvironment(false);
   }, [confirmation.id]);
 
   return (
@@ -53,12 +66,20 @@ export const PluginConfirmationDialog: React.FC<{
           className="flex flex-col gap-md"
         >
           <h2 id="plugin-confirm-title" className="text-lg font-bold text-white">
-            {restoring ? t('plugins.confirm.restoreTitle') : launching ? t('plugins.confirm.launchTitle') : t('plugins.confirm.installTitle')}
+            {launchPlan
+              ? t('plugins.confirm.planTitle')
+              : restoring
+                ? t('plugins.confirm.restoreTitle')
+                : launching || customLaunching
+                  ? t('plugins.confirm.launchTitle')
+                  : t('plugins.confirm.installTitle')}
           </h2>
           <p id="plugin-confirm-body" className="text-sm text-white">
-            {restoring
+            {launchPlan
+              ? t('plugins.confirm.planBody', { plugin: confirmation.pluginId, game })
+              : restoring
               ? t('plugins.confirm.restoreBody', { plugin: confirmation.pluginId, game })
-              : launching
+              : launching || customLaunching
               ? t('plugins.confirm.launchBody', { plugin: confirmation.pluginId, game })
               : t('plugins.confirm.installBody', { plugin: confirmation.pluginId, game })}
           </p>
@@ -75,8 +96,90 @@ export const PluginConfirmationDialog: React.FC<{
             <dd className="break-words text-white">{game}</dd>
           </dl>
           <p className="text-xs text-[var(--settings-text-secondary)]">
-            {restoring ? t('plugins.confirm.restoreNote') : launching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
+            {restoring ? t('plugins.confirm.restoreNote') : launching || customLaunching ? t('plugins.confirm.launchNote') : t('plugins.confirm.installNote')}
           </p>
+          {launchPlan && (
+            <section
+              aria-label={t('plugins.confirm.planTitle')}
+              className="flex max-h-[45vh] flex-col gap-compact overflow-auto rounded-sm border border-border-subtle bg-raised p-sm text-xs text-white"
+              data-testid="launch-plan-review"
+            >
+              <dl className="grid grid-cols-[auto_1fr] gap-x-md gap-y-1">
+                <dt>{t('plugins.confirm.source')}</dt>
+                <dd className="break-all">{launchPlan.sourceId}</dd>
+                <dt>{t('plugins.confirm.target')}</dt>
+                <dd className="break-all font-mono">{launchPlan.target}</dd>
+                <dt>{t('plugins.confirm.packageVersion')}</dt>
+                <dd className="break-all">{launchPlan.requesterPackageVersion}</dd>
+                <dt>{t('plugins.confirm.approvalFingerprint')}</dt>
+                <dd className="break-all font-mono">{launchPlan.fingerprint}</dd>
+              </dl>
+              {launchPlan.components.length > 0 && (
+                <div>
+                  <h3 className="font-semibold">{t('plugins.confirm.components')}</h3>
+                  <ol className="list-decimal pl-5">
+                    {launchPlan.components.map((component, index) => (
+                      <li key={`${component.kind}:${component.id}:${index}`} className="break-all">
+                        {component.kind}: {component.id} · {component.version} · r{component.revision} · {component.ownerPluginId}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+              {launchPlan.arguments.length > 0 && (
+                <div>
+                  <h3 className="font-semibold">{t('plugins.confirm.arguments')}</h3>
+                  <ol className="list-decimal pl-5">
+                    {launchPlan.arguments.map((argument, index) => (
+                      <li key={index} className="break-all font-mono">{argument}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+              {launchPlan.workingDirectory && (
+                <div>
+                  <h3 className="font-semibold">{t('plugins.confirm.workingDirectory')}</h3>
+                  <code className="break-all">{launchPlan.workingDirectory}</code>
+                </div>
+              )}
+              {(Object.keys(launchPlan.environmentSet).length > 0 || launchPlan.environmentUnset.length > 0) && (
+                <div>
+                  <h3 className="font-semibold">{t('plugins.confirm.environmentChanges')}</h3>
+                  <button
+                    type="button"
+                    aria-expanded={revealEnvironment}
+                    aria-controls="launch-plan-environment-values"
+                    onClick={() => setRevealEnvironment((shown) => !shown)}
+                    className={settingsButtonSecondary}
+                  >
+                    {revealEnvironment
+                      ? t('plugins.confirm.hideEnvironmentValues')
+                      : t('plugins.confirm.revealEnvironmentValues')}
+                  </button>
+                  <ul id="launch-plan-environment-values" className="mt-compact">
+                    {Object.entries(launchPlan.environmentSet).map(([key, value]) => (
+                      <li key={key} className="break-all font-mono">
+                        {key}={revealEnvironment ? value : '••••••'}
+                      </li>
+                    ))}
+                    {launchPlan.environmentUnset.map((key) => (
+                      <li key={key} className="break-all font-mono">{key} ({t('plugins.confirm.unset')})</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {launchPlan.differences.length > 0 && (
+                <div>
+                  <h3 className="font-semibold">{t('plugins.confirm.differences')}</h3>
+                  <ul className="list-disc pl-5">
+                    {launchPlan.differences.map((difference, index) => (
+                      <li key={index}>{t(launchDifferenceKeys[difference] ?? 'plugins.confirm.difference.other')}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
           {restoring && (
             <ul aria-label={t('plugins.confirm.restoreTargets')} className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-white">
               {(confirmation.details ?? []).map((detail, index) => (
@@ -93,7 +196,7 @@ export const PluginConfirmationDialog: React.FC<{
               onChange={(event) => setRemember(event.target.checked)}
             />
             <span>
-              {t('plugins.confirm.remember')}
+              {t(launchPlan ? 'plugins.confirm.rememberExactPlan' : 'plugins.confirm.remember')}
               <span className="block text-xs text-[var(--settings-text-secondary)]">
                 {t('plugins.confirm.rememberHint')}
               </span>
@@ -119,7 +222,7 @@ export const PluginConfirmationDialog: React.FC<{
               className={settingsButtonPrimary}
               onClick={() => onAnswer(true, !restoring && remember)}
             >
-              {t('plugins.confirm.allow')}
+              {launchPlan ? t('plugins.confirm.runOnce') : t('plugins.confirm.allow')}
             </button>
           </div>
         </div>

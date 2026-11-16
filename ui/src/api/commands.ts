@@ -7,6 +7,7 @@ import type {
   AuthInput,
   GameNodePage,
   LaunchKind,
+  LaunchRecipeChoices,
   LibraryInput,
   PluginInfo,
   PluginUpdatePreferences,
@@ -109,6 +110,41 @@ export const commands = {
     safeInvoke<void>(
       'review_detected_target',
       { entryKey, expectedRevision },
+      () => undefined,
+    ),
+
+  launchRecipeChoices: (entryKey: string) =>
+    safeInvoke<LaunchRecipeChoices>(
+      'launch_recipe_choices',
+      { entryKey },
+      () => ({
+        targetRevision: 0,
+        detectedDefaultAvailable: false,
+        selected: null,
+        recipes: [],
+      }),
+    ),
+
+  selectLaunchRecipe: (
+    entryKey: string,
+    recipe: {
+      pluginId: string;
+      publisherFingerprint: string;
+      recipeId: string;
+      recipeRevision: number;
+    },
+    expectedTargetRevision: number,
+  ) =>
+    safeInvoke<void>(
+      'select_launch_recipe',
+      { entryKey, ...recipe, expectedTargetRevision },
+      () => undefined,
+    ),
+
+  useDetectedDefault: (entryKey: string, expectedTargetRevision: number) =>
+    safeInvoke<void>(
+      'use_detected_default',
+      { entryKey, expectedTargetRevision },
       () => undefined,
     ),
 

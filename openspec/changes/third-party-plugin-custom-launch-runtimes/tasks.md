@@ -6,7 +6,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [x] 1.2 **Source 7.9.** Implement per-game/profile plugin-owned overlays for official, third-party and manual games, with independent normal/custom grants and one-use host user intents; verify an extension can target a selected Steam game without provider impersonation, broad library reads or modification of official state.
 
-- [ ] 1.3 **Source 7.10.** Fence approvals to recipe/base-target/resource revisions, sanitize child environment and associate wrapper/child process attribution with the original game; verify revocation and changed recipes block new launches without killing running games, leaking session credentials or silently switching routes.
+- [x] 1.3 **Source 7.10.** Fence approvals to recipe/base-target/resource revisions, sanitize child environment and associate wrapper/child process attribution with the original game; verify revocation and changed recipes block new launches without killing running games, leaking session credentials or silently switching routes.
 
 
 - [ ] 1.4 **Source 7.11.** Build immutable typed LaunchPlan resolution and versioned canonical approval fingerprints, binding source/package/component identities, effective target/argv/cwd/env and resource/grant revisions; verify plan substitution, replay, expiry and changed known mod/runtime components cannot dispatch through an old approval, with hashing/revalidation off the UI thread.

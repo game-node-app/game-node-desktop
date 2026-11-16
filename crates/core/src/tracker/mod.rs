@@ -77,6 +77,7 @@ struct Running {
 /// Matching rules are supplied by the host, allowing both platforms to be tested anywhere.
 pub struct Tracker {
     policies: BTreeMap<String, crate::drm_free::ProcessPolicy>,
+    process_attributions: BTreeMap<Identity, String>,
     floor: i64,
     windows: bool,
     account: Option<String>,
@@ -89,12 +90,16 @@ impl Tracker {
             windows,
             account: None,
             policies: BTreeMap::new(),
+            process_attributions: BTreeMap::new(),
             floor: i64::MIN,
             entries: BTreeMap::new(),
             active: BTreeMap::new(),
         }
     }
     pub fn set_policies(&mut self, policies: BTreeMap<String, crate::drm_free::ProcessPolicy>) {
+        if self.policies != policies {
+            self.process_attributions.clear();
+        }
         self.policies = policies;
     }
     pub fn set_floor(&mut self, at: i64) {
@@ -128,6 +133,7 @@ impl Tracker {
                         self.floor = at;
                     }
                     self.stop(at, &mut effects, &mut next_id);
+                    self.process_attributions.clear();
                 }
                 self.account = account;
                 let entries: BTreeMap<_, _> =
@@ -152,16 +158,33 @@ impl Tracker {
                 for key in removed {
                     self.close(&key, at, &mut effects, &mut next_id);
                 }
+                self.process_attributions.retain(|_, key| {
+                    entries
+                        .get(key)
+                        .zip(self.entries.get(key))
+                        .is_some_and(|(new, old)| {
+                            new.install_dir == old.install_dir
+                                && new.source == old.source
+                                && new.game_id == old.game_id
+                                && new.counter == old.counter
+                        })
+                });
                 self.entries = entries;
             }
             Input::Listed { at, processes } if self.account.is_some() => {
+                let process_index: BTreeMap<_, _> = processes
+                    .iter()
+                    .map(|process| ((process.pid, process.created_at), process))
+                    .collect();
                 let mut grouped: BTreeMap<String, BTreeMap<Identity, ProcessInfo>> =
                     BTreeMap::new();
-                for process in processes {
-                    if let Some(entry) = match_policy(
+                for process in processes.iter().cloned() {
+                    if let Some(entry) = match_process_policy(
                         &self.entries,
                         &self.policies,
-                        &process.exe_path,
+                        &process,
+                        &process_index,
+                        &self.process_attributions,
                         self.windows,
                     ) {
                         grouped
@@ -170,6 +193,12 @@ impl Tracker {
                             .insert((process.pid, process.created_at), process);
                     }
                 }
+                self.process_attributions = grouped
+                    .iter()
+                    .flat_map(|(key, processes)| {
+                        processes.keys().map(|identity| (*identity, key.clone()))
+                    })
+                    .collect();
                 let old_keys: Vec<_> = self.active.keys().cloned().collect();
                 for key in old_keys {
                     let current = grouped.get(&key);
@@ -425,6 +454,42 @@ fn match_policy<'a>(
                 .then_with(|| b.2.key.cmp(&a.2.key))
         })
         .map(|(_, _, e)| e)
+}
+
+/// A launched wrapper can hand execution to a child outside the game's installation folder.
+/// Keep that child with the entry matched by its parent chain, using PID plus creation time so a
+/// reused PID cannot inherit an old game's attribution.
+fn match_process_policy<'a>(
+    entries: &'a BTreeMap<String, Entry>,
+    policies: &BTreeMap<String, crate::drm_free::ProcessPolicy>,
+    process: &ProcessInfo,
+    process_index: &BTreeMap<(u32, std::time::SystemTime), &ProcessInfo>,
+    previous_attributions: &BTreeMap<Identity, String>,
+    windows: bool,
+) -> Option<&'a Entry> {
+    let mut current = Some(process);
+    let mut visited = BTreeSet::new();
+    while let Some(process) = current {
+        if !visited.insert((process.pid, process.created_at)) {
+            return None;
+        }
+        if let Some(entry) = match_policy(entries, policies, &process.exe_path, windows) {
+            return Some(entry);
+        }
+        let parent = process.parent.as_ref()?;
+        let identity = (parent.pid, parent.created_at);
+        if let Some(parent_process) = process_index.get(&identity) {
+            current = Some(*parent_process);
+        } else if let Some(entry) = previous_attributions
+            .get(&identity)
+            .and_then(|key| entries.get(key))
+        {
+            return Some(entry);
+        } else {
+            current = None;
+        }
+    }
+    None
 }
 
 #[cfg(test)]

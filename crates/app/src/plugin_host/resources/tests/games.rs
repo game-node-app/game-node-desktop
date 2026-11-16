@@ -131,7 +131,7 @@ impl Fixture {
 
     /// What the host binds an intent to for the fixture's own entry.
     fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
-        self.binding_for(operation, target_revision, "3", INSTALLATION)
+        self.binding_for(operation, target_revision, "3", INSTALLATION, "")
     }
 
     fn binding_for(
@@ -140,6 +140,7 @@ impl Fixture {
         target_revision: u64,
         game_id: &str,
         installation_id: &str,
+        recipe_id: &str,
     ) -> Binding {
         let permission = match operation {
             Operation::Launch => cap::GAME_LAUNCH,
@@ -159,6 +160,8 @@ impl Fixture {
             installation_id: installation_id.into(),
             operation,
             target_revision,
+            recipe_id: recipe_id.into(),
+            recipe_revision: u64::from(operation == Operation::CustomLaunch),
         }
     }
 
@@ -369,7 +372,13 @@ async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
 
     let intent = fixture
         .intents
-        .issue(fixture.binding(Operation::CustomLaunch, 1))
+        .issue(fixture.binding_for(
+            Operation::CustomLaunch,
+            1,
+            "3",
+            INSTALLATION,
+            &first.recipe_id,
+        ))
         .unwrap();
     let request = CustomLaunchRequest {
         context: Some(fixture.context()),
@@ -410,6 +419,160 @@ async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
         .into_inner();
     assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
     assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_recipe_removal_during_confirmation_blocks_dispatch() {
+    let (dialog, gate) = held(&[APPROVE]);
+    let (fixture, host, dialog) =
+        Fixture::game(&[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH], Some(dialog)).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "propose-recipe-before-confirmation".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let pending = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "execute-recipe-after-confirmation".into(),
+            recipe_id: recipe.recipe_id.clone(),
+            recipe_revision: recipe.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    Fixture::dialog_shown(&dialog.unwrap(), 1).await;
+
+    let removed = fixture
+        .client()
+        .games_remove_custom_launch(CustomLaunchRemoveRequest {
+            mutation: Some(fixture.mutation("remove-during-confirmation", recipe.recipe_revision)),
+            game_id: "3".into(),
+            recipe_id: recipe.recipe_id,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
+    gate.notify_one();
+
+    let ended = fixture.ended(&pending.job_id).await;
+    assert_eq!(ended.state(), JobState::Failed);
+    assert_eq!(ended.result_code, "recipe_changed");
+    assert!(host.custom_launch_dispatches.lock().unwrap().is_empty());
+    assert!(host.opened.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_custom_launch_approval_is_bound_to_recipe_identity() {
+    let (fixture, host, dialog) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE_AND_REMEMBER, APPROVE])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let propose = |key: &'static str, uri: &'static str| CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        idempotency_key: key.into(),
+        uri: uri.into(),
+        ..CustomLaunchRequest::default()
+    };
+    let first = fixture
+        .client()
+        .games_propose_custom_launch(propose("remember-recipe-a", "steam://rungameid/3"))
+        .await
+        .unwrap()
+        .into_inner();
+    let first_recipe_id = first.recipe_id.clone();
+    let first_recipe_revision = first.recipe_revision;
+    let first_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-recipe-a".into(),
+            recipe_id: first.recipe_id,
+            recipe_revision: first.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&first_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    let remembered_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-remembered-recipe-a".into(),
+            recipe_id: first_recipe_id,
+            recipe_revision: first_recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&remembered_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+
+    let second = fixture
+        .client()
+        .games_propose_custom_launch(propose("remember-recipe-b", "steam://rungameid/4"))
+        .await
+        .unwrap()
+        .into_inner();
+    let second_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-recipe-b".into(),
+            recipe_id: second.recipe_id,
+            recipe_revision: second.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&second_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -849,7 +1012,13 @@ async fn extension_custom_overlay_targets_selected_steam_without_read_or_provide
 
     let intent = fixture
         .intents
-        .issue(fixture.binding_for(Operation::CustomLaunch, 1, "5", "id-steam:1"))
+        .issue(fixture.binding_for(
+            Operation::CustomLaunch,
+            1,
+            "5",
+            "id-steam:1",
+            &recipe.recipe_id,
+        ))
         .unwrap();
     let request = CustomLaunchRequest {
         context: Some(context),
@@ -930,7 +1099,7 @@ async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
 
     let intent = fixture
         .intents
-        .issue(fixture.binding_for(Operation::Launch, 1, "5", "id-steam:1"))
+        .issue(fixture.binding_for(Operation::Launch, 1, "5", "id-steam:1", ""))
         .unwrap();
     let launched = fixture
         .client()

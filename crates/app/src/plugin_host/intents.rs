@@ -64,6 +64,10 @@ pub struct Binding {
     pub operation: Operation,
     /// The detected-target revision a launch was requested at; 0 for an install.
     pub target_revision: u64,
+    /// The custom recipe being approved; empty for other operations.
+    pub recipe_id: String,
+    /// The custom recipe revision for custom launch; 0 for other operations.
+    pub recipe_revision: u64,
 }
 
 struct Issued {

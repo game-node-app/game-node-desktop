@@ -821,6 +821,8 @@ impl ResourceApi {
             installation_id: frozen.profile.installation_id.clone(),
             operation: Operation::BackupRestore,
             target_revision: frozen.profile.revision,
+            recipe_id: String::new(),
+            recipe_revision: 0,
         };
         // The restore snapshot is not part of a legacy intent binding. Always ask for this exact
         // preview; do not let a launch/install intent authorize a restore.

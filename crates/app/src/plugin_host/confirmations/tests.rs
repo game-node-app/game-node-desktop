@@ -143,6 +143,8 @@ async fn the_settings_list_reads_and_revokes_a_plugins_remembered_confirmations(
                     installation_id: "inst".into(),
                     operation: "launch".into(),
                     target_revision: 0,
+                    recipe_id: String::new(),
+                    recipe_revision: 0,
                     game_name: "Game".into(),
                     approved_at: 77,
                 },

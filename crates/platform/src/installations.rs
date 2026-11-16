@@ -692,6 +692,20 @@ mod custom_launch_tests {
         };
         assert!(!credential_name.validate());
     }
+
+    #[test]
+    fn inherited_custom_launch_environment_is_restricted_to_host_allowlisted_keys() {
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("PATH")));
+        #[cfg(not(windows))]
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("HOME")));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "STEAM_SESSION"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "TAURI_PLUGIN_TOKEN"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new("RUST_LOG")));
+    }
 }
 
 fn pick_folder(initial: Option<&str>) -> Result<Option<String>, LocalError> {

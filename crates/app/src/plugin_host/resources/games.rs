@@ -214,6 +214,11 @@ impl ResourceApi {
             0
         };
         let game = entry.game_id.map(|id| id.to_string()).unwrap_or_default();
+        let recipe_revision = action
+            .custom_recipe
+            .as_ref()
+            .map(|recipe| recipe.revision)
+            .unwrap_or_default();
         let binding = Binding {
             plugin_id: identity.plugin_id.clone(),
             publisher_fingerprint: identity.publisher_fingerprint.clone(),
@@ -222,6 +227,12 @@ impl ResourceApi {
             installation_id: entry.installation_id.clone(),
             operation: action.operation,
             target_revision: fingerprint,
+            recipe_id: action
+                .custom_recipe
+                .as_ref()
+                .map(|recipe| recipe.recipe_id.clone())
+                .unwrap_or_default(),
+            recipe_revision,
         };
         let custom_recipe_id = action
             .custom_recipe
@@ -327,6 +338,8 @@ impl ResourceApi {
         Ok(approval.is_some_and(|approval| {
             approval.game_id == binding.game_id
                 && approval.target_revision == binding.target_revision
+                && approval.recipe_id == binding.recipe_id
+                && approval.recipe_revision == binding.recipe_revision
         }))
     }
 
@@ -408,7 +421,6 @@ impl ResourceApi {
         }
         if operation == Operation::CustomLaunch
             && let Some(recipe) = custom_recipe.as_ref()
-            && recipe.uri.is_empty()
         {
             let Some(dispatch) = custom_dispatch.as_ref() else {
                 return Outcome::failed("unavailable", "the custom launch recipe is unavailable");
@@ -417,6 +429,35 @@ impl ResourceApi {
                 .revalidate_custom_handles(caller, &context, recipe, dispatch)
                 .await
             {
+                return Outcome::stopped(&status);
+            }
+            match host.launch_fingerprint(entry_key.clone()).await {
+                Ok(current) if current == binding.target_revision => {}
+                Ok(_) => {
+                    return Outcome::failed(
+                        "target_changed",
+                        "the game's launch target changed; ask again",
+                    );
+                }
+                Err(status) => return Outcome::stopped(&status),
+            }
+            match host
+                .custom_launch_recipe(
+                    super::mutations::mutation_owner(caller),
+                    recipe.recipe_id.clone(),
+                )
+                .await
+            {
+                Ok(Some(current)) if current == *recipe => {}
+                Ok(_) => {
+                    return Outcome::failed(
+                        "recipe_changed",
+                        "the custom launch recipe changed; ask again",
+                    );
+                }
+                Err(status) => return Outcome::stopped(&status),
+            }
+            if let Err(status) = ctx.check() {
                 return Outcome::stopped(&status);
             }
         }
@@ -462,6 +503,8 @@ impl ResourceApi {
             installation_id: binding.installation_id.clone(),
             operation: binding.operation.as_str().to_owned(),
             target_revision: binding.target_revision,
+            recipe_id: binding.recipe_id.clone(),
+            recipe_revision: binding.recipe_revision,
             game_name: request.game_name.chars().take(120).collect(),
             approved_at: 0,
         };

@@ -13,6 +13,10 @@ The application SHALL install third-party plugins only through explicit package 
 - **WHEN** a user imports a valid package for this platform
 - **THEN** its metadata, license and requested permissions are shown before activation and no executable runs during validation
 
+#### Scenario: Import review does not trust UI metadata
+- **WHEN** the user reviews a selected package archive
+- **THEN** the host stages and validates its signed package contents without execution, derives the identity, publisher key, manifest requests and allowed scopes from those verified contents, and requires explicit confirmation of the exact first-use publisher fingerprint before importing it disabled
+
 #### Scenario: Reject an unsafe archive
 - **WHEN** an archive contains traversal, absolute paths, links, duplicate or case-colliding entries, excessive expansion or an unsupported architecture
 - **THEN** installation is rejected without changing the active version or writing outside staging

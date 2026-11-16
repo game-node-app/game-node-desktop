@@ -17,6 +17,18 @@ The Stores panel SHALL extend its plugin inventory with separate official and th
 - **WHEN** the user selects Steam in the inventory
 - **THEN** its existing official attribution/details remain and third-party permission or update controls cannot alter its grants or bundled binary
 
+#### Scenario: Import review and publisher trust
+- **WHEN** the user selects a local plugin package
+- **THEN** an asynchronous host command stages and validates the archive without executing its payload, and the UI reviews identity, version, compatibility, license, requested permission scopes and publisher fingerprint before installation; first-key trust requires confirmation of the displayed fingerprint and changed keys require explicit re-trust
+
+#### Scenario: Permission scopes are host-validated
+- **WHEN** a signed-in user saves permission decisions for a third-party plugin
+- **THEN** the host derives requests and allowed scopes from the active verified manifest, defaults every undecided scope to denied, atomically persists the complete decision set and rejects stale profile or grant-revision writes
+
+#### Scenario: Lifecycle commands fail without optimistic state
+- **WHEN** import, activation, disable, permission replacement or removal fails
+- **THEN** the UI retains the last host-reported inventory and permission snapshot, shows an actionable failure state, and refreshes state from the host instead of presenting the requested mutation as successful
+
 ### Requirement: Actionable platform compatibility review
 Import/details and update review SHALL show the target, mandatory requirements, detected effective environment and typed verdict/reasons. Author-tested coverage SHALL be labelled separately from eligibility. Incompatible or indeterminate mandatory checks SHALL prevent activation/Configure while leaving management/removal available. Unknown facts SHALL remain labelled unknown; compatible SHALL NOT imply safe code or successful execution.
 

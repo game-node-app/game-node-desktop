@@ -26,6 +26,9 @@ pub struct CustomLaunchRecipe {
     pub arguments: Vec<String>,
     pub working_directory_handle: String,
     pub runtime_handle: String,
+    /// Stable selected-content identity when a runtime binding requires a content item.
+    #[serde(default)]
+    pub content_id: String,
     pub environment_set: LaunchEnvironment,
     pub environment_unset: BTreeSet<String>,
 }
@@ -55,6 +58,7 @@ impl CustomLaunchRecipe {
             || !handle_ok(&self.executable_handle)
             || !handle_ok(&self.working_directory_handle)
             || !handle_ok(&self.runtime_handle)
+            || !handle_ok(&self.content_id)
             || self.arguments.len() > MAX_RECIPE_ARGUMENTS
             || self.arguments.iter().any(|argument| {
                 argument.len() > MAX_RECIPE_ARGUMENT_BYTES || argument.chars().any(|ch| ch == '\0')
@@ -68,14 +72,62 @@ impl CustomLaunchRecipe {
             let target = super::target::TargetSpec::Uri {
                 uri: self.uri.clone(),
             };
-            return target.validate_shape()
-                && self.arguments.is_empty()
-                && self.working_directory_handle.is_empty()
-                && self.runtime_handle.is_empty()
-                && self.environment_set.is_empty()
-                && self.environment_unset.is_empty();
+            // Custom fields are retained on the recipe and passed to UriOpener::open_custom.
+            // The platform adapter decides whether its handler can honor them and returns
+            // Unsupported when it cannot. A runtime wrapper has no meaning for a URI target.
+            return target.validate_shape() && self.runtime_handle.is_empty();
         }
         has_executable || !self.runtime_handle.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri_recipe() -> CustomLaunchRecipe {
+        CustomLaunchRecipe {
+            recipe_id: "recipe-1".into(),
+            revision: 1,
+            game_id: 620,
+            installation_id: "install-1".into(),
+            base_target_revision: 3,
+            executable_handle: String::new(),
+            uri: "steam://rungameid/620".into(),
+            arguments: vec!["--custom".into()],
+            working_directory_handle: "approved-cwd".into(),
+            runtime_handle: String::new(),
+            content_id: String::new(),
+            environment_set: [("CUSTOM_VALUE".into(), "value".into())].into(),
+            environment_unset: ["REMOVE_VALUE".into()].into(),
+        }
+    }
+
+    #[test]
+    fn recipes_without_a_content_id_remain_compatible() {
+        let mut value = serde_json::to_value(uri_recipe()).unwrap();
+        value.as_object_mut().unwrap().remove("contentId");
+        let recipe: CustomLaunchRecipe = serde_json::from_value(value).unwrap();
+        assert!(recipe.content_id.is_empty());
+    }
+
+    #[test]
+    fn uri_customization_is_retained_for_the_uri_handler_to_accept_or_reject() {
+        assert!(uri_recipe().validate());
+    }
+
+    #[test]
+    fn uri_recipe_cannot_also_select_an_external_runtime() {
+        let mut recipe = uri_recipe();
+        recipe.runtime_handle = "runtime-handle".into();
+        assert!(!recipe.validate());
+    }
+
+    #[test]
+    fn uri_recipe_cannot_also_select_an_executable() {
+        let mut recipe = uri_recipe();
+        recipe.executable_handle = "executable-handle".into();
+        assert!(!recipe.validate());
     }
 }
 

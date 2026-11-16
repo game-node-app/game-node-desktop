@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 16;
+pub const CURRENT_SCHEMA_VERSION: u32 = 17;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -99,6 +99,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 16,
         name: "plugin_custom_launch_recipes",
         sql: include_str!("../migrations/0016_plugin_custom_launch_recipes.sql"),
+    },
+    Migration {
+        version: 17,
+        name: "plugin_runtime_resources",
+        sql: include_str!("../migrations/0017_plugin_runtime_resources.sql"),
     },
 ];
 
@@ -396,6 +401,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
     }
@@ -492,13 +498,13 @@ mod tests {
         }
     }
 
-    const V16_OK: Migration = Migration {
-        version: 17,
+    const V17_OK: Migration = Migration {
+        version: 18,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V16_BAD: Migration = Migration {
-        version: 17,
+    const V17_BAD: Migration = Migration {
+        version: 18,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -531,7 +537,8 @@ mod tests {
             MIGRATIONS[13],
             MIGRATIONS[14],
             MIGRATIONS[15],
-            V16_OK,
+            MIGRATIONS[16],
+            V17_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -553,7 +560,8 @@ mod tests {
                 (14, "library_entry_targets".into()),
                 (15, "library_organization".into()),
                 (16, "plugin_custom_launch_recipes".into()),
-                (17, "add_notes".into())
+                (17, "plugin_runtime_resources".into()),
+                (18, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -601,11 +609,12 @@ mod tests {
                 MIGRATIONS[13],
                 MIGRATIONS[14],
                 MIGRATIONS[15],
-                V16_BAD,
+                MIGRATIONS[16],
+                V17_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 17 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 18 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -627,6 +636,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
         let leaked: i64 = conn
@@ -664,19 +674,20 @@ mod tests {
                     MIGRATIONS[13],
                     MIGRATIONS[14],
                     MIGRATIONS[15],
-                    V16_OK,
+                    MIGRATIONS[16],
+                    V17_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 16
+        let err = open(&path).unwrap_err(); // this build only knows schema 17
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 17,
-                supported: 16
+                found: 18,
+                supported: 17
             }
         );
         assert_eq!(
@@ -698,7 +709,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 16,
+                found: 17,
                 supported: 7
             }
         );
@@ -746,6 +757,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
         for table in [
@@ -761,6 +773,9 @@ mod tests {
             "port_install_jobs",
             "port_installations",
             "port_preferences",
+            "plugin_runtime_resources",
+            "plugin_runtime_content_bindings",
+            "plugin_runtime_catalog_state",
         ] {
             let rows: i64 = store
                 .conn()
@@ -781,7 +796,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 16,
+                found: 17,
                 supported: 1
             }
         );
@@ -806,7 +821,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V16_OK
+            ..V17_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -855,6 +870,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
 
@@ -992,6 +1008,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
 
@@ -1196,6 +1213,7 @@ mod tests {
                 (14, "library_entry_targets".to_string()),
                 (15, "library_organization".to_string()),
                 (16, "plugin_custom_launch_recipes".to_string()),
+                (17, "plugin_runtime_resources".to_string()),
             ]
         );
 
@@ -1442,10 +1460,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(16, "plugin_custom_launch_recipes".to_owned()))
+            Some(&(17, "plugin_runtime_resources".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1545,10 +1563,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 17);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(16, "plugin_custom_launch_recipes".to_owned()))
+            Some(&(17, "plugin_runtime_resources".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1662,6 +1680,9 @@ mod tests {
                 "playtime_sessions",
                 "playtime_totals",
                 "plugin_custom_launch_recipes",
+                "plugin_runtime_catalog_state",
+                "plugin_runtime_content_bindings",
+                "plugin_runtime_resources",
                 "port_catalog_snapshot",
                 "port_install_jobs",
                 "port_installations",

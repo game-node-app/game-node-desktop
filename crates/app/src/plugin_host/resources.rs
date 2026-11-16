@@ -30,6 +30,7 @@ mod mutations;
 mod network;
 mod notifications;
 mod ports;
+mod runtimes;
 mod saves;
 mod storage;
 mod tools;
@@ -158,6 +159,43 @@ pub const SERVED: &[Served] = &[
     Served::new("LibraryList", cap::LIBRARY_READ, true, READ_SCOPE),
     Served::new("LibraryGet", cap::LIBRARY_READ, false, READ_SCOPE),
     Served::new("LibraryWatch", cap::LIBRARY_READ, false, READ_SCOPE),
+    Served::new(
+        "RuntimesList",
+        cap::GAME_RUNTIME_READ,
+        true,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesGet",
+        cap::GAME_RUNTIME_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesWatch",
+        cap::GAME_RUNTIME_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesRegister",
+        cap::GAME_RUNTIME_CREATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesUpdate",
+        cap::GAME_RUNTIME_UPDATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesRemove",
+        cap::GAME_RUNTIME_DELETE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new("GamesRegisterContent", cap::DISCOVERY, false, OWN_OR_TARGET),
     Served::new(
         "MetadataUpdate",
         cap::LIBRARY_METADATA_WRITE,
@@ -1013,14 +1051,49 @@ impl resource_host_server::ResourceHost for ResourceApi {
     ) -> Result<Response<JobReply>, Status> {
         self.install_port(request).await
     }
+    async fn runtimes_list(
+        &self,
+        request: Request<DomainListRequest>,
+    ) -> Result<Response<RuntimesListReply>, Status> {
+        self.list_runtimes(request).await
+    }
+    async fn runtimes_get(
+        &self,
+        request: Request<DomainGetRequest>,
+    ) -> Result<Response<RuntimeRecordReply>, Status> {
+        self.get_runtime(request).await
+    }
+    async fn runtimes_watch(
+        &self,
+        request: Request<DomainWatchRequest>,
+    ) -> Result<Response<Self::RuntimesWatchStream>, Status> {
+        self.watch_runtimes(request).await
+    }
+    async fn runtimes_register(
+        &self,
+        request: Request<RuntimeRegisterRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        self.register_runtime(request).await
+    }
+    async fn runtimes_update(
+        &self,
+        request: Request<RuntimeUpdateRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        self.update_runtime(request).await
+    }
+    async fn runtimes_remove(
+        &self,
+        request: Request<DomainRemoveRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.remove_runtime(request).await
+    }
+    async fn games_register_content(
+        &self,
+        request: Request<ContentRegistrationRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.register_content(request).await
+    }
     not_served! {
-        runtimes_list(DomainListRequest) -> RuntimesListReply;
-        runtimes_get(DomainGetRequest) -> RuntimeRecordReply;
-        runtimes_watch(DomainWatchRequest) -> Self::RuntimesWatchStream;
-        runtimes_register(RuntimeRegisterRequest) -> RuntimeMutationReply;
-        runtimes_update(RuntimeUpdateRequest) -> RuntimeMutationReply;
-        runtimes_remove(DomainRemoveRequest) -> MutationReply;
-        games_register_content(ContentRegistrationRequest) -> MutationReply;
         storage_diagnostics_publish_benchmark(BenchmarkReportRequest) -> ReportMutationReply;
         storage_diagnostics_publish_smart(SmartReportRequest) -> ReportMutationReply;
         computer_publish_hardware(HardwareReportRequest) -> ReportMutationReply;

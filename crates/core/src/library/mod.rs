@@ -22,6 +22,7 @@ pub mod membership;
 pub mod organization;
 pub mod plugin_match;
 pub mod query;
+pub mod runtime;
 pub mod selection;
 pub mod store;
 pub mod suggest;
@@ -64,6 +65,10 @@ pub use query::{
     LastPlayedCounts, MatchStateCounts, PlayedCounts, PlaytimeCounts, ProviderCount, ReleaseCount,
     Row, RowGameNode, RowGroup, SavedViewCount, ScopeCounts, StoreCount, TitleSource,
     TitleSourceKind,
+};
+pub use runtime::{
+    ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
+    RuntimeResource,
 };
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{

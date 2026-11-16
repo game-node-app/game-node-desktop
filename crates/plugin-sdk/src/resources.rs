@@ -69,12 +69,19 @@ pub struct Written {
     pub outcome: Outcome,
 }
 
-/// A proposed, typed custom launch recipe. Handles are opaque host-issued resource identifiers;
-/// they are never interpreted by the SDK as filesystem paths.
+/// A proposed, typed custom launch recipe. Choose one direct target: `executable_handle` or `uri`;
+/// both may be empty when a host-issued `runtime_handle` wraps the detected target. URI recipes
+/// may include argv, cwd and environment changes, but the host/OS URI adapter can explicitly
+/// reject customizations it cannot apply. A runtime wrapper cannot be combined with a URI target.
+/// Environment set/unset is a delta applied to the child process by the host. Handles are opaque
+/// host-issued resource identifiers; they are never interpreted by the SDK as filesystem paths.
+/// The host validates the recipe and its handles before saving it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CustomLaunchRecipe {
     pub game_id: String,
     pub installation_id: String,
+    /// Existing content identity selected by the host; execution cannot replace it.
+    pub content_id: String,
     pub expected_revision: u64,
     pub executable_handle: String,
     pub uri: String,
@@ -83,6 +90,248 @@ pub struct CustomLaunchRecipe {
     pub environment_set: std::collections::BTreeMap<String, String>,
     pub environment_unset: Vec<String>,
     pub runtime_handle: String,
+}
+
+/// A runtime executable approved on the host and shared by games that use the same interpreter.
+/// The handle remains opaque: plugins provide it to registration and custom-launch requests but
+/// must never interpret it as a path.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuntimeSpec {
+    pub name: String,
+    pub version: String,
+    pub executable_handle: String,
+    pub supported_formats: Vec<String>,
+    pub extensions: std::collections::HashMap<String, ExtensionPayload>,
+    pub platform: String,
+    pub argument_template: Vec<RuntimeArgumentTemplate>,
+}
+
+/// One ordered runtime argument. `ContentPath` expands to the selected content path as one
+/// argv element; literal values are never parsed as shell text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeArgumentTemplate {
+    Literal(String),
+    ContentPath,
+}
+
+/// One content-to-runtime binding. The game and installation IDs preserve GameNode identity;
+/// content and runtime handles are opaque host-issued references.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeContentBinding {
+    /// Empty when registering a new content item; set to the existing ID when updating its
+    /// locator after a move or rename.
+    pub content_id: String,
+    pub game_id: String,
+    pub installation_id: String,
+    pub content_handle: String,
+    pub content_kind: String,
+    pub runtime_id: String,
+    pub supported_platforms: Vec<String>,
+}
+
+fn runtime_record(spec: RuntimeSpec, id: &str, revision: u64) -> RuntimeRecord {
+    RuntimeRecord {
+        id: id.to_owned(),
+        name: spec.name,
+        version: spec.version,
+        executable_handle: spec.executable_handle,
+        supported_formats: spec.supported_formats,
+        extensions: spec.extensions,
+        revision,
+        observed_at: 0,
+        platform: spec.platform,
+        argument_template: spec
+            .argument_template
+            .into_iter()
+            .map(|argument| crate::proto::RuntimeArgumentTemplate {
+                value: Some(match argument {
+                    RuntimeArgumentTemplate::Literal(value) => {
+                        crate::proto::runtime_argument_template::Value::Literal(value)
+                    }
+                    RuntimeArgumentTemplate::ContentPath => {
+                        crate::proto::runtime_argument_template::Value::ContentPath(
+                            ContentPathArgument {},
+                        )
+                    }
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn runtime_register_request(
+    context: &ServiceContext,
+    spec: RuntimeSpec,
+    key: &str,
+    expected_revision: u64,
+) -> RuntimeRegisterRequest {
+    RuntimeRegisterRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            operation_id: String::new(),
+            idempotency_key: key.to_owned(),
+            expected_revision,
+        }),
+        runtime: Some(runtime_record(spec, "", 0)),
+    }
+}
+
+fn runtime_update_request(
+    context: &ServiceContext,
+    runtime_id: &str,
+    spec: RuntimeSpec,
+    field_mask: Vec<String>,
+    key: &str,
+    expected_revision: u64,
+) -> RuntimeUpdateRequest {
+    RuntimeUpdateRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            operation_id: String::new(),
+            idempotency_key: key.to_owned(),
+            expected_revision,
+        }),
+        runtime: Some(runtime_record(spec, runtime_id, expected_revision)),
+        field_mask,
+    }
+}
+
+fn runtime_content_request(
+    context: &ServiceContext,
+    binding: RuntimeContentBinding,
+    key: &str,
+    expected_revision: u64,
+) -> ContentRegistrationRequest {
+    ContentRegistrationRequest {
+        mutation: Some(MutationContext {
+            context: Some(context.clone()),
+            operation_id: String::new(),
+            idempotency_key: key.to_owned(),
+            expected_revision,
+        }),
+        content_id: binding.content_id,
+        game_id: binding.game_id,
+        installation_id: binding.installation_id,
+        content_handle: binding.content_handle,
+        content_kind: binding.content_kind,
+        runtime_id: binding.runtime_id,
+        supported_platforms: binding.supported_platforms,
+    }
+}
+
+#[cfg(test)]
+mod runtime_sdk_tests {
+    use super::*;
+
+    fn runtime() -> RuntimeSpec {
+        RuntimeSpec {
+            name: "Example Emulator".into(),
+            version: "1.2".into(),
+            executable_handle: "approved-runtime-handle".into(),
+            supported_formats: vec!["sfc".into(), "smc".into()],
+            extensions: Default::default(),
+            platform: "linux".into(),
+            argument_template: vec![
+                RuntimeArgumentTemplate::Literal("--game".into()),
+                RuntimeArgumentTemplate::ContentPath,
+            ],
+        }
+    }
+
+    #[test]
+    fn registration_sends_host_issued_handle_and_expected_revision() {
+        let context = ServiceContext {
+            provider_id: "runtime-plugin".into(),
+            ..Default::default()
+        };
+        let request = runtime_register_request(&context, runtime(), "register-key", 0);
+        let mutation = request.mutation.unwrap();
+        let runtime = request.runtime.unwrap();
+
+        assert_eq!(mutation.context.as_ref(), Some(&context));
+        assert_eq!(mutation.idempotency_key, "register-key");
+        assert_eq!(mutation.expected_revision, 0);
+        assert!(runtime.id.is_empty());
+        assert_eq!(runtime.name, "Example Emulator");
+        assert_eq!(runtime.executable_handle, "approved-runtime-handle");
+        assert_eq!(runtime.supported_formats, ["sfc", "smc"]);
+        assert_eq!(runtime.platform, "linux");
+        assert_eq!(runtime.argument_template.len(), 2);
+        assert!(matches!(
+            runtime.argument_template[0].value.as_ref(),
+            Some(crate::proto::runtime_argument_template::Value::Literal(value))
+                if value == "--game"
+        ));
+        assert!(matches!(
+            runtime.argument_template[1].value.as_ref(),
+            Some(crate::proto::runtime_argument_template::Value::ContentPath(
+                _
+            ))
+        ));
+        assert_eq!(runtime.revision, 0);
+        assert_eq!(runtime.observed_at, 0);
+    }
+
+    #[test]
+    fn update_and_content_binding_keep_game_and_installation_identity() {
+        let context = ServiceContext::default();
+        let update = runtime_update_request(
+            &context,
+            "runtime-1",
+            runtime(),
+            vec!["version".into()],
+            "update-key",
+            7,
+        );
+        let updated = update.runtime.unwrap();
+        assert_eq!(updated.id, "runtime-1");
+        assert_eq!(updated.revision, 7);
+        assert_eq!(update.field_mask, ["version"]);
+        assert_eq!(update.mutation.unwrap().expected_revision, 7);
+
+        let binding = runtime_content_request(
+            &context,
+            RuntimeContentBinding {
+                content_id: String::new(),
+                game_id: "620".into(),
+                installation_id: "steam:620".into(),
+                content_handle: "approved-content-handle".into(),
+                content_kind: "rom".into(),
+                runtime_id: "runtime-1".into(),
+                supported_platforms: vec!["linux".into()],
+            },
+            "bind-key",
+            3,
+        );
+        assert_eq!(binding.game_id, "620");
+        assert!(binding.content_id.is_empty());
+        assert_eq!(binding.installation_id, "steam:620");
+        assert_eq!(binding.content_handle, "approved-content-handle");
+        assert_eq!(binding.runtime_id, "runtime-1");
+        assert_eq!(binding.supported_platforms, ["linux"]);
+        assert_eq!(binding.mutation.unwrap().expected_revision, 3);
+
+        let moved_binding = runtime_content_request(
+            &context,
+            RuntimeContentBinding {
+                content_id: "content-existing".into(),
+                game_id: "620".into(),
+                installation_id: "steam:620".into(),
+                content_handle: "approved-content-handle-after-move".into(),
+                content_kind: "rom".into(),
+                runtime_id: "runtime-1".into(),
+                supported_platforms: vec!["linux".into()],
+            },
+            "move-key",
+            4,
+        );
+        assert_eq!(moved_binding.content_id, "content-existing");
+        assert_eq!(moved_binding.installation_id, "steam:620");
+        assert_eq!(
+            moved_binding.content_handle,
+            "approved-content-handle-after-move"
+        );
+    }
 }
 
 impl Written {
@@ -178,6 +427,7 @@ impl Resources {
             context: Some(context.clone()),
             game_id: recipe.game_id.clone(),
             installation_id: recipe.installation_id.clone(),
+            content_id: recipe.content_id.clone(),
             expected_revision: recipe.expected_revision,
             user_intent_id: user_intent_id.to_owned(),
             idempotency_key: key.to_owned(),
@@ -207,6 +457,7 @@ impl Resources {
             context: Some(context.clone()),
             game_id: game_id.to_owned(),
             installation_id: installation_id.to_owned(),
+            content_id: String::new(),
             expected_revision,
             user_intent_id: user_intent_id.to_owned(),
             idempotency_key: key.to_owned(),
@@ -248,6 +499,154 @@ impl Resources {
             page_size,
             common_data_categories: None,
         }
+    }
+
+    // ---- Runtimes and content bindings (`game.runtime.*`) ----
+
+    /// One page of the caller's private runtime catalog by default. Supplying a selector is an
+    /// explicit request for common runtime records; the host still requires the matching read
+    /// grant and enforces its scope.
+    pub async fn runtimes_page(
+        &self,
+        page_size: u32,
+        cursor: &str,
+        shared_records: Option<CommonDataSelector>,
+    ) -> Result<RuntimesListReply, Status> {
+        let mut page = self.page(page_size, cursor);
+        page.common_data_categories = shared_records;
+        self.client
+            .clone()
+            .runtimes_list(timed(DomainListRequest {
+                page: Some(page),
+                kind: String::new(),
+                owner_filter: String::new(),
+            }))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// One runtime record. With no selector, the host returns only records visible to this plugin.
+    pub async fn runtime_get(
+        &self,
+        runtime_id: &str,
+        shared_records: Option<CommonDataSelector>,
+    ) -> Result<RuntimeRecord, Status> {
+        let reply = self
+            .client
+            .clone()
+            .runtimes_get(timed(DomainGetRequest {
+                context: Some(self.context.clone()),
+                resource_id: runtime_id.to_owned(),
+                expected_revision: 0,
+                shared_records,
+            }))
+            .await?
+            .into_inner();
+        reply
+            .runtime
+            .ok_or_else(|| Status::internal("the host sent no runtime record"))
+    }
+
+    /// Runtime catalog events after `after_revision` (0: from now on). A stale position is
+    /// `FAILED_PRECONDITION`; list again and resume from that reply's revision.
+    pub async fn runtimes_watch(
+        &self,
+        after_revision: u64,
+        shared_records: Option<CommonDataSelector>,
+    ) -> Result<Streaming<RuntimeRecordEvent>, Status> {
+        self.client
+            .clone()
+            .runtimes_watch(DomainWatchRequest {
+                context: Some(self.context.clone()),
+                after_revision,
+                resource_id: String::new(),
+                shared_records,
+            })
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Register an already installed runtime. This call does not install or download software;
+    /// `executable_handle` must be a host-issued approved resource handle.
+    pub async fn runtime_register(
+        &self,
+        runtime: RuntimeSpec,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<RuntimeMutationReply, Status> {
+        self.client
+            .clone()
+            .runtimes_register(timed(runtime_register_request(
+                &self.context,
+                runtime,
+                key,
+                expected_revision,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Update selected fields of a runtime owned by this plugin using its last known revision.
+    pub async fn runtime_update(
+        &self,
+        runtime_id: &str,
+        runtime: RuntimeSpec,
+        field_mask: impl IntoIterator<Item = impl Into<String>>,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<RuntimeMutationReply, Status> {
+        self.client
+            .clone()
+            .runtimes_update(timed(runtime_update_request(
+                &self.context,
+                runtime_id,
+                runtime,
+                field_mask.into_iter().map(Into::into).collect(),
+                key,
+                expected_revision,
+            )))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// Remove an owned runtime. Runtime removal does not imply content, game, save or history
+    /// deletion; callers must handle the resulting unbound installations explicitly.
+    pub async fn runtime_remove(
+        &self,
+        runtime_id: &str,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<Written, Status> {
+        self.client
+            .clone()
+            .runtimes_remove(timed(DomainRemoveRequest {
+                mutation: Some(self.mutation(key, expected_revision)),
+                resource_id: runtime_id.to_owned(),
+            }))
+            .await?
+            .into_inner()
+            .try_into()
+    }
+
+    /// Bind one content item to an existing GameNode game and installation. The content handle
+    /// and runtime ID are opaque; this operation does not create a duplicate game identity.
+    pub async fn register_runtime_content(
+        &self,
+        binding: RuntimeContentBinding,
+        expected_revision: u64,
+        key: &str,
+    ) -> Result<Written, Status> {
+        self.client
+            .clone()
+            .games_register_content(timed(runtime_content_request(
+                &self.context,
+                binding,
+                key,
+                expected_revision,
+            )))
+            .await?
+            .into_inner()
+            .try_into()
     }
 
     // ---- Library reads (`library.read`, or `library.read.all` for other providers) ----
@@ -689,9 +1088,10 @@ mod custom_launch_tests {
         let recipe = CustomLaunchRecipe {
             game_id: "620".into(),
             installation_id: "steam:620".into(),
+            content_id: "content-variant-1".into(),
             expected_revision: 12,
             executable_handle: "exec-handle".into(),
-            uri: "game://open".into(),
+            uri: String::new(),
             argv: vec!["--literal value".into(), "$(not-a-shell)".into()],
             working_directory_handle: "cwd-handle".into(),
             environment_set: [("A".into(), "value with spaces".into())].into(),
@@ -704,9 +1104,10 @@ mod custom_launch_tests {
         assert_eq!(request.context.as_ref(), Some(&context));
         assert_eq!(request.game_id, "620");
         assert_eq!(request.installation_id, "steam:620");
+        assert_eq!(request.content_id, "content-variant-1");
         assert_eq!(request.expected_revision, 12);
         assert_eq!(request.executable_handle, "exec-handle");
-        assert_eq!(request.uri, "game://open");
+        assert!(request.uri.is_empty());
         assert_eq!(request.argv, recipe.argv);
         assert_eq!(request.working_directory_handle, "cwd-handle");
         assert_eq!(
@@ -719,6 +1120,35 @@ mod custom_launch_tests {
         assert_eq!(request.recipe_revision, 0);
         assert_eq!(request.user_intent_id, "intent");
         assert_eq!(request.idempotency_key, "key");
+    }
+
+    #[test]
+    fn uri_proposal_uses_the_uri_target_without_executable_fields() {
+        let context = ServiceContext::default();
+        let recipe = CustomLaunchRecipe {
+            game_id: "620".into(),
+            installation_id: "steam:620".into(),
+            expected_revision: 12,
+            uri: "game://open?id=620".into(),
+            argv: vec!["--profile".into(), "alternate profile".into()],
+            working_directory_handle: "cwd-handle".into(),
+            environment_set: [("MODE".into(), "custom".into())].into(),
+            environment_unset: vec!["LEGACY_MODE".into()],
+            ..Default::default()
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
+
+        assert_eq!(request.uri, "game://open?id=620");
+        assert!(request.executable_handle.is_empty());
+        assert_eq!(request.argv, recipe.argv);
+        assert_eq!(request.working_directory_handle, "cwd-handle");
+        assert!(request.runtime_handle.is_empty());
+        assert_eq!(
+            request.environment_set.get("MODE").map(String::as_str),
+            Some("custom")
+        );
+        assert_eq!(request.environment_unset, ["LEGACY_MODE"]);
     }
 
     #[test]
@@ -738,6 +1168,7 @@ mod custom_launch_tests {
         assert_eq!(request.context.as_ref(), Some(&context));
         assert_eq!(request.game_id, "620");
         assert_eq!(request.installation_id, "steam:620");
+        assert!(request.content_id.is_empty());
         assert_eq!(request.expected_revision, 12);
         assert_eq!(request.recipe_id, "recipe-1");
         assert_eq!(request.recipe_revision, 4);

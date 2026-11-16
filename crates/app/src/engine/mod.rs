@@ -1809,6 +1809,115 @@ impl PluginLibraryHost {
 
 #[async_trait::async_trait]
 impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
+    async fn runtime_resources(
+        &self,
+        owner_key: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeResource>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_resources(&owner_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime resources"))
+    }
+
+    async fn runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+    ) -> Result<Option<gamenode_core::library::RuntimeResource>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_resource(&owner_key, &runtime_id))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime resource"))
+    }
+
+    async fn save_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime: gamenode_core::library::RuntimeResource,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.save_runtime_resource(&owner_key, &runtime))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not save runtime resource"))
+    }
+
+    async fn remove_runtime_resource(
+        &self,
+        owner_key: String,
+        runtime_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_runtime_resource(&owner_key, &runtime_id, expected_revision)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove runtime resource"))
+    }
+
+    async fn runtime_content_bindings(
+        &self,
+        owner_key: String,
+        game_id: u64,
+        installation_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.runtime_content_bindings(&owner_key, game_id, &installation_id)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read runtime content bindings"))
+    }
+
+    async fn save_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.save_runtime_content_binding(&owner_key, &binding)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not save runtime content binding"))
+    }
+
+    async fn remove_runtime_content_binding(
+        &self,
+        owner_key: String,
+        binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.remove_runtime_content_binding(&owner_key, &binding)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not remove runtime content binding"))
+    }
+
+    async fn runtime_catalog_revision(&self, owner_key: String) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.runtime_catalog_revision(&owner_key))
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read runtime catalog revision"))
+    }
+
     async fn custom_launch_recipe(
         &self,
         owner_key: String,
@@ -1856,6 +1965,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
         recipe: gamenode_core::library::CustomLaunchRecipe,
         executable_path: Option<String>,
         working_directory_path: Option<String>,
+        runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
     ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, tonic::Status> {
         let engine = self.engine()?;
         let ports = engine.shared.ports.clone();
@@ -1874,12 +1984,77 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                 return Ok(CustomLaunchDispatch::Uri {
                     uri,
                     arguments: recipe.arguments,
+                    working_directory: working_directory_path.unwrap_or_default(),
                     environment,
                 });
             }
+            if let Some(runtime) = runtime {
+                if !recipe.executable_handle.is_empty() {
+                    return Err(tonic::Status::invalid_argument(
+                        "a runtime recipe cannot also select a direct executable",
+                    ));
+                }
+                if recipe.runtime_handle != runtime.runtime_id {
+                    return Err(tonic::Status::failed_precondition(
+                        "the selected runtime changed during launch preparation",
+                    ));
+                }
+                let installations = ports.installations.ok_or_else(|| {
+                    tonic::Status::unimplemented("runtime launch is unavailable on this platform")
+                })?;
+                let registration = installations
+                    .inspect(&runtime.executable)
+                    .map_err(|error| match error {
+                        gamenode_core::drm_free::LocalError::Unsupported => {
+                            tonic::Status::unimplemented(
+                                "runtime launch is unavailable on this platform",
+                            )
+                        }
+                        gamenode_core::drm_free::LocalError::InvalidTarget => {
+                            tonic::Status::failed_precondition(
+                                "the approved runtime executable changed or is invalid",
+                            )
+                        }
+                        _ => tonic::Status::unavailable("could not inspect approved runtime"),
+                    })?;
+                let mut arguments =
+                    Vec::with_capacity(runtime.arguments.len() + recipe.arguments.len());
+                for argument in runtime.arguments {
+                    match argument {
+                        gamenode_core::library::RuntimeArgumentTemplate::Literal(value) => {
+                            arguments.push(value)
+                        }
+                        gamenode_core::library::RuntimeArgumentTemplate::ContentPath => {
+                            let path = runtime.content_path.as_ref().ok_or_else(|| {
+                                tonic::Status::failed_precondition(
+                                    "the selected runtime requires a content binding",
+                                )
+                            })?;
+                            arguments.push(path.clone());
+                        }
+                    }
+                }
+                arguments.extend(recipe.arguments.iter().cloned());
+                let working_directory = working_directory_path
+                    .unwrap_or_else(|| registration.working_directory.clone());
+                let command = CustomLaunchCommand {
+                    executable: registration.executable,
+                    file_identity: registration.file_identity,
+                    arguments,
+                    working_directory,
+                    environment: recipe.environment(),
+                };
+                return Ok(CustomLaunchDispatch::Runtime {
+                    command,
+                    runtime_id: runtime.runtime_id,
+                    runtime_revision: runtime.runtime_revision,
+                    content_id: runtime.content_id,
+                    binding_revision: runtime.binding_revision,
+                });
+            }
             if !recipe.runtime_handle.is_empty() {
-                return Err(tonic::Status::unimplemented(
-                    "approved external runtime resolution is unavailable",
+                return Err(tonic::Status::failed_precondition(
+                    "the selected runtime could not be resolved",
                 ));
             }
             let executable = executable_path.ok_or_else(|| {
@@ -1930,10 +2105,11 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                 CustomLaunchDispatch::Uri {
                     uri,
                     arguments,
+                    working_directory,
                     environment,
                 } => ports
                     .uri
-                    .open_custom(&uri, &arguments, "", &environment)
+                    .open_custom(&uri, &arguments, &working_directory, &environment)
                     .map_err(|error| match error {
                         UriError::NoHandler => tonic::Status::failed_precondition(
                             "no application handles this launch URI",
@@ -1961,6 +2137,28 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                                 )
                             }
                             _ => tonic::Status::unavailable("custom executable launch failed"),
+                        })
+                }
+                CustomLaunchDispatch::Runtime { command, .. } => {
+                    let installations = ports.installations.ok_or_else(|| {
+                        tonic::Status::unimplemented(
+                            "runtime launch is unavailable on this platform",
+                        )
+                    })?;
+                    installations
+                        .launch_custom(&command)
+                        .map_err(|error| match error {
+                            gamenode_core::drm_free::LocalError::Unsupported => {
+                                tonic::Status::unimplemented(
+                                    "runtime launch is unavailable on this platform",
+                                )
+                            }
+                            gamenode_core::drm_free::LocalError::InvalidTarget => {
+                                tonic::Status::failed_precondition(
+                                    "approved runtime executable changed or is invalid",
+                                )
+                            }
+                            _ => tonic::Status::unavailable("runtime launch failed"),
                         })
                 }
             }

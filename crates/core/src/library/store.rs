@@ -443,6 +443,101 @@ pub trait LibraryStore: Send + Sync {
         ))
     }
 
+    /// Lists this plugin owner's approved runtime resources.
+    fn runtime_resources(
+        &self,
+        owner_key: &str,
+    ) -> Result<Vec<super::runtime::RuntimeResource>, StorageError> {
+        let _ = owner_key;
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Looks up one runtime without exposing another plugin owner's private record.
+    fn runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+    ) -> Result<Option<super::runtime::RuntimeResource>, StorageError> {
+        let _ = (owner_key, runtime_id);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Creates a new runtime at revision 1 or updates it only at current revision + 1.
+    fn save_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime: &super::runtime::RuntimeResource,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, runtime);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Removes only the runtime record. Historical content bindings deliberately remain so they
+    /// can be shown as unavailable and migrated; games, saves and play history are independent.
+    fn remove_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+        expected_revision: u64,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, runtime_id, expected_revision);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Lists runtime bindings for a stable GameNode game and installation identity.
+    fn runtime_content_bindings(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+        installation_id: &str,
+    ) -> Result<Vec<super::runtime::RuntimeContentBinding>, StorageError> {
+        let _ = (owner_key, game_id, installation_id);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
+    /// Durable watch cursor for this owner's runtime and content catalog.
+    fn runtime_catalog_revision(&self, owner_key: &str) -> Result<u64, StorageError> {
+        let _ = owner_key;
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Upserts one binding by owner/game/installation/content/runtime identity, revision-checked.
+    /// If the stable content locator changes, update all sibling runtime bindings for that content
+    /// atomically and advance their revisions too.
+    fn save_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &super::runtime::RuntimeContentBinding,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, binding);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
+    fn remove_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &super::runtime::RuntimeContentBinding,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, binding);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
     /// Applies an owned or shared catalog result for `provider`, replacing only the fact sets the
     /// update covers and leaving installed facts, matches and covers untouched.
     fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError>;

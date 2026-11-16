@@ -11,7 +11,8 @@ use gamenode_core::library::{
     AccountLibrary, ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord,
     CatalogUpdate, ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, EntryStatus,
     FavoriteRecord, GameRecord, LastAccount, LibraryCache, LibraryLayout, LibraryStore,
-    ProviderScanState, SavedView, SavedViewPayload, StoreAccount, StoredEntry, entry_key,
+    ProviderScanState, RuntimeContentBinding, RuntimeMutation, RuntimeResource, SavedView,
+    SavedViewPayload, StoreAccount, StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -36,6 +37,27 @@ fn db_id(game_id: u64) -> Result<i64, StorageError> {
 
 fn game_id(raw: i64) -> Option<u64> {
     u64::try_from(raw).ok()
+}
+
+fn bump_runtime_catalog_revision(
+    tx: &rusqlite::Transaction<'_>,
+    owner_key: &str,
+) -> Result<u64, StorageError> {
+    tx.execute(
+        "INSERT INTO plugin_runtime_catalog_state (owner_key, catalog_revision)
+         VALUES (?1, 1)
+         ON CONFLICT(owner_key) DO UPDATE SET
+            catalog_revision = plugin_runtime_catalog_state.catalog_revision + 1",
+        [owner_key],
+    )
+    .map_err(failed)?;
+    tx.query_row(
+        "SELECT catalog_revision FROM plugin_runtime_catalog_state WHERE owner_key = ?1",
+        [owner_key],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(failed)
+    .and_then(|revision| u64::try_from(revision).map_err(failed))
 }
 
 impl SqliteLibraryStore {
@@ -841,7 +863,12 @@ impl LibraryStore for SqliteLibraryStore {
             )
             .optional()
             .map_err(failed)?;
-        let expected = current.map_or(1, |revision| revision.saturating_add(1));
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("custom launch recipe revision is exhausted"))?,
+            None => 1,
+        };
         if recipe.revision != expected {
             return Ok(match current {
                 Some(current) => CustomLaunchMutation::Conflict { current },
@@ -908,6 +935,428 @@ impl LibraryStore for SqliteLibraryStore {
         tx.commit().map_err(failed)?;
         Ok(CustomLaunchMutation::Applied {
             revision: expected_revision,
+        })
+    }
+
+    fn runtime_resources(&self, owner_key: &str) -> Result<Vec<RuntimeResource>, StorageError> {
+        if owner_key.is_empty() {
+            return Err(failed("runtime owner is required"));
+        }
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT runtime_json FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 ORDER BY runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([owner_key], |row| row.get::<_, String>(0))
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if !runtime.validate() {
+                return Err(failed("stored runtime resource is invalid"));
+            }
+            Ok(runtime)
+        })
+        .collect()
+    }
+
+    fn runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+    ) -> Result<Option<RuntimeResource>, StorageError> {
+        if owner_key.is_empty() || runtime_id.is_empty() {
+            return Err(failed("runtime owner and id are required"));
+        }
+        let conn = self.conn();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT runtime_json FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        json.map(|json| {
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if runtime.validate() {
+                Ok(runtime)
+            } else {
+                Err(failed("stored runtime resource is invalid"))
+            }
+        })
+        .transpose()
+    }
+
+    fn save_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime: &RuntimeResource,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !runtime.validate() {
+            return Err(failed("invalid runtime resource"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime.id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("runtime revision is exhausted"))?,
+            None => 1,
+        };
+        if runtime.revision != expected {
+            return Ok(match current {
+                Some(current) => RuntimeMutation::Conflict { current },
+                None => RuntimeMutation::Conflict { current: 0 },
+            });
+        }
+        tx.execute(
+            "INSERT INTO plugin_runtime_resources
+                (owner_key, runtime_id, revision, runtime_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner_key, runtime_id) DO UPDATE SET
+                revision = excluded.revision,
+                runtime_json = excluded.runtime_json",
+            params![
+                owner_key,
+                runtime.id,
+                i64::try_from(runtime.revision).map_err(failed)?,
+                serde_json::to_string(runtime).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: runtime.revision,
+        })
+    }
+
+    fn remove_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+        expected_revision: u64,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || runtime_id.is_empty() || expected_revision == 0 {
+            return Err(failed("invalid runtime removal"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, runtime_id],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(RuntimeMutation::Missing);
+        };
+        if current != expected_revision {
+            return Ok(RuntimeMutation::Conflict { current });
+        }
+        // Bindings intentionally outlive a runtime so the game remains identifiable and can be
+        // rebound later. This delete does not touch games, saves or play history.
+        tx.execute(
+            "DELETE FROM plugin_runtime_resources
+             WHERE owner_key = ?1 AND runtime_id = ?2 AND revision = ?3",
+            params![
+                owner_key,
+                runtime_id,
+                i64::try_from(expected_revision).map_err(failed)?
+            ],
+        )
+        .map_err(failed)?;
+        bump_runtime_catalog_revision(&tx, owner_key)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: expected_revision,
+        })
+    }
+
+    fn runtime_content_bindings(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+        installation_id: &str,
+    ) -> Result<Vec<RuntimeContentBinding>, StorageError> {
+        if owner_key.is_empty() || game_id == 0 || installation_id.is_empty() {
+            return Err(failed("runtime binding identity is required"));
+        }
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT binding_json FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                 ORDER BY content_id, runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map(
+                params![owner_key, db_id(game_id)?, installation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(failed)?;
+        rows.map(|row| {
+            let json = row.map_err(failed)?;
+            let binding: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+            if !binding.validate() {
+                return Err(failed("stored runtime binding is invalid"));
+            }
+            Ok(binding)
+        })
+        .collect()
+    }
+
+    fn runtime_catalog_revision(&self, owner_key: &str) -> Result<u64, StorageError> {
+        if owner_key.is_empty() {
+            return Err(failed("runtime owner is required"));
+        }
+        let conn = self.conn();
+        let revision: Option<i64> = conn
+            .query_row(
+                "SELECT catalog_revision FROM plugin_runtime_catalog_state WHERE owner_key = ?1",
+                [owner_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        revision
+            .map(u64::try_from)
+            .transpose()
+            .map_err(failed)
+            .map(|revision| revision.unwrap_or(0))
+    }
+
+    fn save_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &RuntimeContentBinding,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !binding.validate() {
+            return Err(failed("invalid runtime content binding"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let runtime_exists: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM plugin_runtime_resources
+                 WHERE owner_key = ?1 AND runtime_id = ?2",
+                params![owner_key, binding.runtime_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(failed)?;
+        if runtime_exists.is_none() {
+            return Ok(RuntimeMutation::Missing);
+        }
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                   AND content_id = ?4 AND runtime_id = ?5",
+                params![
+                    owner_key,
+                    db_id(binding.game_id)?,
+                    binding.installation_id,
+                    binding.content_id,
+                    binding.runtime_id,
+                ],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let expected = match current {
+            Some(revision) => revision
+                .checked_add(1)
+                .ok_or_else(|| failed("runtime binding revision is exhausted"))?,
+            None => 1,
+        };
+        if binding.revision != expected {
+            return Ok(match current {
+                Some(current) => RuntimeMutation::Conflict { current },
+                None => RuntimeMutation::Conflict { current: 0 },
+            });
+        }
+        let mut stored_binding = binding.clone();
+        if current.is_none() {
+            // Adding another runtime for an existing content_id must use its already-current
+            // locator. A caller can move/rename it by revision-updating an existing binding first;
+            // a new runtime binding cannot accidentally roll the shared locator back from stale
+            // data.
+            let sibling_json: Option<String> = tx
+                .query_row(
+                    "SELECT binding_json FROM plugin_runtime_content_bindings
+                     WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                       AND content_id = ?4 ORDER BY runtime_id LIMIT 1",
+                    params![
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failed)?;
+            if let Some(json) = sibling_json {
+                let sibling: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+                stored_binding.content = sibling.content;
+                stored_binding.content_kind = sibling.content_kind;
+            }
+        }
+        tx.execute(
+            "INSERT INTO plugin_runtime_content_bindings
+                (owner_key, game_id, installation_id, content_id, runtime_id, revision, binding_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner_key, game_id, installation_id, content_id, runtime_id) DO UPDATE SET
+                revision = excluded.revision,
+                binding_json = excluded.binding_json",
+            params![
+                owner_key,
+                db_id(binding.game_id)?,
+                binding.installation_id,
+                binding.content_id,
+                binding.runtime_id,
+                i64::try_from(binding.revision).map_err(failed)?,
+                serde_json::to_string(&stored_binding).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        // A content locator is keyed by stable content_id, not by the runtime. Refresh every
+        // sibling binding in the same transaction so choosing another runtime cannot resolve the
+        // same moved/renamed content through a stale handle. Sibling revisions advance so stale
+        // clients cannot overwrite the new location.
+        let siblings = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT runtime_id, revision, binding_json
+                     FROM plugin_runtime_content_bindings
+                     WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                       AND content_id = ?4 AND runtime_id <> ?5",
+                )
+                .map_err(failed)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                        binding.runtime_id,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(failed)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(failed)?
+        };
+        for (runtime_id, revision, json) in siblings {
+            let mut sibling: RuntimeContentBinding = serde_json::from_str(&json).map_err(failed)?;
+            if sibling.content != stored_binding.content
+                || sibling.content_kind != stored_binding.content_kind
+            {
+                sibling.content = stored_binding.content.clone();
+                sibling.content_kind = stored_binding.content_kind.clone();
+                sibling.revision = u64::try_from(revision)
+                    .map_err(failed)?
+                    .checked_add(1)
+                    .ok_or_else(|| failed("runtime binding revision is exhausted"))?;
+                tx.execute(
+                    "UPDATE plugin_runtime_content_bindings
+                     SET revision = ?1, binding_json = ?2
+                     WHERE owner_key = ?3 AND game_id = ?4 AND installation_id = ?5
+                       AND content_id = ?6 AND runtime_id = ?7 AND revision = ?8",
+                    params![
+                        i64::try_from(sibling.revision).map_err(failed)?,
+                        serde_json::to_string(&sibling).map_err(failed)?,
+                        owner_key,
+                        db_id(binding.game_id)?,
+                        binding.installation_id,
+                        binding.content_id,
+                        runtime_id,
+                        revision,
+                    ],
+                )
+                .map_err(failed)?;
+            }
+        }
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: binding.revision,
+        })
+    }
+
+    fn remove_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &RuntimeContentBinding,
+    ) -> Result<RuntimeMutation, StorageError> {
+        if owner_key.is_empty() || !binding.validate() {
+            return Err(failed("invalid runtime binding removal"));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT revision FROM plugin_runtime_content_bindings
+                 WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+                   AND content_id = ?4 AND runtime_id = ?5",
+                params![
+                    owner_key,
+                    db_id(binding.game_id)?,
+                    binding.installation_id,
+                    binding.content_id,
+                    binding.runtime_id,
+                ],
+                |row| row.get::<_, i64>(0).map(|value| value as u64),
+            )
+            .optional()
+            .map_err(failed)?;
+        let Some(current) = current else {
+            return Ok(RuntimeMutation::Missing);
+        };
+        if current != binding.revision {
+            return Ok(RuntimeMutation::Conflict { current });
+        }
+        tx.execute(
+            "DELETE FROM plugin_runtime_content_bindings
+             WHERE owner_key = ?1 AND game_id = ?2 AND installation_id = ?3
+               AND content_id = ?4 AND runtime_id = ?5 AND revision = ?6",
+            params![
+                owner_key,
+                db_id(binding.game_id)?,
+                binding.installation_id,
+                binding.content_id,
+                binding.runtime_id,
+                i64::try_from(binding.revision).map_err(failed)?,
+            ],
+        )
+        .map_err(failed)?;
+        tx.commit().map_err(failed)?;
+        Ok(RuntimeMutation::Applied {
+            revision: binding.revision,
         })
     }
 

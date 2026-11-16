@@ -15,6 +15,7 @@ pub async fn propose_runtime_recipe(
     resources: &Resources,
     game_id: &str,
     installation_id: &str,
+    content_id: &str,
     game_revision: u64,
     executable_handle: &str,
     working_directory_handle: &str,
@@ -23,6 +24,7 @@ pub async fn propose_runtime_recipe(
     let recipe = CustomLaunchRecipe {
         game_id: game_id.into(),
         installation_id: installation_id.into(),
+        content_id: content_id.into(),
         expected_revision: game_revision,
         executable_handle: executable_handle.into(),
         working_directory_handle: working_directory_handle.into(),

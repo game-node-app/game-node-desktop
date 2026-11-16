@@ -419,7 +419,7 @@ message RuntimeMutationReply { RuntimeRecord runtime = 1; MutationOutcome outcom
 message RuntimeRecordReply { RuntimeRecord runtime = 1; uint64 revision = 2; }
 message RuntimeRecordEvent { uint64 revision = 1; string event_type = 2; RuntimeRecord runtime = 3; }
 message RuntimesListReply { repeated RuntimeRecord runtimes = 1; string next_cursor = 2; uint64 revision = 3; }
-message ContentRegistrationRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string content_handle = 4; string content_kind = 5; string runtime_id = 6; repeated string supported_platforms = 7; }
+message ContentRegistrationRequest { MutationContext mutation = 1; string game_id = 2; string installation_id = 3; string content_handle = 4; string content_kind = 5; string runtime_id = 6; repeated string supported_platforms = 7; string content_id = 8; }
 message ReportMutationReply { string report_id = 1; uint64 revision = 2; MutationOutcome outcome = 3; }
 message BenchmarkReportRequest { MutationContext mutation = 1; string volume_handle = 2; string tool_name = 3; string tool_version = 4; map<string,double> measurements = 5; string units = 6; int64 observed_at = 7; }
 message SmartReportRequest { MutationContext mutation = 1; string volume_handle = 2; string device_model = 3; string firmware = 4; map<string,string> attributes = 5; int64 observed_at = 6; }
@@ -708,6 +708,7 @@ message CustomLaunchRequest {
   string recipe_id = 13;
   uint64 recipe_revision = 14;
   string uri = 15;
+  string content_id = 16;
 }
 message CustomLaunchReply { string recipe_id = 1; uint64 recipe_revision = 2; string job_id = 3; JobState state = 4; string refusal_code = 5; string message = 6; }
 
@@ -758,6 +759,16 @@ message ExtensionPatch {
 }
 
 // Example hybrid resource: exact revisions/timestamps remain typed integers.
+message RuntimeArgumentTemplate {
+  oneof value {
+    string literal = 1;
+    ContentPathArgument content_path = 2;
+  }
+}
+
+// Inserts the path of the selected, approved content item as one argv element.
+message ContentPathArgument {}
+
 message RuntimeRecord {
   string id = 1;
   string name = 2;
@@ -767,6 +778,8 @@ message RuntimeRecord {
   map<string, ExtensionPayload> extensions = 6;
   uint64 revision = 7;
   int64 observed_at = 8;
+  string platform = 9;
+  repeated RuntimeArgumentTemplate argument_template = 10;
 }
 
 // Epochs and operation ids are issued by the host; clients cannot widen them.

@@ -95,34 +95,126 @@ impl ResourceApi {
         recipe: &CustomLaunchRecipe,
         dispatch: &crate::plugin_host::library::CustomLaunchDispatch,
     ) -> Result<(), Status> {
-        if !recipe.uri.is_empty() {
+        if !recipe.runtime_handle.is_empty() {
+            let crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                command,
+                runtime_id,
+                runtime_revision,
+                content_id,
+                binding_revision,
+            } = dispatch
+            else {
+                return Err(Status::failed_precondition(
+                    "the approved runtime dispatch changed before launch",
+                ));
+            };
+            if recipe.runtime_handle != *runtime_id || recipe.content_id != *content_id {
+                return Err(Status::failed_precondition(
+                    "the approved runtime or content selection changed before launch",
+                ));
+            }
+            let resolved = self
+                .resolve_runtime_launch(
+                    caller,
+                    context,
+                    recipe.game_id,
+                    &recipe.installation_id,
+                    &recipe.runtime_handle,
+                    &recipe.content_id,
+                )
+                .await?;
+            if resolved.runtime_revision != *runtime_revision
+                || resolved.binding_revision != *binding_revision
+            {
+                return Err(Status::failed_precondition(
+                    "the approved runtime or content binding changed before launch",
+                ));
+            }
+            let working_directory = if recipe.working_directory_handle.is_empty() {
+                None
+            } else {
+                self.providers
+                    .authorize_resource(Some(context), cap::FILES_READ)?;
+                Some(
+                    self.in_namespace(
+                        caller,
+                        resolve_handle_path(
+                            self.files.clone(),
+                            self.library.clone(),
+                            caller.session_id.clone(),
+                            recipe.working_directory_handle.clone(),
+                            recipe.installation_id.clone(),
+                            true,
+                        ),
+                    )
+                    .await?,
+                )
+            };
+            let host = self
+                .library
+                .host()
+                .ok_or_else(|| Status::unavailable("the library is not available"))?;
+            let current = host
+                .prepare_custom_launch(recipe.clone(), None, working_directory, Some(resolved))
+                .await?;
+            match current {
+                crate::plugin_host::library::CustomLaunchDispatch::Runtime {
+                    command: current,
+                    runtime_id: current_runtime,
+                    runtime_revision: current_revision,
+                    content_id: current_content,
+                    binding_revision: current_binding,
+                } if &current == command
+                    && current_runtime == *runtime_id
+                    && current_revision == *runtime_revision
+                    && current_content == *content_id
+                    && current_binding == *binding_revision =>
+                {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(Status::failed_precondition(
+                        "the approved runtime launch plan changed before launch",
+                    ));
+                }
+            }
+        }
+        let is_uri = !recipe.uri.is_empty();
+        if recipe.executable_handle.is_empty() && recipe.working_directory_handle.is_empty() {
             return Ok(());
         }
         self.providers
             .authorize_resource(Some(context), cap::FILES_READ)?;
-        let crate::plugin_host::library::CustomLaunchDispatch::Executable(command) = dispatch
-        else {
-            return Err(Status::failed_precondition(
-                "custom executable dispatch no longer matches its recipe",
-            ));
-        };
-        let executable = self
-            .in_namespace(
-                caller,
-                resolve_handle_path(
-                    self.files.clone(),
-                    self.library.clone(),
-                    caller.session_id.clone(),
-                    recipe.executable_handle.clone(),
-                    recipe.installation_id.clone(),
-                    false,
-                ),
-            )
-            .await?;
-        if executable != command.executable {
-            return Err(Status::failed_precondition(
-                "approved executable handle changed during confirmation",
-            ));
+        if !is_uri {
+            let command = match dispatch {
+                crate::plugin_host::library::CustomLaunchDispatch::Executable(command) => command,
+                crate::plugin_host::library::CustomLaunchDispatch::Runtime { command, .. } => {
+                    command
+                }
+                crate::plugin_host::library::CustomLaunchDispatch::Uri { .. } => {
+                    return Err(Status::failed_precondition(
+                        "custom executable dispatch no longer matches its recipe",
+                    ));
+                }
+            };
+            let executable = self
+                .in_namespace(
+                    caller,
+                    resolve_handle_path(
+                        self.files.clone(),
+                        self.library.clone(),
+                        caller.session_id.clone(),
+                        recipe.executable_handle.clone(),
+                        recipe.installation_id.clone(),
+                        false,
+                    ),
+                )
+                .await?;
+            if executable != command.executable {
+                return Err(Status::failed_precondition(
+                    "approved executable handle changed during confirmation",
+                ));
+            }
         }
         if !recipe.working_directory_handle.is_empty() {
             let working_directory = self
@@ -138,7 +230,17 @@ impl ResourceApi {
                     ),
                 )
                 .await?;
-            if working_directory != command.working_directory {
+            let approved_working_directory = match dispatch {
+                crate::plugin_host::library::CustomLaunchDispatch::Executable(command)
+                | crate::plugin_host::library::CustomLaunchDispatch::Runtime { command, .. } => {
+                    &command.working_directory
+                }
+                crate::plugin_host::library::CustomLaunchDispatch::Uri {
+                    working_directory,
+                    ..
+                } => working_directory,
+            };
+            if &working_directory != approved_working_directory {
                 return Err(Status::failed_precondition(
                     "approved working directory changed during confirmation",
                 ));
@@ -182,6 +284,7 @@ impl ResourceApi {
             installation_id: entry.installation_id,
             base_target_revision: target_revision,
             executable_handle: request.executable_handle,
+            content_id: request.content_id,
             uri: request.uri,
             arguments: request.argv,
             working_directory_handle: request.working_directory_handle,
@@ -189,7 +292,9 @@ impl ResourceApi {
             environment_set: request.environment_set.into_iter().collect(),
             environment_unset: request.environment_unset.into_iter().collect(),
         };
-        if !recipe.validate() {
+        if !recipe.validate()
+            || (!recipe.runtime_handle.is_empty() && !recipe.executable_handle.is_empty())
+        {
             return Err(Status::invalid_argument("invalid custom launch recipe"));
         }
         let saved = host
@@ -223,6 +328,7 @@ impl ResourceApi {
             .providers
             .authorize_resource(request.context.as_ref(), cap::GAME_CUSTOM_LAUNCH)?;
         if !request.executable_handle.is_empty()
+            || !request.content_id.is_empty()
             || !request.uri.is_empty()
             || !request.argv.is_empty()
             || !request.working_directory_handle.is_empty()
@@ -262,49 +368,90 @@ impl ResourceApi {
         {
             return Err(Status::aborted("custom launch recipe revision changed"));
         }
-        let (executable_path, working_directory_path) = if recipe.uri.is_empty() {
-            // A custom recipe grant authorizes asking for the launch; file handles remain subject
-            // to their separate read grant and approval.
-            self.providers
-                .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-            let executable_handle = recipe.executable_handle.clone();
-            let executable = self
-                .in_namespace(
+        let runtime_launch = if recipe.runtime_handle.is_empty() {
+            None
+        } else {
+            Some(
+                self.resolve_runtime_launch(
                     &caller,
-                    resolve_handle_path(
-                        self.files.clone(),
-                        self.library.clone(),
-                        caller.session_id.clone(),
-                        executable_handle,
-                        recipe.installation_id.clone(),
-                        false,
-                    ),
+                    context,
+                    recipe.game_id,
+                    &recipe.installation_id,
+                    &recipe.runtime_handle,
+                    &recipe.content_id,
                 )
-                .await?;
-            let working = if recipe.working_directory_handle.is_empty() {
-                None
-            } else {
-                Some(
-                    self.in_namespace(
+                .await?,
+            )
+        };
+        let (executable_path, working_directory_path) =
+            if recipe.uri.is_empty() && recipe.runtime_handle.is_empty() {
+                // A custom recipe grant authorizes asking for the launch; file handles remain subject
+                // to their separate read grant and approval.
+                self.providers
+                    .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+                let executable_handle = recipe.executable_handle.clone();
+                let executable = self
+                    .in_namespace(
                         &caller,
                         resolve_handle_path(
                             self.files.clone(),
                             self.library.clone(),
                             caller.session_id.clone(),
-                            recipe.working_directory_handle.clone(),
+                            executable_handle,
                             recipe.installation_id.clone(),
-                            true,
+                            false,
                         ),
                     )
-                    .await?,
-                )
+                    .await?;
+                let working = if recipe.working_directory_handle.is_empty() {
+                    None
+                } else {
+                    Some(
+                        self.in_namespace(
+                            &caller,
+                            resolve_handle_path(
+                                self.files.clone(),
+                                self.library.clone(),
+                                caller.session_id.clone(),
+                                recipe.working_directory_handle.clone(),
+                                recipe.installation_id.clone(),
+                                true,
+                            ),
+                        )
+                        .await?,
+                    )
+                };
+                (Some(executable), working)
+            } else {
+                let working = if recipe.working_directory_handle.is_empty() {
+                    None
+                } else {
+                    self.providers
+                        .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
+                    Some(
+                        self.in_namespace(
+                            &caller,
+                            resolve_handle_path(
+                                self.files.clone(),
+                                self.library.clone(),
+                                caller.session_id.clone(),
+                                recipe.working_directory_handle.clone(),
+                                recipe.installation_id.clone(),
+                                true,
+                            ),
+                        )
+                        .await?,
+                    )
+                };
+                (None, working)
             };
-            (Some(executable), working)
-        } else {
-            (None, None)
-        };
         let dispatch = host
-            .prepare_custom_launch(recipe.clone(), executable_path, working_directory_path)
+            .prepare_custom_launch(
+                recipe.clone(),
+                executable_path,
+                working_directory_path,
+                runtime_launch,
+            )
             .await?;
         self.request_custom_action(request, recipe.clone(), dispatch)
             .await

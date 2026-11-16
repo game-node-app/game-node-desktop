@@ -637,7 +637,7 @@ mod custom_launch_tests {
         assert!(interpreter.status.success());
         let interpreter = String::from_utf8(interpreter.stdout).unwrap();
         let interpreter = interpreter.trim();
-        let script = "import json,os,sys; print(json.dumps({'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
+        let script = "import json,os,sys; print(json.dumps({'executable':sys.executable, 'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
         let arguments = vec![
             "-c".into(),
             script.into(),
@@ -648,15 +648,18 @@ mod custom_launch_tests {
             set: LaunchEnvironment::from([("GAMENODE_TEST_SET".into(), "one value".into())]),
             unset: ["PATH".into()].into(),
         };
-        let output = custom_command(
+        let mut command = custom_command(
             interpreter,
             &arguments,
             &directory.path().to_string_lossy(),
             &environment,
         )
-        .unwrap()
-        .output()
-        .expect("fixture process should start without a shell");
+        .unwrap();
+        // Process creation and waiting happen on a worker, matching the production contract.
+        let output = std::thread::spawn(move || command.output())
+            .join()
+            .expect("launch worker should finish")
+            .expect("fixture process should start without a shell");
 
         assert!(
             output.status.success(),
@@ -664,6 +667,7 @@ mod custom_launch_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["executable"], interpreter);
         assert_eq!(
             result["argv"],
             serde_json::json!(["space and & literal", "$(not-a-shell)"])

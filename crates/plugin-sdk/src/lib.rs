@@ -17,7 +17,8 @@ pub mod utilities;
 
 pub use actions::Actions;
 pub use resources::{
-    Cover, CustomLaunchRecipe, LibrarySnapshot, Outcome, Resources, Written, idempotency_key,
+    Cover, CustomLaunchRecipe, LibrarySnapshot, Outcome, Resources, RuntimeArgumentTemplate,
+    RuntimeContentBinding, RuntimeSpec, Written, idempotency_key,
 };
 pub use tonic::{Code, Status};
 pub use utilities::{

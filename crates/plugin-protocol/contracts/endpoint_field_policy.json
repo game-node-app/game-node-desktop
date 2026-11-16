@@ -293,8 +293,8 @@
     },
     {
       "route": "/gamenode.plugin.v1.Games/RegisterContent",
-      "request_policy": "Own-provider or scoped runtime-discovery game/install/content/runtime handles and typed default target",
-      "response_policy": "Typed resource ids/revisions and approval state",
+      "request_policy": "Own-provider or scoped runtime-discovery stable game/install/content/runtime identities, approved content handle and platform support",
+      "response_policy": "Stable content id, binding revision and typed mutation outcome",
       "extension_or_opaque_policy": "Namespaced descriptive game annotations only",
       "access_model": "library.discovery; provider or runtime-content context",
       "status": "protobuf_contract",
@@ -319,7 +319,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Games/ProposeCustomLaunch",
-      "request_policy": "Game/base revision, typed target/runtime/argv/cwd/env and intent",
+      "request_policy": "Game/base revision, typed target/runtime/content id/argv/cwd/env and intent",
       "response_policy": "Typed recipe/host-plan id, revision and approval state",
       "extension_or_opaque_policy": "Descriptive recommendation/evidence only; executable fields remain typed",
       "access_model": "game.custom_launch; own recipe",
@@ -332,7 +332,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Games/RequestCustomLaunch",
-      "request_policy": "Approved immutable host-plan/recipe revision and user intent",
+      "request_policy": "Approved immutable host-plan/recipe revision and user intent; no content id override",
       "response_policy": "Typed launch/job outcome or changed-plan refusal",
       "extension_or_opaque_policy": "None; no dynamic execution parameters",
       "access_model": "game.custom_launch",
@@ -488,7 +488,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Runtimes/Register",
-      "request_policy": "Authorized resource ids/revision and typed runtime fields/approved resource handles",
+      "request_policy": "Typed runtime name/version/platform/formats/argv template and approved executable handle",
       "response_policy": "Typed runtime id/revision/status",
       "extension_or_opaque_policy": "Descriptive namespaced metadata only; runtime executable/formats/templates stay typed",
       "access_model": "game.runtime.create; creator/category scope",
@@ -501,7 +501,7 @@
     },
     {
       "route": "/gamenode.plugin.v1.Runtimes/Update",
-      "request_policy": "Authorized resource ids/revision and typed runtime fields/approved resource handles",
+      "request_policy": "Owned runtime id/revision and typed field patch including platform/formats/argv template/approved executable handle",
       "response_policy": "Typed runtime id/revision/status",
       "extension_or_opaque_policy": "Descriptive namespaced metadata only; runtime executable/formats/templates stay typed",
       "access_model": "game.runtime.update; creator or explicit selected/category-authorized record scope",

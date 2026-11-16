@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::Engine;
 use gamenode_core::{Snapshot, WindowGeometry};
@@ -389,6 +390,157 @@ pub async fn plugin_inventory(
     .map_err(|_| "plugin inventory worker failed".to_owned())
 }
 
+static NEXT_SETTINGS_FORM: AtomicU64 = AtomicU64::new(1);
+
+#[tauri::command]
+pub async fn plugin_configuration_modes(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+) -> Result<crate::plugin_host::provider::ConfigurationModes, String> {
+    providers
+        .configuration_modes(&provider_id)
+        .map_err(|status| status.message().to_owned())
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigurationStatus {
+    pub status: &'static str,
+    pub window_id: Option<String>,
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+pub async fn plugin_configuration_open(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+    focus: bool,
+) -> Result<PluginConfigurationStatus, String> {
+    use gamenode_plugin_protocol::proto::ProviderOperation;
+    let operation = if focus {
+        ProviderOperation::ConfigurationFocus
+    } else {
+        ProviderOperation::ConfigurationOpen
+    };
+    Ok(match providers.configure(&provider_id, operation).await {
+        Ok(completion) => match completion.result.configuration {
+            Some(result) if result.accepted => PluginConfigurationStatus {
+                status: if focus { "focused" } else { "open" },
+                window_id: Some(result.window_id),
+                message: None,
+            },
+            Some(result) => PluginConfigurationStatus {
+                status: "failed",
+                window_id: None,
+                message: Some(result.failure),
+            },
+            None => PluginConfigurationStatus {
+                status: "failed",
+                window_id: None,
+                message: Some("plugin returned no configuration result".into()),
+            },
+        },
+        Err(status) => {
+            let code = status.code();
+            PluginConfigurationStatus {
+                status: match code {
+                    tonic::Code::DeadlineExceeded => "timedOut",
+                    tonic::Code::PermissionDenied => "denied",
+                    tonic::Code::Unavailable | tonic::Code::FailedPrecondition => "unavailable",
+                    _ => "failed",
+                },
+                window_id: None,
+                message: Some(status.message().to_owned()),
+            }
+        }
+    })
+}
+
+#[tauri::command]
+pub async fn plugin_settings_describe(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    provider_id: String,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    let handle = format!(
+        "settings-form-{}",
+        NEXT_SETTINGS_FORM.fetch_add(1, Ordering::Relaxed)
+    );
+    let context = providers
+        .settings_scope(&provider_id, handle)
+        .map_err(|status| status.message().to_owned())?;
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::DescribeRead,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_settings_submit(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    context: gamenode_plugin_protocol::settings::Context,
+    schema_revision: String,
+    configuration_revision: String,
+    values: gamenode_plugin_protocol::settings::Values,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::Submit {
+                schema_revision,
+                configuration_revision,
+                values,
+            },
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn plugin_settings_cancel(
+    providers: tauri::State<'_, crate::plugin_host::provider::ProviderApi>,
+    context: gamenode_plugin_protocol::settings::Context,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    use gamenode_plugin_protocol::settings::{Action, Request};
+    complete_plugin_settings(
+        &providers,
+        Request {
+            context,
+            action: Action::Cancel,
+        },
+    )
+    .await
+}
+
+async fn complete_plugin_settings(
+    providers: &crate::plugin_host::provider::ProviderApi,
+    request: gamenode_plugin_protocol::settings::Request,
+) -> Result<gamenode_plugin_protocol::settings::Reply, String> {
+    request
+        .validate()
+        .map_err(|_| "invalid plugin settings request".to_owned())?;
+    let completion = providers
+        .execute_settings(request.clone())
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let reply: gamenode_plugin_protocol::settings::Reply = completion
+        .result
+        .settings
+        .ok_or_else(|| "plugin returned no settings response".to_owned())?
+        .try_into()
+        .map_err(|_| "plugin returned an invalid settings response".to_owned())?;
+    reply
+        .validate_for(&request)
+        .map_err(|_| "plugin settings response did not match the request".to_owned())?;
+    Ok(reply)
+}
+
 #[tauri::command]
 pub async fn plugin_update_preferences(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
@@ -456,6 +608,84 @@ pub async fn plugin_confirmation_answer(
 ) -> Result<(), String> {
     bridge.answer(&id, approved, remember);
     Ok(())
+}
+
+/// Answers a pending folder-selection prompt. Empty paths and declines cancel the approval.
+#[tauri::command]
+pub async fn plugin_folder_selection_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::files::RootApprovalBridge>>,
+    id: String,
+    selected_root: Option<String>,
+) -> Result<(), String> {
+    if selected_root
+        .as_ref()
+        .is_some_and(|path| path.is_empty() || path.len() > 32 * 1024 || path.contains('\0'))
+    {
+        return Err("invalid folder selection".into());
+    }
+    bridge.answer_selection(&id, selected_root);
+    Ok(())
+}
+
+/// Answers a pending folder-scope confirmation. A late or repeated response is ignored.
+#[tauri::command]
+pub async fn plugin_folder_approval_answer(
+    bridge: tauri::State<'_, Arc<crate::plugin_host::files::RootApprovalBridge>>,
+    id: String,
+    approved: bool,
+) -> Result<(), String> {
+    bridge.answer_confirmation(&id, approved);
+    Ok(())
+}
+
+/// Lists file and logical-library root approvals in one plugin's active account profile.
+#[tauri::command]
+pub async fn plugin_folder_approvals(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+) -> Result<Vec<crate::plugin_host::file_approvals::PluginFolderApproval>, String> {
+    approvals.list(&plugin_id, &publisher_fingerprint).await
+}
+
+/// Revokes a folder approval or a standing logical-library root approval.
+#[tauri::command]
+pub async fn plugin_folder_revoke(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<bool, String> {
+    approvals
+        .revoke(&plugin_id, &publisher_fingerprint, &id)
+        .await
+}
+
+/// Opens the folder chooser and replaces an existing file approval with the newly confirmed root.
+#[tauri::command]
+pub async fn plugin_folder_change(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+) -> Result<(), String> {
+    approvals
+        .change_root(&plugin_id, &publisher_fingerprint, &id)
+        .await
+}
+
+/// Turns Core discovery on or off for a standing logical-library root.
+#[tauri::command]
+pub async fn plugin_library_root_set_watching(
+    approvals: tauri::State<'_, Arc<crate::plugin_host::file_approvals::PluginFolderApprovals>>,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    id: String,
+    watching: bool,
+) -> Result<bool, String> {
+    approvals
+        .set_watching(&plugin_id, &publisher_fingerprint, &id, watching)
+        .await
 }
 
 /// What the user allowed one plugin to start without asking, in the active profile.

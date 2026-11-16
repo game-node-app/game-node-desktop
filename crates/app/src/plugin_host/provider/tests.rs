@@ -2,7 +2,7 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gamenode_plugin_protocol::prost::Message;
-use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession};
+use gamenode_plugin_sdk::{Error, HostClient, Launch, Session as ClientSession, SessionOptions};
 
 #[path = "permissions_tests.rs"]
 mod permissions_tests;
@@ -14,6 +14,23 @@ struct Services {
     reads: AtomicUsize,
     publications: AtomicUsize,
     status: Mutex<Option<models::AccountStatus>>,
+}
+
+#[tokio::test]
+async fn configuration_modes_separate_declarations_from_active_authorization() {
+    let harness = Harness::third_party_config("account").await;
+    let available = harness.api.configuration_modes("fixture").unwrap();
+    assert!(available.external_declared && available.external_authorized);
+    assert!(available.declarative_declared && available.declarative_authorized);
+
+    harness
+        .api
+        .revoke_session_permission("fixture", cap::SETTINGS)
+        .await;
+    let revoked = harness.api.configuration_modes("fixture").unwrap();
+    assert!(revoked.declarative_declared);
+    assert!(!revoked.declarative_authorized);
+    assert!(revoked.external_authorized);
 }
 
 #[tonic::async_trait]
@@ -88,6 +105,18 @@ impl Harness {
         .await
     }
 
+    async fn third_party_config(account: &str) -> Self {
+        Self::build_with(
+            &[cap::CONFIGURE, cap::LIBRARY_READ],
+            false,
+            RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "ab".repeat(32),
+            },
+            Some(account),
+        )
+        .await
+    }
+
     async fn build_with(
         extra: &[&'static str],
         shared_catalog: bool,
@@ -137,19 +166,39 @@ impl Harness {
             root,
         )
         .unwrap();
-        let client = ClientSession::open(
-            Launch {
-                endpoint,
-                credential,
-                operation_id: "launch".into(),
-            },
-            "fixture.plugin",
-            "fixture",
-            "1.0",
-            &capabilities,
-        )
-        .await
-        .unwrap();
+        let plugin_launch = Launch {
+            endpoint,
+            credential,
+            operation_id: "launch".into(),
+        };
+        let client = if capabilities.contains(&cap::CONFIGURE) {
+            ClientSession::open_with_options(
+                plugin_launch,
+                "fixture.plugin",
+                "fixture",
+                "1.0",
+                &capabilities,
+                SessionOptions {
+                    min_api_major: 1,
+                    min_api_minor: gamenode_plugin_protocol::API_MINOR,
+                    max_api_major: 1,
+                    max_api_minor: gamenode_plugin_protocol::API_MINOR,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        } else {
+            ClientSession::open(
+                plugin_launch,
+                "fixture.plugin",
+                "fixture",
+                "1.0",
+                &capabilities,
+            )
+            .await
+            .unwrap()
+        };
         launch.ready.await.unwrap();
         Self {
             api,
@@ -181,6 +230,11 @@ impl Harness {
     }
 
     async fn next(&mut self, expected: ProviderOperation) -> HostClient {
+        let command = self.next_command(expected).await;
+        self.client.host.for_command(&command).unwrap()
+    }
+
+    async fn next_command(&mut self, expected: ProviderOperation) -> ProviderCommand {
         loop {
             let command =
                 tokio::time::timeout(Duration::from_secs(2), self.client.commands.message())
@@ -192,7 +246,7 @@ impl Harness {
                 continue;
             }
             assert_eq!(command.operation, expected as i32);
-            return self.client.host.for_command(&command).unwrap();
+            return command;
         }
     }
 }
@@ -203,6 +257,246 @@ fn completed() -> OperationResult {
         observed_at: 100,
         ..Default::default()
     }
+}
+
+fn configuration_result(command: &ProviderCommand) -> OperationResult {
+    OperationResult {
+        disposition: OperationDisposition::Completed as i32,
+        configuration: Some(ConfigurationResult {
+            session_id: command.context.as_ref().unwrap().session_id.clone(),
+            profile_id: super::super::profile::profile_id_for_account("account"),
+            window_id: command.target_operation_id.clone(),
+            accepted: true,
+            failure: String::new(),
+        }),
+        ..Default::default()
+    }
+}
+
+async fn open_configuration_window(h: &mut Harness) -> (String, HostClient) {
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    let window_id = command.target_operation_id.clone();
+    let host = h.client.host.for_command(&command).unwrap();
+    host.finish(configuration_result(&command)).await.unwrap();
+    opening.await.unwrap().unwrap();
+    (window_id, host)
+}
+
+#[tokio::test]
+async fn revoking_configure_requests_close_and_removes_its_grant() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, _) = open_configuration_window(&mut h).await;
+
+    let api = h.api.clone();
+    let revoking = tokio::spawn(async move {
+        api.revoke_session_permission("fixture", cap::CONFIGURE)
+            .await;
+    });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    revoking.await.unwrap();
+
+    let permissions = h.client.host.get_permissions().await.unwrap();
+    assert!(
+        !permissions
+            .grants
+            .iter()
+            .any(|grant| grant.permission_id == cap::CONFIGURE && grant.state == "granted")
+    );
+    assert_eq!(
+        h.api
+            .configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+}
+
+#[tokio::test]
+async fn switching_verified_accounts_closes_the_old_window_and_fences_its_context() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, old_host) = open_configuration_window(&mut h).await;
+    let old_resources = old_host.resources().unwrap();
+    assert!(old_resources.library_snapshot("").await.is_ok());
+
+    h.api.profiles().update(Some("next-account"), true);
+    assert_eq!(
+        old_resources.library_snapshot("").await.unwrap_err().code(),
+        tonic::Code::FailedPrecondition
+    );
+    let api = h.api.clone();
+    let fencing = tokio::spawn(async move { api.fence_third_party_sessions().await });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    fencing.await.unwrap();
+
+    assert!(matches!(
+        old_host.get_permissions().await,
+        Err(gamenode_plugin_sdk::DetailedError::Unauthenticated)
+    ));
+}
+
+#[tokio::test]
+async fn signing_out_closes_the_window_before_ending_the_plugin_session() {
+    let mut h = Harness::third_party_config("account").await;
+    let (window_id, _) = open_configuration_window(&mut h).await;
+
+    h.api.profiles().update(None, false);
+    let api = h.api.clone();
+    let fencing = tokio::spawn(async move { api.fence_third_party_sessions().await });
+    let close = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close.target_operation_id, window_id);
+    h.client
+        .host
+        .for_command(&close)
+        .unwrap()
+        .finish(configuration_result(&close))
+        .await
+        .unwrap();
+    fencing.await.unwrap();
+    assert!(!h.api.connected("fixture"));
+}
+
+#[tokio::test]
+async fn configure_reuses_one_host_handle_for_open_focus_and_close() {
+    let mut h = Harness::third_party_config("account").await;
+
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    let handle = open_command.target_operation_id.clone();
+    assert!(!handle.is_empty());
+    h.client
+        .host
+        .for_command(&open_command)
+        .unwrap()
+        .finish(configuration_result(&open_command))
+        .await
+        .unwrap();
+    opening.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let focusing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let focus_command = h.next_command(ProviderOperation::ConfigurationFocus).await;
+    assert_eq!(focus_command.target_operation_id, handle);
+    h.client
+        .host
+        .for_command(&focus_command)
+        .unwrap()
+        .finish(configuration_result(&focus_command))
+        .await
+        .unwrap();
+    focusing.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let closing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationClose)
+            .await
+    });
+    let close_command = h.next_command(ProviderOperation::ConfigurationClose).await;
+    assert_eq!(close_command.target_operation_id, handle);
+    h.client
+        .host
+        .for_command(&close_command)
+        .unwrap()
+        .finish(configuration_result(&close_command))
+        .await
+        .unwrap();
+    closing.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn rejected_focus_clears_stale_handle_for_the_next_configure_open() {
+    let mut h = Harness::third_party_config("account").await;
+    let (old_handle, _) = open_configuration_window(&mut h).await;
+
+    let api = h.api.clone();
+    let focusing = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationFocus)
+            .await
+    });
+    let focus_command = h.next_command(ProviderOperation::ConfigurationFocus).await;
+    h.client
+        .host
+        .for_command(&focus_command)
+        .unwrap()
+        .finish(OperationResult {
+            disposition: OperationDisposition::Failed as i32,
+            configuration: Some(ConfigurationResult {
+                session_id: focus_command.context.as_ref().unwrap().session_id.clone(),
+                profile_id: super::super::profile::profile_id_for_account("account"),
+                window_id: old_handle.clone(),
+                accepted: false,
+                failure: "window-closed".into(),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    focusing.await.unwrap().unwrap();
+
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+    assert_ne!(open_command.target_operation_id, old_handle);
+    h.client
+        .host
+        .for_command(&open_command)
+        .unwrap()
+        .finish(configuration_result(&open_command))
+        .await
+        .unwrap();
+    opening.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn configuration_ack_timeout_does_not_block_provider_operations() {
+    let mut h = Harness::third_party_config("account").await;
+    tokio::time::pause();
+    let api = h.api.clone();
+    let opening = tokio::spawn(async move {
+        api.configure("fixture", ProviderOperation::ConfigurationOpen)
+            .await
+    });
+    let _open_command = h.next_command(ProviderOperation::ConfigurationOpen).await;
+
+    let discovery = h.execute(ProviderOperation::Discover);
+    let discovery_host = h.next(ProviderOperation::Discover).await;
+    discovery_host.finish(completed()).await.unwrap();
+    discovery.await.unwrap().unwrap();
+
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let error = opening.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), tonic::Code::DeadlineExceeded);
 }
 
 #[tokio::test]

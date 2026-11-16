@@ -2,7 +2,7 @@
 //! authenticated account namespace, separate from global DRM-free watch configuration.
 use super::mutations::{mutation_key, request_hash};
 use super::*;
-use crate::plugin_host::files::{APPROVAL_TIMEOUT, RootRequest, RootScope};
+use crate::plugin_host::files::{APPROVAL_TIMEOUT, AffectedGame, RootRequest, RootScope};
 use crate::plugin_host::library::PluginScanRoot;
 use gamenode_platform::plugin_files::{ApprovedRoot, Confined, Identity, approve_root};
 use gamenode_platform::plugin_locations::{Os, SystemFolders};
@@ -534,6 +534,7 @@ impl ResourceApi {
                 installation_name: library.into(),
                 kind: "library".into(),
                 operations: vec!["read", "plugin_discovery", "core_executable_discovery"],
+                previously_approved: None,
                 suggested: None,
                 preselected,
                 declared,
@@ -543,7 +544,8 @@ impl ResourceApi {
         .map_err(|_| Status::deadline_exceeded("folder approval timed out"))??
         .ok_or_else(|| Status::permission_denied("folder selection declined"))?;
         let reserved = files.reserved.clone();
-        let (approved, declared, token) = tokio::task::spawn_blocking(move || {
+        let feed = self.library.clone();
+        let (approved, declared, token, affected) = tokio::task::spawn_blocking(move || {
             let approved = approve_root(&chosen, &reserved)
                 .map_err(|_| Status::failed_precondition("folder cannot be approved"))?;
             let declared = originals
@@ -553,7 +555,15 @@ impl ResourceApi {
                 .map(|v| v.volume_identity_token)
                 .filter(|v| !v.is_empty())
                 .ok_or_else(|| Status::failed_precondition("volume identity unknown"))?;
-            Ok::<_, Status>((approved, declared, token))
+            let affected = files
+                .overlapping(&feed, &approved.path)
+                .into_iter()
+                .map(|entry| AffectedGame {
+                    name: entry.name,
+                    game_id: entry.game_id,
+                })
+                .collect();
+            Ok::<_, Status>((approved, declared, token, affected))
         })
         .await
         .map_err(|_| Status::internal("folder validation failed"))??;
@@ -567,7 +577,7 @@ impl ResourceApi {
                 operations: vec!["read", "plugin_discovery", "core_executable_discovery"],
                 root: approved.path.clone(),
                 declared_by_plugin: declared,
-                affected: vec![],
+                affected,
             }),
         )
         .await

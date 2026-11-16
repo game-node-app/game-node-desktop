@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use gamenode_platform::plugin_files::Reserved;
 use gamenode_platform::sealed::Sealer;
+use tokio::sync::oneshot;
 use tonic::Status;
 
 use super::library::{EntryFolder, LibraryFeed};
@@ -47,6 +48,9 @@ pub struct RootRequest {
     pub kind: String,
     /// `read`, `write` and `delete`, the ones the plugin asked for.
     pub operations: Vec<&'static str>,
+    /// The prior scope when this request adds operations to an existing approval. The user must
+    /// see both this scope and the addition before approving the wider access.
+    pub previously_approved: Option<PreviousRootApproval>,
     /// Where the installation lives, to start the choice there; `None` when unknown. The host
     /// knows it from the library, so it is trustworthy (installation kind only).
     pub suggested: Option<PathBuf>,
@@ -54,9 +58,15 @@ pub struct RootRequest {
     /// **declared by the plugin and not verified**: the dialog must label them so, and a plugin
     /// can neither learn which exist nor which the user took.
     pub declared: Vec<DeclaredFolder>,
-    /// The folder to start on: the host's own suggestion, else the first declared one that
-    /// exists. `None` when there is nothing to propose.
+    /// The folder to start on: the first existing plugin-declared suggestion, then the host's
+    /// own suggestion. `None` when there is nothing to propose.
     pub preselected: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreviousRootApproval {
+    pub root: PathBuf,
+    pub operations: Vec<&'static str>,
 }
 
 /// A folder a plugin suggested, expanded for this system.
@@ -70,7 +80,8 @@ pub struct DeclaredFolder {
 }
 
 /// A game that shares the chosen folder.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AffectedGame {
     pub name: String,
     pub game_id: Option<u64>,
@@ -101,6 +112,243 @@ pub trait RootApprover: Send + Sync {
     async fn choose_root(&self, request: RootRequest) -> Result<Option<PathBuf>, Status>;
     /// Shows the final scope and asks for consent.
     async fn confirm(&self, scope: RootScope) -> Result<bool, Status>;
+}
+
+/// The window event that asks the user to choose a folder for a plugin.
+pub const ROOT_SELECT_EVENT: &str = "plugin:folder-approval-select";
+/// The window event that asks the user to approve the selected folder's scope.
+pub const ROOT_CONFIRM_EVENT: &str = "plugin:folder-approval-confirm";
+/// The window event that closes a folder prompt that was withdrawn or timed out.
+pub const ROOT_CLOSED_EVENT: &str = "plugin:folder-approval-closed";
+
+/// Plain event data for choosing the folder. Plugin supplied descriptions and paths are shown as
+/// text; declared suggestions are explicitly unverified and never imply approval.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootSelectionPrompt {
+    pub id: String,
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub installation_name: String,
+    pub kind: String,
+    pub operations: Vec<&'static str>,
+    pub previously_approved: Option<PreviousRootApprovalPrompt>,
+    pub suggested: Option<String>,
+    pub preselected: Option<String>,
+    pub declared: Vec<DeclaredFolderPrompt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousRootApprovalPrompt {
+    pub root: String,
+    pub operations: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredFolderPrompt {
+    pub path: String,
+    pub description: String,
+    pub exists: bool,
+}
+
+/// Plain event data for the final approval. `root` is intentionally shown so the user can see
+/// the exact canonicalized location and all library entries affected by it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootConfirmationPrompt {
+    pub id: String,
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub installation_name: String,
+    pub kind: String,
+    pub operations: Vec<&'static str>,
+    pub root: String,
+    pub declared_by_plugin: bool,
+    pub affected: Vec<AffectedGame>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootApprovalSignal {
+    Select(RootSelectionPrompt),
+    Confirm(RootConfirmationPrompt),
+    Closed(String),
+}
+
+pub type RootApprovalEmit = Arc<dyn Fn(RootApprovalSignal) -> bool + Send + Sync>;
+enum RootAnswer {
+    Selected(oneshot::Sender<Option<String>>),
+    Confirmed(oneshot::Sender<bool>),
+}
+
+/// Bridges host approval requests to the React window without making the host wait on the UI
+/// thread. The five-minute timeout remains owned by the call site in the resource host.
+pub struct RootApprovalBridge {
+    emit: RootApprovalEmit,
+    waiting: Mutex<HashMap<String, RootAnswer>>,
+}
+
+struct ForgetRootPrompt<'a> {
+    bridge: &'a RootApprovalBridge,
+    id: String,
+}
+
+impl Drop for ForgetRootPrompt<'_> {
+    fn drop(&mut self) {
+        let removed = self
+            .bridge
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.id)
+            .is_some();
+        if removed {
+            (self.bridge.emit)(RootApprovalSignal::Closed(self.id.clone()));
+        }
+    }
+}
+
+impl RootApprovalBridge {
+    pub fn new(emit: RootApprovalEmit) -> Self {
+        Self {
+            emit,
+            waiting: Mutex::default(),
+        }
+    }
+
+    fn id() -> Result<String, Status> {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| Status::internal("no source of randomness"))?;
+        Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn answer_selection(&self, id: &str, selected: Option<String>) -> bool {
+        let answer = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
+        match answer {
+            Some(RootAnswer::Selected(sender)) => sender.send(selected).is_ok(),
+            Some(answer) => {
+                self.waiting
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(id.to_owned(), answer);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub fn answer_confirmation(&self, id: &str, approved: bool) -> bool {
+        let answer = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
+        match answer {
+            Some(RootAnswer::Confirmed(sender)) => sender.send(approved).is_ok(),
+            Some(answer) => {
+                self.waiting
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(id.to_owned(), answer);
+                false
+            }
+            None => false,
+        }
+    }
+
+    async fn choose(&self, request: RootRequest) -> Result<Option<String>, Status> {
+        let id = Self::id()?;
+        let (send, receive) = oneshot::channel();
+        self.waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.clone(), RootAnswer::Selected(send));
+        let _forget = ForgetRootPrompt {
+            bridge: self,
+            id: id.clone(),
+        };
+        let shown = (self.emit)(RootApprovalSignal::Select(RootSelectionPrompt {
+            id,
+            plugin_id: request.plugin_id,
+            publisher_fingerprint: request.publisher_fingerprint,
+            installation_name: request.installation_name,
+            kind: request.kind,
+            operations: request.operations,
+            previously_approved: request.previously_approved.map(|previous| {
+                PreviousRootApprovalPrompt {
+                    root: previous.root.to_string_lossy().into_owned(),
+                    operations: previous.operations,
+                }
+            }),
+            suggested: request
+                .suggested
+                .map(|path| path.to_string_lossy().into_owned()),
+            preselected: request
+                .preselected
+                .map(|path| path.to_string_lossy().into_owned()),
+            declared: request
+                .declared
+                .into_iter()
+                .map(|folder| DeclaredFolderPrompt {
+                    path: folder.path.to_string_lossy().into_owned(),
+                    description: folder.description,
+                    exists: folder.exists,
+                })
+                .collect(),
+        }));
+        if !shown {
+            return Err(Status::unavailable("there is no window to ask the user in"));
+        }
+        receive
+            .await
+            .map_err(|_| Status::unavailable("the folder selection was closed"))
+    }
+
+    async fn confirm_scope(&self, scope: RootScope) -> Result<bool, Status> {
+        let id = Self::id()?;
+        let (send, receive) = oneshot::channel();
+        self.waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.clone(), RootAnswer::Confirmed(send));
+        let _forget = ForgetRootPrompt {
+            bridge: self,
+            id: id.clone(),
+        };
+        let shown = (self.emit)(RootApprovalSignal::Confirm(RootConfirmationPrompt {
+            id,
+            plugin_id: scope.plugin_id,
+            publisher_fingerprint: scope.publisher_fingerprint,
+            installation_name: scope.installation_name,
+            kind: scope.kind,
+            operations: scope.operations,
+            root: scope.root.to_string_lossy().into_owned(),
+            declared_by_plugin: scope.declared_by_plugin,
+            affected: scope.affected,
+        }));
+        if !shown {
+            return Err(Status::unavailable("there is no window to ask the user in"));
+        }
+        receive
+            .await
+            .map_err(|_| Status::unavailable("the folder approval was closed"))
+    }
+}
+
+#[async_trait]
+impl RootApprover for RootApprovalBridge {
+    async fn choose_root(&self, request: RootRequest) -> Result<Option<PathBuf>, Status> {
+        Ok(self.choose(request).await?.map(PathBuf::from))
+    }
+
+    async fn confirm(&self, scope: RootScope) -> Result<bool, Status> {
+        self.confirm_scope(scope).await
+    }
 }
 
 /// File access state shared by every plugin session.

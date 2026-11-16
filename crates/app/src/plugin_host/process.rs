@@ -286,6 +286,11 @@ impl ProviderProcesses {
     }
 
     pub async fn stop_provider(&self, provider_id: &str) {
+        let _ = self
+            .inner
+            .api
+            .close_configuration_before_stop(provider_id)
+            .await;
         if let Some(slot) = self.inner.slots.get(provider_id) {
             let mut child = slot.child.lock().await;
             if let Some(mut child) = child.take() {
@@ -301,9 +306,25 @@ impl ProviderProcesses {
     }
 
     pub async fn shutdown(&self) {
+        // Send correlated Close acknowledgements while provider command sessions are still
+        // serviceable. Broadcasting shutdown first would let supervisors tear down those sessions
+        // before the configuration windows could be fenced.
+        let provider_ids: Vec<_> = self
+            .inner
+            .slots
+            .iter()
+            .map(|(provider_id, _)| provider_id.clone())
+            .collect();
+        for provider_id in &provider_ids {
+            let _ = self
+                .inner
+                .api
+                .close_configuration_before_stop(provider_id)
+                .await;
+        }
         self.inner.shutdown.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(4), async {
-            for id in self.inner.slots.keys() {
+            for id in &provider_ids {
                 self.stop_provider(id).await;
             }
         })

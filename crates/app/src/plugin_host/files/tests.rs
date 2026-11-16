@@ -2,6 +2,53 @@ use std::os::unix::fs::symlink;
 
 use super::*;
 use crate::plugin_host::library::LibrarySource;
+use std::time::Duration;
+
+fn root_window() -> (RootApprovalEmit, Arc<Mutex<Vec<RootApprovalSignal>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let emit = {
+        let seen = seen.clone();
+        Arc::new(move |signal| {
+            seen.lock().unwrap().push(signal);
+            true
+        }) as RootApprovalEmit
+    };
+    (emit, seen)
+}
+
+async fn next_root_signal(
+    seen: &Arc<Mutex<Vec<RootApprovalSignal>>>,
+    index: usize,
+) -> RootApprovalSignal {
+    for _ in 0..200 {
+        if let Some(signal) = seen.lock().unwrap().get(index).cloned() {
+            return signal;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("no folder prompt was emitted");
+}
+
+fn root_request() -> RootRequest {
+    RootRequest {
+        plugin_id: "org.example".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        installation_name: "Game".into(),
+        kind: "save".into(),
+        operations: vec!["read", "write"],
+        previously_approved: Some(PreviousRootApproval {
+            root: PathBuf::from("/games/saves"),
+            operations: vec!["read"],
+        }),
+        suggested: None,
+        declared: vec![DeclaredFolder {
+            path: PathBuf::from("/plugin/suggested"),
+            description: "Saves".into(),
+            exists: true,
+        }],
+        preselected: Some(PathBuf::from("/plugin/suggested")),
+    }
+}
 
 fn path(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|part| (*part).to_owned()).collect()
@@ -82,6 +129,78 @@ fn only_one_approval_per_namespace_waits_at_a_time() {
     assert!(
         access.begin_approval([1; 32]).is_some(),
         "the slot is released"
+    );
+}
+
+#[tokio::test]
+async fn the_window_bridge_correlates_folder_selection_and_scope_answers() {
+    let (emit, seen) = root_window();
+    let bridge = Arc::new(RootApprovalBridge::new(emit));
+    let selecting = tokio::spawn({
+        let bridge = bridge.clone();
+        async move { bridge.choose_root(root_request()).await }
+    });
+    let RootApprovalSignal::Select(selection) = next_root_signal(&seen, 0).await else {
+        panic!("expected a folder selection prompt");
+    };
+    assert_eq!(selection.plugin_id, "org.example");
+    assert_eq!(
+        selection.previously_approved.as_ref().unwrap().operations,
+        ["read"]
+    );
+    assert_eq!(selection.declared[0].path, "/plugin/suggested");
+    assert!(!bridge.answer_confirmation(&selection.id, true));
+    assert!(bridge.answer_selection(&selection.id, Some("/games/new-saves".into())));
+    assert_eq!(
+        selecting.await.unwrap().unwrap(),
+        Some(PathBuf::from("/games/new-saves"))
+    );
+
+    let confirming = tokio::spawn({
+        let bridge = bridge.clone();
+        async move {
+            bridge
+                .confirm(RootScope {
+                    plugin_id: "org.example".into(),
+                    publisher_fingerprint: "ab".repeat(32),
+                    installation_name: "Game".into(),
+                    kind: "save".into(),
+                    operations: vec!["read", "write"],
+                    root: PathBuf::from("/games/new-saves"),
+                    declared_by_plugin: false,
+                    affected: vec![AffectedGame {
+                        name: "Game".into(),
+                        game_id: Some(42),
+                    }],
+                })
+                .await
+        }
+    });
+    let RootApprovalSignal::Confirm(scope) = next_root_signal(&seen, 1).await else {
+        panic!("expected a scope confirmation prompt");
+    };
+    assert_eq!(scope.root, "/games/new-saves");
+    assert_eq!(scope.affected[0].name, "Game");
+    assert!(bridge.answer_confirmation(&scope.id, true));
+    assert!(confirming.await.unwrap().unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_folder_prompt_closes_when_the_five_minute_limit_expires() {
+    let (emit, seen) = root_window();
+    let bridge = Arc::new(RootApprovalBridge::new(emit));
+    let request = tokio::spawn({
+        let bridge = bridge.clone();
+        async move { tokio::time::timeout(APPROVAL_TIMEOUT, bridge.choose_root(root_request())).await }
+    });
+    let RootApprovalSignal::Select(selection) = next_root_signal(&seen, 0).await else {
+        panic!("expected a folder selection prompt");
+    };
+    tokio::time::advance(APPROVAL_TIMEOUT).await;
+    assert!(request.await.unwrap().is_err());
+    assert_eq!(
+        seen.lock().unwrap().last(),
+        Some(&RootApprovalSignal::Closed(selection.id))
     );
 }
 

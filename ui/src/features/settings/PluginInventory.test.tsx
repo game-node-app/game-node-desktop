@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { appTheme } from '../../AppProviders';
 import { commands, type PluginInfo } from '../../api';
+import { selectPluginConfiguration } from '../../api/pluginSettings';
 import { I18nProvider } from '../../i18n';
 import { PluginInventory } from './PluginInventory';
 
@@ -33,6 +35,113 @@ function renderInventory(locale = 'en') {
 
 describe('PluginInventory', () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ['external-only', { externalDeclared: true, externalAuthorized: true, declarativeDeclared: false, declarativeAuthorized: false }, 'external'],
+    ['form-only', { externalDeclared: false, externalAuthorized: false, declarativeDeclared: true, declarativeAuthorized: true }, 'form'],
+    ['both', { externalDeclared: true, externalAuthorized: true, declarativeDeclared: true, declarativeAuthorized: true }, 'external'],
+    ['denied', { externalDeclared: true, externalAuthorized: false, declarativeDeclared: true, declarativeAuthorized: false }, 'denied'],
+    ['absent', { externalDeclared: false, externalAuthorized: false, declarativeDeclared: false, declarativeAuthorized: false }, 'absent'],
+  ] as const)('selects authorized configuration mode for %s', (_name, modes, expected) => {
+    expect(selectPluginConfiguration(modes)).toBe(expected);
+  });
+
+  it('prefers the authorized external window when a form is also available', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+      externalDeclared: true, externalAuthorized: true,
+      declarativeDeclared: true, declarativeAuthorized: true,
+    });
+    const describe = vi.spyOn(commands, 'pluginSettingsDescribe');
+    renderInventory();
+    expect(await screen.findByRole('button', { name: 'Configure' })).toBeInTheDocument();
+    expect(describe).not.toHaveBeenCalled();
+  });
+
+  it('routes Configure to open, then focus, while plugin settings navigation stays usable', async () => {
+    const secondPlugin: PluginInfo = { ...plugin, providerId: 'second-provider', pluginId: 'org.example.second', name: 'Second plugin' };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin, secondPlugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+      externalDeclared: true, externalAuthorized: true,
+      declarativeDeclared: true, declarativeAuthorized: true,
+    });
+    const configure = vi.spyOn(commands, 'pluginConfigurationOpen')
+      .mockResolvedValueOnce({ status: 'open', windowId: 'window-1', message: null })
+      .mockResolvedValueOnce({ status: 'focused', windowId: 'window-1', message: null });
+    renderInventory();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+    await waitFor(() => expect(configure).toHaveBeenCalledWith(plugin.providerId, false));
+    expect(await screen.findByText('Configuration window opened.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Configure' }));
+    await waitFor(() => expect(configure).toHaveBeenLastCalledWith(plugin.providerId, true));
+    expect(await screen.findByText('Configuration window focused.')).toBeInTheDocument();
+
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Installed plugins' })).getByRole('button', { name: /Second plugin/ }));
+    expect(screen.getByRole('article', { name: 'Plugin details' })).toHaveTextContent('org.example.second');
+  });
+
+  it('shows timeout feedback from the external configuration lifecycle', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+      externalDeclared: true, externalAuthorized: true,
+      declarativeDeclared: false, declarativeAuthorized: false,
+    });
+    vi.spyOn(commands, 'pluginConfigurationOpen').mockResolvedValue({ status: 'timedOut', windowId: null, message: 'timeout' });
+    renderInventory();
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+    expect(await screen.findByText('The configuration request timed out. Try again.')).toBeInTheDocument();
+  });
+
+  it('reports disabled and unavailable modes without issuing Configure requests', async () => {
+    const disabledConfigure = vi.spyOn(commands, 'pluginConfigurationOpen');
+    const disabledModes = vi.spyOn(commands, 'pluginConfigurationModes');
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([{ ...plugin, status: 'missing', session: 'stopped' }]);
+    renderInventory();
+    expect(await screen.findByText(/unavailable while this plugin is disabled or stopped/i)).toBeInTheDocument();
+    expect(disabledModes).not.toHaveBeenCalled();
+    expect(disabledConfigure).not.toHaveBeenCalled();
+
+    cleanup();
+    vi.restoreAllMocks();
+    const unavailableConfigure = vi.spyOn(commands, 'pluginConfigurationOpen');
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockRejectedValue(new Error('provider unavailable'));
+    renderInventory();
+    expect(await screen.findByText(/configuration is unavailable for this plugin right now/i)).toBeInTheDocument();
+    expect(unavailableConfigure).not.toHaveBeenCalled();
+  });
+
+  it('loads and renders the authorized declarative schema in form-only mode', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({
+      externalDeclared: false, externalAuthorized: false,
+      declarativeDeclared: true, declarativeAuthorized: true,
+    });
+    vi.spyOn(commands, 'pluginSettingsDescribe').mockResolvedValue({
+      context: { plugin_id: plugin.pluginId, provider_id: plugin.providerId, session_id: 's1', profile_epoch: 1, form_handle: 'f1' },
+      outcome: { type: 'form', form: {
+        schema_version: 1, form_id: 'prefs', schema_revision: 'schema-1', configuration_revision: 'config-1',
+        title: { fallback: 'Plugin preferences', translations: {} },
+        fields: [{ id: 'label', label: { fallback: 'Catalog label', translations: {} }, kind: { type: 'text', min_length: 1, max_length: 32 }, default: { type: 'text', value: 'Games' } }],
+      }, values: { label: { type: 'text', value: 'Games' } } },
+    });
+    renderInventory();
+    expect(await screen.findByRole('textbox', { name: 'Catalog label' })).toHaveValue('Games');
+    expect(commands.pluginSettingsDescribe).toHaveBeenCalledWith(plugin.providerId);
+  });
+
+  it.each([
+    [{ externalDeclared: true, externalAuthorized: false, declarativeDeclared: true, declarativeAuthorized: false }, /not authorized/i],
+    [{ externalDeclared: false, externalAuthorized: false, declarativeDeclared: false, declarativeAuthorized: false }, /does not provide an authorized configuration/i],
+  ])('does not request settings for denied or absent configuration', async (modes, message) => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue(modes);
+    const describe = vi.spyOn(commands, 'pluginSettingsDescribe');
+    renderInventory();
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(describe).not.toHaveBeenCalled();
+  });
 
   it.each([
     ['en', 'Linux Package Manager'],

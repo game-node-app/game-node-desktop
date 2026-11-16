@@ -214,6 +214,8 @@ async fn queued_storage_is_fenced_when_revocation_wins_commit_lock() {
             secret_deleted: false,
             identity_accepted: false,
             settings: None,
+            configuration: None,
+            configuration_cleanup: false,
             requested_achievements: Default::default(),
         },
     );

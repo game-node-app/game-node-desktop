@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, transport::Server};
 pub mod compatibility;
 pub mod confirmations;
 pub mod files;
+pub mod file_approvals;
 pub mod fingerprints;
 pub mod grants;
 pub mod intents;

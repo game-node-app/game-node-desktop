@@ -2,6 +2,11 @@
 
 ## OpenSpec task and design navigation
 
+Worktree-specific notes for the `mvp-actions-configuration` branch live in
+[`worktree/mvp-actions-configuration/README.md`](../worktree/mvp-actions-configuration/README.md).
+Keep checkout-local coordination notes there so parallel worktrees can keep
+their own records without mixing branch-specific details.
+
 Use the repository helper to query OpenSpec's structured task data and retrieve
 only the task or design section needed for the current work. It falls back to
 reading `tasks.md` directly if the OpenSpec CLI is unavailable.

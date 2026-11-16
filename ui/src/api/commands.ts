@@ -27,6 +27,8 @@ import type {
   PortToolsCacheView,
 } from './ports';
 import type { RememberedConfirmation } from './pluginConfirmations';
+import type { PluginFolderApproval } from './pluginFolderApprovals';
+import type { PluginConfigurationModes, PluginConfigurationStatus, PluginSettingsContext, PluginSettingsReply, PluginSettingsValue } from './pluginSettings';
 import { createDefaultSnapshot } from './types';
 
 export function isTauriRuntime(): boolean {
@@ -131,6 +133,32 @@ export const commands = {
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
 
+  pluginConfigurationModes: (providerId: string) =>
+    safeInvoke<PluginConfigurationModes>('plugin_configuration_modes', { providerId }, () => ({
+      externalDeclared: false, externalAuthorized: false,
+      declarativeDeclared: false, declarativeAuthorized: false,
+    })),
+  pluginConfigurationOpen: (providerId: string, focus: boolean) =>
+    safeInvoke<PluginConfigurationStatus>('plugin_configuration_open', { providerId, focus }, () => ({
+      status: 'unavailable', windowId: null, message: 'Native plugin configuration is unavailable in the web preview',
+    })),
+  pluginSettingsDescribe: (providerId: string) =>
+    safeInvoke<PluginSettingsReply>('plugin_settings_describe', { providerId }, () => {
+      throw new Error('Plugin settings are unavailable in the web preview');
+    }),
+  pluginSettingsSubmit: (
+    context: PluginSettingsContext,
+    schemaRevision: string,
+    configurationRevision: string,
+    values: Record<string, PluginSettingsValue>,
+  ) => safeInvoke<PluginSettingsReply>('plugin_settings_submit', {
+    context, schemaRevision, configurationRevision, values,
+  }, () => { throw new Error('Plugin settings are unavailable in the web preview'); }),
+  pluginSettingsCancel: (context: PluginSettingsContext) =>
+    safeInvoke<PluginSettingsReply>('plugin_settings_cancel', { context }, () => {
+      throw new Error('Plugin settings are unavailable in the web preview');
+    }),
+
   pluginUpdatePreferences: () =>
     safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),
   pluginUpdateAvailable: () =>
@@ -157,6 +185,34 @@ export const commands = {
   /** Answers a plugin's confirmation. Late, repeated or unknown answers are ignored by the host. */
   pluginConfirmationAnswer: (id: string, approved: boolean, remember: boolean) =>
     safeInvoke<void>('plugin_confirmation_answer', { id, approved, remember }, () => undefined),
+
+  /** Answers a host-owned plugin folder chooser; null means decline. */
+  pluginFolderSelectionAnswer: (id: string, selectedRoot: string | null) =>
+    safeInvoke<void>('plugin_folder_selection_answer', { id, selectedRoot }, () => undefined),
+
+  /** Confirms or declines the exact folder scope shown in the approval modal. */
+  pluginFolderApprovalAnswer: (id: string, approved: boolean) =>
+    safeInvoke<void>('plugin_folder_approval_answer', { id, approved }, () => undefined),
+
+  pluginFolderApprovals: (pluginId: string, publisherFingerprint: string) =>
+    safeInvoke<PluginFolderApproval[]>(
+      'plugin_folder_approvals', { pluginId, publisherFingerprint }, () => [],
+    ),
+
+  pluginFolderRevoke: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<boolean>(
+      'plugin_folder_revoke', { pluginId, publisherFingerprint, id }, () => false,
+    ),
+
+  pluginFolderChange: (pluginId: string, publisherFingerprint: string, id: string) =>
+    safeInvoke<void>(
+      'plugin_folder_change', { pluginId, publisherFingerprint, id }, () => undefined,
+    ),
+
+  pluginLibraryRootSetWatching: (pluginId: string, publisherFingerprint: string, id: string, watching: boolean) =>
+    safeInvoke<boolean>(
+      'plugin_library_root_set_watching', { pluginId, publisherFingerprint, id, watching }, () => false,
+    ),
 
   /** What the user allowed one plugin to start without asking, in the active profile. */
   pluginRememberedConfirmations: (pluginId: string, publisherFingerprint: string) =>

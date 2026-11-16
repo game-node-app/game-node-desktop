@@ -37,6 +37,107 @@ const PROTECTED_ROOT_KEYS: &[&str] = &[
     "command",
 ];
 
+#[derive(Default)]
+struct ProjectionNode {
+    include_value: bool,
+    children: BTreeMap<String, ProjectionNode>,
+}
+
+/// Returns a copy containing only the requested declared field paths.
+///
+/// A selected path includes its entire value. Callers must derive `paths` from
+/// the recipient's current field grants and the dataset's validated schema;
+/// this helper only performs structural projection and grants no authority.
+pub fn project_struct_paths(
+    value: &prost_types::Struct,
+    paths: &BTreeSet<String>,
+) -> Result<prost_types::Struct, WireError> {
+    if paths.len() > MAX_SCHEMA_FIELDS {
+        return Err(WireError);
+    }
+    if paths.is_empty() {
+        return Ok(prost_types::Struct::default());
+    }
+    let mut root = ProjectionNode::default();
+    for path in paths {
+        if !valid_field_path(path) {
+            return Err(WireError);
+        }
+        let mut node = &mut root;
+        for part in path.split('.') {
+            node = node.children.entry(part.to_owned()).or_default();
+        }
+        node.include_value = true;
+    }
+    let projected = project_value(
+        &prost_types::Value {
+            kind: Some(Kind::StructValue(value.clone())),
+        },
+        &root,
+    )?
+    .ok_or(WireError)?;
+    let Some(Kind::StructValue(projected)) = projected.kind else {
+        return Err(WireError);
+    };
+    if projected.encoded_len() > MAX_EXTENSION_BYTES {
+        return Err(WireError);
+    }
+    let mut key_count = 0;
+    validate_struct(&projected, 0, &mut key_count)?;
+    Ok(projected)
+}
+
+/// Validates a payload against its declared schema and projects only fields
+/// that are both declared and present in the caller's current field grant.
+pub fn project_payload_fields(
+    payload: &proto::ExtensionPayload,
+    descriptor: &proto::ExtensionSchemaDescriptor,
+    granted_paths: &BTreeSet<String>,
+) -> Result<proto::ExtensionPayload, WireError> {
+    validate_payload_for_schema(payload, descriptor)?;
+    let declared_paths: BTreeSet<_> = descriptor
+        .fields
+        .iter()
+        .map(|field| field.path.as_str())
+        .collect();
+    if granted_paths.iter().any(|path| !valid_field_path(path)) {
+        return Err(WireError);
+    }
+    let selected_paths = granted_paths
+        .iter()
+        .filter(|path| declared_paths.contains(path.as_str()))
+        .cloned()
+        .collect();
+    let data = project_struct_paths(payload.data.as_ref().ok_or(WireError)?, &selected_paths)?;
+    let mut projected = payload.clone();
+    projected.data = Some(data);
+    Ok(projected)
+}
+
+fn project_value(
+    value: &prost_types::Value,
+    node: &ProjectionNode,
+) -> Result<Option<prost_types::Value>, WireError> {
+    if node.include_value {
+        return Ok(Some(value.clone()));
+    }
+    let Some(Kind::StructValue(object)) = value.kind.as_ref() else {
+        return Err(WireError);
+    };
+    let mut projected = prost_types::Struct::default();
+    for (key, child_node) in &node.children {
+        let Some(child) = object.fields.get(key) else {
+            continue;
+        };
+        if let Some(child) = project_value(child, child_node)? {
+            projected.fields.insert(key.clone(), child);
+        }
+    }
+    Ok(Some(prost_types::Value {
+        kind: Some(Kind::StructValue(projected)),
+    }))
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExtensionSet {
     namespaces: BTreeMap<String, proto::ExtensionPayload>,
@@ -118,6 +219,36 @@ impl ExtensionSet {
         self.namespaces = candidate;
         Ok(next_revision)
     }
+}
+
+/// Applies a revision-checked runtime patch while preserving host-owned fields
+/// and extension namespaces omitted by an older client. The caller must check
+/// owner authorization before calling this function.
+pub fn apply_runtime_patch(
+    current: &proto::RuntimeRecord,
+    proposed: &proto::RuntimeRecord,
+    patch: &proto::ExtensionPatch,
+) -> Result<proto::RuntimeRecord, WireError> {
+    validate_patch(patch)?;
+    if current.revision != patch.expected_revision || proposed.id != current.id {
+        return Err(WireError);
+    }
+    let mut updated = current.clone();
+    for field in &patch.typed_field_mask {
+        match field.as_str() {
+            "name" => updated.name.clone_from(&proposed.name),
+            "version" => updated.version.clone_from(&proposed.version),
+            "supported_formats" => updated
+                .supported_formats
+                .clone_from(&proposed.supported_formats),
+            _ => return Err(WireError),
+        }
+    }
+    let mut extensions = ExtensionSet::from_wire(current.extensions.clone())?;
+    let revision = extensions.apply_patch(patch, current.revision)?;
+    updated.extensions = extensions.into_wire();
+    updated.revision = revision;
+    Ok(updated)
 }
 
 pub fn validate_patch(patch: &proto::ExtensionPatch) -> Result<(), WireError> {
@@ -234,7 +365,141 @@ pub fn validate_payload_for_schema(
     {
         return Err(WireError);
     }
+    let schema: serde_json::Value =
+        serde_json::from_slice(&descriptor.schema_json).map_err(|_| WireError)?;
+    validate_struct_shape(payload.data.as_ref().ok_or(WireError)?, &schema)?;
     Ok(())
+}
+
+fn validate_struct_shape(
+    value: &prost_types::Struct,
+    schema: &serde_json::Value,
+) -> Result<(), WireError> {
+    use serde_json::Value as J;
+
+    let object = schema.as_object().ok_or(WireError)?;
+    if let Some(expected) = object.get("type")
+        && !schema_type_matches(expected)
+    {
+        return Err(WireError);
+    }
+    let properties = object.get("properties").and_then(J::as_object);
+    if let Some(properties) = properties {
+        if object.get("additionalProperties") == Some(&J::Bool(false))
+            && value.fields.keys().any(|key| !properties.contains_key(key))
+        {
+            return Err(WireError);
+        }
+        for (key, child) in &value.fields {
+            if let Some(child_schema) = properties.get(key) {
+                validate_value_shape(child, child_schema)?;
+            }
+        }
+    }
+    if let Some(required) = object.get("required").and_then(J::as_array)
+        && required
+            .iter()
+            .filter_map(J::as_str)
+            .any(|key| !value.fields.contains_key(key))
+    {
+        return Err(WireError);
+    }
+    Ok(())
+}
+
+fn validate_value_shape(
+    value: &prost_types::Value,
+    schema: &serde_json::Value,
+) -> Result<(), WireError> {
+    use prost_types::value::Kind;
+    use serde_json::Value as J;
+
+    let object = schema.as_object().ok_or(WireError)?;
+    if let Some(expected) = object.get("type")
+        && !value
+            .kind
+            .as_ref()
+            .is_some_and(|kind| kind_matches_type(kind, expected))
+    {
+        return Err(WireError);
+    }
+    match value.kind.as_ref().ok_or(WireError)? {
+        Kind::StructValue(value) => validate_struct_shape(value, schema),
+        Kind::ListValue(list) => {
+            if let Some(items) = object.get("items") {
+                for item in &list.values {
+                    validate_value_shape(item, items)?;
+                }
+            }
+            if let Some(minimum) = object.get("minItems").and_then(J::as_u64)
+                && list.values.len() < minimum as usize
+            {
+                return Err(WireError);
+            }
+            if let Some(maximum) = object.get("maxItems").and_then(J::as_u64)
+                && list.values.len() > maximum as usize
+            {
+                return Err(WireError);
+            }
+            Ok(())
+        }
+        Kind::StringValue(text) => {
+            if object
+                .get("minLength")
+                .and_then(J::as_u64)
+                .is_some_and(|min| text.chars().count() < min as usize)
+                || object
+                    .get("maxLength")
+                    .and_then(J::as_u64)
+                    .is_some_and(|max| text.chars().count() > max as usize)
+            {
+                Err(WireError)
+            } else {
+                Ok(())
+            }
+        }
+        Kind::NumberValue(number) => {
+            if object
+                .get("minimum")
+                .and_then(J::as_f64)
+                .is_some_and(|min| *number < min)
+                || object
+                    .get("maximum")
+                    .and_then(J::as_f64)
+                    .is_some_and(|max| *number > max)
+            {
+                Err(WireError)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn schema_type_matches(expected: &serde_json::Value) -> bool {
+    expected.as_str() == Some("object")
+        || expected
+            .as_array()
+            .is_some_and(|types| types.iter().any(|name| name.as_str() == Some("object")))
+}
+
+fn kind_matches_type(kind: &Kind, expected: &serde_json::Value) -> bool {
+    let matches = |name: &str| match (kind, name) {
+        (Kind::StructValue(_), "object") | (Kind::ListValue(_), "array") => true,
+        (Kind::StringValue(_), "string") | (Kind::BoolValue(_), "boolean") => true,
+        (Kind::NumberValue(_), "number") => true,
+        (Kind::NumberValue(number), "integer") => number.fract() == 0.0,
+        (Kind::NullValue(_), "null") => true,
+        _ => false,
+    };
+    expected.as_str().is_some_and(matches)
+        || expected.as_array().is_some_and(|types| {
+            types
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(matches)
+        })
 }
 
 /// A package may declare no more than one schema owner for each namespace.

@@ -6,8 +6,8 @@ Cross-plugin data, diagnostics and durable storage need separate producer/recipi
 
 ## What Changes
 
-Adds typed shared data and projections, diagnostic/gameplay telemetry, durable plugin-owned persistence, cleanup administration, consent UI and two-client interoperability coverage.
+Adds typed shared data and projections, diagnostic/gameplay telemetry, durable plugin-owned persistence, cleanup administration, consent UI, two-client interoperability coverage, and explicit downgrade/publisher-key re-trust review with a rollback-safe private-data policy.
 
 ## Out of Scope
 
-Does not make any dataset public by default, add a Core collector/dashboard, expose physical persistence paths or let a grant reveal another plugin’s private namespace.
+Does not make any dataset public by default, add a Core collector/dashboard, expose physical persistence paths or let a grant reveal another plugin’s private namespace. Package-version changes do not create new owner namespaces or automatically migrate/delete older schema-versioned data.

@@ -44,28 +44,34 @@ Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 ## Required Cargo target location
 
 Always use the configured external `CARGO_TARGET_DIR`. In this Linux workspace
-the selected directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target`**. Never compile into
-Cargo's default repository `target/`, `/home`, or a target inside the user's
-home directory. Do not substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem
-or a target on the root filesystem. The selected target is on the persistent
-`/data/DADOS_LINUX` mount. If it is unavailable, stop and report the problem;
-do not invent another path or silently choose a fallback.
+the shared directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target`**.
+The `third-party-plugin-data-and-persistence` worktree has an isolated target
+at **`/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-data-and-persistence`**;
+use it for every Cargo invocation from that worktree. This exception is local
+to that worktree and does not change the target used by other worktrees. Never
+compile into Cargo's default repository `target/`, `/home`, or a target inside
+the user's home directory. Do not substitute `/tmp`, `/var/tmp`, a RAM-backed
+filesystem or a target on the root filesystem. Both configured targets are on
+the persistent `/data/DADOS_LINUX` mount. If the applicable target is
+unavailable, stop and report the problem; do not silently choose a fallback.
 
 Set the target before any Cargo build, check, test, Clippy, cross-compilation,
 or development/package launcher, and verify the effective location:
 
 ```sh
-export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target
+export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-data-and-persistence
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
 
-The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target` in this workspace. All Cargo
-examples below require this setup. For separate tool calls or fresh shells,
-pass the variable on **each invocation**, because an earlier export is not
-inherited:
+In the `third-party-plugin-data-and-persistence` worktree, the command must
+print `/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-data-and-persistence`.
+In other worktrees, use and verify the shared target instead. All Cargo examples
+below use the isolated target for this worktree. For separate tool calls or
+fresh shells, pass the applicable variable on **each invocation**, because an
+earlier export is not inherited:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target cargo test --locked -p gamenode-app
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-data-and-persistence cargo test --locked -p gamenode-app
 ```
 
 On native Windows, use the configured external Windows target outside the user

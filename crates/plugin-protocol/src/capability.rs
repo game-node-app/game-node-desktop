@@ -66,6 +66,10 @@ pub const GAME_PRESENCE_PUBLISH: &str = "game.presence.publish";
 pub const GAME_PERFORMANCE_PUBLISH: &str = "game.performance.publish";
 pub const GAME_SESSIONS_REPORT: &str = "game.sessions.report";
 pub const DATA_PUBLISH: &str = "data.publish";
+pub const COMMON_GAME_PATHS_READ: &str = "common.game_paths.read";
+pub const COMMON_GAME_PERFORMANCE_HISTORY_READ: &str = "common.game_performance_history.read";
+pub const COMMON_RUNTIME_CATALOG_READ: &str = "common.runtime_catalog.read";
+pub const COMMON_CONTENT_AVAILABILITY_READ: &str = "common.content_availability.read";
 pub const TOOLS_READ: &str = "tools.read";
 pub const TOOLS_APPLY: &str = "tools.apply";
 pub const TOOLS_REMOVE: &str = "tools.remove";
@@ -265,6 +269,10 @@ pub const KNOWN: &[&str] = &[
     GAME_PERFORMANCE_PUBLISH,
     GAME_SESSIONS_REPORT,
     DATA_PUBLISH,
+    COMMON_GAME_PATHS_READ,
+    COMMON_GAME_PERFORMANCE_HISTORY_READ,
+    COMMON_RUNTIME_CATALOG_READ,
+    COMMON_CONTENT_AVAILABILITY_READ,
     TOOLS_READ,
     TOOLS_APPLY,
     TOOLS_REMOVE,
@@ -309,6 +317,10 @@ pub const THIRD_PARTY_CAPABILITIES: &[&str] = &[
     GAME_PERFORMANCE_PUBLISH,
     GAME_SESSIONS_REPORT,
     DATA_PUBLISH,
+    COMMON_GAME_PATHS_READ,
+    COMMON_GAME_PERFORMANCE_HISTORY_READ,
+    COMMON_RUNTIME_CATALOG_READ,
+    COMMON_CONTENT_AVAILABILITY_READ,
     TOOLS_READ,
     TOOLS_APPLY,
     TOOLS_REMOVE,

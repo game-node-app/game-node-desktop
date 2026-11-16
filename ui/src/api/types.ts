@@ -1261,6 +1261,13 @@ export interface AvailablePluginUpdate {
   versions: string[];
 }
 
+export interface AvailablePluginRollback {
+  pluginId: string;
+  name: string;
+  activeVersion: string;
+  versions: string[];
+}
+
 export interface PluginUpdateReview {
   pluginId: string;
   installedVersion: string;
@@ -1290,6 +1297,10 @@ export interface PluginUpdateReview {
   publisherChanged: boolean;
   installedPublisherKeyId: string;
   candidatePublisherKeyId: string;
+  publisherFingerprint: string;
+  changedDataSchemas: string[];
+  preservesPriorData: boolean;
+  isDowngrade: boolean;
   requiresManualApproval: boolean;
 }
 

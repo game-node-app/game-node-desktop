@@ -60,4 +60,4 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [ ] 1.25 **Source 19.4.** Add installation/settings controls for public-pool publication, operation and category/record scopes; verify default denial and no implicit permission expansion.
 
-- [ ] 1.26 **Source 9.4.** Implement explicit downgrade and publisher-key re-trust review with a versioned private-data policy; verify automated feeds cannot silently downgrade or change identity and document rollback-safe storage requirements.
+- [x] 1.26 **Source 9.4.** Implement update review that rejects feed downgrades, supports only explicitly confirmed user-requested downgrades through the verified-package path, and requires separate re-trust of the exact changed publisher fingerprint; keep the plugin/publisher/profile data namespace stable, require versioned logical keys or schema IDs for incompatible private-data changes, preserve older values for rollback, and intersect current grants with the selected package manifest; verify feed downgrade/key changes never activate silently and rollback preserves compatible data without restoring broader grants.

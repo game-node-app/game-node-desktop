@@ -384,7 +384,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Third-party plugin profiles follow the signed-in GameNode account; each change fences and
     // stops third-party sessions.
     plugin_api.providers.spawn_profile_fencing(runtime.handle());
-    engine.set_plugin_profiles(plugin_api.providers.profiles());
+    let plugin_profiles = plugin_api.providers.profiles();
+    engine.set_plugin_profiles(plugin_profiles.clone());
+    plugin_updates.set_profiles(plugin_profiles);
     // Plugins read the library through a host-owned projection the engine keeps current.
     engine.set_library_feed(plugin_api.library.clone());
 
@@ -501,6 +503,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_update_set_periodic_checks,
         commands::plugin_update_check,
         commands::plugin_update_review,
+        commands::plugin_rollback_available,
+        commands::plugin_rollback_review,
+        commands::plugin_update_retrust_publisher,
+        commands::plugin_rollback_approve,
         commands::plugin_update_approve,
         commands::plugin_update_decline,
         commands::plugin_confirmation_answer,

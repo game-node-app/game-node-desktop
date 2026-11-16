@@ -12,16 +12,17 @@ export interface PluginActivationPermissionsValue {
 }
 
 interface Props {
+  initialValue?: PluginActivationPermissionsValue;
   onContinue: (value: PluginActivationPermissionsValue) => void;
 }
 
 const COMMON_CATEGORIES: CommonDataCategory[] = ['library', 'playtime', 'performance', 'runtime'];
 const SENSITIVE_REVIEW: SensitiveDataReview[] = ['source', 'recipient', 'fields', 'history', 'delivery', 'retention'];
 
-export const PluginActivationPermissions: React.FC<Props> = ({ onContinue }) => {
+export const PluginActivationPermissions: React.FC<Props> = ({ initialValue, onContinue }) => {
   const { t } = useI18n();
-  const [commonDataRead, setCommonDataRead] = useState<CommonDataCategory[]>([]);
-  const [sensitiveDataReview, setSensitiveDataReview] = useState<SensitiveDataReview[]>([]);
+  const [commonDataRead, setCommonDataRead] = useState<CommonDataCategory[]>(() => initialValue?.commonDataRead ?? []);
+  const [sensitiveDataReview, setSensitiveDataReview] = useState<SensitiveDataReview[]>(() => initialValue?.sensitiveDataReview ?? []);
 
   const toggle = <T extends string>(values: T[], value: T, update: (next: T[]) => void) => {
     update(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);

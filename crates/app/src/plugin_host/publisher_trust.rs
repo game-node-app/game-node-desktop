@@ -275,6 +275,11 @@ fn fingerprint(public_key: &[u8]) -> Result<String, TrustStoreError> {
     Ok(output)
 }
 
+/// Returns the canonical, user-visible fingerprint for a publisher's Ed25519 public key.
+pub fn key_fingerprint(public_key: &[u8]) -> String {
+    fingerprint(public_key).unwrap_or_default()
+}
+
 fn is_fingerprint(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("SHA256:")

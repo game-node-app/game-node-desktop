@@ -18,15 +18,22 @@
   builds, checks, tests, Clippy, cross-compilation and packaging/development
   scripts. In this Linux workspace the selected target is
   `/data/DADOS_LINUX/geral/area_troca_rust/target`.
+- The `third-party-plugin-data-and-persistence` worktree has an isolated
+  target at
+  `/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-data-and-persistence`.
+  Use that path for every Cargo invocation in that worktree; it is an explicit
+  per-worktree exception and does not change the target for other worktrees.
 - NEVER fall back to Cargo's default repository `target/` or create a build
   target under `/home` (including this checkout and the user's home directory).
   NEVER substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem, or a target on
   the root filesystem. The selected path is on the persistent
-  `/data/DADOS_LINUX` mount. Do not invent another target: if this location is
-  unavailable, stop and report the problem instead of choosing a fallback.
-- Pass `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target` on each tool/shell invocation;
-  an `export` in an earlier tool call does not persist into a new shell. Verify
-  Cargo's effective `target_directory` with `cargo metadata` before compiling.
+  `/data/DADOS_LINUX` mount. Do not invent another target beyond the configured
+  workspace target above: if the applicable location is unavailable, stop and
+  report the problem instead of choosing a fallback.
+- Pass the `CARGO_TARGET_DIR` for the current worktree on each tool/shell
+  invocation; an `export` in an earlier tool call does not persist into a new
+  shell. Verify Cargo's effective `target_directory` with `cargo metadata`
+  before compiling.
   Check launch/package scripts for overrides; a script that resets the target to
   the checkout is not an exception to this rule.
 - Before finishing work on these instructions, reread this section and

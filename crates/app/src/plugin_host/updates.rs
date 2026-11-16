@@ -6,8 +6,10 @@
 //! represents the user's explicit approval; this module never starts plugin code.
 
 use super::{
+    grants::PluginIdentity,
     managed_packages::{ManagedPackageLifecycle, PackageLifecycleError},
     package::Manifest,
+    profile::{PluginProfiles, PluginStateLayout},
 };
 use gamenode_platform::{
     plugin_environment::EmulationPolicy,
@@ -78,6 +80,12 @@ pub struct UpdateReview {
     pub publisher_changed: bool,
     pub installed_publisher_key_id: String,
     pub candidate_publisher_key_id: String,
+    pub publisher_fingerprint: String,
+    /// Namespaced private-data contracts whose declared version differs. The host does not
+    /// migrate or delete their stored values during package activation.
+    pub changed_data_schemas: Vec<String>,
+    pub preserves_prior_data: bool,
+    pub is_downgrade: bool,
     pub requires_manual_approval: bool,
 }
 
@@ -142,8 +150,28 @@ impl UpdateReview {
         let candidate_license = candidate.license.expression.clone();
         let api_changed = installed_api != candidate_api;
         let license_changed = installed.license != candidate.license;
-        let publisher_changed = installed.publisher.key_id != candidate.publisher.key_id
-            || installed.publisher.public_key != candidate.publisher.public_key;
+        // Key ID labels are package metadata. Re-trust is tied only to the actual key bytes.
+        let publisher_changed = installed.publisher.public_key != candidate.publisher.public_key;
+        let schema_versions = |manifest: &Manifest| -> BTreeMap<String, BTreeSet<String>> {
+            let mut versions = BTreeMap::new();
+            for schema in &manifest.schemas {
+                versions
+                    .entry(schema.namespace.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(schema.version.clone());
+            }
+            versions
+        };
+        let old_schemas = schema_versions(installed);
+        let new_schemas = schema_versions(candidate);
+        let changed_data_schemas: Vec<String> = old_schemas
+            .keys()
+            .chain(new_schemas.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|namespace| old_schemas.get(*namespace) != new_schemas.get(*namespace))
+            .cloned()
+            .collect();
         // Every version activation is a user decision. The diff is disclosure; it never mutates
         // the separate permission grant store, even when all requested permissions are unchanged.
         let requires_manual_approval = true;
@@ -170,6 +198,15 @@ impl UpdateReview {
             publisher_changed,
             installed_publisher_key_id: installed.publisher.key_id.clone(),
             candidate_publisher_key_id: candidate.publisher.key_id.clone(),
+            publisher_fingerprint: String::new(),
+            // Package activation changes no storage namespace and performs no data migration or
+            // cleanup. Values remain available to a compatible version selected later.
+            preserves_prior_data: true,
+            is_downgrade: Version::parse(&candidate.version)
+                .ok()
+                .zip(Version::parse(&installed.version).ok())
+                .is_some_and(|(candidate, installed)| candidate < installed),
+            changed_data_schemas,
             requires_manual_approval,
         }
     }
@@ -186,15 +223,29 @@ pub struct AvailablePluginUpdate {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AvailablePluginRollback {
+    pub plugin_id: String,
+    pub name: String,
+    pub active_version: String,
+    pub versions: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginUpdatePreferences {
     pub periodic_checks: bool,
 }
 
 struct PendingCandidate {
-    work: UpdateWorkDir,
+    work: Option<UpdateWorkDir>,
     version: String,
     installed_version: String,
     publisher_key: [u8; 32],
+    candidate_publisher_key: [u8; 32],
+    confirmed_retrust: bool,
+    is_rollback: bool,
+    installed_manifest: Manifest,
+    candidate_manifest: Manifest,
     review: UpdateReview,
 }
 
@@ -207,12 +258,15 @@ pub struct PluginUpdateService {
     verifier: UpdateIndexVerifier,
     client: std::sync::Arc<FetchClient>,
     private_dir: PathBuf,
+    grant_layout: PluginStateLayout,
+    profiles: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<PluginProfiles>>>>,
     preferences_path: PathBuf,
     available_path: PathBuf,
     preferences: std::sync::Arc<std::sync::Mutex<PluginUpdatePreferences>>,
     available: std::sync::Arc<std::sync::Mutex<Vec<AvailablePluginUpdate>>>,
     indexes: std::sync::Arc<std::sync::Mutex<HashMap<String, VerifiedUpdateIndex>>>,
     checks: std::sync::Arc<AsyncMutex<()>>,
+    activations: std::sync::Arc<AsyncMutex<()>>,
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
 }
 
@@ -224,6 +278,7 @@ impl PluginUpdateService {
                 .map_err(|error| error.to_string())?;
         let client = FetchClient::new().map_err(|error| error.to_string())?;
         let private_dir = paths.private_dir();
+        let grant_layout = PluginStateLayout::new(paths.data_dir().join("plugin-state"));
         fs::create_dir_all(&private_dir).map_err(|error| error.to_string())?;
         let preferences_path = private_dir.join("plugin-update-preferences.json");
         let preferences = read_preferences(&preferences_path)?;
@@ -235,12 +290,15 @@ impl PluginUpdateService {
             verifier,
             client: std::sync::Arc::new(client),
             private_dir,
+            grant_layout,
+            profiles: Default::default(),
             preferences_path,
             available_path,
             preferences: std::sync::Arc::new(std::sync::Mutex::new(preferences)),
             available: std::sync::Arc::new(std::sync::Mutex::new(available)),
             indexes: Default::default(),
             checks: Default::default(),
+            activations: Default::default(),
             pending: Default::default(),
         })
     }
@@ -250,6 +308,14 @@ impl PluginUpdateService {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
+    }
+
+    /// Connects profile-scoped grants once the authenticated plugin profile source is created.
+    pub fn set_profiles(&self, profiles: std::sync::Arc<PluginProfiles>) {
+        *self
+            .profiles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(profiles);
     }
 
     pub fn set_periodic_checks(&self, enabled: bool) -> Result<PluginUpdatePreferences, String> {
@@ -420,20 +486,164 @@ impl PluginUpdateService {
             })
             .await
             .map_err(|error| error.to_string())?;
-        let candidate = updater
+        let (work, report, candidate_key) = updater
             .stage_review_candidate(&index, &release, archive, publisher_key)
             .await
             .map_err(|error| error.to_string())?;
-        let candidate_manifest = candidate.1.manifest.clone();
+        let candidate_manifest = report.manifest.clone();
         let review = UpdateReview::compare(&current.manifest, &candidate_manifest);
+        let mut review = review;
+        review.publisher_fingerprint = super::publisher_trust::key_fingerprint(&candidate_key);
         let mut pending = self.pending.lock().await;
         pending.insert(
             plugin_id.to_owned(),
             PendingCandidate {
-                work: candidate.0,
+                work: Some(work),
                 version: version.to_owned(),
                 installed_version: active.version,
                 publisher_key,
+                candidate_publisher_key: candidate_key,
+                confirmed_retrust: false,
+                is_rollback: false,
+                installed_manifest: current.manifest,
+                candidate_manifest,
+                review: review.clone(),
+            },
+        );
+        Ok(review)
+    }
+
+    /// Installed versions older than the active version. Feed results never include these.
+    pub async fn rollback_versions(&self, plugin_id: &str) -> Result<Vec<String>, String> {
+        let registry = self.registry.clone();
+        let id = plugin_id.to_owned();
+        let (active, versions) = tokio::task::spawn_blocking(move || {
+            let active = registry
+                .active(&id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "plugin is not installed".to_owned())?;
+            let versions = registry.versions(&id).map_err(|error| error.to_string())?;
+            Ok::<_, String>((active, versions))
+        })
+        .await
+        .map_err(|_| "plugin registry worker failed".to_owned())??;
+        let active_version = Version::parse(&active.version).map_err(|error| error.to_string())?;
+        let mut versions: Vec<_> = versions
+            .into_iter()
+            .filter_map(|installed| {
+                Version::parse(&installed.version)
+                    .ok()
+                    .filter(|version| version < &active_version)
+                    .map(|_| installed.version)
+            })
+            .collect();
+        versions.sort_by(|left, right| Version::parse(right).ok().cmp(&Version::parse(left).ok()));
+        Ok(versions)
+    }
+
+    pub async fn available_rollbacks(&self) -> Result<Vec<AvailablePluginRollback>, String> {
+        let registry = self.registry.clone();
+        let active = tokio::task::spawn_blocking(move || registry.active_versions())
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let mut available = Vec::new();
+        for installed in active {
+            let manifest = self
+                .packages
+                .inspect_candidate(
+                    &installed.package_path,
+                    package_key(&installed.package_path)?,
+                    EmulationPolicy::RequireNative,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+                .manifest;
+            let versions = self.rollback_versions(&installed.plugin_id).await?;
+            if !versions.is_empty() {
+                available.push(AvailablePluginRollback {
+                    plugin_id: installed.plugin_id,
+                    name: manifest.name,
+                    active_version: installed.version,
+                    versions,
+                });
+            }
+        }
+        Ok(available)
+    }
+
+    /// Reviews an already installed, verified package as an explicit rollback candidate.
+    pub async fn review_rollback(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<UpdateReview, String> {
+        let registry = self.registry.clone();
+        let id = plugin_id.to_owned();
+        let wanted = version.to_owned();
+        let (active, selected) = tokio::task::spawn_blocking(move || {
+            let active = registry
+                .active(&id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "plugin is not installed".to_owned())?;
+            let selected = registry
+                .versions(&id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|item| item.version == wanted)
+                .ok_or_else(|| "rollback version is not installed".to_owned())?;
+            Ok::<_, String>((active, selected))
+        })
+        .await
+        .map_err(|_| "plugin registry worker failed".to_owned())??;
+        if Version::parse(version).map_err(|error| error.to_string())?
+            >= Version::parse(&active.version).map_err(|error| error.to_string())?
+        {
+            return Err("rollback must select a version older than the active version".into());
+        }
+        let current = self
+            .packages
+            .inspect_candidate(
+                &active.package_path,
+                package_key(&active.package_path)?,
+                EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let current_key = decode_publisher_key(&current.manifest.publisher.public_key)?;
+        let candidate_key = package_key(&selected.package_path)?;
+        let candidate = self
+            .packages
+            .inspect_candidate(
+                &selected.package_path,
+                candidate_key,
+                EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if candidate.manifest.id != plugin_id || candidate.manifest.version != version {
+            return Err("rollback package identity does not match the selected version".into());
+        }
+        candidate
+            .selected_target()
+            .map_err(|error| error.to_string())?;
+        let mut review = UpdateReview::compare(&current.manifest, &candidate.manifest);
+        review.publisher_fingerprint = super::publisher_trust::key_fingerprint(&candidate_key);
+        if !review.is_downgrade {
+            return Err("selected package is not older than the active version".into());
+        }
+        self.pending.lock().await.insert(
+            plugin_id.to_owned(),
+            PendingCandidate {
+                work: None,
+                version: version.to_owned(),
+                installed_version: active.version,
+                publisher_key: current_key,
+                candidate_publisher_key: candidate_key,
+                confirmed_retrust: false,
+                is_rollback: true,
+                installed_manifest: current.manifest,
+                candidate_manifest: candidate.manifest,
                 review: review.clone(),
             },
         );
@@ -441,6 +651,31 @@ impl PluginUpdateService {
     }
 
     pub async fn approve(&self, plugin_id: &str, version: &str) -> Result<String, String> {
+        self.approve_reviewed(plugin_id, version, false, false)
+            .await
+    }
+
+    /// Activates a rollback only after a separate explicit user confirmation.
+    pub async fn approve_rollback(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        confirmed: bool,
+    ) -> Result<String, String> {
+        if !confirmed {
+            return Err("rollback requires explicit user confirmation".into());
+        }
+        self.approve_reviewed(plugin_id, version, true, true).await
+    }
+
+    async fn approve_reviewed(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        is_rollback: bool,
+        explicit_downgrade: bool,
+    ) -> Result<String, String> {
+        let _activation = self.activations.lock().await;
         let candidate = self
             .pending
             .lock()
@@ -449,6 +684,9 @@ impl PluginUpdateService {
             .ok_or_else(|| "review the update before approving it".to_owned())?;
         if candidate.version != version || candidate.review.plugin_id != plugin_id {
             return Err("the reviewed update changed; review it again".into());
+        }
+        if candidate.is_rollback != is_rollback {
+            return Err("reviewed package does not match the requested action".into());
         }
         let registry = self.registry.clone();
         let id = plugin_id.to_owned();
@@ -460,18 +698,30 @@ impl PluginUpdateService {
         if active.version != candidate.installed_version {
             return Err("the active plugin changed after review; review the update again".into());
         }
-        // New requests are intentionally not written to the permission grants store here.
+        // New and rescaled requests never receive a grant from package activation.
+        if candidate.review.publisher_changed && !candidate.confirmed_retrust {
+            self.pending
+                .lock()
+                .await
+                .insert(plugin_id.to_owned(), candidate);
+            return Err("the changed publisher key must be re-trusted separately".into());
+        }
+        if !candidate.review.publisher_changed {
+            let trust = super::publisher_trust::PublisherTrustStore::open(&self.private_dir)
+                .map_err(|error| error.to_string())?;
+            if !trust
+                .is_pinned(plugin_id, &candidate.candidate_publisher_key)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("the selected package publisher key is no longer trusted".into());
+            }
+        }
+        if candidate.is_rollback && (!candidate.review.is_downgrade || !explicit_downgrade) {
+            return Err("the reviewed package is not a downgrade".into());
+        }
         let version = self
-            .packages
-            .install_candidate(
-                &candidate.work.path.join("package"),
-                candidate.publisher_key,
-                EmulationPolicy::RequireNative,
-                true,
-            )
-            .await
-            .map(|installed| installed.version)
-            .map_err(|error| error.to_string())?;
+            .activate_selected_candidate(plugin_id, candidate, explicit_downgrade)
+            .await?;
         let mut available = self
             .available
             .lock()
@@ -479,6 +729,152 @@ impl PluginUpdateService {
         available.retain(|item| item.plugin_id != plugin_id);
         let _ = write_available(&self.available_path, &available);
         Ok(version)
+    }
+
+    /// Confirms only the exact publisher key fingerprint shown by the current review. This
+    /// records the separate user decision in the pending review. The new key is persisted only
+    /// after the reviewed package passes signature and compatibility checks at activation.
+    pub async fn confirm_publisher_retrust(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        confirmed_fingerprint: &str,
+    ) -> Result<(), String> {
+        let mut pending = self.pending.lock().await;
+        let candidate = pending
+            .get_mut(plugin_id)
+            .ok_or_else(|| "review the package before re-trusting its publisher".to_owned())?;
+        if candidate.version != version || !candidate.review.publisher_changed {
+            return Err("the reviewed package has no publisher-key change".into());
+        }
+        if candidate.review.publisher_fingerprint != confirmed_fingerprint {
+            return Err("publisher fingerprint does not match the reviewed key".into());
+        }
+        candidate.confirmed_retrust = true;
+        Ok(())
+    }
+
+    async fn activate_selected_candidate(
+        &self,
+        plugin_id: &str,
+        candidate: PendingCandidate,
+        explicit_downgrade: bool,
+    ) -> Result<String, String> {
+        let key = candidate.candidate_publisher_key;
+        let version = candidate.version.clone();
+        let installed = if let Some(work) = candidate.work {
+            self.packages
+                .install_candidate(
+                    &work.path.join("package"),
+                    key,
+                    EmulationPolicy::RequireNative,
+                    false,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            let registry = self.registry.clone();
+            let id = plugin_id.to_owned();
+            let wanted = version.clone();
+            tokio::task::spawn_blocking(move || {
+                registry
+                    .versions(&id)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|item| item.version == wanted)
+                    .ok_or_else(|| "rollback package was removed after review".to_owned())
+            })
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())??
+        };
+        let registry = self.registry.clone();
+        let id = plugin_id.to_owned();
+        let active_version = tokio::task::spawn_blocking(move || {
+            registry
+                .active(&id)
+                .map_err(|error| error.to_string())?
+                .map(|item| item.version)
+                .ok_or_else(|| "plugin is no longer installed".to_owned())
+        })
+        .await
+        .map_err(|_| "plugin registry worker failed".to_owned())??;
+        if active_version != candidate.installed_version {
+            return Err("the active plugin changed during approval; review again".into());
+        }
+        if let Some(profiles) = self
+            .profiles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+            && let Some(profile) = profiles.current()
+        {
+            let identity = PluginIdentity {
+                plugin_id: plugin_id.to_owned(),
+                publisher_fingerprint: super::publisher_trust::key_fingerprint(
+                    &candidate.publisher_key,
+                ),
+                profile_id: profile.profile_id().to_owned(),
+            };
+            let mut grants = self
+                .grant_layout
+                .open_grants(&profile)
+                .map_err(|error| error.to_string())?;
+            grants
+                .intersect_with_selected_manifest(
+                    &identity,
+                    &candidate.installed_manifest,
+                    &candidate.candidate_manifest,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        let changed_key = candidate.review.publisher_changed;
+        if changed_key && !candidate.confirmed_retrust {
+            return Err("the reviewed publisher key was not re-trusted".into());
+        }
+        let previous_version = candidate.installed_version.clone();
+        let previous_key = candidate.publisher_key;
+        let activated = self
+            .packages
+            .activate_version(
+                plugin_id.to_owned(),
+                installed.version,
+                key,
+                EmulationPolicy::RequireNative,
+            )
+            .await;
+        match activated {
+            Ok(active) if changed_key => {
+                let trust_result = super::publisher_trust::PublisherTrustStore::open(
+                    &self.private_dir,
+                )
+                .and_then(|mut trust| {
+                    trust.retrust_key(plugin_id, &key, &candidate.review.publisher_fingerprint)?;
+                    Ok(())
+                });
+                if let Err(trust_error) = trust_result {
+                    self.packages
+                        .activate_version(
+                            plugin_id.to_owned(),
+                            previous_version,
+                            previous_key,
+                            EmulationPolicy::RequireNative,
+                        )
+                        .await
+                        .map_err(|rollback_error| {
+                            format!(
+                                "publisher re-trust failed ({trust_error}); restoring the prior package also failed ({rollback_error})"
+                            )
+                        })?;
+                    return Err(trust_error.to_string());
+                }
+                Ok(active.version)
+            }
+            Ok(active) => Ok(active.version),
+            Err(error) => {
+                let _ = explicit_downgrade;
+                Err(error.to_string())
+            }
+        }
     }
 
     pub async fn decline(&self, plugin_id: &str) {
@@ -545,7 +941,8 @@ fn write_available(path: &Path, available: &[AvailablePluginUpdate]) -> Result<(
 mod review_tests {
     use super::*;
     use crate::plugin_host::package::{
-        ApiRange, LicenseNotice, PermissionRequest, PluginKind, Publisher, Target,
+        ApiRange, DataClassification, LicenseNotice, PackagedSchema, PermissionRequest, PluginKind,
+        Publisher, Target,
     };
 
     fn manifest(
@@ -609,6 +1006,7 @@ mod review_tests {
             reason: "Fetch metadata".into(),
         });
         after.publisher.key_id = "key-2".into();
+        after.publisher.public_key = "different-key".into();
         let review = UpdateReview::compare(&before, &after);
         assert_eq!(review.added_permissions, ["network.fetch"]);
         assert_eq!(review.changed_permissions, ["files.read"]);
@@ -625,6 +1023,82 @@ mod review_tests {
         assert!(review.requires_manual_approval);
         assert!(review.added_permissions.is_empty());
         assert!(review.added_native_access.is_empty());
+    }
+
+    #[test]
+    fn review_discloses_versioned_private_schema_changes_and_downgrade_direction() {
+        let mut installed = manifest("2.0.0", "own", &[], "MIT", "1.4.0");
+        installed.schemas.push(PackagedSchema {
+            namespace: "org.example.plugin.private".into(),
+            version: "1.0.0".into(),
+            classification: DataClassification::Private,
+            asset: "schemas/private.json".into(),
+        });
+        let mut selected = manifest("1.0.0", "own", &[], "MIT", "1.4.0");
+        selected.schemas.push(PackagedSchema {
+            namespace: "org.example.plugin.private".into(),
+            version: "2.0.0".into(),
+            classification: DataClassification::Private,
+            asset: "schemas/private.json".into(),
+        });
+        let review = UpdateReview::compare(&installed, &selected);
+        assert!(review.is_downgrade);
+        assert!(review.preserves_prior_data);
+        assert_eq!(review.changed_data_schemas, ["org.example.plugin.private"]);
+    }
+
+    #[test]
+    fn selected_manifest_intersection_drops_removed_or_rescoped_grants() {
+        use crate::plugin_host::grants::{
+            GrantScope, PermissionDecision, PermissionGrantStore,
+            PermissionRequest as GrantRequest, PermissionState, PluginIdentity,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let identity = PluginIdentity {
+            plugin_id: "org.example.plugin".into(),
+            publisher_fingerprint: "SHA256:publisher".into(),
+            profile_id: "profile".into(),
+        };
+        let scope = GrantScope::OwnPrivateNamespace;
+        let mut grants = PermissionGrantStore::open(directory.path()).unwrap();
+        grants
+            .replace_grants(
+                identity.clone(),
+                &[GrantRequest {
+                    permission_id: "storage.persist".into(),
+                    required: false,
+                    allowed_scopes: [scope.clone()].into(),
+                }],
+                &[PermissionDecision {
+                    permission_id: "storage.persist".into(),
+                    scope: scope.clone(),
+                    granted: true,
+                }],
+            )
+            .unwrap();
+        let mut previous = manifest("1.0.0", "private-v1", &[], "MIT", "1.4.0");
+        previous.permissions = vec![PermissionRequest {
+            id: "storage.persist".into(),
+            required: false,
+            scope: "private-v1".into(),
+            reason: "Persist data".into(),
+        }];
+        let unchanged = previous.clone();
+        grants
+            .intersect_with_selected_manifest(&identity, &previous, &unchanged)
+            .unwrap();
+        assert_eq!(
+            grants.effective_grants(&identity)[0].state,
+            PermissionState::Granted
+        );
+
+        let mut selected = unchanged;
+        selected.permissions[0].scope = "private-v2".into();
+        grants
+            .intersect_with_selected_manifest(&identity, &previous, &selected)
+            .unwrap();
+        assert!(grants.effective_grants(&identity).is_empty());
     }
 
     #[test]
@@ -698,11 +1172,12 @@ impl ManagedPluginUpdater {
         index: &VerifiedUpdateIndex,
         release: &UpdateRelease,
         archive: Vec<u8>,
-        publisher_key: [u8; 32],
+        _publisher_key: [u8; 32],
     ) -> Result<
         (
             UpdateWorkDir,
             super::managed_packages::PackageCandidateReport,
+            [u8; 32],
         ),
         ManagedUpdateError,
     > {
@@ -725,15 +1200,20 @@ impl ManagedPluginUpdater {
         tokio::task::spawn_blocking(move || -> Result<(), ManagedUpdateError> {
             fs::write(&archive_for_worker, archive)
                 .map_err(|error| ManagedUpdateError::Staging(error.to_string()))?;
-            stage_package_archive(&archive_for_worker, &package_for_worker, &publisher_key)
-                .map_err(|error| ManagedUpdateError::Staging(error.to_string()))?;
+            gamenode_platform::plugin_packages::stage_package_archive_from_verified_feed(
+                &archive_for_worker,
+                &package_for_worker,
+            )
+            .map_err(|error| ManagedUpdateError::Staging(error.to_string()))?;
             Ok(())
         })
         .await
         .map_err(|_| ManagedUpdateError::WorkerFailed)??;
+        let candidate_key =
+            package_key(&package_path).map_err(|error| ManagedUpdateError::Staging(error))?;
         let report = self
             .packages
-            .inspect_candidate(&package_path, publisher_key, EmulationPolicy::RequireNative)
+            .inspect_candidate(&package_path, candidate_key, EmulationPolicy::RequireNative)
             .await?;
         if report.manifest.id != index.index().plugin_id
             || report.manifest.version != release.version
@@ -741,7 +1221,7 @@ impl ManagedPluginUpdater {
             return Err(ManagedUpdateError::PackageIdentityMismatch);
         }
         report.selected_target()?;
-        Ok((work, report))
+        Ok((work, report, candidate_key))
     }
 
     /// Download and install one release after caller approval. The index and package are both
@@ -1083,6 +1563,27 @@ mod tests {
             releases: vec![release.clone()],
         };
 
+        let feed_downgrade = UpdateRelease {
+            version: "0.9.0".into(),
+            ..release.clone()
+        };
+        let downgrade_index = UpdateIndex {
+            releases: vec![feed_downgrade.clone()],
+            ..index.clone()
+        };
+        assert!(matches!(
+            updater
+                .install_verified_archive(
+                    &downgrade_index,
+                    &feed_downgrade,
+                    archive.clone(),
+                    publisher_key,
+                    EmulationPolicy::RequireNative,
+                )
+                .await,
+            Err(ManagedUpdateError::Downgrade)
+        ));
+
         let interrupted = archive[..archive.len() / 2].to_vec();
         assert!(
             updater
@@ -1123,6 +1624,94 @@ mod tests {
                 .unwrap()
                 .version,
             "2.0.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_requires_confirmation_and_exact_retrust_for_a_changed_key() {
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        paths.ensure_data_dir().unwrap();
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let lifecycle = ManagedPackageLifecycle::new(registry.clone());
+        let old_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[41; 32]).unwrap();
+        let current_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+        let old_public: [u8; 32] = old_key.public_key().as_ref().try_into().unwrap();
+        let current_public: [u8; 32] = current_key.public_key().as_ref().try_into().unwrap();
+
+        let old_package = base.path().join("old");
+        signed_package(&old_package, "1.0.0", &old_key);
+        lifecycle
+            .install_candidate(
+                &old_package,
+                old_public,
+                EmulationPolicy::RequireNative,
+                true,
+            )
+            .await
+            .unwrap();
+        let current_package = base.path().join("current");
+        signed_package(&current_package, "2.0.0", &current_key);
+        lifecycle
+            .install_candidate(
+                &current_package,
+                current_public,
+                EmulationPolicy::RequireNative,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let current_fingerprint = super::super::publisher_trust::key_fingerprint(&current_public);
+        super::super::publisher_trust::PublisherTrustStore::open(paths.private_dir())
+            .unwrap()
+            .confirm_first_key("org.example.update", &current_public, &current_fingerprint)
+            .unwrap();
+        let service = PluginUpdateService::open(&paths).unwrap();
+        assert_eq!(
+            service
+                .rollback_versions("org.example.update")
+                .await
+                .unwrap(),
+            ["1.0.0"]
+        );
+        let review = service
+            .review_rollback("org.example.update", "1.0.0")
+            .await
+            .unwrap();
+        assert!(review.is_downgrade && review.publisher_changed);
+        assert!(
+            service
+                .approve_rollback("org.example.update", "1.0.0", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .confirm_publisher_retrust("org.example.update", "1.0.0", "SHA256:wrong")
+                .await
+                .is_err()
+        );
+        service
+            .confirm_publisher_retrust(
+                "org.example.update",
+                "1.0.0",
+                &super::super::publisher_trust::key_fingerprint(&old_public),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .approve_rollback("org.example.update", "1.0.0", true)
+                .await
+                .unwrap(),
+            "1.0.0"
+        );
+        assert!(
+            super::super::publisher_trust::PublisherTrustStore::open(paths.private_dir())
+                .unwrap()
+                .is_pinned("org.example.update", &old_public)
+                .unwrap()
         );
     }
 }

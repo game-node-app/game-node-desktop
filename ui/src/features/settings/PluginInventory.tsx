@@ -6,6 +6,10 @@ import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginInfo, 
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import {
+  PluginActivationPermissions,
+  type PluginActivationPermissionsValue,
+} from './PluginActivationPermissions';
+import {
   settingsCard,
   settingsPill,
   settingsPillSuccess,
@@ -25,9 +29,15 @@ export const PluginInventory: React.FC = () => {
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [updates, setUpdates] = useState<AvailablePluginUpdate[]>([]);
   const [review, setReview] = useState<PluginUpdateReview | null>(null);
+  const [reviewIsRollback, setReviewIsRollback] = useState(false);
+  const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
+  const [retrustFingerprint, setRetrustFingerprint] = useState('');
+  const [publisherRetrusted, setPublisherRetrusted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
   const [periodicChecks, setPeriodicChecks] = useState(false);
+  const [reviewingPluginId, setReviewingPluginId] = useState<string | null>(null);
+  const [activationReviews, setActivationReviews] = useState<Record<string, PluginActivationPermissionsValue>>({});
   const { data: updatePreferences } = useQuery({
     queryKey: ['plugin-update-preferences'],
     queryFn: commands.pluginUpdatePreferences,
@@ -42,6 +52,10 @@ export const PluginInventory: React.FC = () => {
     staleTime: 30_000,
   });
   const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
+  const { data: rollbackPackages = [], refetch: refetchRollbacks } = useQuery({
+    queryKey: ['plugin-rollback-available'],
+    queryFn: commands.pluginRollbackAvailable,
+  });
 
   useEffect(() => {
     if (updatePreferences) setPeriodicChecks(updatePreferences.periodicChecks);
@@ -71,8 +85,36 @@ export const PluginInventory: React.FC = () => {
     setBusy(true);
     setUpdateError(false);
     setReview(null);
+    setReviewIsRollback(false);
+    setRollbackConfirmed(false);
+    setPublisherRetrusted(false);
+    setRetrustFingerprint('');
     try { setReview(await commands.pluginUpdateReview(pluginId, version)); }
     catch { setUpdateError(true); }
+    finally { setBusy(false); }
+  };
+
+  const reviewRollback = async (pluginId: string, version: string) => {
+    setBusy(true);
+    setUpdateError(false);
+    setReview(null);
+    setReviewIsRollback(true);
+    setRollbackConfirmed(false);
+    setPublisherRetrusted(false);
+    setRetrustFingerprint('');
+    try { setReview(await commands.pluginRollbackReview(pluginId, version)); }
+    catch { setUpdateError(true); }
+    finally { setBusy(false); }
+  };
+
+  const retrustPublisher = async () => {
+    if (!review || retrustFingerprint !== review.publisherFingerprint) return;
+    setBusy(true);
+    setUpdateError(false);
+    try {
+      await commands.pluginUpdateRetrustPublisher(review.pluginId, review.candidateVersion, retrustFingerprint);
+      setPublisherRetrusted(true);
+    } catch { setUpdateError(true); }
     finally { setBusy(false); }
   };
 
@@ -81,9 +123,17 @@ export const PluginInventory: React.FC = () => {
     setBusy(true);
     setUpdateError(false);
     try {
-      await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
+      if (reviewIsRollback) {
+        await commands.pluginRollbackApprove(review.pluginId, review.candidateVersion, rollbackConfirmed);
+      } else {
+        await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
+      }
       setUpdates((current) => current.filter((update) => update.pluginId !== review.pluginId));
       setReview(null);
+      setReviewIsRollback(false);
+      setRollbackConfirmed(false);
+      setPublisherRetrusted(false);
+      await refetchRollbacks();
     } catch { setUpdateError(true); }
     finally { setBusy(false); }
   };
@@ -134,10 +184,29 @@ export const PluginInventory: React.FC = () => {
             </div>
           </div>
         ))}
+        {rollbackPackages.map((pkg) => (
+          <div key={pkg.pluginId} className="mt-compact border-t border-border-subtle pt-compact">
+            <p className={settingsRowTitle}>{t('plugins.updates.rollbackTitle')}: {pkg.name} ({pkg.activeVersion})</p>
+            <p className={settingsRowDescription}>{t('plugins.updates.rollbackDescription')}</p>
+            <div className="flex flex-wrap gap-1">
+              {pkg.versions.map((version) => (
+                <button key={version} type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void reviewRollback(pkg.pluginId, version)}>
+                  {t('plugins.updates.reviewRollback', { version })}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
         {updateError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.updates.failed')}</p>}
         {review && (
-          <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.updates.reviewTitle')}>
-            <h3 className={settingsRowTitle}>{t('plugins.updates.reviewTitle')}: {review.installedVersion} → {review.candidateVersion}</h3>
+          <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={reviewIsRollback ? t('plugins.updates.rollbackReviewTitle') : t('plugins.updates.reviewTitle')}>
+            <h3 className={settingsRowTitle}>{reviewIsRollback ? t('plugins.updates.rollbackReviewTitle') : t('plugins.updates.reviewTitle')}: {review.installedVersion} → {review.candidateVersion}</h3>
+            {reviewIsRollback && (
+              <label className="my-compact flex items-start gap-compact text-sm">
+                <input type="checkbox" checked={rollbackConfirmed} onChange={(event) => setRollbackConfirmed(event.currentTarget.checked)} />
+                <span>{t('plugins.updates.rollbackConfirm')}</span>
+              </label>
+            )}
             <p className={settingsRowDescription}>{t('plugins.grants')}: +{review.addedPermissions.join(', ') || '—'}; {t('plugins.updates.changed')}: {review.changedPermissions.join(', ') || '—'}; −{review.removedPermissions.join(', ') || '—'}</p>
             {review.permissionChanges.map((change) => <p key={change.id} className={settingsRowDescription}>{change.id}: {change.installedScope} → {change.candidateScope}</p>)}
             <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: +{review.addedNativeAccess.join(', ') || '—'}; −{review.removedNativeAccess.join(', ') || '—'}</p>
@@ -146,11 +215,24 @@ export const PluginInventory: React.FC = () => {
             <p className={settingsRowDescription}>{t('plugins.updates.licenseFiles')}: {review.installedLicenseFiles.join(', ') || '—'} → {review.candidateLicenseFiles.join(', ') || '—'}</p>
             <p className={settingsRowDescription}>{t('plugins.updates.licenseNotices')}: {review.installedLicenseNotices.join('; ') || '—'} → {review.candidateLicenseNotices.join('; ') || '—'}</p>
             <p className={settingsRowDescription}>{t('plugins.updates.publisher')}: {review.installedPublisherKeyId} → {review.candidatePublisherKeyId}</p>
-            {review.publisherChanged && <p className={settingsRowDescription}>{t('plugins.updates.publisherChanged')}: {review.installedPublisherKeyId} → {review.candidatePublisherKeyId}</p>}
+            {review.publisherChanged && (
+              <div className="my-compact border border-border-subtle p-sm">
+                <p className={settingsRowDescription}>{t('plugins.updates.publisherChanged')}: {review.installedPublisherKeyId} → {review.candidatePublisherKeyId}</p>
+                <p className={`${settingsRowDescription} break-all`}>{t('plugins.updates.publisherFingerprint')}: {review.publisherFingerprint}</p>
+                {!publisherRetrusted ? (
+                  <div className="mt-compact flex flex-wrap items-center gap-compact">
+                    <input aria-label={t('plugins.updates.publisherFingerprintConfirm')} className="min-w-64 rounded-sm border border-border-subtle bg-raised px-sm py-1 text-sm" value={retrustFingerprint} onChange={(event) => setRetrustFingerprint(event.currentTarget.value)} />
+                    <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy || retrustFingerprint !== review.publisherFingerprint} onClick={() => void retrustPublisher()}>{t('plugins.updates.publisherRetrust')}</button>
+                  </div>
+                ) : <p className={`${settingsRowDescription} mt-compact`} role="status">{t('plugins.updates.publisherRetrusted')}</p>}
+              </div>
+            )}
+            <p className={settingsRowDescription}>{t('plugins.updates.dataPreserved')}</p>
+            {review.changedDataSchemas.length > 0 && <p className={settingsRowDescription}>{t('plugins.updates.dataSchemaChanged')}: {review.changedDataSchemas.join(', ')}. {t('plugins.updates.versionedDataKeysRequired')}</p>}
             <p className={settingsRowDescription}>{t('plugins.updates.newPermissionsDenied')}</p>
             <div className="mt-compact flex gap-compact">
               <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void declineUpdate()}>{t('plugins.updates.decline')}</button>
-              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={busy} onClick={() => void approveUpdate()}>{t('plugins.updates.approve')}</button>
+              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={busy || (reviewIsRollback && !rollbackConfirmed) || (review.publisherChanged && !publisherRetrusted)} onClick={() => void approveUpdate()}>{reviewIsRollback ? t('plugins.updates.rollbackApprove') : t('plugins.updates.approve')}</button>
             </div>
           </article>
         )}
@@ -195,6 +277,36 @@ export const PluginInventory: React.FC = () => {
               </div>
               <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
               <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
+              <div className="mt-compact border-t border-border-subtle pt-compact">
+                <button
+                  type="button"
+                  aria-expanded={reviewingPluginId === selectedPlugin.pluginId}
+                  aria-controls={`plugin-activation-review-${selectedPlugin.pluginId}`}
+                  className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]"
+                  onClick={() => setReviewingPluginId((current) => current === selectedPlugin.pluginId ? null : selectedPlugin.pluginId)}
+                >
+                  {t('plugins.activation.openReview')}
+                </button>
+                {activationReviews[selectedPlugin.pluginId] && reviewingPluginId !== selectedPlugin.pluginId && (
+                  <p className={`${settingsRowDescription} mt-compact`} role="status">
+                    {t('plugins.activation.reviewOnly')}
+                  </p>
+                )}
+                {reviewingPluginId === selectedPlugin.pluginId && (
+                  <div id={`plugin-activation-review-${selectedPlugin.pluginId}`} className="mt-compact border-t border-border-subtle pt-compact">
+                    <p className={`${settingsRowDescription} mb-compact`}>
+                      {t('plugins.activation.reviewFor', { plugin: providerLabel(selectedPlugin.providerId, selectedPlugin.name, t) })}
+                    </p>
+                    <PluginActivationPermissions
+                      initialValue={activationReviews[selectedPlugin.pluginId]}
+                      onContinue={(value) => {
+                        setActivationReviews((current) => ({ ...current, [selectedPlugin.pluginId]: value }));
+                        setReviewingPluginId(null);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
               <div>
                 <p className={settingsRowDescription}>{t('plugins.grants')}</p>
                 <ul className="mt-1 flex flex-wrap gap-1" aria-label={t('plugins.grants')}>

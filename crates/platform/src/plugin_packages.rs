@@ -255,6 +255,24 @@ pub fn stage_package_archive(
     staging_dir: &Path,
     publisher_key: &[u8],
 ) -> Result<IntegrityManifest, PackageArchiveError> {
+    stage_package_archive_inner(archive_path, staging_dir, Some(publisher_key))
+}
+
+/// Extract a package whose complete archive digest has already been authenticated by a signed
+/// update feed. The caller must subsequently validate the extracted package signature using the
+/// candidate manifest's publisher key before it can be installed or executed.
+pub fn stage_package_archive_from_verified_feed(
+    archive_path: &Path,
+    staging_dir: &Path,
+) -> Result<IntegrityManifest, PackageArchiveError> {
+    stage_package_archive_inner(archive_path, staging_dir, None)
+}
+
+fn stage_package_archive_inner(
+    archive_path: &Path,
+    staging_dir: &Path,
+    publisher_key: Option<&[u8]>,
+) -> Result<IntegrityManifest, PackageArchiveError> {
     let archive_file = File::open(archive_path)?;
     if archive_file.metadata()?.len() > MAX_COMPRESSED_BYTES {
         return Err(PackageArchiveError::CompressedLimit);
@@ -266,7 +284,9 @@ pub fn stage_package_archive(
     let raw_integrity =
         read_zip_metadata(&mut archive, "integrity.json", MAX_METADATA_BYTES as usize)?;
     let signature = read_zip_metadata(&mut archive, "signature.ed25519", 64)?;
-    verify_integrity_signature(publisher_key, &raw_integrity, &signature)?;
+    if let Some(publisher_key) = publisher_key {
+        verify_integrity_signature(publisher_key, &raw_integrity, &signature)?;
+    }
     let integrity = parse_integrity_json(&raw_integrity)?;
 
     let mut expected_files = integrity.files.0.keys().cloned().collect::<BTreeSet<_>>();
@@ -283,7 +303,9 @@ pub fn stage_package_archive(
         &metadata_files,
         &target_files,
     )?;
-    verify_package_directory(staging_dir, publisher_key)?;
+    if let Some(publisher_key) = publisher_key {
+        verify_package_directory(staging_dir, publisher_key)?;
+    }
     Ok(integrity)
 }
 
@@ -816,6 +838,11 @@ mod tests {
             b"signed package payload"
         );
         assert!(staging.join("integrity.json").is_file());
+
+        let feed_staging = temp.path().join("feed-staging");
+        stage_package_archive_from_verified_feed(&archive, &feed_staging).unwrap();
+        verify_package_directory(&feed_staging, public_key).unwrap();
+        assert!(verify_package_directory(&feed_staging, &[0; 32]).is_err());
 
         let bad_archive = signed_archive(temp.path(), &key, true);
         let bad_staging = temp.path().join("bad-staging");

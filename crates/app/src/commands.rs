@@ -428,6 +428,46 @@ pub async fn plugin_update_review(
 }
 
 #[tauri::command]
+pub async fn plugin_rollback_available(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::AvailablePluginRollback>, String> {
+    updates.available_rollbacks().await
+}
+
+#[tauri::command]
+pub async fn plugin_rollback_review(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    updates.review_rollback(&plugin_id, &version).await
+}
+
+#[tauri::command]
+pub async fn plugin_update_retrust_publisher(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    updates
+        .confirm_publisher_retrust(&plugin_id, &version, &fingerprint)
+        .await
+}
+
+#[tauri::command]
+pub async fn plugin_rollback_approve(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+    version: String,
+    confirmed: bool,
+) -> Result<String, String> {
+    updates
+        .approve_rollback(&plugin_id, &version, confirmed)
+        .await
+}
+
+#[tauri::command]
 pub async fn plugin_update_approve(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,

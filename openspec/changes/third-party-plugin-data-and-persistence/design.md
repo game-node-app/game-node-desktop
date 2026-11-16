@@ -11,3 +11,9 @@ Keep plugin-private storage separate from published datasets. Attribute every re
 ## Persistence and administration
 
 Durable records use a logical owner namespace and explicit retention choice. Quotas, cleanup and uninstall retention operate only on the authenticated owner's data. Host administration may report physical usage, but plugin IPC never receives physical paths. Diagnostics and gameplay observations remain plugin-produced data; Core does not add collectors or dashboards here.
+
+## Updates, downgrades and private data
+
+An update feed cannot select a release below the active version. A user-requested downgrade uses the same signature, integrity, target and API verification path as an update, shows the active and target versions with a downgrade warning, and changes the active package only after explicit confirmation. A publisher-key change requires a separate re-trust review bound to the exact new fingerprint; approving a package update does not substitute for that review.
+
+The private-data owner namespace remains stable across package versions and continues to use the authenticated plugin, publisher and profile identity from the namespace resolver. A plugin that changes a private-data schema writes to versioned logical keys or schema identifiers. It does not automatically migrate destructively or delete the older values; retaining them allows a compatible last-known-good version to recover its data. Package rollback keeps the current grants intersected with the selected version's manifest. Reuse of data archived by uninstall remains a separate host-reviewed operation and does not grant a new consumer access.

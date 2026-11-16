@@ -4,7 +4,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [x] 1.1 **Source 12.1.** Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and get/list/watch access; add a typed per-query selector for category grants and independently selected record grants that defaults to excluded, then verify both authorization paths plus sensitive/custom broker projections.
 
-- [ ] 1.2 **Source 12.2.** Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
+- [x] 1.2 **Source 12.2.** Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
 
 - [ ] 1.3 **Source 12.3.** Implement default-deny common-data category read grants selected during activation and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify grants permit but do not trigger queries, explicit common queries cover all publishers within scope, and denied queries leave private data available.
 

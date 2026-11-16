@@ -1171,6 +1171,7 @@ mod tests {
             true,
             true,
         );
+        let current_revision = broker.lock().revision;
         let subscription = broker
             .subscribe(
                 request(
@@ -1180,7 +1181,7 @@ mod tests {
                     10,
                     None,
                 ),
-                broker.lock().revision,
+                current_revision,
                 4,
                 authorizer.clone(),
             )

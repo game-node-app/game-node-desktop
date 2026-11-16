@@ -4,6 +4,7 @@
 
 use super::{
     login::LoginBroker,
+    namespace::{NamespaceOwner, SecretSlot},
     provider::{HostServices, Lease},
 };
 use gamenode_core::{
@@ -12,6 +13,7 @@ use gamenode_core::{
     ports::{CredentialError, CredentialStore},
 };
 use gamenode_plugin_protocol::{login::LoginPolicy, models, proto::*};
+use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tonic::Status;
 
@@ -43,7 +45,9 @@ struct Persistence {
 pub struct ProviderServices {
     context: ProviderContext,
     credentials: Option<Arc<dyn CredentialStore>>,
+    external_credentials: Option<Arc<dyn ExternalCredentialStoreFactory>>,
     accounts: Mutex<Arc<dyn AccountPersistence>>,
+    external_accounts: Option<Arc<dyn ExternalAccountPersistence>>,
     identity: Arc<Mutex<Option<String>>>,
     login: Option<Arc<LoginBroker>>,
     login_policy: Option<Arc<LoginPolicy>>,
@@ -59,6 +63,112 @@ pub trait AccountPersistence: Send + Sync {
     fn load(&self, provider: &str) -> Result<Option<models::StoreAccount>, Status>;
     fn save(&self, account: models::StoreAccount, clear_ownership: bool) -> Result<(), Status>;
     fn clear(&self, provider: &str) -> Result<(), Status>;
+}
+
+/// Blocking account persistence for a third-party provider. The owner is derived from the
+/// authenticated plugin, publisher and profile on every request; implementations must use it as
+/// part of their storage key and must not route these records through Core's official accounts.
+pub trait ExternalAccountPersistence: Send + Sync {
+    fn load(
+        &self,
+        owner: &NamespaceOwner,
+        provider: &str,
+    ) -> Result<Option<models::StoreAccount>, Status>;
+    fn save(
+        &self,
+        owner: &NamespaceOwner,
+        account: models::StoreAccount,
+        clear_ownership: bool,
+    ) -> Result<(), Status>;
+    fn clear(&self, owner: &NamespaceOwner, provider: &str) -> Result<(), Status>;
+}
+
+/// Host-owned adapter that opens one already-resolved third-party credential slot. The service
+/// invokes it only inside the blocking storage worker; plugin requests never choose a slot.
+pub trait ExternalCredentialStoreFactory: Send + Sync {
+    fn open(
+        &self,
+        slot: gamenode_platform::credentials::CredentialSlot,
+    ) -> Arc<dyn CredentialStore>;
+}
+
+struct PlatformExternalCredentialStoreFactory(gamenode_platform::paths::DataPaths);
+
+impl ExternalCredentialStoreFactory for PlatformExternalCredentialStoreFactory {
+    fn open(
+        &self,
+        slot: gamenode_platform::credentials::CredentialSlot,
+    ) -> Arc<dyn CredentialStore> {
+        gamenode_platform::credentials::open_store(&self.0, slot)
+    }
+}
+
+/// Signed third-party login metadata. It deliberately names a host probe instead of carrying
+/// JavaScript that would be evaluated inside the privileged login WebView.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalLoginPolicy {
+    pub start_url: String,
+    #[serde(default)]
+    pub cookie_urls: Vec<String>,
+    pub probe_origin: String,
+    pub title: String,
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub cookie_names: Vec<String>,
+    pub probe_id: ExternalPageProbe,
+    pub width: u32,
+    pub height: u32,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum ExternalPageProbe {
+    #[serde(rename = "oauth_authorization_code")]
+    OAuthAuthorizationCode,
+}
+
+impl ExternalLoginPolicy {
+    fn into_host_policy(self) -> Result<LoginPolicy, Status> {
+        let probe_script = match self.probe_id {
+            ExternalPageProbe::OAuthAuthorizationCode => {
+                "(() => { const code = new URL(window.location.href).searchParams.get('code'); return code ? { authorization_code: code } : null; })()"
+            }
+        };
+        let policy = LoginPolicy {
+            start_url: self.start_url,
+            cookie_urls: self.cookie_urls,
+            probe_origin: self.probe_origin,
+            title: self.title,
+            allowed_hosts: self.allowed_hosts,
+            cookie_names: self.cookie_names,
+            probe_script: probe_script.into(),
+            width: self.width,
+            height: self.height,
+            timeout_seconds: self.timeout_seconds,
+        };
+        policy
+            .validate()
+            .map_err(|_| Status::failed_precondition("invalid external login policy"))?;
+        Ok(policy)
+    }
+}
+
+fn external_credential_slot(slot: &SecretSlot) -> gamenode_platform::credentials::CredentialSlot {
+    use gamenode_platform::credentials::{CredentialAlias, CredentialSlot};
+
+    let suffix = slot
+        .key()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    CredentialSlot::provider(
+        "third-party",
+        Some(CredentialAlias {
+            keyring_account: format!("third-party.{suffix}"),
+            private_file: format!("third-party-{suffix}.secret"),
+        }),
+    )
 }
 
 pub struct LibraryAccounts(pub Arc<dyn LibraryStore>);
@@ -197,7 +307,9 @@ impl ProviderServices {
         Ok(Self {
             context,
             credentials,
+            external_credentials: None,
             accounts: Mutex::new(Arc::new(LibraryAccounts(library))),
+            external_accounts: None,
             identity: Arc::new(Mutex::new(None)),
             login,
             login_policy: login_policy.map(Arc::new),
@@ -206,6 +318,45 @@ impl ProviderServices {
             status: Mutex::new(None),
             observer: Mutex::new(None),
         })
+    }
+
+    /// Compose services for a managed third-party provider. Its account adapter is separate from
+    /// Core's official account table, and each secret is opened from a host-derived namespace
+    /// slot inside the blocking storage worker. The login descriptor cannot supply probe code.
+    pub fn new_external(
+        context: ProviderContext,
+        paths: gamenode_platform::paths::DataPaths,
+        library: Arc<dyn LibraryStore>,
+        accounts: Arc<dyn ExternalAccountPersistence>,
+        login: Option<Arc<LoginBroker>>,
+        login_policy: Option<ExternalLoginPolicy>,
+    ) -> Result<Self, Status> {
+        Self::new_external_with_credentials(
+            context,
+            Arc::new(PlatformExternalCredentialStoreFactory(paths)),
+            library,
+            accounts,
+            login,
+            login_policy,
+        )
+    }
+
+    /// Variant for a host-owned credential backend, also used by deterministic service fixtures.
+    pub fn new_external_with_credentials(
+        context: ProviderContext,
+        credentials: Arc<dyn ExternalCredentialStoreFactory>,
+        library: Arc<dyn LibraryStore>,
+        accounts: Arc<dyn ExternalAccountPersistence>,
+        login: Option<Arc<LoginBroker>>,
+        login_policy: Option<ExternalLoginPolicy>,
+    ) -> Result<Self, Status> {
+        let login_policy = login_policy
+            .map(ExternalLoginPolicy::into_host_policy)
+            .transpose()?;
+        let mut services = Self::new(context, None, library, login, login_policy)?;
+        services.external_credentials = Some(credentials);
+        services.external_accounts = Some(accounts);
+        Ok(services)
     }
 
     pub fn status(&self) -> Option<models::AccountStatus> {
@@ -277,24 +428,55 @@ impl HostServices for ProviderServices {
                 );
             }
         }
-        let accounts = lock(&self.accounts).clone();
+        let external_accounts = self.external_accounts.clone();
+        let accounts = external_accounts
+            .is_none()
+            .then(|| lock(&self.accounts).clone());
+        let external_owner = if external_accounts.is_some() {
+            Some(
+                lease
+                    .namespace()?
+                    .account_owner()
+                    .map_err(|_| Status::failed_precondition("account namespace unavailable"))?,
+            )
+        } else {
+            None
+        };
         let identity = self.identity.clone();
         let authority = lease.clone();
         let persistence = self.persistence.clone();
         let read = matches!(action, account_request::Action::Read(true));
         lease
             .storage(move || {
+                let load = |provider: &str| match (&external_accounts, &external_owner, &accounts) {
+                    (Some(store), Some(owner), _) => store.load(owner, provider),
+                    (None, None, Some(store)) => store.load(provider),
+                    _ => Err(Status::unavailable("account storage unavailable")),
+                };
+                let save = |account, clear_ownership| match (
+                    &external_accounts,
+                    &external_owner,
+                    &accounts,
+                ) {
+                    (Some(store), Some(owner), _) => store.save(owner, account, clear_ownership),
+                    (None, None, Some(store)) => store.save(account, clear_ownership),
+                    _ => Err(Status::unavailable("account storage unavailable")),
+                };
+                let clear = |provider: &str| match (&external_accounts, &external_owner, &accounts)
+                {
+                    (Some(store), Some(owner), _) => store.clear(owner, provider),
+                    (None, None, Some(store)) => store.clear(provider),
+                    _ => Err(Status::unavailable("account storage unavailable")),
+                };
                 let mut reply = AccountReply {
                     account: None,
                     accepted: true,
                 };
                 let result = match action {
-                    account_request::Action::Read(true) => {
-                        accounts.load(&provider).map(|account| {
-                            *lock(&identity) = account.as_ref().map(|a| a.account_id.clone());
-                            reply.account = account.map(Into::into);
-                        })
-                    }
+                    account_request::Action::Read(true) => load(&provider).map(|account| {
+                        *lock(&identity) = account.as_ref().map(|a| a.account_id.clone());
+                        reply.account = account.map(Into::into);
+                    }),
                     account_request::Action::Save(account) => {
                         // A plugin may save before it ever reads, so an empty
                         // cache cannot be treated as "no previous account":
@@ -302,8 +484,7 @@ impl HostServices for ProviderServices {
                         // source for deciding whether identity changed.
                         let known = match lock(&identity).clone() {
                             Some(id) => Ok(Some(id)),
-                            None => accounts
-                                .load(&provider)
+                            None => load(&provider)
                                 .map(|account| account.map(|account| account.account_id)),
                         };
                         match known {
@@ -312,7 +493,7 @@ impl HostServices for ProviderServices {
                                     known.as_ref().is_some_and(|id| id != &account.account_id);
                                 authority.accept_identity(changed)?;
                                 *lock(&identity) = Some(account.account_id.clone());
-                                accounts.save(
+                                save(
                                     account.try_into().map_err(|_| {
                                         Status::invalid_argument("invalid account identity")
                                     })?,
@@ -323,7 +504,7 @@ impl HostServices for ProviderServices {
                         }
                     }
                     account_request::Action::Clear(true) => {
-                        let result = accounts.clear(&provider);
+                        let result = clear(&provider);
                         if result.is_ok() {
                             *lock(&identity) = None;
                         }
@@ -349,9 +530,6 @@ impl HostServices for ProviderServices {
             _ => return Err(Status::invalid_argument("invalid secret operation")),
         };
         lease.require(permission)?;
-        if request.key != "session" {
-            return Err(lease.deny_scope_for(permission));
-        }
         let value = request
             .value
             .map(|value| {
@@ -369,14 +547,35 @@ impl HostServices for ProviderServices {
         {
             return Err(Status::invalid_argument("invalid secret operation"));
         }
-        let store = self
-            .credentials
-            .clone()
-            .ok_or_else(|| Status::unavailable("secret storage unavailable"))?;
+        let store = self.credentials.clone();
+        let external_factory = self.external_credentials.clone();
+        let external_slot = if external_factory.is_some() {
+            Some(
+                lease
+                    .namespace()?
+                    .secret_slot(&request.key)
+                    .map_err(|_| Status::invalid_argument("invalid logical secret key"))?,
+            )
+        } else {
+            if request.key != "session" {
+                return Err(lease.deny_scope_for(permission));
+            }
+            None
+        };
+        if store.is_none() && external_factory.is_none() {
+            return Err(Status::unavailable("secret storage unavailable"));
+        }
         let persistence = self.persistence.clone();
         let authority = lease.clone();
         lease
             .storage(move || {
+                let store = match (store, external_factory, external_slot) {
+                    (Some(store), None, None) => store,
+                    (None, Some(factory), Some(slot)) => {
+                        factory.open(external_credential_slot(&slot))
+                    }
+                    _ => return Err(Status::unavailable("secret storage unavailable")),
+                };
                 use secret_reply::Outcome;
                 let outcome = match operation {
                     SecretOperation::Read => store.load().map(|value| {
@@ -411,6 +610,11 @@ impl HostServices for ProviderServices {
 
     async fn login(&self, lease: Lease, request: LoginRequest) -> Result<LoginReply, Status> {
         self.scope(&lease)?;
+        if self.external_credentials.is_some() {
+            // Do not allow a trusted descriptor service to be attached to an official or
+            // unauthenticated registration by accident.
+            lease.namespace()?;
+        }
         let broker = self
             .login
             .as_ref()

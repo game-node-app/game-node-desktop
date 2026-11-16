@@ -188,6 +188,19 @@ impl ManagedPackageLifecycle {
         .await
         .map_err(|_| PackageLifecycleError::WorkerFailed)?
     }
+
+    /// Removes every installed version after the caller has stopped processes and revoked
+    /// sessions. Filesystem work stays on a blocking worker.
+    pub async fn remove_plugin(&self, plugin_id: String) -> Result<(), PackageLifecycleError> {
+        let registry = self.registry.clone();
+        tokio::task::spawn_blocking(move || {
+            registry
+                .remove_plugin(&plugin_id)
+                .map_err(|error| PackageLifecycleError::Registry(error.to_string()))
+        })
+        .await
+        .map_err(|_| PackageLifecycleError::WorkerFailed)?
+    }
 }
 
 fn read_signed_manifest(

@@ -161,6 +161,8 @@ fn context_provider_id(registration: &Registration) -> &str {
 
 struct Provider {
     registration: Registration,
+    declared_capabilities: std::sync::RwLock<Vec<String>>,
+    capabilities: std::sync::RwLock<Vec<String>>,
     /// Set for third-party providers: their profile epoch is the account profile's epoch.
     profiles: Option<Arc<PluginProfiles>>,
     account_epoch: std::sync::atomic::AtomicU64,
@@ -172,6 +174,7 @@ struct Provider {
 struct Pending {
     provider: Arc<Provider>,
     credential: [u8; 32],
+    profile_epoch: Option<u64>,
     ready: oneshot::Sender<()>,
 }
 
@@ -935,6 +938,8 @@ impl ProviderApi {
         state.providers.insert(
             registration.provider_id.clone(),
             Arc::new(Provider {
+                declared_capabilities: std::sync::RwLock::new(registration.capabilities.clone()),
+                capabilities: std::sync::RwLock::new(registration.capabilities.clone()),
                 profiles: matches!(registration.origin, RegistrationOrigin::ThirdParty { .. })
                     .then(|| self.profiles.clone()),
                 registration,
@@ -948,6 +953,14 @@ impl ProviderApi {
     }
 
     pub fn begin_launch(&self, provider_id: &str) -> Result<Launch, Status> {
+        self.begin_launch_for_profile(provider_id, None)
+    }
+
+    pub(crate) fn begin_launch_for_profile(
+        &self,
+        provider_id: &str,
+        expected_profile_epoch: Option<u64>,
+    ) -> Result<Launch, Status> {
         let mut state = lock(&self.state);
         let provider = state
             .providers
@@ -955,13 +968,17 @@ impl ProviderApi {
             .cloned()
             .ok_or_else(|| Status::not_found("provider is unavailable"))?;
         // A third-party process runs only inside an active GameNode account profile.
-        if provider
-            .profiles
-            .as_ref()
-            .is_some_and(|profiles| !profiles.may_start_third_party())
-        {
-            return Err(super::profile::no_profile());
-        }
+        let profile_epoch = if let Some(profiles) = provider.profiles.as_ref() {
+            let profile = profiles.require()?;
+            if expected_profile_epoch.is_some_and(|expected| expected != profile.epoch()) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during startup",
+                ));
+            }
+            Some(profile.epoch())
+        } else {
+            None
+        };
         if state.pending.len() + state.sessions.len() >= 16 {
             return Err(Status::resource_exhausted("provider session capacity"));
         }
@@ -985,6 +1002,7 @@ impl ProviderApi {
         state.pending.push(Pending {
             provider,
             credential,
+            profile_epoch,
             ready,
         });
         Ok(Launch {
@@ -1007,6 +1025,15 @@ impl ProviderApi {
             .iter()
             .position(|p| super::constant_time_eq(&p.credential, &hello.session_credential))
             .ok_or_else(|| Status::unauthenticated("unknown provider launch"))?;
+        let profile_changed = state.pending[index]
+            .profile_epoch
+            .is_some_and(|expected| !self.profiles.is_current(expected));
+        if profile_changed {
+            state.pending.remove(index);
+            return Err(Status::failed_precondition(
+                "plugin profile changed during startup",
+            ));
+        }
         let pending = &state.pending[index];
         if pending.provider.registration.plugin_id != hello.plugin_id {
             return Err(Status::unauthenticated(
@@ -1016,13 +1043,13 @@ impl ProviderApi {
         if hello.plugin_version.is_empty() || hello.plugin_version.len() > 128 {
             return Err(Status::invalid_argument("invalid plugin version"));
         }
-        let allowed: Vec<&str> = pending
+        let current_capabilities = pending
             .provider
-            .registration
             .capabilities
-            .iter()
-            .map(String::as_str)
-            .collect();
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let allowed: Vec<&str> = current_capabilities.iter().map(String::as_str).collect();
         cap::validate_session_scope(
             u32::try_from(hello.session_kind).unwrap_or(u32::MAX),
             hello.target_game.is_some(),
@@ -1075,48 +1102,58 @@ impl ProviderApi {
                 "invalid provider capability request",
             ));
         }
+        let requested: BTreeSet<String> = hello.requested_capabilities.iter().cloned().collect();
+        let declared_capabilities = pending
+            .provider
+            .declared_capabilities
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let declared: BTreeSet<String> = declared_capabilities.iter().cloned().collect();
+        if !requested.is_subset(&declared) {
+            return Err(Status::permission_denied(
+                "requested provider permission is not declared by the package",
+            ));
+        }
+        let third_party = pending.provider.profiles.is_some();
+        if !third_party && requested != current_capabilities.iter().cloned().collect() {
+            return Err(Status::failed_precondition(
+                "required provider capabilities are missing",
+            ));
+        }
+        let granted: BTreeSet<String> = if third_party {
+            requested
+                .intersection(&current_capabilities.iter().cloned().collect())
+                .cloned()
+                .collect()
+        } else {
+            requested
+        };
+        if !granted.contains(cap::CONTEXT) {
+            return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
+        }
+        let granted_capabilities = granted.iter().cloned().collect::<Vec<_>>();
         let minor = cap::negotiate(
             selection.api_major,
             selection.api_minor,
-            &hello.requested_capabilities,
+            &granted_capabilities,
             &allowed,
         )
         .map_err(|error| match error {
             cap::NegotiationError::Capability => {
-                if let Some(permission) = hello
-                    .requested_capabilities
+                if let Some(permission) = granted_capabilities
                     .iter()
                     .find(|permission| !cap::KNOWN.contains(&permission.as_str()))
                 {
                     Status::failed_precondition(format!(
                         "unsupported provider permission: {permission}"
                     ))
-                } else if let Some(permission) = hello
-                    .requested_capabilities
-                    .iter()
-                    .find(|permission| !allowed.contains(&permission.as_str()))
-                {
-                    denial(DenialReason::NotGranted, permission, 0)
                 } else {
                     Status::invalid_argument(error.to_string())
                 }
             }
             _ => Status::failed_precondition(error.to_string()),
         })?;
-        let requested: BTreeSet<String> = hello.requested_capabilities.iter().cloned().collect();
-        if requested
-            != pending
-                .provider
-                .registration
-                .capabilities
-                .iter()
-                .cloned()
-                .collect()
-        {
-            return Err(Status::failed_precondition(
-                "required provider capabilities are missing",
-            ));
-        }
         let pending = state.pending.remove(index);
         let session_id = super::random_session_id()?;
         let resource_context = if minor >= cap::THIRD_PARTY_API_MINOR {
@@ -1139,7 +1176,7 @@ impl ProviderApi {
             Session {
                 provider: pending.provider,
                 credential: pending.credential,
-                grants: requested.clone(),
+                grants: granted.clone(),
                 kind: hello.session_kind,
                 target_game: hello.target_game.clone(),
                 grant_revision: 1,
@@ -1156,7 +1193,7 @@ impl ProviderApi {
         Ok(OpenSessionReply {
             resource_context,
             session_id,
-            granted_capabilities: requested.into_iter().collect(),
+            granted_capabilities: granted_capabilities,
             api_major: gamenode_plugin_protocol::API_MAJOR,
             api_minor: minor,
             features: selection
@@ -1186,6 +1223,133 @@ impl ProviderApi {
             .sessions
             .values()
             .any(|s| s.provider.registration.provider_id == provider_id && s.commands.is_some())
+    }
+
+    /// Registered providers bound to an account profile. Their supervised processes must stop
+    /// whenever that profile changes; official providers are deliberately excluded.
+    pub(crate) fn third_party_provider_ids(&self) -> Vec<String> {
+        lock(&self.state)
+            .providers
+            .values()
+            .filter(|provider| provider.profiles.is_some())
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect()
+    }
+
+    /// Provider process registrations owned by one installed third-party plugin.
+    pub(crate) fn third_party_provider_ids_for_plugin(&self, plugin_id: &str) -> Vec<String> {
+        lock(&self.state)
+            .providers
+            .values()
+            .filter(|provider| {
+                provider.profiles.is_some() && provider.registration.plugin_id == plugin_id
+            })
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect()
+    }
+
+    pub(crate) fn third_party_plugin_id(&self, provider_id: &str) -> Option<String> {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .filter(|provider| provider.profiles.is_some())
+            .map(|provider| provider.registration.plugin_id.clone())
+    }
+
+    pub(crate) fn third_party_identity(&self, provider_id: &str) -> Option<(String, String)> {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .filter(|provider| provider.profiles.is_some())
+            .and_then(|provider| match &provider.registration.origin {
+                RegistrationOrigin::ThirdParty {
+                    publisher_fingerprint,
+                } => Some((
+                    provider.registration.plugin_id.clone(),
+                    publisher_fingerprint.clone(),
+                )),
+                RegistrationOrigin::Official => None,
+            })
+    }
+
+    /// Replace the session capability ceiling from the currently validated package and its
+    /// profile's persisted grants. Effective permissions must be a subset of the signed manifest.
+    pub(crate) fn set_third_party_capabilities(
+        &self,
+        provider_id: &str,
+        declared: &[String],
+        effective: &[String],
+    ) -> Result<(), Status> {
+        let declared = declared.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let effective = effective
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if declared
+            .iter()
+            .chain(effective.iter())
+            .any(|permission| !cap::KNOWN.contains(permission))
+            || !effective.is_subset(&declared)
+            || !declared.contains(cap::CONTEXT)
+            || !effective.contains(cap::CONTEXT)
+        {
+            return Err(Status::invalid_argument(
+                "invalid third-party permission set",
+            ));
+        }
+        let mut state = lock(&self.state);
+        let provider = state
+            .providers
+            .get_mut(provider_id)
+            .filter(|provider| provider.profiles.is_some())
+            .ok_or_else(|| Status::not_found("third-party provider is not registered"))?;
+        *provider
+            .capabilities
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            effective.into_iter().map(str::to_owned).collect();
+        *provider
+            .declared_capabilities
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            declared.into_iter().map(str::to_owned).collect();
+        Ok(())
+    }
+
+    /// Fences sessions and unregisters a third-party plugin after its process has been stopped.
+    /// Official registrations are never eligible for removal through this lifecycle path.
+    pub(crate) async fn unregister_third_party_plugin(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Vec<String>, Status> {
+        let providers: Vec<_> = {
+            let state = lock(&self.state);
+            let matching = state
+                .providers
+                .values()
+                .filter(|provider| provider.registration.plugin_id == plugin_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            if matching.iter().any(|provider| provider.profiles.is_none()) {
+                return Err(Status::permission_denied(
+                    "official plugin registrations cannot be removed here",
+                ));
+            }
+            matching
+        };
+        let provider_ids = providers
+            .iter()
+            .map(|provider| provider.registration.provider_id.clone())
+            .collect::<Vec<_>>();
+        for provider in &providers {
+            drop(provider.commits.lock().await);
+            self.disconnect(&provider.registration.provider_id).await;
+        }
+        let mut state = lock(&self.state);
+        for provider_id in &provider_ids {
+            state.providers.remove(provider_id);
+        }
+        Ok(provider_ids)
     }
 
     pub async fn disconnect(&self, provider_id: &str) {
@@ -1936,8 +2100,9 @@ impl ProviderApi {
 
     pub fn settings_authorized(&self, provider: &str) -> bool {
         lock(&self.state).providers.get(provider).is_some_and(|p| {
-            p.registration
-                .capabilities
+            p.capabilities
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .any(|c| c == cap::SETTINGS)
         })
@@ -2663,7 +2828,12 @@ impl provider_host_server::ProviderHost for ProviderApi {
         };
         let (lease, services) = self.lease(request.context.clone(), permission)?;
         if request.key != "session" {
-            return Err(lease.deny_scope_for(permission));
+            let namespace = lease
+                .namespace()
+                .map_err(|_| lease.deny_scope_for(permission))?;
+            namespace
+                .secret_slot(&request.key)
+                .map_err(|_| Status::invalid_argument("invalid logical secret key"))?;
         }
         if request
             .value

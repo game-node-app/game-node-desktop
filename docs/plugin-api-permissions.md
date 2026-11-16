@@ -1371,13 +1371,14 @@ these changes.
 
 Profile IDs are opaque hashes of the account ID, safe as directory names, and
 do not reveal the account in paths or namespace keys. State is layered per OS
-user: installed packages (`packages/`) and publisher trust (`trust/`) are
-shared by every account of that OS user, while activation, grants,
-configuration and private data live in `accounts/<profile id>/`. Another
-account on the same OS user sees the installed packages but not the previous
-account's activation, grants or data. The layout is modelled by
-`PluginStateLayout`; it is not yet bound to an application-data root, because
-managed third-party packages are not installed by the desktop yet.
+user: installed package versions and active pointers are stored at
+`plugin-packages/`, publisher trust is shared at `plugin-data/state/trust/`,
+and activation, grants, configuration and private data live under
+`plugin-data/state/accounts/<profile id>/`. The latter path is managed by
+`PluginStateLayout`. Another account on the same OS user sees the installed
+packages and publisher trust but not the previous account's activation,
+grants or data. Both roots remain private to the OS user, while profile data
+remains isolated by account.
 
 This audit describes API enforcement. A native plugin process can still access
 resources available to its operating-system identity, so API grants do not

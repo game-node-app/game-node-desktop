@@ -258,6 +258,53 @@ impl PluginStateLayout {
     ) -> Result<AccountActivationStore, GrantError> {
         AccountActivationStore::open(self.account_dir(profile)?)
     }
+
+    /// Removes a plugin's activation and grants from every account without touching its private
+    /// configuration, storage, or secrets. Existing account directories are never followed when
+    /// they are symlinks.
+    pub fn remove_plugin_account_state(&self, plugin_id: &str) -> Result<(), GrantError> {
+        if plugin_id.trim().is_empty()
+            || plugin_id.len() > 256
+            || plugin_id.chars().any(char::is_control)
+        {
+            return Err(GrantError::InvalidIdentity);
+        }
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(GrantError::InvalidStore("unsafe plugin state root".into())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let accounts = self.root.join("accounts");
+        match fs::symlink_metadata(&accounts) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(GrantError::InvalidStore("unsafe accounts directory".into())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let entries = match fs::read_dir(&accounts) {
+            Ok(entries) => entries,
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let account_dir = entry.path();
+            let metadata = fs::symlink_metadata(&account_dir)?;
+            if metadata.file_type().is_symlink() {
+                return Err(GrantError::InvalidStore("unsafe account directory".into()));
+            }
+            if !metadata.is_dir() {
+                continue;
+            }
+            let mut activation = AccountActivationStore::open(account_dir.clone())?;
+            if activation.is_enabled(plugin_id) {
+                activation.set_enabled(plugin_id, false)?;
+            }
+            let mut grants = PermissionGrantStore::open(&account_dir)?;
+            grants.remove_plugin(plugin_id)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -328,6 +375,21 @@ impl AccountActivationStore {
         }
         persist(&self.path, &next)?;
         self.state = next;
+        Ok(())
+    }
+
+    pub fn remove_plugin(&mut self, plugin_id: &str) -> Result<(), GrantError> {
+        if plugin_id.trim().is_empty()
+            || plugin_id.len() > 256
+            || plugin_id.chars().any(char::is_control)
+        {
+            return Err(GrantError::InvalidIdentity);
+        }
+        let mut next = self.state.clone();
+        if next.enabled.remove(plugin_id) {
+            persist(&self.path, &next)?;
+            self.state = next;
+        }
         Ok(())
     }
 }

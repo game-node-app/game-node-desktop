@@ -237,6 +237,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    if let Some(provider_runtime) = provider_runtime.as_ref() {
+        plugin_updates.set_lifecycle(provider_runtime.lifecycle());
+    }
 
     let app_handle_slot = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
     let slot_clone = app_handle_slot.clone();
@@ -406,9 +409,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(provider_runtime) = provider_runtime.clone() {
         engine.set_provider_runtime(provider_runtime);
     }
-    // Third-party plugin profiles follow the signed-in GameNode account; each change fences and
-    // stops third-party sessions.
-    plugin_api.providers.spawn_profile_fencing(runtime.handle());
+    // HostedProviders owns the single profile lifecycle observer: it fences sessions, reaps old
+    // process trees, then restores only the new account's enabled plugins.
     engine.set_plugin_profiles(plugin_api.providers.profiles());
     // Plugins read the library through a host-owned projection the engine keeps current.
     engine.set_library_feed(plugin_api.library.clone());
@@ -432,6 +434,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder = builder.manage(engine.clone());
     builder = builder.manage(plugin_api.providers.clone());
+    if let Some(provider_runtime) = provider_runtime.as_ref() {
+        builder = builder.manage(provider_runtime.lifecycle());
+    }
     builder = builder.manage(confirmations);
     builder = builder.manage(root_approvals);
     builder = builder.manage(folder_approvals);

@@ -210,6 +210,82 @@ fn another_account_sees_packages_but_not_grants_or_activation() {
     );
 }
 
+#[test]
+fn removing_plugin_clears_every_accounts_grants_and_activation_but_keeps_private_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = PluginStateLayout::new(temp.path().join("plugins"));
+    let profiles = profiles_with(Some("first"), true);
+    let first = profiles.current().unwrap();
+    let plugin_id = "org.example.plugin";
+
+    let mut grants = layout.open_grants(&first).unwrap();
+    grants
+        .replace_grants(
+            identity(&first),
+            &[grant_request()],
+            &[PermissionDecision {
+                permission_id: "storage.persist".into(),
+                scope: GrantScope::OwnPrivateNamespace,
+                granted: true,
+            }],
+        )
+        .unwrap();
+    layout
+        .open_activation(&first)
+        .unwrap()
+        .set_enabled(plugin_id, true)
+        .unwrap();
+    let private_data = layout
+        .account_dir(&first)
+        .unwrap()
+        .join("plugin-data")
+        .join(plugin_id);
+    std::fs::create_dir_all(&private_data).unwrap();
+    std::fs::write(private_data.join("keep.json"), "user data").unwrap();
+
+    profiles.update(Some("second"), true);
+    let second = profiles.current().unwrap();
+    let mut grants = layout.open_grants(&second).unwrap();
+    grants
+        .replace_grants(
+            identity(&second),
+            &[grant_request()],
+            &[PermissionDecision {
+                permission_id: "storage.persist".into(),
+                scope: GrantScope::OwnPrivateNamespace,
+                granted: true,
+            }],
+        )
+        .unwrap();
+    layout
+        .open_activation(&second)
+        .unwrap()
+        .set_enabled(plugin_id, true)
+        .unwrap();
+
+    layout.remove_plugin_account_state(plugin_id).unwrap();
+
+    for profile in [&first, &second] {
+        assert!(
+            !layout
+                .open_activation(profile)
+                .unwrap()
+                .is_enabled(plugin_id)
+        );
+        assert!(
+            layout
+                .open_grants(profile)
+                .unwrap()
+                .effective_grants(&identity(profile))
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(private_data.join("keep.json")).unwrap(),
+        "user data"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn account_state_is_private_to_the_os_user() {

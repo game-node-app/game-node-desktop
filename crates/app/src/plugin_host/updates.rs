@@ -1395,6 +1395,15 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     fn signed_package(root: &Path, version: &str, key: &ring::signature::Ed25519KeyPair) {
+        signed_package_with_permissions(root, version, key, vec![]);
+    }
+
+    fn signed_package_with_permissions(
+        root: &Path,
+        version: &str,
+        key: &ring::signature::Ed25519KeyPair,
+        permissions: Vec<serde_json::Value>,
+    ) {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("licenses")).unwrap();
         fs::write(root.join("bin/plugin"), b"fixture executable").unwrap();
@@ -1407,6 +1416,7 @@ mod tests {
             "name": "Update Fixture",
             "version": version,
             "api": {"min": "1.6.0", "max": "1.6.0"},
+            "permissions": permissions,
             "targets": [{"os": "linux", "arch": "x86_64", "abi": "gnu", "entrypoint": "bin/plugin"}],
             "publisher": {
                 "key_id": "fixture-key",
@@ -1713,5 +1723,157 @@ mod tests {
                 .is_pinned("org.example.update", &old_public)
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn rollback_preserves_profile_data_and_does_not_restore_rescoped_grants() {
+        use crate::plugin_host::{
+            grants::{
+                GrantScope, PermissionDecision, PermissionRequest as GrantRequest, PluginIdentity,
+            },
+            profile::{PluginProfiles, PluginStateLayout},
+        };
+        use gamenode_platform::plugin_storage::{
+            DurableStore, PutResult, QUOTA_BYTES, namespace_dir,
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        paths.ensure_data_dir().unwrap();
+        let registry = PluginPackageRegistry::open(&paths).unwrap();
+        let lifecycle = ManagedPackageLifecycle::new(registry.clone());
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[51; 32]).unwrap();
+        let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+        let current_origin = "https://current.example";
+        let previous_origin = "https://previous.example";
+
+        let previous_package = base.path().join("previous");
+        signed_package_with_permissions(
+            &previous_package,
+            "1.0.0",
+            &key,
+            vec![serde_json::json!({
+                "id": "network.fetch",
+                "required": false,
+                "scope": previous_origin,
+                "reason": "Fetch the plugin's service data"
+            })],
+        );
+        lifecycle
+            .install_candidate(
+                &previous_package,
+                public_key,
+                EmulationPolicy::RequireNative,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let current_package = base.path().join("current");
+        signed_package_with_permissions(
+            &current_package,
+            "2.0.0",
+            &key,
+            vec![serde_json::json!({
+                "id": "network.fetch",
+                "required": false,
+                "scope": current_origin,
+                "reason": "Fetch the plugin's service data"
+            })],
+        );
+        lifecycle
+            .install_candidate(
+                &current_package,
+                public_key,
+                EmulationPolicy::RequireNative,
+                true,
+            )
+            .await
+            .unwrap();
+        let fingerprint = super::super::publisher_trust::key_fingerprint(&public_key);
+        super::super::publisher_trust::PublisherTrustStore::open(paths.private_dir())
+            .unwrap()
+            .confirm_first_key("org.example.update", &public_key, &fingerprint)
+            .unwrap();
+
+        let profiles = std::sync::Arc::new(PluginProfiles::default());
+        profiles.update(Some("account-a"), true);
+        let profile = profiles.current().unwrap();
+        let identity = PluginIdentity {
+            plugin_id: "org.example.update".into(),
+            publisher_fingerprint: fingerprint.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let current_scope = GrantScope::Declared {
+            value: current_origin.into(),
+        };
+        let layout = PluginStateLayout::new(paths.data_dir().join("plugin-state"));
+        let mut grants = layout.open_grants(&profile).unwrap();
+        grants
+            .replace_grants(
+                identity.clone(),
+                &[GrantRequest {
+                    permission_id: "network.fetch".into(),
+                    required: false,
+                    allowed_scopes: [current_scope.clone()].into(),
+                }],
+                &[PermissionDecision {
+                    permission_id: "network.fetch".into(),
+                    scope: current_scope,
+                    granted: true,
+                }],
+            )
+            .unwrap();
+
+        let data_namespace = namespace_dir(
+            &paths.plugin_data_dir(),
+            &fingerprint,
+            "org.example.update",
+            profile.profile_id(),
+        );
+        let mut data = DurableStore::open(&data_namespace).unwrap();
+        assert!(matches!(
+            data.put(
+                "settings.v1",
+                b"shared profile value",
+                1,
+                None,
+                1,
+                QUOTA_BYTES,
+            )
+            .unwrap(),
+            PutResult::Stored { .. }
+        ));
+        drop(data);
+
+        let service = PluginUpdateService::open(&paths).unwrap();
+        service.set_profiles(profiles);
+        let review = service
+            .review_rollback("org.example.update", "1.0.0")
+            .await
+            .unwrap();
+        assert!(review.is_downgrade && review.preserves_prior_data);
+        service
+            .approve_rollback("org.example.update", "1.0.0", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .active("org.example.update")
+                .unwrap()
+                .unwrap()
+                .version,
+            "1.0.0"
+        );
+        let retained_data = DurableStore::open_existing(&data_namespace)
+            .unwrap()
+            .expect("rollback must leave the plugin/profile namespace in place");
+        assert_eq!(
+            retained_data.get("settings.v1", 1).unwrap().unwrap().value,
+            b"shared profile value"
+        );
+        let rollback_grants = layout.open_grants(&profile).unwrap();
+        assert!(rollback_grants.effective_grants(&identity).is_empty());
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use gamenode_plugin_protocol::{common_data, proto::*};
 
 #[test]
@@ -97,4 +99,55 @@ fn selected_record_ids_are_explicit_independent_query_selectors() {
         })),
         Err(common_data::SelectorError::EmptyRecordId)
     );
+}
+
+#[test]
+fn category_and_selected_record_grants_are_authorized_independently() {
+    let selector = CommonDataSelector {
+        categories: vec![
+            CommonDataCategory::RuntimeCatalog as i32,
+            CommonDataCategory::ContentAvailability as i32,
+        ],
+        selected_record_ids: vec!["runtime:one".into(), "runtime:two".into()],
+    };
+    let granted_categories = [CommonDataCategory::RuntimeCatalog].into();
+    let granted_records = ["runtime:two".to_owned()].into();
+
+    let selected =
+        common_data::authorize_selector(Some(&selector), &granted_categories, &granted_records)
+            .unwrap();
+    assert!(selected.includes_category(CommonDataCategory::RuntimeCatalog));
+    assert!(!selected.includes_category(CommonDataCategory::ContentAvailability));
+    assert!(!selected.includes_record("runtime:one"));
+    assert!(selected.includes_record("runtime:two"));
+
+    let permission_grants = ["common.runtime_catalog.read".to_owned()].into();
+    let selected_from_grants = common_data::authorize_grant_selector(
+        Some(&selector),
+        &permission_grants,
+        &granted_records,
+    )
+    .unwrap();
+    assert_eq!(selected_from_grants, selected);
+
+    let private_only =
+        common_data::authorize_grant_selector(None, &permission_grants, &BTreeSet::new()).unwrap();
+    assert!(!private_only.includes_category(CommonDataCategory::RuntimeCatalog));
+    assert!(!private_only.includes_record("runtime:two"));
+
+    // A category grant never implies access to every record in that category, and a record grant
+    // never widens the query to the whole category.
+    let category_only = common_data::authorize_grant_selector(
+        Some(&selector),
+        &permission_grants,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert!(category_only.includes_category(CommonDataCategory::RuntimeCatalog));
+    assert!(!category_only.includes_record("runtime:two"));
+    let record_only =
+        common_data::authorize_grant_selector(Some(&selector), &BTreeSet::new(), &granted_records)
+            .unwrap();
+    assert!(!record_only.includes_category(CommonDataCategory::RuntimeCatalog));
+    assert!(record_only.includes_record("runtime:two"));
 }

@@ -1141,14 +1141,38 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     })
     .unwrap();
 
-    let launch = api.begin_launch(&internal_id).unwrap();
-    let credential = (0..launch.credential.len())
+    let target = TargetGameContext {
+        game_id: "42".into(),
+        installation_id: "steam:123".into(),
+        profile_id: "account-a".into(),
+        revision: "target-rev-1".into(),
+    };
+    let launch = api
+        .begin_extension_launch(&internal_id, api.profiles().epoch(), target.clone())
+        .unwrap();
+    let credential: Vec<u8> = (0..launch.credential.len())
         .step_by(2)
         .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
         .collect();
     let server =
         super::super::PluginApiServer::start(&tokio::runtime::Handle::current(), &endpoint, root)
             .unwrap();
+    let mismatched = gamenode_plugin_sdk::Session::open_extension(
+        gamenode_plugin_sdk::Launch {
+            endpoint: endpoint.clone(),
+            credential: credential.clone(),
+            operation_id: "extension-launch-forged-target".into(),
+        },
+        plugin_id,
+        "1.0.0",
+        TargetGameContext {
+            game_id: "43".into(),
+            ..target.clone()
+        },
+        &[cap::GAME_CUSTOM_LAUNCH],
+    )
+    .await;
+    assert!(mismatched.is_err(), "the plugin cannot replace Core's target");
     let session = gamenode_plugin_sdk::Session::open_extension(
         gamenode_plugin_sdk::Launch {
             endpoint: endpoint.clone(),
@@ -1157,12 +1181,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         },
         plugin_id,
         "1.0.0",
-        TargetGameContext {
-            game_id: "42".into(),
-            installation_id: "steam:123".into(),
-            profile_id: "account-a".into(),
-            revision: "target-rev-1".into(),
-        },
+        target,
         &[cap::GAME_CUSTOM_LAUNCH],
     )
     .await

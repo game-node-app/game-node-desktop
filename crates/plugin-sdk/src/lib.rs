@@ -212,6 +212,14 @@ impl Default for SessionOptions {
 }
 
 impl Launch {
+    /// The opaque, host-issued user intent for a Core-started extension action, if present.
+    /// Provider sessions and extensions started outside that Core action have no intent.
+    pub fn user_intent_id(&self) -> Option<String> {
+        std::env::var("GAMENODE_PLUGIN_USER_INTENT_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+    }
+
     pub fn from_env() -> Result<Self, Error> {
         let endpoint = std::env::var_os("GAMENODE_PLUGIN_ENDPOINT")
             .or_else(|| std::env::var_os("GAMENODE_PLUGIN_SOCKET"))

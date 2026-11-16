@@ -201,6 +201,14 @@ impl Intents {
         Ok(id)
     }
 
+    /// Discards a pre-issued intent when the host could not complete the matching startup.
+    pub(crate) fn revoke_issued(&self, id: &str) {
+        self.issued
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+    }
+
     /// Spends `id` for a request bound to `binding`. Only a match, once, within its lifetime.
     /// A failed attempt spends nothing.
     pub fn redeem(&self, binding: &Binding, id: &str) -> Result<(), Status> {

@@ -339,6 +339,40 @@ pub async fn launch_selected(
 }
 
 #[tauri::command]
+pub async fn start_extension_action(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    plugin_id: String,
+    operation: String,
+) -> Result<(), String> {
+    let operation = match operation.as_str() {
+        "play" => crate::plugin_host::intents::Operation::Launch,
+        "install" => crate::plugin_host::intents::Operation::Install,
+        _ => return Err("unsupported extension action".to_owned()),
+    };
+    engine
+        .start_extension_action(&entry_key, &plugin_id, operation)
+        .await
+        .map_err(|status| status.message().to_owned())
+}
+
+#[tauri::command]
+pub async fn available_plugin_extensions(
+    engine: tauri::State<'_, Engine>,
+    operation: String,
+) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
+    let operation = match operation.as_str() {
+        "play" => crate::plugin_host::intents::Operation::Launch,
+        "install" => crate::plugin_host::intents::Operation::Install,
+        _ => return Err("unsupported extension action".to_owned()),
+    };
+    engine
+        .available_extensions(operation)
+        .await
+        .map_err(|status| status.message().to_owned())
+}
+
+#[tauri::command]
 pub async fn dismiss_launch(engine: tauri::State<'_, Engine>) -> Result<(), String> {
     engine.dismiss_launch();
     Ok(())

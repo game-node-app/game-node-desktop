@@ -27,6 +27,7 @@ import {
   getMatchedGameId,
   useLibraryView,
   type EntryStatus,
+  type PluginInfo,
   type Reason,
 } from '../../api';
 import {
@@ -81,6 +82,11 @@ export const ContextMenu: React.FC = () => {
   } | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [collectionsOpen, setCollectionsOpen] = useState(false);
+  const [extensionsOpen, setExtensionsOpen] = useState(false);
+  const [extensionActions, setExtensionActions] = useState<{
+    play: PluginInfo[];
+    install: PluginInfo[];
+  }>({ play: [], install: [] });
 
   const isOpen = contextMenu.open && contextMenu.entryKey != null;
   const entryKey = contextMenu.entryKey ?? '';
@@ -92,9 +98,35 @@ export const ContextMenu: React.FC = () => {
   const detail = library?.detail && library.detail.row.key === entryKey ? library.detail : null;
 
   useEffect(() => {
+    if (!isOpen || !row || isMulti || getMatchedGameId(row.status) == null) {
+      setExtensionActions({ play: [], install: [] });
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const [play, install] = await Promise.all([
+        row.installed && library?.actions?.play === 'available'
+          ? commands.availablePluginExtensions('play')
+          : Promise.resolve([]),
+        !row.installed && library?.actions?.install === 'available'
+          ? commands.availablePluginExtensions('install')
+          : Promise.resolve([]),
+      ]);
+      if (!cancelled) setExtensionActions({ play, install });
+    };
+    void load().catch(() => {
+      if (!cancelled) setExtensionActions({ play: [], install: [] });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isMulti, row?.key, row?.installed, row?.status, library?.actions]);
+
+  useEffect(() => {
     if (!isOpen) {
       setStatusOpen(false);
       setCollectionsOpen(false);
+      setExtensionsOpen(false);
     }
   }, [isOpen]);
 
@@ -163,6 +195,18 @@ export const ContextMenu: React.FC = () => {
     policyReason(actions.install) !== 'noInstallRule';
   const toolsReason = single?.running ? formatReason('running', t) : '';
   const changeMatch = actions?.changeMatch ?? false;
+  const extensionChoices = [
+    ...extensionActions.play.map((plugin) => ({ plugin, operation: 'play' as const })),
+    ...extensionActions.install.map((plugin) => ({ plugin, operation: 'install' as const })),
+  ];
+
+  const startWithExtension = (plugin: PluginInfo, operation: 'play' | 'install') => {
+    if (!single) return;
+    void commands.startExtensionAction(single.key, plugin.pluginId, operation).catch(() => {
+      pushToast('danger', t('Library::The extension could not be started.'));
+    });
+    close();
+  };
 
   const openPage = (page: { game: { id: number } }) => {
     void commands.openGameNodePage(page).catch(() => {
@@ -326,6 +370,48 @@ export const ContextMenu: React.FC = () => {
           >
             <ItemReason label={t('Library::Install')} reason={installReason} />
           </Menu.Item>
+        )}
+
+        {single && matched && extensionChoices.length > 0 && (
+          <Menu.Sub
+            opened={extensionsOpen}
+            onChange={setExtensionsOpen}
+            position="right-start"
+            offset={4}
+            floatingStrategy="fixed"
+          >
+            <Menu.Sub.Target>
+              <Menu.Item
+                data-testid="context-menu-start-with-extension"
+                closeMenuOnClick={false}
+                onClick={() => setExtensionsOpen((open) => !open)}
+                leftSection={<IconPlayerPlay size={16} stroke={2} aria-hidden />}
+                rightSection={<IconChevronRight size={14} aria-hidden />}
+              >
+                {t('Library::Start with extension')}
+              </Menu.Item>
+            </Menu.Sub.Target>
+            <Menu.Sub.Dropdown classNames={{ dropdown: menuClassNames.dropdown }}>
+              {extensionChoices.map(({ plugin, operation }) => (
+                <Menu.Sub.Item
+                  key={`${plugin.pluginId}:${operation}`}
+                  data-testid={`context-menu-extension-${plugin.pluginId}-${operation}`}
+                  classNames={{
+                    item: menuClassNames.item,
+                    itemLabel: menuClassNames.itemLabel,
+                    itemIndicator: menuClassNames.itemIndicator,
+                  }}
+                  onClick={() => startWithExtension(plugin, operation)}
+                >
+                  {formatI18n(
+                    t('Library::{} · {}'),
+                    plugin.name,
+                    t(operation === 'play' ? 'Library::Play' : 'Library::Install'),
+                  )}
+                </Menu.Sub.Item>
+              ))}
+            </Menu.Sub.Dropdown>
+          </Menu.Sub>
         )}
 
         {single?.installed && installPath !== '' && (

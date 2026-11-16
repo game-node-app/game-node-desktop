@@ -52,6 +52,8 @@ include!(concat!(env!("OUT_DIR"), "/plugin_descriptors.rs"));
 pub struct PluginInfo {
     pub provider_id: String,
     pub plugin_id: String,
+    /// Package role. Extensions expose a target-scoped, one-shot Core action.
+    pub kind: String,
     pub name: String,
     pub source: String,
     pub status: String,
@@ -90,6 +92,7 @@ fn inventory_at(
             PluginInfo {
                 provider_id: plugin.provider_id.clone(),
                 plugin_id: plugin.plugin_id.clone(),
+                kind: "provider".to_owned(),
                 name: plugin.name.clone(),
                 source: "official".to_owned(),
                 status: if !installed {

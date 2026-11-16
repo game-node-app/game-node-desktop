@@ -82,6 +82,22 @@ pub trait ProviderRuntime: Send + Sync {
         provider: &str,
         operation: ProviderOperation,
     ) -> Result<Completion, Status>;
+    async fn start_extension(
+        &self,
+        _plugin_id: &str,
+        _game_id: &str,
+        _installation_id: &str,
+        _target_revision: u64,
+        _operation: super::intents::Operation,
+    ) -> Result<(), Status> {
+        Err(Status::unimplemented("extension actions are unavailable"))
+    }
+    async fn available_extensions(
+        &self,
+        _operation: super::intents::Operation,
+    ) -> Result<Vec<super::PluginInfo>, Status> {
+        Ok(Vec::new())
+    }
     async fn execute_achievements(
         &self,
         _provider: &str,
@@ -110,15 +126,15 @@ pub(crate) fn managed_process_config(
             "managed package identity does not match its registry record",
         ));
     }
-    if manifest.kind != super::package::PluginKind::Provider {
-        return Err(Status::failed_precondition(
-            "only provider packages have a supervised process runtime",
-        ));
-    }
-    let provider_id = manifest
-        .provider_id
-        .clone()
-        .ok_or_else(|| Status::failed_precondition("provider package has no provider id"))?;
+    let provider_id = match manifest.kind {
+        super::package::PluginKind::Provider => manifest
+            .provider_id
+            .clone()
+            .ok_or_else(|| Status::failed_precondition("provider package has no provider id"))?,
+        super::package::PluginKind::Extension => {
+            super::provider::extension_registration_id(&manifest.id)
+        }
+    };
     let target = report
         .selected_target()
         .map_err(|error| Status::failed_precondition(error.to_string()))?;
@@ -160,6 +176,7 @@ pub(crate) fn managed_process_config(
 pub struct HostedProviders {
     api: ProviderApi,
     processes: ProviderProcesses,
+    intents: Arc<super::intents::Intents>,
     endpoint_available: bool,
     entries: BTreeMap<String, Entry>,
     managed_plugins: Vec<super::PluginInfo>,
@@ -301,9 +318,11 @@ impl ThirdPartyPluginLifecycle {
                     "plugin profile changed during update activation",
                 ));
             }
-            self.processes
-                .ensure_ready_for_update(&config.provider_id)
-                .await?;
+            if !self.api.is_extension(&config.provider_id) {
+                self.processes
+                    .ensure_ready_for_update(&config.provider_id)
+                    .await?;
+            }
             if !self.api.profiles().is_current(profile_epoch) {
                 return Err(Status::failed_precondition(
                     "plugin profile changed during update readiness check",
@@ -353,7 +372,10 @@ impl ThirdPartyPluginLifecycle {
             self.processes
                 .replace_config(&previous_provider_id, previous_config)
                 .await?;
-            if enabled && self.api.profiles().is_current(profile_epoch) {
+            if enabled
+                && !self.api.is_extension(&config.provider_id)
+                && self.api.profiles().is_current(profile_epoch)
+            {
                 if let Err(restart_error) = self.processes.ensure_started(&config.provider_id).await
                 {
                     return Err(Status::unavailable(format!(
@@ -440,6 +462,9 @@ impl ThirdPartyPluginLifecycle {
             ));
         }
         for provider_id in &process_ids {
+            if self.api.is_extension(provider_id) {
+                continue;
+            }
             if let Err(error) = self.processes.ensure_started(provider_id).await {
                 for provider_id in &process_ids {
                     self.processes.stop_provider(provider_id).await;
@@ -554,6 +579,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl HostedProviders {
     pub async fn bundled(
         api: ProviderApi,
+        intents: Arc<super::intents::Intents>,
         endpoint: Option<PathBuf>,
         paths: gamenode_platform::paths::DataPaths,
         library: Arc<dyn gamenode_core::library::LibraryStore>,
@@ -715,6 +741,10 @@ impl HostedProviders {
             let inventory_entry = super::PluginInfo {
                 provider_id: provider_id.clone(),
                 plugin_id: installed.plugin_id.clone(),
+                kind: match report.manifest.kind {
+                    super::package::PluginKind::Provider => "provider".to_owned(),
+                    super::package::PluginKind::Extension => "extension".to_owned(),
+                },
                 name: report.manifest.name.clone(),
                 source: "community".to_owned(),
                 status: "installed".to_owned(),
@@ -739,7 +769,14 @@ impl HostedProviders {
             if let Err(error) = api.register(Registration {
                 provider_id: provider_id.clone(),
                 plugin_id: installed.plugin_id.clone(),
-                kind: super::provider::RegistrationKind::Provider,
+                kind: match report.manifest.kind {
+                    super::package::PluginKind::Provider => {
+                        super::provider::RegistrationKind::Provider
+                    }
+                    super::package::PluginKind::Extension => {
+                        super::provider::RegistrationKind::Extension
+                    }
+                },
                 origin: super::provider::RegistrationOrigin::ThirdParty {
                     publisher_fingerprint,
                 },
@@ -782,6 +819,7 @@ impl HostedProviders {
         Ok(Arc::new(Self {
             api,
             processes,
+            intents,
             endpoint_available,
             entries,
             managed_plugins,
@@ -947,6 +985,123 @@ impl ProviderRuntime for HostedProviders {
         .await;
         self.record_result(id, &result);
         result
+    }
+
+    async fn start_extension(
+        &self,
+        plugin_id: &str,
+        game_id: &str,
+        installation_id: &str,
+        target_revision: u64,
+        operation: super::intents::Operation,
+    ) -> Result<(), Status> {
+        let permission = match operation {
+            super::intents::Operation::Launch => cap::GAME_LAUNCH,
+            super::intents::Operation::Install => cap::GAMES_INSTALL,
+            _ => return Err(Status::invalid_argument("unsupported extension action")),
+        };
+        let provider_id = super::provider::extension_registration_id(plugin_id);
+        if !self.api.is_extension(&provider_id) {
+            return Err(Status::not_found("extension is not installed and trusted"));
+        }
+        let profile = self.api.profiles().require()?;
+        let (registered_plugin, publisher_fingerprint) = self
+            .api
+            .third_party_identity(&provider_id)
+            .ok_or_else(|| Status::not_found("extension is not available"))?;
+        if registered_plugin != plugin_id {
+            return Err(Status::permission_denied("extension identity mismatch"));
+        }
+        let binding = super::intents::Binding {
+            plugin_id: registered_plugin,
+            publisher_fingerprint,
+            profile_epoch: profile.epoch(),
+            game_id: game_id.to_owned(),
+            installation_id: installation_id.to_owned(),
+            operation,
+            target_revision,
+        };
+        let intent_id = self.intents.issue(binding)?;
+        let target = gamenode_plugin_protocol::proto::TargetGameContext {
+            game_id: game_id.to_owned(),
+            installation_id: installation_id.to_owned(),
+            profile_id: profile.profile_id().to_owned(),
+            revision: target_revision.to_string(),
+        };
+        if let Err(error) = self
+            .processes
+            .ensure_extension_started(&provider_id, target, intent_id.clone(), permission)
+            .await
+        {
+            self.intents.revoke_issued(&intent_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn available_extensions(
+        &self,
+        operation: super::intents::Operation,
+    ) -> Result<Vec<super::PluginInfo>, Status> {
+        let permission = match operation {
+            super::intents::Operation::Launch => cap::GAME_LAUNCH,
+            super::intents::Operation::Install => cap::GAMES_INSTALL,
+            _ => return Err(Status::invalid_argument("unsupported extension action")),
+        };
+        if !self.endpoint_available {
+            return Ok(Vec::new());
+        }
+        let profile = self.api.profiles().require()?;
+        let mut eligible = Vec::new();
+        for plugin in self
+            .managed_plugins
+            .iter()
+            .filter(|plugin| plugin.kind == "extension")
+        {
+            let config = self.processes.config(&plugin.provider_id)?;
+            if !config
+                .manifest_capabilities
+                .iter()
+                .any(|capability| capability == permission)
+            {
+                continue;
+            }
+            let Some((plugin_id, publisher_fingerprint)) =
+                self.api.third_party_identity(&plugin.provider_id)
+            else {
+                continue;
+            };
+            let identity = super::grants::PluginIdentity {
+                plugin_id: plugin_id.clone(),
+                publisher_fingerprint,
+                profile_id: profile.profile_id().to_owned(),
+            };
+            let state = self.lifecycle.state.clone();
+            let account = profile.clone();
+            let plugin_id_for_check = plugin_id.clone();
+            let permission = permission.to_owned();
+            let can_start = tokio::task::spawn_blocking(move || -> Result<bool, Status> {
+                let activation = state.open_activation(&account).map_err(|error| {
+                    Status::internal(format!("plugin activation state: {error}"))
+                })?;
+                if !activation.is_enabled(&plugin_id_for_check) {
+                    return Ok(false);
+                }
+                let grants = state
+                    .open_grants(&account)
+                    .map_err(|error| Status::internal(format!("plugin grants: {error}")))?;
+                Ok(grants.effective_grants(&identity).into_iter().any(|grant| {
+                    grant.permission_id == permission
+                        && grant.state == super::grants::PermissionState::Granted
+                }))
+            })
+            .await
+            .map_err(|_| Status::internal("plugin eligibility worker failed"))??;
+            if can_start {
+                eligible.push(plugin.clone());
+            }
+        }
+        Ok(eligible)
     }
     async fn execute_achievements(
         &self,

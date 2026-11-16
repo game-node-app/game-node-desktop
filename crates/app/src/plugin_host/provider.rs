@@ -175,6 +175,8 @@ struct Pending {
     provider: Arc<Provider>,
     credential: [u8; 32],
     profile_epoch: Option<u64>,
+    session_kind: i32,
+    target_game: Option<TargetGameContext>,
     ready: oneshot::Sender<()>,
 }
 
@@ -915,10 +917,9 @@ impl ProviderApi {
                 ));
             }
             RegistrationKind::Extension
-                if !registration
-                    .capabilities
-                    .iter()
-                    .any(|s| s == cap::GAME_LAUNCH || s == cap::GAME_CUSTOM_LAUNCH) =>
+                if !registration.capabilities.iter().any(|s| {
+                    s == cap::GAME_LAUNCH || s == cap::GAME_CUSTOM_LAUNCH || s == cap::GAMES_INSTALL
+                }) =>
             {
                 return Err(Status::invalid_argument(
                     "extension requires an approved game action",
@@ -960,6 +961,37 @@ impl ProviderApi {
         &self,
         provider_id: &str,
         expected_profile_epoch: Option<u64>,
+    ) -> Result<Launch, Status> {
+        self.begin_scoped_launch(
+            provider_id,
+            expected_profile_epoch,
+            SessionKind::Provider as i32,
+            None,
+        )
+    }
+
+    pub(crate) fn begin_extension_launch(
+        &self,
+        provider_id: &str,
+        expected_profile_epoch: u64,
+        target_game: TargetGameContext,
+    ) -> Result<Launch, Status> {
+        cap::validate_target(&target_game)
+            .map_err(|_| Status::invalid_argument("invalid target game context"))?;
+        self.begin_scoped_launch(
+            provider_id,
+            Some(expected_profile_epoch),
+            SessionKind::Extension as i32,
+            Some(target_game),
+        )
+    }
+
+    fn begin_scoped_launch(
+        &self,
+        provider_id: &str,
+        expected_profile_epoch: Option<u64>,
+        session_kind: i32,
+        target_game: Option<TargetGameContext>,
     ) -> Result<Launch, Status> {
         let mut state = lock(&self.state);
         let provider = state
@@ -1003,6 +1035,8 @@ impl ProviderApi {
             provider,
             credential,
             profile_epoch,
+            session_kind,
+            target_game,
             ready,
         });
         Ok(Launch {
@@ -1056,6 +1090,11 @@ impl ProviderApi {
         )
         .map_err(|_| Status::invalid_argument("invalid session scope"))?;
         let extension_session = hello.session_kind == SessionKind::Extension as i32;
+        if hello.session_kind != pending.session_kind || hello.target_game != pending.target_game {
+            return Err(Status::permission_denied(
+                "session scope does not match the host-selected launch",
+            ));
+        }
         if extension_session != (pending.provider.registration.kind == RegistrationKind::Extension)
         {
             return Err(Status::permission_denied(
@@ -1121,7 +1160,7 @@ impl ProviderApi {
                 "required provider capabilities are missing",
             ));
         }
-        let granted: BTreeSet<String> = if third_party {
+        let mut granted: BTreeSet<String> = if third_party {
             requested
                 .intersection(&current_capabilities.iter().cloned().collect())
                 .cloned()
@@ -1129,6 +1168,11 @@ impl ProviderApi {
         } else {
             requested
         };
+        // An extension's context is the target the Core chose for this launch. It is an
+        // implicit session scope, not a permission to enumerate or widen the library.
+        if extension_session {
+            granted.insert(cap::CONTEXT.to_owned());
+        }
         if !granted.contains(cap::CONTEXT) {
             return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
         }
@@ -1166,7 +1210,7 @@ impl ProviderApi {
                 account_epoch,
                 profile_epoch,
                 session_kind: hello.session_kind,
-                target_game: hello.target_game.clone(),
+                target_game: pending.target_game.clone(),
             })
         } else {
             None
@@ -1178,7 +1222,7 @@ impl ProviderApi {
                 credential: pending.credential,
                 grants: granted.clone(),
                 kind: hello.session_kind,
-                target_game: hello.target_game.clone(),
+                target_game: pending.target_game,
                 grant_revision: 1,
                 permission_watchers: Vec::new(),
                 commands: None,
@@ -1254,6 +1298,13 @@ impl ProviderApi {
             .get(provider_id)
             .filter(|provider| provider.profiles.is_some())
             .map(|provider| provider.registration.plugin_id.clone())
+    }
+
+    pub(crate) fn is_extension(&self, provider_id: &str) -> bool {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .is_some_and(|provider| provider.registration.kind == RegistrationKind::Extension)
     }
 
     pub(crate) fn third_party_identity(&self, provider_id: &str) -> Option<(String, String)> {

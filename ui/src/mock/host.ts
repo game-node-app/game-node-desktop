@@ -2967,6 +2967,8 @@ export function createMockHost(options: {
       if (cmd === 'plugin_update_check') return [];
       if (cmd === 'plugin_update_review') return null;
       if (cmd === 'plugin_update_approve' || cmd === 'plugin_update_decline') return undefined;
+      if (cmd === 'available_plugin_extensions') return [];
+      if (cmd === 'start_extension_action') return undefined;
       if (cmd === 'plugin_confirmation_answer') {
         const id = String(args.id ?? '');
         const asked = openConfirmations.get(id);

@@ -124,6 +124,12 @@ export const commands = {
   launchSelected: (kind: LaunchKind) =>
     safeInvoke<void>('launch_selected', { kind }, () => undefined),
 
+  startExtensionAction: (entryKey: string, pluginId: string, operation: 'play' | 'install') =>
+    safeInvoke<void>('start_extension_action', { entryKey, pluginId, operation }, () => undefined),
+
+  availablePluginExtensions: (operation: 'play' | 'install') =>
+    safeInvoke<PluginInfo[]>('available_plugin_extensions', { operation }, () => []),
+
   dismissLaunch: () =>
     safeInvoke<void>('dismiss_launch', undefined, () => undefined),
 

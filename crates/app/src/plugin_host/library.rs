@@ -432,6 +432,16 @@ impl LibraryFeed {
         state.entries.get(id).map(|entry| entry.revision)
     }
 
+    /// Host-side installation identity for an engine entry. This never exposes the entry key or
+    /// installation id to the plugin except through a Core-issued target context.
+    pub fn projected_entry(&self, entry_key: &str) -> Option<(LibrarySource, Projected)> {
+        let state = self.lock();
+        let source = state.sources.get(entry_key)?.clone();
+        let installation_id = state.ids.get(entry_key)?;
+        let projected = state.entries.get(installation_id)?.clone();
+        Some((source, projected))
+    }
+
     /// The entry key and projection of `installation_id`, if the scope admits it. Host-side only:
     /// the entry key never reaches a plugin.
     pub fn target(&self, scope: &Scope, installation_id: &str) -> Option<(String, Projected)> {

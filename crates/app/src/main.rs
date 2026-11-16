@@ -225,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider_runtime = match runtime.block_on(
         gamenode_app::plugin_host::runtime::HostedProviders::bundled(
             plugin_api.providers.clone(),
+            plugin_api.intents.clone(),
             plugin_endpoint,
             paths.clone(),
             library_store.clone(),
@@ -493,6 +494,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::review_detected_target,
         commands::repair_detected_target,
         commands::launch_selected,
+        commands::start_extension_action,
+        commands::available_plugin_extensions,
         commands::dismiss_launch,
         commands::rescan_library,
         commands::open_gamenode_page,

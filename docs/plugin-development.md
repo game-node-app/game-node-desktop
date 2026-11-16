@@ -17,6 +17,13 @@ remote service. `Launch` intentionally has no `Debug` or serialization implement
 operation identifier is host-supplied launch context, not a substitute for host-issued operation
 IDs in later commands.
 
+When Core starts an extension from a game's **Start with extension** action, it also supplies
+`GAMENODE_PLUGIN_USER_INTENT_ID`. Read it with `Launch::user_intent_id()` and pass it unchanged to
+`Actions::launch_game` or `Actions::install_game`. It is single-use, expires after 60 seconds and
+is bound to that extension, account profile, game, installation, operation and launch target.
+The session's host-selected target is authoritative; an extension cannot substitute another
+installation. Provider sessions and extensions started without this Core action receive no intent.
+
 `OpenSession` authenticates the package identity and negotiates the protocol before the plugin
 opens `ProviderHost.Exchange`. API 1.1–1.5 clients keep using `api_major` and `api_minor`; an
 empty API range in the additive fields means the legacy request, where `api_minor` is the newest
@@ -378,6 +385,8 @@ install flow. Rules and limits are under "Launching and installing" in
   the dialog is open, and `FAILED` with `declined` or `timed_out` if the user says no or does not
   answer. Do not retry a decline in a loop; give the user a reason and a button. You can withdraw
   the request with `JobsCancel`.
+- For a user-started extension action, pass the intent from `Launch::user_intent_id()` for the
+  matching Play or Install request. Without a valid intent Core asks the user as usual.
 - The user can choose "don't ask again" for your plugin and one game. That is not a permission you
   can rely on: it ends when the game's launch target changes or when the user revokes it.
 - Only your own library entries (or the game the user selected for an extension) can be named.

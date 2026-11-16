@@ -1296,6 +1296,7 @@ export interface PluginUpdateReview {
 export interface PluginInfo {
   providerId: string;
   pluginId: string;
+  kind?: 'provider' | 'extension';
   name: string;
   source: 'official' | 'community';
   status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';

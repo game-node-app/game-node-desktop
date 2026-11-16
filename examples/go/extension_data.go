@@ -89,8 +89,8 @@ func ProjectStructKeys(input *structpb.Struct, allowed ...string) *structpb.Stru
 	return projected
 }
 
-// CustomDatasetWireShape constructs the versioned Struct envelope. ResourceHost.DataPublish is
-// currently unserved by the desktop host, so this message is not publishable through this fixture.
+// CustomDatasetWireShape constructs the versioned Struct envelope. DataPublish is served by the
+// desktop host; this protobuf-only fixture does not send the request to it.
 func CustomDatasetWireShape() (*proto.DataPublishRequest, error) {
 	value, err := structpb.NewStruct(map[string]any{
 		"game_key": "game:example", "note": "remember controller layout",

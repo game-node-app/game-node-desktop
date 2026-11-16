@@ -120,9 +120,11 @@ The `Saves` domain service is also served (`ListProfiles`, `GetProfile`, `Create
 [`plugin-api-permissions.md`](plugin-api-permissions.md#save-profiles)) and `Locations.GetSize`,
 `GetAccess`, `GetLastModified`, `GetFingerprint`, `Compare`, `Inspect` and `WatchAvailability` (see
 [`plugin-api-permissions.md`](plugin-api-permissions.md#inspecting-approved-places)); the Rust SDK
-exposes the raw `HostClient::saves_client()` and `HostClient::locations_client()`. Every other `ResourceHost` method and all other domain services answer `UNIMPLEMENTED`, so generated
-clients cannot call them successfully yet. Call `DescribeApi` for the methods this build serves
-instead of inferring availability from the protobuf contract.
+exposes the raw `HostClient::saves_client()` and `HostClient::locations_client()`. The four
+`Data*` methods are also served; see the [shared-data producer and consumer guide](plugin-shared-data.md)
+for their permissions, projections and current source limitations. Other `ResourceHost` methods
+and domain services answer `UNIMPLEMENTED` unless listed as served above. Call `DescribeApi` for
+the methods this build serves instead of inferring availability from the protobuf contract.
 
 Resource calls are plugin-initiated and use the `resource_context` that `OpenSession` returns to API
 1.6 sessions (`HostClient::resource_context()` in the Rust SDK). Put it in the `context` of each
@@ -133,11 +135,15 @@ Public-data reads use a typed per-query `CommonDataSelector` on each query that 
 projections. Its categories and selected record ids are checked independently; a selected-record
 grant does not require category-wide access. Rust plugins can construct one with
 `gamenode_plugin_sdk::common_data_selector([CommonDataCategory::GamePerformanceHistory])` and
-set it on the operation-specific request, such as `LibraryListRequest.page` or
+set it on a served data request, such as `DataListRequest.page` or
 `DataGetRequest.common_data_categories`; selected-record clients populate
 `selected_record_ids`. Omitting or emptying the selector keeps the query private to the caller's
 visible records. Selectors request data only; the host still checks each grant and scope. Secrets
 remain excluded, and sensitive/custom datasets require separate sharing review.
+
+For the served `DataPublish`, `DataGet`, `DataList` and `DataWatch` contract, including
+session retention, field projection, snapshot-to-watch resumption and safe exclusions, see
+[Shared plugin data](plugin-shared-data.md).
 
 The ResourceHost method names, grouped for source/API review, are:
 

@@ -2,8 +2,8 @@
 //!
 //! The typed runtime fields remain authoritative. Extension values are bounded annotations; an
 //! older client should patch only the namespace it understands and carry every other namespace
-//! forward unchanged. The generic Data service and runtime update RPC are currently unserved by
-//! the desktop host, so those examples construct local wire values only.
+//! forward unchanged. The Data service is served by the desktop host; these examples construct
+//! local wire values only. Runtime update remains unserved.
 #![allow(dead_code)]
 
 use std::collections::{BTreeSet, HashMap};
@@ -134,9 +134,8 @@ pub fn project_display_family(record: &RuntimeRecord) -> Result<Struct, WireErro
     extensions::project_struct_paths(value, &BTreeSet::from(["display_family".into()]))
 }
 
-/// The custom Data envelope carries a versioned Struct. It is a wire-shape example only: the
-/// desktop DataPublish route and schema catalog are not served, so this request cannot currently
-/// be published through `Resources`.
+/// The custom Data envelope carries a versioned Struct. This constructs a request only; send it
+/// through the generated `ResourceHost` client with a session context and `data.publish` grant.
 pub fn custom_dataset_wire_shape() -> proto::DataPublishRequest {
     proto::DataPublishRequest {
         mutation: None,

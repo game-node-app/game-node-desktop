@@ -14,9 +14,9 @@ go test ./...
 The message bindings are generated from `crates/plugin-protocol/proto/plugin.proto` with
 `protoc-gen-go`; regenerate them when the public wire contract changes. This fixture covers wire
 compatibility and local examples only. Private `StoragePut` carries opaque bytes; those bytes are
-not cross-plugin data. `DataPublish` and the runtime update/extension patch operation are currently
-unserved by the desktop host, so the custom dataset and hybrid patch examples construct messages
-but do not invoke working RPCs. A production consumer must rely on host-enforced authorization and
-projection; a local field filter does not grant access. Typed identity, ownership, handles,
+not cross-plugin data. `DataPublish` is served, but this fixture has no RPC client and only
+constructs its request; the runtime update/extension patch operation remains unserved. A production
+consumer must rely on host-enforced authorization and projection; a local field filter does not
+grant access. Typed identity, ownership, handles,
 revision, and observation time are interpreted by Core. Extension `Struct` values are declarative
 metadata only: Core does not infer identity, grants, executable behavior, or paths from them.

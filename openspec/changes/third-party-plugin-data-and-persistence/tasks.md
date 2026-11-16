@@ -40,7 +40,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 - [ ] 1.17 **Source 16.5.** Implement own-namespace automatic cleanup policy within user limits and reviewed host-wide cleanup for unused/large datasets, coordinated with active readers/writers; verify deletion events/tokens, protected data, partial failures and measured reclaimed space, and document API isolation versus native OS access.
 
 
-- [ ] 1.18 **Source 17.1.** Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/retention review, explaining that grants do not trigger per-query use; verify all start off, private-only query defaults and common lookup has no mandatory transfer wizard in en/pt-BR component tests.
+- [x] 1.18 **Source 17.1.** Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/retention review, explaining that grants do not trigger per-query use; verify all start off, private-only query defaults and common lookup has no mandatory transfer wizard in en/pt-BR component tests.
 
 - [ ] 1.19 **Source 17.2.** Add host-only physical-path storage accounting, uninstall retain/delete and cleanup preview/policy screens; verify plugin IPC cannot access these host administrative paths and slow accounting/deletion remains off the UI thread.
 

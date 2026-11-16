@@ -3,7 +3,13 @@ import { Switch } from '@mantine/core';
 import { useI18n } from '../../i18n';
 import { settingsCard, settingsRow, settingsRowDescription, settingsRowInfo, settingsRowTitle } from './settingsClasses';
 
-export type CommonDataCategory = 'library' | 'playtime' | 'performance' | 'runtime';
+export type CommonDataCategory =
+  | 'gamePaths'
+  | 'gamePerformanceHistory'
+  | 'runtimeCatalog'
+  | 'contentAvailability'
+  | 'libraryRoots'
+  | 'saveProfiles';
 export type SensitiveDataReview = 'source' | 'recipient' | 'fields' | 'history' | 'delivery' | 'retention';
 
 export interface PluginActivationPermissionsValue {
@@ -16,7 +22,14 @@ interface Props {
   onContinue: (value: PluginActivationPermissionsValue) => void;
 }
 
-const COMMON_CATEGORIES: CommonDataCategory[] = ['library', 'playtime', 'performance', 'runtime'];
+const COMMON_CATEGORIES: CommonDataCategory[] = [
+  'gamePaths',
+  'gamePerformanceHistory',
+  'runtimeCatalog',
+  'contentAvailability',
+  'libraryRoots',
+  'saveProfiles',
+];
 const SENSITIVE_REVIEW: SensitiveDataReview[] = ['source', 'recipient', 'fields', 'history', 'delivery', 'retention'];
 
 export const PluginActivationPermissions: React.FC<Props> = ({ initialValue, onContinue }) => {

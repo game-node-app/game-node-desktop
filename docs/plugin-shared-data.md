@@ -54,7 +54,8 @@ state and are not connected to the persisted policy store. As a result, the
 default-deny installation can publish and read its own records but cannot
 complete an interactive cross-plugin grant. The consumer flow below describes
 the public request contract after a host policy has approved the recipient;
-connecting review controls to the host is tracked separately in task 1.18.
+persisting the review choices and enforcing them through the policy store remain
+an integration gap beyond the UI controls covered by task 1.18.
 
 ## Dataset categories and exclusions
 

@@ -6,7 +6,7 @@ MVP establishes trusted plugin packaging, provider composition, signed-in accoun
 
 ## What Changes
 
-Adds confirmed launch/install intents, scoped folder approvals, optional plugin configuration windows/forms, and their example coverage. Depends on the provider session, permission inventory and process lifecycle delivered by the MVP.
+Adds confirmed launch/install intents, scoped folder approvals, optional plugin configuration windows/forms, and their example coverage. A user may start an enabled third-party extension from a game's Core actions; Core starts a verified, one-shot extension session scoped to that selected game and installation and supplies an intent for the selected Play or Install action. Depends on the provider session, permission inventory and process lifecycle delivered by the MVP.
 
 ## Out of Scope
 

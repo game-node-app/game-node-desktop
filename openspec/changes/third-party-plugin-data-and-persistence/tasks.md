@@ -8,7 +8,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [ ] 1.3 **Source 12.3.** Implement default-deny common-data category read grants selected during activation and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify grants permit but do not trigger queries, explicit common queries cover all publishers within scope, and denied queries leave private data available.
 
-- [ ] 1.4 **Source 12.4.** Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
+- [ ] 1.4 **Source 12.4.** Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; return the DataList snapshot revision for gap-free DataWatch resumption; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
 
 - [ ] 1.5 **Source 12.5.** Document each dataset/method/permission/projection and safe non-shareable exclusions; verify the published producer-consumer contract can be followed without source-private RPCs or Core dashboards.
 

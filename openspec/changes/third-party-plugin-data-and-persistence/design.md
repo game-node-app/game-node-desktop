@@ -8,6 +8,8 @@ This follow-up depends on the MVP's authenticated plugin identity, profile fenci
 
 Keep plugin-private storage separate from published datasets. Attribute every record to a host-derived owner and package provenance. Queries and subscriptions use explicit per-query selectors and default-deny category/record grants. Apply projection, size/depth limits, cursor fencing and revocation to every delivery path.
 
+`DataListReply.revision` carries the global broker revision of the returned snapshot. A client passes that exact revision to `DataWatchRequest.after_revision`; the host accepts only a current resumable position and fails closed for stale positions, so the list-to-watch handoff cannot skip intervening records.
+
 ## Persistence and administration
 
 Durable records use a logical owner namespace and explicit retention choice. Quotas, cleanup and uninstall retention operate only on the authenticated owner's data. Host administration may report physical usage, but plugin IPC never receives physical paths. Diagnostics and gameplay observations remain plugin-produced data; Core does not add collectors or dashboards here.

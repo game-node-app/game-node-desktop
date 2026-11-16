@@ -38,6 +38,8 @@ pub mod resources;
 pub mod runtime;
 pub mod saves;
 pub mod services;
+pub mod shared_data;
+pub mod sharing_policy;
 pub mod storage;
 mod transport;
 pub mod updates;
@@ -488,6 +490,10 @@ pub fn backends(platform: Platform) -> Vec<gamenode_core::provider::PluginBacken
 #[derive(Clone, Default)]
 pub struct PluginApi {
     pub providers: provider::ProviderApi,
+    /// Host-owned shared-data category grants and source/recipient sharing policies.
+    pub shared_policies: Arc<sharing_policy::SharedSharingPolicies>,
+    /// Shared published datasets; all provider sessions use the same broker.
+    pub data_broker: Arc<shared_data::DataBroker>,
     /// The library projection plugins read; the engine keeps it current.
     pub library: Arc<library::LibraryFeed>,
     /// The plugins' private key/value storage.
@@ -755,7 +761,8 @@ impl PluginApiServer {
                 api.intents.clone(),
                 api.saves.clone(),
                 api.fingerprints.clone(),
-            );
+            )
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone());
             let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
@@ -851,7 +858,8 @@ impl PluginApiServer {
                 api.intents.clone(),
                 api.saves.clone(),
                 api.fingerprints.clone(),
-            );
+            )
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone());
             let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)

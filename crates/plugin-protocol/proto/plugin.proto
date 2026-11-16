@@ -436,7 +436,7 @@ message DataListRequest { PageRequest page = 1; string dataset_id = 2; string fi
 message DataWatchRequest { ServiceContext context = 1; string dataset_id = 2; uint64 after_revision = 3; CommonDataSelector common_data_categories = 4; }
 message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; }
 message DataGetReply { DataRecord record = 1; }
-message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; }
+message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
 message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
 message PersistenceUsageRequest { ServiceContext context = 1; }
 message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; }

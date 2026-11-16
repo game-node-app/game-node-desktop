@@ -171,6 +171,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(gamenode_platform::processes::HostProcesses::new());
 
     let plugin_api = gamenode_app::plugin_host::PluginApi {
+        shared_policies: Arc::new(
+            gamenode_app::plugin_host::sharing_policy::SharedSharingPolicies::open(
+                paths.plugin_data_dir().join("shared-data-policies"),
+            )?,
+        ),
         storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
             paths.plugin_data_dir(),
         )),

@@ -23,6 +23,7 @@ use tonic::transport::Channel;
 
 mod artwork_handles;
 mod backups;
+mod data;
 mod declared_locations;
 mod files;
 mod fingerprints;

@@ -187,6 +187,10 @@ The host MUST keep published datasets private by default and apply explicit cate
 - **WHEN** a consumer reads shared data without selecting an authorized category or record scope
 - **THEN** the host excludes that data from the result
 
+#### Scenario: Data list resumes as a watch without a gap
+- **WHEN** a consumer starts `DataWatch` using the snapshot revision returned by `DataList`
+- **THEN** the host starts the bounded subscription after that exact revision or rejects a stale cursor, without silently skipping intervening records
+
 ### Requirement: Published data preserves host provenance
 The host MUST assign source, publisher, package/version and record identity and MUST reject plugin-supplied authority or ownership fields.
 

@@ -70,3 +70,9 @@ After the API 1.6 protocol/SDK additions, the current locked closure resolves
 dependencies remain within the same reviewed permissive/Unicode-compatible
 license families. This updated count was checked with
 `cargo metadata --locked --offline --format-version 1` on 2026-11-10.
+
+Versioned Rust crate packages and clean source bundles are prepared and
+verified by [`scripts/package-plugin-rust-sources.py`](../scripts/package-plugin-rust-sources.py).
+Each bundle carries its lockfile, pinned toolchain and dependency license
+inventory; see [Plugin Rust source releases](plugin-rust-source-releases.md)
+for the exact commands and protocol-before-SDK registry release order.

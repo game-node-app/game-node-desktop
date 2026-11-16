@@ -77,6 +77,40 @@ account session", not as a denial. When the account signs out or changes, the ho
 profile and stops the process; do not cache data from one account for use after a restart. See
 [account-bound plugin profiles](plugin-api-permissions.md#account-bound-plugin-profiles).
 
+## Management lifecycle, configuration and plugin-owned UI
+
+GameNode manages package trust and installation, permission grants, per-account activation,
+process startup and shutdown, update recovery and removal. Activation answers whether the host may
+run a registered plugin for the current account; it does not mean that the plugin has completed its
+own setup, signed in to its service, or configured a feature. Functional settings and configuration
+are separate provider operations (`ui.settings` or `ui.configure`) and belong to the plugin's
+feature lifecycle. Plugins own the meaning and persistence of those values. Do not use enable or
+disable as a substitute for a functional configuration operation.
+
+When a plugin offers configuration UI, it owns and runs that UI outside the GameNode frontend,
+such as in a window or web surface created by the plugin. The host may dispatch typed configuration
+requests and present host-owned activation and permission controls, but it does not load plugin
+HTML, JavaScript, or other plugin code into the GameNode React/Tauri frontend. Plugins should keep
+their private data in their own account-scoped storage and treat its retention as separate from
+activation, grants and package removal. Removing a plugin removes its packages and account
+activation/grants; it does not implicitly erase the plugin's private data.
+
+Process supervision is lifecycle management, not an OS sandbox. On Linux the host supervises a
+process group; on Windows it assigns the process to a Job Object configured to terminate processes
+when the job closes. Shutdown asks the plugin to stop, waits for a bounded period, then terminates
+the supervised tree. These measures limit leftover host-managed processes, but a native plugin runs
+with the user's OS identity and can access resources available to that identity directly. API grants
+do not restrict direct filesystem, network or OS access, and process-tree supervision is not a
+security boundary against a malicious native executable.
+
+The lifecycle fixtures keep these concerns distinct:
+`managed_lifecycle_refuses_disabled_plugins_and_requires_an_active_profile` checks activation and
+profile requirements, while
+`activation_persists_per_account_and_remove_stops_unregisters_and_deletes_packages` checks account
+switching, restart, disable and removal. Settings/configuration have separate typed operation
+contracts. The GameNode UI contains host-owned activation and permission surfaces; it does not
+embed or execute plugin frontend code.
+
 ## RPC inventory and API 1.6 status
 
 The mounted `PluginHost` service has `OpenSession`, the legacy `SubmitDiscovery`, and API 1.6

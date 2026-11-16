@@ -1166,6 +1166,14 @@ impl ProviderApi {
             .collect()
     }
 
+    pub(crate) fn third_party_plugin_id(&self, provider_id: &str) -> Option<String> {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .filter(|provider| provider.profiles.is_some())
+            .map(|provider| provider.registration.plugin_id.clone())
+    }
+
     /// Fences sessions and unregisters a third-party plugin after its process has been stopped.
     /// Official registrations are never eligible for removal through this lifecycle path.
     pub(crate) async fn unregister_third_party_plugin(

@@ -285,6 +285,22 @@ impl PermissionGrantStore {
             .unwrap_or_default()
     }
 
+    /// Removes all saved grant records for a plugin in this account profile. Audit history is
+    /// retained and private plugin data lives in a separate store.
+    pub fn remove_plugin(&mut self, plugin_id: &str) -> Result<(), GrantError> {
+        if !valid_identity_part(plugin_id, 256) {
+            return Err(GrantError::InvalidIdentity);
+        }
+        let mut next = self.state.clone();
+        next.plugins
+            .retain(|_, record| record.identity.plugin_id != plugin_id);
+        if next.plugins.len() != self.state.plugins.len() {
+            self.persist(&next)?;
+            self.state = next;
+        }
+        Ok(())
+    }
+
     /// Required requests gate activation when denied or unsupported.
     pub fn required_permissions_granted(&self, identity: &PluginIdentity) -> bool {
         let grants = self.effective_grants(identity);
@@ -744,7 +760,13 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
             Ok(())
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::DirBuilder::new().mode(0o700).create(path)
+            match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    ensure_private_dir(path)
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error),
     }
@@ -758,7 +780,11 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
             "unsafe grant directory",
         )),
         Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::create_dir(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => ensure_private_dir(path),
+            Err(error) => Err(error),
+        },
         Err(error) => Err(error),
     }
 }

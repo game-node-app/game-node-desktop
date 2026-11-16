@@ -70,6 +70,7 @@ pub struct HostedProviders {
     entries: BTreeMap<String, Entry>,
     failures: Mutex<BTreeMap<String, String>>,
     observer: Mutex<Option<Observer>>,
+    lifecycle: Arc<ThirdPartyPluginLifecycle>,
 }
 
 /// Account-scoped enable/disable controls for already registered managed plugins. Registration
@@ -123,24 +124,46 @@ impl ThirdPartyPluginLifecycle {
     /// Starts the plugins enabled in the active account after registration has been restored.
     pub async fn start_enabled_plugins(&self) -> Result<(), Status> {
         let profile = self.api.profiles().require()?;
+        let profile_epoch = profile.epoch();
         let state = self.state.clone();
+        let account_profile = profile.clone();
         let enabled = tokio::task::spawn_blocking(move || {
             state
-                .open_activation(&profile)
+                .open_activation(&account_profile)
                 .map(|activation| activation.enabled().map(str::to_owned).collect::<Vec<_>>())
                 .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
         })
         .await
         .map_err(|_| Status::internal("plugin activation worker failed"))??;
         for plugin_id in enabled {
-            self.set_enabled(plugin_id, true).await?;
+            if !self.api.profiles().is_current(profile_epoch) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during lifecycle restore",
+                ));
+            }
+            self.set_enabled_for_profile(plugin_id, true, Some(profile_epoch))
+                .await?;
         }
         Ok(())
     }
 
     async fn set_enabled(&self, plugin_id: String, enabled: bool) -> Result<(), Status> {
+        self.set_enabled_for_profile(plugin_id, enabled, None).await
+    }
+
+    async fn set_enabled_for_profile(
+        &self,
+        plugin_id: String,
+        enabled: bool,
+        expected_epoch: Option<u64>,
+    ) -> Result<(), Status> {
         let _mutation = self.mutation.lock().await;
         let profile = self.api.profiles().require()?;
+        if expected_epoch.is_some_and(|expected| expected != profile.epoch()) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed during lifecycle restore",
+            ));
+        }
         let process_ids = self.process_ids(&plugin_id)?;
         let state = self.state.clone();
         let account = profile.clone();
@@ -164,8 +187,12 @@ impl ThirdPartyPluginLifecycle {
             return Ok(());
         }
 
-        if !self.api.profiles().is_current(profile.epoch()) {
-            return Err(super::profile::no_profile());
+        if !self.api.profiles().is_current(profile.epoch())
+            || expected_epoch.is_some_and(|expected| expected != profile.epoch())
+        {
+            return Err(Status::failed_precondition(
+                "plugin profile changed during lifecycle restore",
+            ));
         }
         for provider_id in &process_ids {
             if let Err(error) = self.processes.ensure_started(provider_id).await {
@@ -214,9 +241,14 @@ impl ThirdPartyPluginLifecycle {
         }
         self.api.unregister_third_party_plugin(&plugin_id).await?;
         self.packages
-            .remove_plugin(plugin_id)
+            .remove_plugin(plugin_id.clone())
             .await
-            .map_err(package_status)
+            .map_err(package_status)?;
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || state.remove_plugin_account_state(&plugin_id))
+            .await
+            .map_err(|_| Status::internal("plugin state removal worker failed"))?
+            .map_err(|error| Status::internal(format!("plugin account state: {error}")))
     }
 
     fn process_ids(&self, plugin_id: &str) -> Result<Vec<String>, Status> {
@@ -234,6 +266,35 @@ impl ThirdPartyPluginLifecycle {
             ));
         }
         Ok(process_ids)
+    }
+
+    pub(crate) fn spawn_profile_lifecycle(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
+        let lifecycle = self.clone();
+        let mut changes = self.api.profiles().subscribe();
+        runtime.spawn(async move {
+            let mut epoch = lifecycle.api.profiles().epoch();
+            if lifecycle.api.profiles().current().is_some()
+                && let Err(error) = lifecycle.start_enabled_plugins().await
+            {
+                tracing::warn!(%error, "could not restore enabled third-party plugins");
+            }
+            while changes.changed().await.is_ok() {
+                let current_epoch = lifecycle.api.profiles().epoch();
+                if current_epoch == epoch {
+                    continue;
+                }
+                epoch = current_epoch;
+                lifecycle.api.fence_third_party_sessions().await;
+                for provider_id in lifecycle.api.third_party_provider_ids() {
+                    lifecycle.processes.stop_provider(&provider_id).await;
+                }
+                if lifecycle.api.profiles().current().is_some()
+                    && let Err(error) = lifecycle.start_enabled_plugins().await
+                {
+                    tracing::warn!(%error, "could not restore enabled third-party plugins");
+                }
+            }
+        });
     }
 }
 
@@ -263,6 +324,7 @@ impl HostedProviders {
         .ok_or_else(|| Status::unavailable("provider directory unavailable"))?;
         let mut entries = BTreeMap::new();
         let mut configs = vec![];
+        let state = PluginStateLayout::new(paths.plugin_data_dir().join("state"));
         for descriptor in super::descriptors().iter().filter(|p| p.has(cap::CONTEXT)) {
             if gamenode_core::provider::Platform::current()
                 .is_none_or(|platform| !descriptor.supports(platform))
@@ -311,7 +373,29 @@ impl HostedProviders {
             );
         }
         let endpoint_available = endpoint.is_some();
-        let processes = ProviderProcesses::new(api.clone(), endpoint.unwrap_or_default(), configs)?;
+        let processes = ProviderProcesses::new_for_lifecycle(
+            api.clone(),
+            endpoint.unwrap_or_default(),
+            configs,
+            state.clone(),
+        )?;
+        let registry_paths = paths.clone();
+        let registry = tokio::task::spawn_blocking(move || {
+            gamenode_platform::plugin_registry::PluginPackageRegistry::open(&registry_paths)
+        })
+        .await
+        .map_err(|_| Status::internal("plugin package registry worker failed"))?
+        .map_err(|_| Status::internal("plugin package registry is unavailable"))?;
+        let packages = ManagedPackageLifecycle::new(registry);
+        let lifecycle = Arc::new(ThirdPartyPluginLifecycle::new(
+            api.clone(),
+            processes.clone(),
+            state,
+            packages,
+        ));
+        lifecycle.spawn_profile_lifecycle(&tokio::runtime::Handle::try_current().map_err(
+            |_| Status::failed_precondition("plugin lifecycle requires an async runtime"),
+        )?);
         Ok(Arc::new(Self {
             api,
             processes,
@@ -319,7 +403,12 @@ impl HostedProviders {
             entries,
             failures: Mutex::new(BTreeMap::new()),
             observer: Mutex::new(None),
+            lifecycle,
         }))
+    }
+
+    pub fn lifecycle(&self) -> Arc<ThirdPartyPluginLifecycle> {
+        self.lifecycle.clone()
     }
 
     pub fn availability(&self, id: &str) -> &'static str {

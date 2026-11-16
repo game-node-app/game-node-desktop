@@ -135,6 +135,20 @@ async fn manager_with_origin(
     super::super::PluginApiServer,
     tempfile::TempDir,
 ) {
+    manager_with_origin_and_lifecycle(executable, mode, timeout, origin, false).await
+}
+
+async fn manager_with_origin_and_lifecycle(
+    executable: PathBuf,
+    mode: &str,
+    timeout: Duration,
+    origin: crate::plugin_host::provider::RegistrationOrigin,
+    managed_lifecycle: bool,
+) -> (
+    ProviderProcesses,
+    super::super::PluginApiServer,
+    tempfile::TempDir,
+) {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -157,37 +171,45 @@ async fn manager_with_origin(
         root.clone(),
     )
     .unwrap();
-    let manager = ProviderProcesses::new(
-        root.providers,
-        endpoint,
-        vec![ProcessConfig {
-            provider_id: "fixture".into(),
-            executable,
-            arguments: vec![
-                "--exact".into(),
-                "plugin_host::process::tests::fixture_process".into(),
-                "--nocapture".into(),
-            ],
-            environment: vec![
-                ("GAMENODE_TEST_PLUGIN_PROCESS".into(), "fixture".into()),
-                ("GAMENODE_TEST_PLUGIN_MODE".into(), mode.into()),
-                (
-                    "GAMENODE_TEST_PLUGIN_CRASH_MARKER".into(),
-                    directory.path().join("crash-once").into_os_string(),
-                ),
-                (
-                    "GAMENODE_TEST_PLUGIN_TREE_PID".into(),
-                    directory.path().join("tree-child-pid").into_os_string(),
-                ),
-                (
-                    "GAMENODE_TEST_PLUGIN_TREE_OUTPUT".into(),
-                    directory.path().join("tree-child-output").into_os_string(),
-                ),
-            ],
-            startup_timeout: timeout,
-            integrity: None,
-        }],
-    )
+    let config = vec![ProcessConfig {
+        provider_id: "fixture".into(),
+        executable,
+        arguments: vec![
+            "--exact".into(),
+            "plugin_host::process::tests::fixture_process".into(),
+            "--nocapture".into(),
+        ],
+        environment: vec![
+            ("GAMENODE_TEST_PLUGIN_PROCESS".into(), "fixture".into()),
+            ("GAMENODE_TEST_PLUGIN_MODE".into(), mode.into()),
+            (
+                "GAMENODE_TEST_PLUGIN_CRASH_MARKER".into(),
+                directory.path().join("crash-once").into_os_string(),
+            ),
+            (
+                "GAMENODE_TEST_PLUGIN_TREE_PID".into(),
+                directory.path().join("tree-child-pid").into_os_string(),
+            ),
+            (
+                "GAMENODE_TEST_PLUGIN_TREE_OUTPUT".into(),
+                directory.path().join("tree-child-output").into_os_string(),
+            ),
+        ],
+        startup_timeout: timeout,
+        integrity: None,
+    }];
+    let manager = if managed_lifecycle {
+        ProviderProcesses::new_for_lifecycle(
+            root.providers,
+            endpoint,
+            config,
+            crate::plugin_host::profile::PluginStateLayout::new(
+                directory.path().join("plugin-data"),
+            ),
+        )
+    } else {
+        ProviderProcesses::new(root.providers, endpoint, config)
+    }
     .unwrap();
     (manager, server, directory)
 }
@@ -399,16 +421,61 @@ async fn profile_change_stops_third_party_process_but_not_official_processes() {
     official.shutdown().await;
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
-async fn activation_persists_per_account_and_remove_stops_unregisters_and_deletes_packages() {
-    let (processes, _server, directory) = manager_with_origin(
+async fn managed_lifecycle_refuses_disabled_plugins_and_requires_an_active_profile() {
+    let (processes, _server, directory) = manager_with_origin_and_lifecycle(
         std::env::current_exe().unwrap(),
         "linger",
         Duration::from_secs(10),
         crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
             publisher_fingerprint: "fixture-publisher".into(),
         },
+        true,
+    )
+    .await;
+    let state =
+        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data"));
+
+    assert_eq!(
+        processes
+            .ensure_started("fixture")
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Unavailable
+    );
+    let profiles = processes.inner.api.profiles();
+    profiles.update(Some("account-one"), true);
+    assert_eq!(
+        processes
+            .ensure_started("fixture")
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+    let profile = profiles.current().unwrap();
+    state
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled("fixture.plugin", true)
+        .unwrap();
+    processes.ensure_started("fixture").await.unwrap();
+    assert!(processes.process_id("fixture").await.is_some());
+    processes.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn activation_persists_per_account_and_remove_stops_unregisters_and_deletes_packages() {
+    let (processes, _server, directory) = manager_with_origin_and_lifecycle(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+        crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "fixture-publisher".into(),
+        },
+        true,
     )
     .await;
     let api = processes.inner.api.clone();
@@ -423,12 +490,16 @@ async fn activation_persists_per_account_and_remove_stops_unregisters_and_delete
     registry
         .install_verified("fixture.plugin", "1.0.0", &package_source, true)
         .unwrap();
-    let lifecycle = crate::plugin_host::runtime::ThirdPartyPluginLifecycle::new(
-        api.clone(),
-        processes.clone(),
-        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data")),
-        crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
-    );
+    let lifecycle =
+        std::sync::Arc::new(crate::plugin_host::runtime::ThirdPartyPluginLifecycle::new(
+            api.clone(),
+            processes.clone(),
+            crate::plugin_host::profile::PluginStateLayout::new(
+                directory.path().join("plugin-data"),
+            ),
+            crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
+        ));
+    lifecycle.spawn_profile_lifecycle(&tokio::runtime::Handle::current());
 
     lifecycle.enable("fixture.plugin".into()).await.unwrap();
     let pid = processes.process_id("fixture").await.unwrap();
@@ -444,7 +515,13 @@ async fn activation_persists_per_account_and_remove_stops_unregisters_and_delete
     .expect("changing accounts should stop the old process");
     assert!(!lifecycle.enabled("fixture.plugin".into()).await.unwrap());
     api.profiles().update(Some("account-one"), true);
-    lifecycle.start_enabled_plugins().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while processes.process_id("fixture").await.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the previously enabled plugin should restart for its account");
     assert!(processes.process_id("fixture").await.is_some());
     assert!(lifecycle.enabled("fixture.plugin".into()).await.unwrap());
 

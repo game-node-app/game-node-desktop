@@ -222,6 +222,7 @@ struct Inner {
     endpoint: PathBuf,
     slots: HashMap<String, Slot>,
     shutdown: watch::Sender<bool>,
+    activation: std::sync::RwLock<Option<super::profile::PluginStateLayout>>,
 }
 
 #[derive(Clone)]
@@ -234,6 +235,25 @@ impl ProviderProcesses {
         api: ProviderApi,
         endpoint: PathBuf,
         configs: Vec<ProcessConfig>,
+    ) -> Result<Self, Status> {
+        Self::build(api, endpoint, configs, None, true)
+    }
+
+    pub(crate) fn new_for_lifecycle(
+        api: ProviderApi,
+        endpoint: PathBuf,
+        configs: Vec<ProcessConfig>,
+        activation: super::profile::PluginStateLayout,
+    ) -> Result<Self, Status> {
+        Self::build(api, endpoint, configs, Some(activation), false)
+    }
+
+    fn build(
+        api: ProviderApi,
+        endpoint: PathBuf,
+        configs: Vec<ProcessConfig>,
+        activation: Option<super::profile::PluginStateLayout>,
+        watch_profile: bool,
     ) -> Result<Self, Status> {
         let mut slots = HashMap::new();
         for config in configs {
@@ -260,9 +280,12 @@ impl ProviderProcesses {
                 endpoint,
                 slots,
                 shutdown,
+                activation: std::sync::RwLock::new(activation),
             }),
         };
-        manager.spawn_profile_shutdown()?;
+        if watch_profile {
+            manager.spawn_profile_shutdown()?;
+        }
         Ok(manager)
     }
 
@@ -312,6 +335,31 @@ impl ProviderProcesses {
             .slots
             .get(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
+        let activation_layout = self
+            .inner
+            .activation
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let (Some(plugin_id), Some(layout)) = (
+            self.inner.api.third_party_plugin_id(provider_id),
+            activation_layout.as_ref(),
+        ) {
+            let profile = self.inner.api.profiles().require()?;
+            let layout = layout.clone();
+            let plugin = plugin_id;
+            let enabled = tokio::task::spawn_blocking(move || {
+                layout
+                    .open_activation(&profile)
+                    .map(|state| state.is_enabled(&plugin))
+                    .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
+            })
+            .await
+            .map_err(|_| Status::internal("plugin activation worker failed"))??;
+            if !enabled {
+                return Err(Status::permission_denied("third-party plugin is disabled"));
+            }
+        }
         // A per-provider async lock joins concurrent startup requests without
         // blocking another provider or a native UI callback.
         let mut stored = slot.child.lock().await;

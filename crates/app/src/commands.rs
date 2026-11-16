@@ -381,10 +381,13 @@ pub async fn plugin_inventory(
 ) -> Result<Vec<crate::plugin_host::PluginInfo>, String> {
     let engine = engine.inner().clone();
     tokio::task::spawn_blocking(move || {
-        crate::plugin_host::inventory(|id| {
+        let mut inventory = crate::plugin_host::inventory(|id| {
             let (_, connected) = engine.provider_health(id);
             (engine.provider_availability(id), connected)
-        })
+        });
+        inventory.extend(engine.managed_plugin_inventory());
+        inventory.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+        inventory
     })
     .await
     .map_err(|_| "plugin inventory worker failed".to_owned())

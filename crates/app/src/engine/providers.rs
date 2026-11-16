@@ -218,6 +218,12 @@ impl Engine {
             .unwrap_or("unavailable")
     }
 
+    pub fn managed_plugin_inventory(&self) -> Vec<crate::plugin_host::PluginInfo> {
+        self.provider_runtime()
+            .map(|runtime| runtime.managed_plugin_inventory())
+            .unwrap_or_default()
+    }
+
     pub(super) fn provider_runtime(&self) -> Option<Arc<dyn ProviderRuntime>> {
         self.shared
             .providers

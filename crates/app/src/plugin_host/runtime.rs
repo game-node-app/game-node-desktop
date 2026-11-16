@@ -58,6 +58,9 @@ pub type Observer = Arc<dyn Fn() + Send + Sync>;
 
 #[async_trait::async_trait]
 pub trait ProviderRuntime: Send + Sync {
+    fn managed_plugin_inventory(&self) -> Vec<super::PluginInfo> {
+        Vec::new()
+    }
     fn accounts(&self) -> Vec<String>;
     fn has_provider(&self, provider: &str) -> bool;
     fn status(&self, provider: &str) -> Option<models::AccountStatus>;
@@ -159,6 +162,7 @@ pub struct HostedProviders {
     processes: ProviderProcesses,
     endpoint_available: bool,
     entries: BTreeMap<String, Entry>,
+    managed_plugins: Vec<super::PluginInfo>,
     failures: Mutex<BTreeMap<String, String>>,
     observer: Mutex<Option<Observer>>,
     lifecycle: Arc<ThirdPartyPluginLifecycle>,
@@ -565,6 +569,7 @@ impl HostedProviders {
         .ok_or_else(|| Status::unavailable("provider directory unavailable"))?;
         let mut entries = BTreeMap::new();
         let mut configs = vec![];
+        let mut managed_plugins = vec![];
         let state = PluginStateLayout::new(paths.plugin_data_dir().join("state"));
         let registry_paths = paths.clone();
         let registry = tokio::task::spawn_blocking(move || {
@@ -707,6 +712,19 @@ impl HostedProviders {
                 }
             };
             let provider_id = config.provider_id.clone();
+            let inventory_entry = super::PluginInfo {
+                provider_id: provider_id.clone(),
+                plugin_id: installed.plugin_id.clone(),
+                name: report.manifest.name.clone(),
+                source: "community".to_owned(),
+                status: "installed".to_owned(),
+                // Manifest declarations are not grants. The permission viewer will expose
+                // effective grants separately; this legacy field is only for bundled plugins.
+                capabilities: vec![],
+                session: "stopped".to_owned(),
+                native_access: report.manifest.native_access.clone(),
+                publisher_fingerprint: Some(publisher_fingerprint.clone()),
+            };
             let services = Arc::new(ProviderServices::new_external(
                 ProviderContext {
                     provider_id: provider_id.clone(),
@@ -732,6 +750,7 @@ impl HostedProviders {
                 tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin registration was rejected");
                 continue;
             }
+            managed_plugins.push(inventory_entry);
             configs.push(config);
             entries.insert(
                 provider_id,
@@ -765,6 +784,7 @@ impl HostedProviders {
             processes,
             endpoint_available,
             entries,
+            managed_plugins,
             failures: Mutex::new(BTreeMap::new()),
             observer: Mutex::new(None),
             lifecycle,
@@ -867,6 +887,23 @@ impl HostedProviders {
 
 #[async_trait::async_trait]
 impl ProviderRuntime for HostedProviders {
+    fn managed_plugin_inventory(&self) -> Vec<super::PluginInfo> {
+        self.managed_plugins
+            .iter()
+            .cloned()
+            .map(|mut plugin| {
+                plugin.status = self.availability(&plugin.provider_id).to_owned();
+                plugin.session = if self.api.connected(&plugin.provider_id) {
+                    "active"
+                } else {
+                    "stopped"
+                }
+                .to_owned();
+                plugin
+            })
+            .collect()
+    }
+
     fn accounts(&self) -> Vec<String> {
         self.entries
             .iter()

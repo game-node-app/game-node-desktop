@@ -285,6 +285,47 @@ impl PermissionGrantStore {
             .unwrap_or_default()
     }
 
+    /// Permanently denies every saved scope for the selected permissions. Used when an approved
+    /// package update changes the declaration behind an existing permission id; a failed package
+    /// activation must never restore the old authorization.
+    pub fn revoke_permissions(
+        &mut self,
+        identity: &PluginIdentity,
+        permission_ids: &BTreeSet<String>,
+    ) -> Result<u64, GrantError> {
+        identity.validate()?;
+        if permission_ids.is_empty() {
+            return Ok(self.revision(identity));
+        }
+        let key = identity_key(identity);
+        let Some(previous) = self.state.plugins.get(&key) else {
+            return Ok(0);
+        };
+        if previous.identity != *identity {
+            return Err(GrantError::InvalidIdentity);
+        }
+        let mut next = self.state.clone();
+        let record = next.plugins.get_mut(&key).expect("record was just checked");
+        let mut changed = false;
+        for grant in &mut record.grants {
+            if permission_ids.contains(&grant.permission_id)
+                && grant.state == PermissionState::Granted
+            {
+                grant.state = PermissionState::Denied;
+                changed = true;
+            }
+        }
+        if changed {
+            record.revision = record.revision.saturating_add(1);
+            let revision = record.revision;
+            self.persist(&next)?;
+            self.state = next;
+            Ok(revision)
+        } else {
+            Ok(record.revision)
+        }
+    }
+
     /// Removes all saved grant records for a plugin in this account profile. Audit history is
     /// retained and private plugin data lives in a separate store.
     pub fn remove_plugin(&mut self, plugin_id: &str) -> Result<(), GrantError> {
@@ -1173,6 +1214,43 @@ mod tests {
                 .iter()
                 .any(|grant| grant.permission_id == permission
                     && grant.state == PermissionState::Granted)
+        );
+    }
+
+    #[test]
+    fn revoking_updated_permission_persists_denial_and_advances_revision() {
+        let dir = tempdir().unwrap();
+        let actor = identity();
+        let permission = permission_id(&DomainCategory::Runtime, Operation::Read);
+        let scope = GrantScope::OwnCreator {
+            category: DomainCategory::Runtime,
+        };
+        let mut store = PermissionGrantStore::open(dir.path()).unwrap();
+        store
+            .replace_grants(
+                actor.clone(),
+                &[request(&permission, BTreeSet::from([scope.clone()]))],
+                &[PermissionDecision {
+                    permission_id: permission.clone(),
+                    scope,
+                    granted: true,
+                }],
+            )
+            .unwrap();
+        let previous_revision = store.revision(&actor);
+        let ids = BTreeSet::from([permission.clone()]);
+        let next_revision = store.revoke_permissions(&actor, &ids).unwrap();
+
+        assert_eq!(next_revision, previous_revision + 1);
+        assert_eq!(
+            store.effective_grants(&actor)[0].state,
+            PermissionState::Denied
+        );
+        let reopened = PermissionGrantStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.revision(&actor), next_revision);
+        assert_eq!(
+            reopened.effective_grants(&actor)[0].state,
+            PermissionState::Denied
         );
     }
 

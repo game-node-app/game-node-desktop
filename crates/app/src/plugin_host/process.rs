@@ -1,7 +1,7 @@
 //! Supervision for persistent provider processes. Executable configurations are
 //! supplied only by trusted desktop composition, never by plugin RPCs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,12 +14,19 @@ use tonic::Status;
 
 use super::provider::{Completion, ProviderApi};
 
+#[derive(Clone)]
 pub struct ProcessConfig {
     pub provider_id: String,
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
     pub environment: Vec<(OsString, OsString)>,
     pub startup_timeout: Duration,
+    /// Signed manifest permissions which the process is allowed to request.
+    pub manifest_capabilities: Vec<String>,
+    /// Required manifest permissions gate startup until the user has granted them.
+    pub required_capabilities: Vec<String>,
+    /// Update declarations whose previous grants have been revoked and need a fresh review.
+    pub blocked_capabilities: Vec<String>,
     /// Present for managed packages; publisher key comes from host trust state.
     pub integrity: Option<PackageIntegrity>,
 }
@@ -213,7 +220,7 @@ impl Drop for ChildProcess {
 }
 
 struct Slot {
-    config: ProcessConfig,
+    config: std::sync::Mutex<ProcessConfig>,
     child: Mutex<Option<ChildProcess>>,
 }
 
@@ -268,7 +275,7 @@ impl ProviderProcesses {
             slots.insert(
                 config.provider_id.clone(),
                 Slot {
-                    config,
+                    config: std::sync::Mutex::new(config),
                     child: Mutex::new(None),
                 },
             );
@@ -327,6 +334,21 @@ impl ProviderProcesses {
     }
 
     pub async fn ensure_started(&self, provider_id: &str) -> Result<(), Status> {
+        self.ensure_started_inner(provider_id, false).await
+    }
+
+    /// One-shot readiness check used only after explicit update approval. It may start a plugin
+    /// whose account activation is disabled, but still requires an active profile and current
+    /// grants. Callers must stop it again after readiness when the user had disabled it.
+    pub(crate) async fn ensure_ready_for_update(&self, provider_id: &str) -> Result<(), Status> {
+        self.ensure_started_inner(provider_id, true).await
+    }
+
+    async fn ensure_started_inner(
+        &self,
+        provider_id: &str,
+        allow_disabled: bool,
+    ) -> Result<(), Status> {
         if *self.inner.shutdown.borrow() {
             return Err(Status::unavailable("desktop is shutting down"));
         }
@@ -341,24 +363,33 @@ impl ProviderProcesses {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if let (Some(plugin_id), Some(layout)) = (
-            self.inner.api.third_party_plugin_id(provider_id),
-            activation_layout.as_ref(),
-        ) {
+        let third_party_identity = self.inner.api.third_party_identity(provider_id);
+        let mut active_profile = None;
+        let mut active_profile_epoch = None;
+        if let Some((plugin_id, _)) = third_party_identity.as_ref() {
             let profile = self.inner.api.profiles().require()?;
-            let layout = layout.clone();
-            let plugin = plugin_id;
-            let enabled = tokio::task::spawn_blocking(move || {
-                layout
-                    .open_activation(&profile)
-                    .map(|state| state.is_enabled(&plugin))
-                    .map_err(|error| Status::internal(format!("plugin activation state: {error}")))
-            })
-            .await
-            .map_err(|_| Status::internal("plugin activation worker failed"))??;
-            if !enabled {
-                return Err(Status::permission_denied("third-party plugin is disabled"));
+            active_profile_epoch = Some(profile.epoch());
+            if !allow_disabled {
+                if let Some(layout) = activation_layout.as_ref() {
+                    let layout = layout.clone();
+                    let plugin = plugin_id.clone();
+                    let account = profile.clone();
+                    let enabled = tokio::task::spawn_blocking(move || {
+                        layout
+                            .open_activation(&account)
+                            .map(|state| state.is_enabled(&plugin))
+                            .map_err(|error| {
+                                Status::internal(format!("plugin activation state: {error}"))
+                            })
+                    })
+                    .await
+                    .map_err(|_| Status::internal("plugin activation worker failed"))??;
+                    if !enabled {
+                        return Err(Status::permission_denied("third-party plugin is disabled"));
+                    }
+                }
             }
+            active_profile = Some(profile);
         }
         // A per-provider async lock joins concurrent startup requests without
         // blocking another provider or a native UI callback.
@@ -382,12 +413,84 @@ impl ProviderProcesses {
             }
         }
         stored.take();
-        verify_before_launch(&slot.config).await?;
-        let launch = self.inner.api.begin_launch(provider_id)?;
-        let mut command = tokio::process::Command::new(&slot.config.executable);
+        let config = slot
+            .config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let (Some((plugin_id, publisher_fingerprint)), Some(profile), Some(layout)) = (
+            third_party_identity,
+            active_profile,
+            activation_layout.as_ref(),
+        ) {
+            let grants_layout = layout.clone();
+            let grants_profile = profile.clone();
+            let identity = super::grants::PluginIdentity {
+                plugin_id,
+                publisher_fingerprint,
+                profile_id: profile.profile_id().to_owned(),
+            };
+            let declared = config.manifest_capabilities.clone();
+            let required = config.required_capabilities.clone();
+            let blocked = config.blocked_capabilities.clone();
+            let effective = tokio::task::spawn_blocking(move || {
+                let grants = grants_layout
+                    .open_grants(&grants_profile)
+                    .map_err(|error| {
+                        Status::internal(format!("plugin grants unavailable: {error}"))
+                    })?;
+                let effective = grants
+                    .effective_grants(&identity)
+                    .into_iter()
+                    .filter(|grant| grant.state == super::grants::PermissionState::Granted)
+                    .map(|grant| grant.permission_id)
+                    .filter(|permission| !blocked.contains(permission))
+                    .collect::<BTreeSet<_>>();
+                let missing_required = required
+                    .iter()
+                    .find(|permission| !effective.contains(*permission));
+                if missing_required.is_some() {
+                    return Err(Status::permission_denied(
+                        "required plugin permissions are not granted",
+                    ));
+                }
+                let mut allowed = vec![gamenode_plugin_protocol::capability::CONTEXT.to_owned()];
+                allowed.extend(
+                    declared
+                        .into_iter()
+                        .filter(|permission| effective.contains(permission)),
+                );
+                allowed.sort();
+                allowed.dedup();
+                Ok(allowed)
+            })
+            .await
+            .map_err(|_| Status::internal("plugin permission worker failed"))??;
+            if !self.inner.api.profiles().is_current(profile.epoch()) {
+                return Err(Status::failed_precondition(
+                    "plugin profile changed during startup",
+                ));
+            }
+            self.inner.api.set_third_party_capabilities(
+                provider_id,
+                &config.manifest_capabilities,
+                &effective,
+            )?;
+        }
+        verify_before_launch(&config).await?;
+        if active_profile_epoch.is_some_and(|epoch| !self.inner.api.profiles().is_current(epoch)) {
+            return Err(Status::failed_precondition(
+                "plugin profile changed during startup",
+            ));
+        }
+        let launch = self
+            .inner
+            .api
+            .begin_launch_for_profile(provider_id, active_profile_epoch)?;
+        let mut command = tokio::process::Command::new(&config.executable);
         command
-            .args(&slot.config.arguments)
-            .envs(slot.config.environment.iter().cloned())
+            .args(&config.arguments)
+            .envs(config.environment.iter().cloned())
             .env("GAMENODE_PLUGIN_ENDPOINT", &self.inner.endpoint)
             .env("GAMENODE_PLUGIN_OPERATION_ID", "initialization")
             .env("GAMENODE_PLUGIN_SESSION_CREDENTIAL", &launch.credential)
@@ -430,7 +533,7 @@ impl ProviderProcesses {
                 api: self.inner.api.clone(),
                 provider_id: provider_id.into(),
                 ready: launch.ready,
-                startup_timeout: slot.config.startup_timeout,
+                startup_timeout: config.startup_timeout,
                 startup,
                 stop: stop_receiver,
                 shutdown: self.inner.shutdown.subscribe(),
@@ -502,6 +605,57 @@ impl ProviderProcesses {
                 }
             }
         }
+    }
+
+    /// Stop a package process before replacing its immutable verified executable configuration.
+    /// The per-provider child lock fences an overlapping startup until the new config is visible.
+    pub(crate) async fn replace_config(
+        &self,
+        provider_id: &str,
+        config: ProcessConfig,
+    ) -> Result<(), Status> {
+        if config.provider_id != provider_id || config.startup_timeout.is_zero() {
+            return Err(Status::invalid_argument(
+                "invalid provider process configuration",
+            ));
+        }
+        let slot = self
+            .inner
+            .slots
+            .get(provider_id)
+            .ok_or_else(|| Status::not_found("provider process is not registered"))?;
+        let mut child = slot.child.lock().await;
+        if let Some(mut child) = child.take() {
+            if let Some(stop) = child.stop.take() {
+                let _ = stop.send(());
+            }
+            let stopped = child.stopped.notified();
+            if child.running.load(Ordering::Acquire)
+                && tokio::time::timeout(Duration::from_secs(4), stopped)
+                    .await
+                    .is_err()
+            {
+                return Err(Status::unavailable("provider cleanup is still in progress"));
+            }
+        }
+        *slot
+            .config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+        Ok(())
+    }
+
+    pub(crate) fn config(&self, provider_id: &str) -> Result<ProcessConfig, Status> {
+        let slot = self
+            .inner
+            .slots
+            .get(provider_id)
+            .ok_or_else(|| Status::not_found("provider process is not registered"))?;
+        Ok(slot
+            .config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
     }
 
     pub async fn stop_plugin(&self, plugin_id: &str) {

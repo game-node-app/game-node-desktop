@@ -56,6 +56,32 @@ async fn third_party_processes_start_only_inside_an_account_profile() {
     assert!(unavailable(api.begin_launch("community")));
 }
 
+#[test]
+fn pending_third_party_launch_is_rejected_after_profile_changes() {
+    let api = ProviderApi::default();
+    api.register(third_party_registration("community")).unwrap();
+    api.profiles().update(Some("account-a"), true);
+    let epoch = api.profiles().current().unwrap().epoch();
+    let launch = api
+        .begin_launch_for_profile("community", Some(epoch))
+        .unwrap();
+    let credential = launch
+        .credential
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+
+    api.profiles().update(Some("account-b"), true);
+    let request = gamenode_plugin_protocol::proto::OpenSessionRequest {
+        session_credential: credential,
+        ..Default::default()
+    };
+    let error = api.open_session(&request).unwrap_err();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(!api.owns_launch(&request.session_credential));
+}
+
 #[tokio::test]
 async fn a_different_verified_account_fences_third_party_sessions_and_namespaces() {
     let mut h = Harness::third_party("account-a").await;

@@ -27,6 +27,21 @@ struct VersionRecord {
     version: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivationRecord {
+    schema: u32,
+    plugin_id: String,
+    previous_version: String,
+    candidate_version: String,
+}
+
+/// Durable handle for a version swap that is waiting for a supervised readiness check.
+#[derive(Clone, Debug)]
+pub struct ActivationTransaction {
+    record: ActivationRecord,
+}
+
 /// Persistent per-user package registry. Paths under `versions/` are create-once; activation
 /// changes only an atomic pointer and never edits an installed version tree.
 #[derive(Clone, Debug)]
@@ -199,6 +214,136 @@ impl PluginPackageRegistry {
         sync_dir(&active_dir)
     }
 
+    /// Selects a fully published candidate while retaining a durable rollback record. Callers
+    /// must not start the candidate until this returns successfully; `recover` restores the old
+    /// version (or leaves the plugin inactive) if the application exits before `commit_activation`.
+    pub fn begin_activation(
+        &self,
+        plugin_id: &str,
+        expected_previous_version: &str,
+        candidate_version: &str,
+    ) -> io::Result<ActivationTransaction> {
+        validate_identity(plugin_id)?;
+        validate_identity(expected_previous_version)?;
+        validate_identity(candidate_version)?;
+        let previous = self.active(plugin_id)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "plugin has no active version")
+        })?;
+        if previous.version != expected_previous_version {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "active plugin changed before staged activation",
+            ));
+        }
+        if previous.version == candidate_version {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "candidate version is already active",
+            ));
+        }
+        let candidate = self.version_path(plugin_id, candidate_version);
+        if self
+            .read_complete(&candidate, plugin_id, candidate_version)
+            .is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "candidate package is incomplete or missing",
+            ));
+        }
+
+        let record = ActivationRecord {
+            schema: 1,
+            plugin_id: plugin_id.to_owned(),
+            previous_version: previous.version,
+            candidate_version: candidate_version.to_owned(),
+        };
+        let transaction_dir = self.activation_transactions_dir();
+        ensure_owner_dir(&transaction_dir)?;
+        let transaction_path = self.activation_transaction_path(plugin_id);
+        let bytes = serde_json::to_vec(&record).map_err(io::Error::other)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&transaction_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        sync_dir(&transaction_dir)?;
+
+        if let Err(error) = self.set_active(plugin_id, candidate_version) {
+            let _ = fs::remove_file(&transaction_path);
+            let _ = sync_dir(&transaction_dir);
+            return Err(error);
+        }
+        Ok(ActivationTransaction { record })
+    }
+
+    /// Commits a candidate only if it is still the active version named by the transaction.
+    pub fn commit_activation(&self, transaction: ActivationTransaction) -> io::Result<()> {
+        self.finish_activation(transaction, true)
+    }
+
+    /// Restores the prior package pointer without changing the permission store. Any permission
+    /// revocations made while the candidate was starting therefore remain in force.
+    pub fn rollback_activation(&self, transaction: ActivationTransaction) -> io::Result<()> {
+        self.finish_activation(transaction, false)
+    }
+
+    fn finish_activation(
+        &self,
+        transaction: ActivationTransaction,
+        commit: bool,
+    ) -> io::Result<()> {
+        let record = transaction.record;
+        let path = self.activation_transaction_path(&record.plugin_id);
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && commit => {
+                let active = self.active(&record.plugin_id)?;
+                if active.as_ref().map(|version| version.version.as_str())
+                    == Some(record.candidate_version.as_str())
+                {
+                    // A worker may finish the durable commit as its caller is cancelled. Retrying
+                    // that commit is safe once the pointer already names the ready candidate.
+                    return Ok(());
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let persisted: ActivationRecord = serde_json::from_reader(file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if persisted.schema != 1 || persisted.plugin_id != record.plugin_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "activation transaction does not match its durable record",
+            ));
+        }
+        let active = self.active(&record.plugin_id)?;
+        if active.as_ref().map(|version| version.version.as_str())
+            != Some(record.candidate_version.as_str())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "active package changed during activation",
+            ));
+        }
+        if !commit {
+            self.set_active(&record.plugin_id, &record.previous_version)?;
+        }
+        fs::remove_file(&path)?;
+        sync_dir(&self.activation_transactions_dir())
+    }
+
+    fn activation_transactions_dir(&self) -> PathBuf {
+        self.root.join("activation-transactions")
+    }
+
+    fn activation_transaction_path(&self, plugin_id: &str) -> PathBuf {
+        self.activation_transactions_dir()
+            .join(format!("{}.json", encode_key(plugin_id)))
+    }
+
     pub fn active(&self, plugin_id: &str) -> io::Result<Option<InstalledPluginVersion>> {
         validate_identity(plugin_id)?;
         let pointer = self.root.join("active").join(encode_key(plugin_id));
@@ -349,6 +494,7 @@ impl PluginPackageRegistry {
     /// pointers are never changed by an incomplete update; fully published but unactivated
     /// versions are retained for inspection or a later explicit activation.
     pub fn recover(&self) -> io::Result<()> {
+        self.recover_activation_transactions()?;
         let plugins = self.root.join("plugins");
         if plugins.exists()
             && fs::symlink_metadata(&plugins)?.is_dir()
@@ -427,6 +573,97 @@ impl PluginPackageRegistry {
             }
         }
         sync_dir(&self.root)
+    }
+
+    fn recover_activation_transactions(&self) -> io::Result<()> {
+        let directory = self.activation_transactions_dir();
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "activation transaction path is not a real directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(encoded_id) = name.strip_suffix(".json") else {
+                if entry.file_type()?.is_file() {
+                    fs::remove_file(entry.path())?;
+                }
+                continue;
+            };
+            let Some(plugin_id) = decode_key(encoded_id) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "activation transaction has an invalid plugin id",
+                ));
+            };
+            if !entry.file_type()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "activation transaction is not a regular file",
+                ));
+            }
+            let record = File::open(entry.path()).and_then(|file| {
+                serde_json::from_reader::<_, ActivationRecord>(file).map_err(io::Error::other)
+            });
+            let Ok(record) = record else {
+                self.remove_active_pointer(&plugin_id)?;
+                fs::remove_file(entry.path())?;
+                continue;
+            };
+            if record.schema != 1
+                || record.plugin_id != plugin_id
+                || validate_identity(&record.previous_version).is_err()
+                || validate_identity(&record.candidate_version).is_err()
+            {
+                self.remove_active_pointer(&plugin_id)?;
+                fs::remove_file(entry.path())?;
+                continue;
+            }
+            let active = self.active(&plugin_id)?;
+            if active
+                .as_ref()
+                .is_some_and(|active| active.version == record.candidate_version)
+            {
+                if self
+                    .read_complete(
+                        &self.version_path(&plugin_id, &record.previous_version),
+                        &plugin_id,
+                        &record.previous_version,
+                    )
+                    .is_some()
+                {
+                    self.set_active(&plugin_id, &record.previous_version)?;
+                } else {
+                    self.remove_active_pointer(&plugin_id)?;
+                }
+            }
+            fs::remove_file(entry.path())?;
+        }
+        sync_dir(&directory)
+    }
+
+    fn remove_active_pointer(&self, plugin_id: &str) -> io::Result<()> {
+        let directory = self.root.join("active");
+        let pointer = directory.join(encode_key(plugin_id));
+        match fs::symlink_metadata(&pointer) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                fs::remove_file(pointer)?;
+                sync_dir(&directory)
+            }
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "active plugin pointer is not a regular file",
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn version_path(&self, plugin_id: &str, version: &str) -> PathBuf {
@@ -857,6 +1094,52 @@ mod tests {
         );
         restarted.set_active("demo", "2").unwrap();
         assert_eq!(restarted.active("demo").unwrap().unwrap().version, "2");
+    }
+
+    #[test]
+    fn staged_activation_can_commit_or_roll_back_after_readiness() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("registry");
+        let registry = PluginPackageRegistry::at(&root).unwrap();
+        let one = source(&temp, "one", b"stable");
+        registry.install_verified("demo", "1", &one, true).unwrap();
+        let two = source(&temp, "two", b"candidate");
+        registry.install_verified("demo", "2", &two, false).unwrap();
+
+        let failed_candidate = registry.begin_activation("demo", "1", "2").unwrap();
+        assert_eq!(registry.active("demo").unwrap().unwrap().version, "2");
+        registry.rollback_activation(failed_candidate).unwrap();
+        assert_eq!(registry.active("demo").unwrap().unwrap().version, "1");
+
+        let ready_candidate = registry.begin_activation("demo", "1", "2").unwrap();
+        registry.commit_activation(ready_candidate.clone()).unwrap();
+        registry.commit_activation(ready_candidate).unwrap();
+        assert_eq!(registry.active("demo").unwrap().unwrap().version, "2");
+        assert_eq!(registry.versions("demo").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn interrupted_staged_activation_recovers_to_last_known_good_version() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("registry");
+        let registry = PluginPackageRegistry::at(&root).unwrap();
+        let one = source(&temp, "one", b"stable");
+        registry.install_verified("demo", "1", &one, true).unwrap();
+        let two = source(&temp, "two", b"candidate");
+        registry.install_verified("demo", "2", &two, false).unwrap();
+
+        let _transaction = registry.begin_activation("demo", "1", "2").unwrap();
+        assert_eq!(registry.active("demo").unwrap().unwrap().version, "2");
+
+        let restarted = PluginPackageRegistry::at(&root).unwrap();
+        assert_eq!(restarted.active("demo").unwrap().unwrap().version, "1");
+        assert_eq!(restarted.versions("demo").unwrap().len(), 2);
+        assert_eq!(
+            fs::read_dir(restarted.activation_transactions_dir())
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     #[test]

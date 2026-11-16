@@ -196,6 +196,9 @@ async fn manager_with_origin_and_lifecycle(
             ),
         ],
         startup_timeout: timeout,
+        manifest_capabilities: vec![capability::CONTEXT.into(), "library.read".into()],
+        required_capabilities: vec![],
+        blocked_capabilities: vec![],
         integrity: None,
     }];
     let manager = if managed_lifecycle {
@@ -228,6 +231,8 @@ async fn managed_package_integrity_failure_prevents_process_start() {
         .get_mut("fixture")
         .unwrap()
         .config
+        .get_mut()
+        .unwrap()
         .integrity = Some(PackageIntegrity {
         package_root: directory.path().to_owned(),
         publisher_key: [0; 32],
@@ -305,6 +310,8 @@ async fn incompatible_signed_target_prevents_process_start() {
         .get_mut("fixture")
         .unwrap()
         .config
+        .get_mut()
+        .unwrap()
         .integrity = Some(PackageIntegrity {
         package_root: package.path().to_owned(),
         publisher_key: public_key.try_into().unwrap(),
@@ -465,6 +472,50 @@ async fn managed_lifecycle_refuses_disabled_plugins_and_requires_an_active_profi
     processes.shutdown().await;
 }
 
+#[tokio::test]
+async fn update_readiness_can_start_a_disabled_plugin_without_persisting_enablement() {
+    let (processes, _server, directory) = manager_with_origin_and_lifecycle(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+        crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "fixture-publisher".into(),
+        },
+        true,
+    )
+    .await;
+    let profiles = processes.inner.api.profiles();
+    profiles.update(Some("account-one"), true);
+    let state =
+        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data"));
+    let profile = profiles.current().unwrap();
+    assert!(
+        !state
+            .open_activation(&profile)
+            .unwrap()
+            .is_enabled("fixture.plugin")
+    );
+    assert_eq!(
+        processes
+            .ensure_started("fixture")
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+
+    processes.ensure_ready_for_update("fixture").await.unwrap();
+    assert!(processes.inner.api.connected("fixture"));
+    processes.stop_provider("fixture").await;
+    assert!(
+        !state
+            .open_activation(&profile)
+            .unwrap()
+            .is_enabled("fixture.plugin")
+    );
+    processes.shutdown().await;
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn activation_persists_per_account_and_remove_stops_unregisters_and_deletes_packages() {
@@ -497,6 +548,7 @@ async fn activation_persists_per_account_and_remove_stops_unregisters_and_delete
             crate::plugin_host::profile::PluginStateLayout::new(
                 directory.path().join("plugin-data"),
             ),
+            registry.clone(),
             crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
         ));
     lifecycle.spawn_profile_lifecycle(&tokio::runtime::Handle::current());
@@ -539,6 +591,191 @@ async fn activation_persists_per_account_and_remove_stops_unregisters_and_delete
     );
     assert!(registry.active("fixture.plugin").unwrap().is_none());
     processes.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn failed_update_rolls_back_version_and_keeps_changed_permission_revoked() {
+    let (processes, _server, directory) = manager_with_origin_and_lifecycle(
+        std::env::current_exe().unwrap(),
+        "linger",
+        Duration::from_secs(10),
+        crate::plugin_host::provider::RegistrationOrigin::ThirdParty {
+            publisher_fingerprint: "fixture-publisher".into(),
+        },
+        true,
+    )
+    .await;
+    let api = processes.inner.api.clone();
+    api.profiles().update(Some("account-one"), true);
+    let state =
+        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data"));
+    let profile = api.profiles().current().unwrap();
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "fixture-publisher".into(),
+        profile_id: profile.profile_id().into(),
+    };
+    let permission = "library.read";
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "fixture provider data".into(),
+    };
+    let request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: permission.into(),
+        required: false,
+        allowed_scopes: std::collections::BTreeSet::from([scope.clone()]),
+    };
+    state
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(
+            identity.clone(),
+            &[request],
+            &[crate::plugin_host::grants::PermissionDecision {
+                permission_id: permission.into(),
+                scope,
+                granted: true,
+            }],
+        )
+        .unwrap();
+
+    let package_source = directory.path().join("update-source");
+    std::fs::create_dir(&package_source).unwrap();
+    std::fs::write(package_source.join("plugin.bin"), b"fixture update").unwrap();
+    let registry = gamenode_platform::plugin_registry::PluginPackageRegistry::at(
+        directory.path().join("update-registry"),
+    )
+    .unwrap();
+    registry
+        .install_verified("fixture.plugin", "1.0.0", &package_source, true)
+        .unwrap();
+    let candidate = registry
+        .install_verified("fixture.plugin", "2.0.0", &package_source, false)
+        .unwrap();
+    let lifecycle = crate::plugin_host::runtime::ThirdPartyPluginLifecycle::new(
+        api,
+        processes.clone(),
+        state.clone(),
+        registry.clone(),
+        crate::plugin_host::managed_packages::ManagedPackageLifecycle::new(registry.clone()),
+    );
+    lifecycle.enable("fixture.plugin".into()).await.unwrap();
+    assert!(processes.process_id("fixture").await.is_some());
+
+    let mut candidate_config = processes.config("fixture").unwrap();
+    candidate_config.environment = vec![("GAMENODE_TEST_PLUGIN_MODE".into(), "stall".into())];
+    candidate_config.startup_timeout = Duration::from_millis(150);
+    candidate_config.blocked_capabilities = vec![permission.into()];
+    let error = lifecycle
+        .activate_update(
+            "fixture.plugin".into(),
+            "1.0.0".into(),
+            candidate,
+            candidate_config,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error.code(),
+        tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+    ));
+    assert_eq!(
+        registry.active("fixture.plugin").unwrap().unwrap().version,
+        "1.0.0"
+    );
+    let persisted = state.open_grants(&profile).unwrap();
+    assert_eq!(
+        persisted.effective_grants(&identity)[0].state,
+        crate::plugin_host::grants::PermissionState::Denied
+    );
+    assert_eq!(
+        processes
+            .config("fixture")
+            .unwrap()
+            .environment
+            .iter()
+            .find(|(key, _)| key == "GAMENODE_TEST_PLUGIN_MODE")
+            .map(|(_, value)| value),
+        Some(&std::ffi::OsString::from("linger"))
+    );
+    assert!(processes.process_id("fixture").await.is_some());
+    processes.shutdown().await;
+}
+
+#[test]
+fn interrupted_update_recovery_keeps_last_known_good_and_revoked_grants() {
+    let directory = tempfile::tempdir().unwrap();
+    let package_source = directory.path().join("package-source");
+    std::fs::create_dir(&package_source).unwrap();
+    std::fs::write(package_source.join("plugin.bin"), b"complete package").unwrap();
+    let registry_root = directory.path().join("packages");
+    let registry =
+        gamenode_platform::plugin_registry::PluginPackageRegistry::at(&registry_root).unwrap();
+    registry
+        .install_verified("fixture.plugin", "1.0.0", &package_source, true)
+        .unwrap();
+    registry
+        .install_verified("fixture.plugin", "2.0.0", &package_source, false)
+        .unwrap();
+
+    let profiles = crate::plugin_host::profile::PluginProfiles::default();
+    profiles.update(Some("account-one"), true);
+    let profile = profiles.current().unwrap();
+    let state =
+        crate::plugin_host::profile::PluginStateLayout::new(directory.path().join("plugin-data"));
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "fixture-publisher".into(),
+        profile_id: profile.profile_id().into(),
+    };
+    let permission = "library.read";
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "fixture provider data".into(),
+    };
+    let request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: permission.into(),
+        required: false,
+        allowed_scopes: std::collections::BTreeSet::from([scope.clone()]),
+    };
+    let mut grants = state.open_grants(&profile).unwrap();
+    grants
+        .replace_grants(
+            identity.clone(),
+            &[request],
+            &[crate::plugin_host::grants::PermissionDecision {
+                permission_id: permission.into(),
+                scope,
+                granted: true,
+            }],
+        )
+        .unwrap();
+    grants
+        .revoke_permissions(
+            &identity,
+            &std::collections::BTreeSet::from([permission.to_owned()]),
+        )
+        .unwrap();
+    let _interrupted = registry
+        .begin_activation("fixture.plugin", "1.0.0", "2.0.0")
+        .unwrap();
+    assert_eq!(
+        registry.active("fixture.plugin").unwrap().unwrap().version,
+        "2.0.0"
+    );
+    drop(registry);
+
+    let recovered =
+        gamenode_platform::plugin_registry::PluginPackageRegistry::at(&registry_root).unwrap();
+    assert_eq!(
+        recovered.active("fixture.plugin").unwrap().unwrap().version,
+        "1.0.0"
+    );
+    let grants = state.open_grants(&profile).unwrap();
+    assert_eq!(
+        grants.effective_grants(&identity)[0].state,
+        crate::plugin_host::grants::PermissionState::Denied
+    );
 }
 
 #[tokio::test]

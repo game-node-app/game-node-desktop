@@ -237,6 +237,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    if let Some(provider_runtime) = provider_runtime.as_ref() {
+        plugin_updates.set_lifecycle(provider_runtime.lifecycle());
+    }
 
     let app_handle_slot = Arc::new(std::sync::Mutex::new(None::<AppHandle>));
     let slot_clone = app_handle_slot.clone();

@@ -210,6 +210,12 @@ impl ValidatedManifest {
     pub fn manifest(&self) -> &Manifest {
         &self.0
     }
+
+    pub(crate) fn publisher_key(&self) -> [u8; 32] {
+        decode_key(&self.0.publisher.public_key)
+            .and_then(|key| key.try_into().ok())
+            .expect("validated manifest contains a 32-byte publisher key")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

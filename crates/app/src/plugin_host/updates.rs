@@ -214,6 +214,9 @@ pub struct PluginUpdateService {
     indexes: std::sync::Arc<std::sync::Mutex<HashMap<String, VerifiedUpdateIndex>>>,
     checks: std::sync::Arc<AsyncMutex<()>>,
     pending: std::sync::Arc<AsyncMutex<HashMap<String, PendingCandidate>>>,
+    lifecycle: std::sync::Arc<
+        std::sync::RwLock<Option<std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>>>,
+    >,
 }
 
 impl PluginUpdateService {
@@ -242,7 +245,18 @@ impl PluginUpdateService {
             indexes: Default::default(),
             checks: Default::default(),
             pending: Default::default(),
+            lifecycle: Default::default(),
         })
+    }
+
+    pub fn set_lifecycle(
+        &self,
+        lifecycle: std::sync::Arc<super::runtime::ThirdPartyPluginLifecycle>,
+    ) {
+        *self
+            .lifecycle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lifecycle);
     }
 
     pub fn preferences(&self) -> PluginUpdatePreferences {
@@ -441,6 +455,12 @@ impl PluginUpdateService {
     }
 
     pub async fn approve(&self, plugin_id: &str, version: &str) -> Result<String, String> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "managed plugin runtime is unavailable".to_owned())?;
         let candidate = self
             .pending
             .lock()
@@ -460,17 +480,47 @@ impl PluginUpdateService {
         if active.version != candidate.installed_version {
             return Err("the active plugin changed after review; review the update again".into());
         }
-        // New requests are intentionally not written to the permission grants store here.
-        let version = self
+        // New requests are intentionally not written to the permission grants store here. Install
+        // the complete candidate inactive, then require the supervisor's bounded Ready handshake
+        // before the registry commits its active pointer.
+        let installed = self
             .packages
             .install_candidate(
                 &candidate.work.path.join("package"),
                 candidate.publisher_key,
                 EmulationPolicy::RequireNative,
-                true,
+                false,
             )
             .await
-            .map(|installed| installed.version)
+            .map_err(|error| error.to_string())?;
+        let report = self
+            .packages
+            .inspect_candidate(
+                &installed.package_path,
+                candidate.publisher_key,
+                EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let config =
+            super::runtime::managed_process_config(&installed, &report, candidate.publisher_key)
+                .map_err(|error| error.to_string())?;
+        let mut config = config;
+        config.blocked_capabilities = candidate
+            .review
+            .added_permissions
+            .iter()
+            .chain(&candidate.review.changed_permissions)
+            .cloned()
+            .collect();
+        lifecycle
+            .activate_update(
+                plugin_id.to_owned(),
+                candidate.installed_version,
+                installed.clone(),
+                config,
+            )
+            .await
             .map_err(|error| error.to_string())?;
         let mut available = self
             .available
@@ -478,7 +528,7 @@ impl PluginUpdateService {
             .unwrap_or_else(|poison| poison.into_inner());
         available.retain(|item| item.plugin_id != plugin_id);
         let _ = write_available(&self.available_path, &available);
-        Ok(version)
+        Ok(installed.version)
     }
 
     pub async fn decline(&self, plugin_id: &str) {

@@ -133,6 +133,20 @@ describe('LibraryScreen keyboard', () => {
     expect(setInputs(input)).toContainEqual('clearSelection');
   });
 
+  it('keeps the selection when Escape is pressed inside a dialog opened from the library', () => {
+    const input = spyLibraryInput();
+    renderScreen();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    try {
+      fireEvent.keyDown(screen.getByTestId('library-screen'), { key: 'Escape' });
+      expect(setInputs(input)).not.toContainEqual('clearSelection');
+    } finally {
+      dialog.remove();
+    }
+  });
+
   it('ignores Shift+S while an overlay owns the keyboard and when another handler consumed it', () => {
     const input = spyLibraryInput();
     openFilters();

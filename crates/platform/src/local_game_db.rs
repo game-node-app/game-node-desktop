@@ -91,6 +91,31 @@ impl LocalGameStore for SqliteLocalGameStore {
         let v = &candidate_paths(v.clone());
         crate::db::lock(&self.conn).execute("INSERT INTO discovery_candidates(fingerprint,payload) VALUES(?1,?2) ON CONFLICT(fingerprint) DO UPDATE SET payload=excluded.payload", params![v.fingerprint,encode(v)?]).map(drop).map_err(failed)
     }
+    fn save_candidate_suggestion(
+        &self,
+        fingerprint: &str,
+        suggestion: Option<&gamenode_core::library::SuggestionView>,
+    ) -> Result<(), StorageError> {
+        // One JSON update keeps a suggestion write from overwriting a newer selected target or
+        // any other field another worker changed while the search was in flight.
+        let suggestion = serde_json::to_string(&suggestion).map_err(failed)?;
+        crate::db::lock(&self.conn)
+            .execute(
+                "UPDATE discovery_candidates SET payload=json_set(payload,'$.suggestion',json(?2)) WHERE fingerprint=?1",
+                params![fingerprint, suggestion],
+            )
+            .map(drop)
+            .map_err(failed)
+    }
+    fn delete_candidate(&self, fingerprint: &str) -> Result<(), StorageError> {
+        crate::db::lock(&self.conn)
+            .execute(
+                "DELETE FROM discovery_candidates WHERE fingerprint=?1",
+                params![fingerprint],
+            )
+            .map(drop)
+            .map_err(failed)
+    }
     fn inferences(&self, account: &str) -> Result<Vec<Inference>, StorageError> {
         let conn = crate::db::lock(&self.conn);
         let mut statement = conn
@@ -179,6 +204,69 @@ impl LocalGameStore for SqliteLocalGameStore {
         }
         tx.commit().map_err(failed)
     }
+    fn backup_version_meta(
+        &self,
+        installation: &str,
+    ) -> Result<Vec<BackupVersionMeta>, StorageError> {
+        let conn = crate::db::lock(&self.conn);
+        let mut statement = conn
+            .prepare(
+                "SELECT installation, profile, backup_id, reason, play_seconds, created_at
+                 FROM backup_version_meta WHERE installation=?1 ORDER BY created_at, backup_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([installation], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(failed)?;
+        let mut meta = Vec::new();
+        for row in rows {
+            let (installation, profile, backup_id, reason, play_seconds, created_at) =
+                row.map_err(failed)?;
+            let Some(reason) = BackupReason::parse(&reason) else {
+                continue;
+            };
+            meta.push(BackupVersionMeta {
+                installation,
+                profile,
+                backup_id,
+                reason,
+                play_seconds: play_seconds.and_then(|value| value.try_into().ok()),
+                created_at,
+            });
+        }
+        Ok(meta)
+    }
+    fn save_backup_version_meta(&self, v: &BackupVersionMeta) -> Result<(), StorageError> {
+        crate::db::lock(&self.conn)
+            .execute(
+                "INSERT INTO backup_version_meta
+                    (installation, profile, backup_id, reason, play_seconds, created_at)
+                 VALUES(?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(installation, profile, backup_id) DO UPDATE SET
+                    reason=excluded.reason,
+                    play_seconds=excluded.play_seconds,
+                    created_at=excluded.created_at",
+                params![
+                    v.installation,
+                    v.profile,
+                    v.backup_id,
+                    v.reason.as_str(),
+                    v.play_seconds.map(i64::from),
+                    v.created_at
+                ],
+            )
+            .map(drop)
+            .map_err(failed)
+    }
 }
 
 #[cfg(test)]
@@ -199,9 +287,73 @@ mod tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         }
     }
+    #[test]
+    fn a_custom_cover_round_trips_with_the_registration() {
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        let store = SqliteLocalGameStore::new(Arc::new(Mutex::new(conn)));
+        let mut game = registration();
+        game.custom_cover = Some("local-stable-0123456789abcdef.webp".into());
+        store.save_registration(&game).unwrap();
+        assert_eq!(
+            store.registrations().unwrap()[0].custom_cover.as_deref(),
+            Some("local-stable-0123456789abcdef.webp")
+        );
+        let mut cleared = game.clone();
+        cleared.custom_cover = None;
+        cleared.revision = 2;
+        store.save_registration(&cleared).unwrap();
+        assert_eq!(store.registrations().unwrap()[0].custom_cover, None);
+    }
+    #[test]
+    fn a_candidate_round_trips_review_fields_and_can_be_deleted() {
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        let store = SqliteLocalGameStore::new(Arc::new(Mutex::new(conn)));
+        let candidate = Candidate {
+            fingerprint: "fingerprint".into(),
+            watch: "watch".into(),
+            root: "C:/Games/Instaladores".into(),
+            title: "setup_redist".into(),
+            targets: vec!["C:/Games/Instaladores/vc_redist.x64.exe".into()],
+            selected_target: Some("C:/Games/Instaladores/vc_redist.x64.exe".into()),
+            evidence: vec![],
+            ignored: false,
+            incomplete: false,
+            suggestion: Some(gamenode_core::library::SuggestionView {
+                game_id: 42,
+                title: "Moss & Machine".into(),
+                year: Some(2023),
+                cover_url: None,
+                confidence: 96,
+                tone: gamenode_core::library::SuggestionTone::Success,
+            }),
+            likely_non_game: true,
+        };
+        store.save_candidate(&candidate).unwrap();
+        let saved = store.candidates().unwrap().remove(0);
+        assert_eq!(saved.suggestion, candidate.suggestion);
+        assert!(saved.likely_non_game);
+        // A suggestion update is targeted and keeps the rest of the record.
+        store
+            .save_candidate_suggestion("fingerprint", None)
+            .unwrap();
+        let saved = store.candidates().unwrap().remove(0);
+        assert_eq!(saved.suggestion, None);
+        assert_eq!(saved.selected_target, candidate.selected_target);
+        store
+            .save_candidate_suggestion("fingerprint", candidate.suggestion.as_ref())
+            .unwrap();
+        assert_eq!(
+            store.candidates().unwrap().remove(0).suggestion,
+            candidate.suggestion
+        );
+        store.delete_candidate("fingerprint").unwrap();
+        assert!(store.candidates().unwrap().is_empty());
+    }
+
     #[test]
     fn legacy_verbatim_paths_are_cleaned_on_read_and_write() {
         let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
@@ -226,6 +378,8 @@ mod tests {
             evidence: vec![],
             ignored: true,
             incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
         };
         // Insert the old payloads directly, bypassing the corrected write path.
         conn.execute(
@@ -336,6 +490,7 @@ mod tests {
         assert_eq!(game.working_directory, r"F:\Games\ER");
         assert!(game.rediscovery_allowed);
         assert_eq!(game.transferred_from.as_deref(), Some("old-id"));
+        assert_eq!(game.custom_cover, None);
 
         assert_eq!(
             store.watches().expect("legacy watches load")[0].id,
@@ -382,6 +537,50 @@ mod tests {
 
         let settings = store.backup_settings().expect("legacy settings load");
         assert_eq!(settings.destination, r"D:\Backups");
+        assert_eq!(settings.retention, 10);
+    }
+
+    #[test]
+    fn backup_version_meta_round_trips_and_replaces_a_row() {
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        let store = SqliteLocalGameStore::new(Arc::new(Mutex::new(conn)));
+        let first = BackupVersionMeta {
+            installation: "game".into(),
+            profile: "profile".into(),
+            backup_id: "backup-1".into(),
+            reason: BackupReason::AfterSession,
+            play_seconds: Some(42 * 60),
+            created_at: 100,
+        };
+        let recovery = BackupVersionMeta {
+            installation: "game".into(),
+            profile: "profile_recovery_1".into(),
+            backup_id: "backup-1".into(),
+            reason: BackupReason::Recovery,
+            play_seconds: None,
+            created_at: 200,
+        };
+        let other = BackupVersionMeta {
+            installation: "other".into(),
+            ..first.clone()
+        };
+        store.save_backup_version_meta(&first).unwrap();
+        store.save_backup_version_meta(&recovery).unwrap();
+        store.save_backup_version_meta(&other).unwrap();
+        let meta = store.backup_version_meta("game").unwrap();
+        assert_eq!(meta, vec![first.clone(), recovery.clone()]);
+        assert_eq!(
+            store.backup_version_meta("other").unwrap(),
+            vec![other.clone()]
+        );
+
+        let updated = BackupVersionMeta {
+            reason: BackupReason::Manual,
+            play_seconds: None,
+            ..first
+        };
+        store.save_backup_version_meta(&updated).unwrap();
+        assert_eq!(store.backup_version_meta("game").unwrap()[0], updated);
     }
 
     #[test]
@@ -430,6 +629,7 @@ mod tests {
             registry: vec![],
             support: SaveSupport::Supported,
             automatic: None,
+            retention: None,
         };
         store.save_profile(&profile).unwrap();
         let job = BackupJob {
@@ -444,6 +644,7 @@ mod tests {
             ready_at: 10,
             backup_id: None,
             error: None,
+            play_seconds: None,
         };
         store.save_job(&job).unwrap();
         drop(store);

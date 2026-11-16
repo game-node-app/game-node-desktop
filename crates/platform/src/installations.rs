@@ -180,6 +180,7 @@ impl InstallationHost for WindowsInstallations {
                 removed: false,
                 rediscovery_allowed: false,
                 transferred_from: None,
+                custom_cover: None,
                 available: true,
             })
         }
@@ -608,6 +609,7 @@ mod tests {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         };
         assert_eq!(

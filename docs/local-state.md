@@ -156,10 +156,17 @@ Migration `0004_drm_free_backups.sql` adds Windows-user-owned tables:
   `destination`, `state` and result `payload`. A play-period identity deduplicates
   automatic work. Profile changes cancel obsolete queued jobs transactionally.
 - `backup_destinations`: previously used local destination `path` values.
+- `backup_version_meta` (migration `0013_backup_metadata.sql`): `installation`,
+  `profile`, `backup_id`, `reason` (`afterSession`, `manual`, `recovery`),
+  `play_seconds` and `created_at`, primary keyed by installation/profile/backup.
+  Recovery namespaces keep their own profile identity, so ordinary and recovery
+  rows never collide.
 
-The `backup_settings` settings key stores independent automatic-backup control
-and destination. Save profiles and protection belong to the OS user and survive
-GameNode account changes. They never inherit a catalog rematch. Backup bytes use
+The `backup_settings` settings key stores independent automatic-backup control,
+the default destination and the default retention (`5`, `10`, `20` or `50`;
+ten when the key predates the migration). Save profiles and protection belong
+to the OS user and survive GameNode account changes. A per-profile `retention`
+override is stored with the save profile. They never inherit a catalog rematch. Backup bytes use
 `backups/manual/<installation UUID>/<profile ID>/`, outside SQLite; removing a
 registration preserves archives. Recovery snapshots are retained separately from
 ordinary history. Interrupted jobs remain durable and require reconciliation

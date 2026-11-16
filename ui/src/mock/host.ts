@@ -6,6 +6,7 @@ import {
   createDefaultSnapshot,
   filtersAreDefault,
   getMatchedGameId,
+  type AddItem,
   type AddSummary,
   type AuthInput,
   type CatalogStatus,
@@ -15,8 +16,11 @@ import {
   type LibraryScope,
   type LibraryView,
   type EntryStatus,
+  type MatchOption,
   type PaletteEntry,
   type PluginInfo,
+  type Provider,
+  type Registration,
   type Row,
   type SavedView,
   type SavedViewNotice,
@@ -29,6 +33,10 @@ import {
   type StoreAccountState,
   type StoreAccountView,
   type SuggestionView,
+  type ToolCatalogItemView,
+  type ToolChannel,
+  type ToolModalView,
+  type ToolRelease,
   type UndoAddView,
   type ViewError,
   type ViewWriteView,
@@ -85,8 +93,81 @@ export const MOCK_COLLECTIONS = [
   { id: 'coop-no-sofa', name: 'Coop no sofá' },
 ];
 
+/**
+ * Creating a collection with this name is refused with `collection_limit_reached`, so the
+ * inline limit message can be exercised in `VITE_UI_MOCK=1`.
+ */
+export const MOCK_LIMIT_COLLECTION_NAME = 'Collection limit';
+
 /** A hidden fixture entry, so Show hidden and the hidden counts can be exercised. */
 export const MOCK_HIDDEN_KEY = 'steam:900';
+
+/**
+ * The one game whose tools open with an anti-cheat detection, so the danger callout and the
+ * disabled Install button are reachable through the usual library action in the mock.
+ */
+export const MOCK_TOOLS_ANTICHEAT_KEY = 'steam:9';
+
+const MOCK_TOOL_CATALOG: ToolCatalogItemView[] = [
+  {
+    id: 'optiscaler',
+    name: 'OptiScaler',
+    summary: 'Upscaler & frame generation middleware (DLSS / XeSS / FSR 2/3/4)',
+    license: 'GPL-3.0',
+    sourceUrl: 'https://github.com/optiscaler/OptiScaler',
+  },
+];
+
+const MOCK_TOOL_RELEASES: ToolRelease[] = [
+  {
+    toolId: 'optiscaler',
+    channel: 'stable',
+    version: '0.7.9',
+    tagName: 'v0.7.9',
+    name: 'OptiScaler 0.7.9',
+    publishedAt: '2026-05-01',
+    downloadUrl:
+      'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.9/OptiScaler.7z',
+    assetName: 'OptiScaler.7z',
+    sizeBytes: 39845888,
+    sha256: 'sha-0.7.9',
+    cachedPath: null,
+  },
+  {
+    toolId: 'optiscaler',
+    channel: 'stable',
+    version: '0.7.2',
+    tagName: 'v0.7.2',
+    name: 'OptiScaler 0.7.2',
+    publishedAt: '2026-04-01',
+    downloadUrl:
+      'https://github.com/optiscaler/OptiScaler/releases/download/v0.7.2/OptiScaler.7z',
+    assetName: 'OptiScaler.7z',
+    sizeBytes: 36000000,
+    sha256: null,
+    cachedPath: '/cache/optiscaler-0.7.2.7z',
+  },
+  {
+    toolId: 'optiscaler',
+    channel: 'nightly',
+    version: '0.8.0-pre1',
+    tagName: 'nightly-2026-06-01',
+    name: 'OptiScaler Nightly 2026-06-01',
+    publishedAt: '2026-06-01',
+    downloadUrl:
+      'https://github.com/optiscaler/OptiScaler/releases/download/nightly/OptiScaler-nightly.7z',
+    assetName: 'OptiScaler-nightly.7z',
+    sizeBytes: 41000000,
+    sha256: 'sha-nightly',
+    cachedPath: null,
+  },
+];
+
+/**
+ * Cached cover file names for the signed-out mural. Fewer than 25, so the remaining tiles
+ * exercise the neutral fallback, and all resolve to `/mock-covers/` in the mock.
+ */
+export const MOCK_COVER_WALL = Array.from({ length: 12 }, (_, index) => `mock-${index}.svg`);
 
 /** The fixture saved view; a new host starts from it, and the mock keeps later changes in memory. */
 const MOCK_SAVED_VIEWS: SavedView[] = [
@@ -191,33 +272,94 @@ allRows.push({
 });
 
 const DAY = 86_400;
-const MOCK_ACHIEVEMENTS = [
-  { id: 'ACH_FIRST', name: 'First steps', description: 'Finish the opening chapter.', hidden: false, unlocked: true, unlockedAt: NOW - 300, position: 0 },
-  { id: 'ACH_COLLECT', name: 'Collector', description: 'Find every hidden relic.', hidden: false, unlocked: true, unlockedAt: NOW - 7_200, position: 1 },
-  { id: 'ACH_HIDDEN', name: 'A secret', description: 'A spoiler description.', hidden: true, unlocked: false, unlockedAt: null, position: 2 },
-  { id: 'ACH_BOSS', name: 'Boss rush', description: 'Defeat every boss.', hidden: false, unlocked: false, unlockedAt: null, position: 3 },
-  { id: 'ACH_NIGHT', name: 'Night owl', description: 'Play after midnight.', hidden: false, unlocked: false, unlockedAt: null, position: 4 },
-];
+const HIDDEN_SORT_LABEL = 'Hidden achievement';
 
-function mockAchievementList(filter: string) {
+/** 58 achievements with 31 unlocked, one locked hidden and rarity on most rows (D04). */
+const MOCK_ACHIEVEMENTS = Array.from({ length: 58 }, (_, index) => ({
+  id: `ACH_${String(index).padStart(2, '0')}`,
+  name: index === 40 ? 'A secret' : `Achievement ${index + 1}`,
+  description: index === 40 ? 'A spoiler description.' : `Fictional milestone ${index + 1}.`,
+  hidden: index === 40,
+  unlocked: index < 31,
+  unlockedAt: index < 31 ? NOW - 300 - index * 3_600 : null,
+  globalPercent: index % 7 === 6 ? null : 120 + index * 41,
+  position: index,
+}));
+
+function achievementSortKey(
+  achievement: (typeof MOCK_ACHIEVEMENTS)[number],
+): string {
+  return achievement.hidden && !achievement.unlocked
+    ? HIDDEN_SORT_LABEL
+    : achievement.name;
+}
+
+function mockAchievementList(filter: string, sort: string) {
   const records = MOCK_ACHIEVEMENTS
-    .map((achievement) => ({
-      ...achievement,
-      iconUrl: '',
-      iconGrayUrl: '',
-    }))
     .filter((achievement) =>
       filter === 'unlocked'
         ? achievement.unlocked
         : filter === 'locked'
           ? !achievement.unlocked
           : true,
-    );
+    )
+    .sort((left, right) => {
+      if (sort === 'rarest' || sort === 'mostCommon') {
+        const leftMissing = left.globalPercent == null;
+        const rightMissing = right.globalPercent == null;
+        if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+        if (!leftMissing && !rightMissing && left.globalPercent !== right.globalPercent) {
+          return sort === 'rarest'
+            ? left.globalPercent! - right.globalPercent!
+            : right.globalPercent! - left.globalPercent!;
+        }
+        return left.position - right.position;
+      }
+      if (sort === 'name') {
+        return achievementSortKey(left)
+          .toLocaleLowerCase()
+          .localeCompare(achievementSortKey(right).toLocaleLowerCase()) ||
+          left.position - right.position;
+      }
+      // Most recent: unlocked newest first, unlocked without a time, then locked.
+      const group = (achievement: typeof left): number =>
+        achievement.unlocked
+          ? achievement.unlockedAt == null
+            ? 1
+            : 0
+          : 2;
+      const groupOrder = group(left) - group(right);
+      if (groupOrder !== 0) return groupOrder;
+      if (group(left) === 0) return right.unlockedAt! - left.unlockedAt!;
+      return left.position - right.position;
+    })
+    .map((achievement) => ({
+      id: achievement.id,
+      name: achievement.name,
+      description: achievement.description,
+      hidden: achievement.hidden,
+      iconUrl: '',
+      iconGrayUrl: '',
+      unlocked: achievement.unlocked,
+      unlockedAt: achievement.unlockedAt,
+      globalPercent: achievement.globalPercent,
+      position: achievement.position,
+    }));
+  const unlocked = MOCK_ACHIEVEMENTS.filter((achievement) => achievement.unlocked).length;
   return {
     connected: true,
     state: 'ready' as const,
     lastSuccessAt: NOW - 60,
+    refreshedAt: NOW - 60,
     failure: null,
+    counts: {
+      all: MOCK_ACHIEVEMENTS.length,
+      unlocked,
+      locked: MOCK_ACHIEVEMENTS.length - unlocked,
+    },
+    hasRarity: MOCK_ACHIEVEMENTS.some((achievement) => achievement.globalPercent != null),
+    providerName: 'Steam',
+    hasProviderPage: true,
     achievements: records,
   };
 }
@@ -329,6 +471,93 @@ const MOCK_SUGGESTIONS: Record<string, SuggestionView[]> = {
     },
   ],
 };
+
+/**
+ * Three match candidates at 96/74/38%, as in the design's D01 fixture. A matched row's current
+ * game replaces the first option so the dialog preselects it; every other row gets generated ids.
+ */
+function mockMatchCandidates(row: Row): MatchOption[] {
+  const matched = getMatchedGameId(row.status);
+  const year = row.releaseYear ?? 2024;
+  return [
+    {
+      gameId: matched ?? 1000,
+      name: matched != null ? (row.matchedName ?? row.title) : row.title,
+      releaseYear: year,
+      coverUrl: `/mock-covers/mock-${(row.key.length + 1) % 12}.svg`,
+      coverFile: `mock-${(row.key.length + 1) % 12}.svg`,
+      current: matched != null,
+      confidence: 96,
+      tone: 'success',
+      platforms: ['PC', 'Switch'],
+      reasons: [
+        { titleSimilarity: { percent: 96 } },
+        'sameYear',
+        'storeIdRecognized',
+      ],
+    },
+    {
+      gameId: 1001,
+      name: `${row.title} Remastered`,
+      releaseYear: 2021,
+      coverUrl: `/mock-covers/mock-${(row.key.length + 4) % 12}.svg`,
+      coverFile: null,
+      current: false,
+      confidence: 74,
+      tone: 'warning',
+      platforms: ['PC'],
+      reasons: [
+        { titleSimilarity: { percent: 74 } },
+        'storeIdRecognized',
+      ],
+    },
+    {
+      gameId: 1002,
+      name: `${row.title} Classic`,
+      releaseYear: 2019,
+      coverUrl: null,
+      coverFile: null,
+      current: false,
+      confidence: 38,
+      tone: 'neutral',
+      platforms: ['PC', 'PS4'],
+      reasons: [
+        { titleSimilarity: { percent: 38 } },
+        'storeIdRecognized',
+      ],
+    },
+  ];
+}
+
+/** The search answer's results, in the server's order and without the candidates. */
+function mockMatchResults(query: string): MatchOption[] {
+  return [
+    {
+      gameId: 2000,
+      name: query,
+      releaseYear: 2020,
+      coverUrl: null,
+      coverFile: null,
+      current: false,
+      confidence: 60,
+      tone: 'warning',
+      platforms: ['PC'],
+      reasons: [{ titleSimilarity: { percent: 60 } }],
+    },
+    {
+      gameId: 2001,
+      name: `${query} II`,
+      releaseYear: 2024,
+      coverUrl: null,
+      coverFile: null,
+      current: false,
+      confidence: 30,
+      tone: 'neutral',
+      platforms: [],
+      reasons: [{ titleSimilarity: { percent: 30 } }],
+    },
+  ];
+}
 
 function mockPlaytimeLabel(seconds: number | null | undefined): string | null {
   if (seconds == null || seconds < 0) return null;
@@ -571,6 +800,24 @@ function createVariantRows(): Row[] {
   ];
 }
 
+/** The tracking conflict behind the DRM-free `?claim=1` fixture. */
+function applyClaimFixture(local: Snapshot['localGames']) {
+  local.pendingClaim = {
+    storeKey: 'steam:9',
+    storeEntry: {
+      title: 'Infinite Coast',
+      provider: 'steam',
+      coverFile: 'mock-8.svg',
+      playtimeSeconds: 8 * 3600 + 16 * 60,
+    },
+    registration: {
+      title: 'Infinite Coast',
+      root: 'D:\\Jogos\\Infinite Coast',
+      coverFile: 'mock-2.svg',
+    },
+  };
+}
+
 /** The DRM-free registrations, profile, backups and profile history behind the variant rows. */
 function applyVariantLocalGames(local: Snapshot['localGames']) {
   local.watches = [
@@ -589,6 +836,7 @@ function applyVariantLocalGames(local: Snapshot['localGames']) {
       launchers: [],
       revision: 1,
       removed: false,
+      customCover: null,
       available: true,
     },
     {
@@ -603,6 +851,7 @@ function applyVariantLocalGames(local: Snapshot['localGames']) {
       launchers: [],
       revision: 1,
       removed: false,
+      customCover: null,
       available: true,
     },
   ];
@@ -618,16 +867,57 @@ function applyVariantLocalGames(local: Snapshot['localGames']) {
       registry: [],
       support: 'supported',
       automatic: true,
+      retention: 10,
     },
   ];
-  local.versions = Array.from({ length: 12 }, (_, index) => ({
-    installation: 'brasa',
-    profile: 'brasa-profile',
-    destination: 'D:\\Backups\\Brasa',
-    id: `brasa-backup-${index + 1}`,
-    label: `Backup ${index + 1}`,
-    bytes: 24_000_000 + index * 1024,
-  }));
+  local.versions = [
+    {
+      installation: 'brasa',
+      profile: 'brasa-profile',
+      destination: 'D:\\Backups\\Brasa',
+      id: 'brasa-backup-12',
+      label: '2026-11-15 14:20:00',
+      bytes: 7_100_000,
+      createdAt: NOW - 2 * 3_600,
+      reason: 'afterSession',
+      playSeconds: 42 * 60,
+    },
+    {
+      installation: 'brasa',
+      profile: 'brasa-profile',
+      destination: 'D:\\Backups\\Brasa',
+      id: 'brasa-backup-11',
+      label: '2026-11-14 22:05:00',
+      bytes: 7_000_000,
+      createdAt: NOW - 26 * 3_600,
+      reason: 'afterSession',
+      playSeconds: 72 * 60,
+    },
+    {
+      installation: 'brasa',
+      profile: 'brasa-profile',
+      destination: 'D:\\Backups\\Brasa',
+      id: 'brasa-backup-10',
+      label: '2026-11-14 18:30:00',
+      bytes: 6_800_000,
+      createdAt: NOW - 30 * 3_600,
+      reason: 'manual',
+      playSeconds: null,
+    },
+    {
+      installation: 'brasa',
+      profile: 'brasa-profile_recovery_mock',
+      destination: 'D:\\Backups\\Brasa',
+      id: 'brasa-recovery-1',
+      label: '2026-11-10 21:44:00',
+      bytes: 6_800_000,
+      createdAt: NOW - 5 * DAY,
+      reason: 'recovery',
+      playSeconds: null,
+    },
+  ];
+  local.historyBytes = local.versions.reduce((total, version) => total + version.bytes, 0);
+  local.historyCount = local.versions.length;
   local.jobs = [
     {
       id: 'brasa-job-2',
@@ -656,54 +946,111 @@ function applyVariantLocalGames(local: Snapshot['localGames']) {
       error: null,
     },
   ];
-  local.settings = { automatic: true, destination: 'D:\\Backups' };
+  local.settings = { automatic: true, destination: 'D:\\Backups', retention: 10 };
   local.discoveryCompleted = true;
   local.discoveryLastCheckedAt = NOW - 12 * 60;
+}
+
+function candidateFileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? '';
+}
+
+/** Mirrors `identity::maintenance` in the core, including the `redist` infix. */
+function maintenanceName(name: string): boolean {
+  const lower = candidateFileName(name).toLowerCase().replace(/\.exe$/, '');
+  return (
+    [
+      'setup',
+      'install',
+      'unins',
+      'update',
+      'redist',
+      'vcredist',
+      'dxsetup',
+      'support',
+      'unitycrashhandler',
+      'crashreport',
+      'crashhandler',
+      'crashpad',
+      'ue4prereq',
+      'ue5prereq',
+    ].some((word) => lower.startsWith(word)) ||
+    lower.includes('redist') ||
+    [
+      'editor',
+      'config',
+      'settings',
+      'benchmark',
+      'dedicatedserver',
+      'crashreporter',
+      'updater',
+    ].some((word) => lower.endsWith(word))
+  );
+}
+
+function candidateLikelyNonGame(
+  candidate: Snapshot['localGames']['candidates'][number],
+): boolean {
+  if (candidate.evidence.some((evidence) => evidence.strong)) return false;
+  const executable = candidate.selectedTarget ?? candidate.targets[0] ?? '';
+  return maintenanceName(executable) || maintenanceName(candidate.root);
 }
 
 /** Three watched-folder candidates for the discovered banner and its review (`?discoveries=1`). */
 function applyDiscoveryFixture(local: Snapshot['localGames']) {
   const candidates: Snapshot['localGames']['candidates'] = [
     {
-      fingerprint: 'candidate-signal-ridge',
+      fingerprint: 'candidate-moss-machine',
       watch: 'watched-games',
-      root: 'D:\\Jogos\\Signal Ridge',
-      title: 'Signal Ridge',
-      targets: ['D:\\Jogos\\Signal Ridge\\signal.exe'],
-      selectedTarget: 'D:\\Jogos\\Signal Ridge\\signal.exe',
-      evidence: [{ kind: 'executable', value: 'signal.exe', strong: true }],
+      root: 'D:\\Jogos\\MossMachine',
+      title: 'Moss & Machine',
+      targets: ['D:\\Jogos\\MossMachine\\MossMachine.exe'],
+      selectedTarget: 'D:\\Jogos\\MossMachine\\MossMachine.exe',
+      evidence: [{ kind: 'product', value: 'Moss & Machine', strong: true }],
       ignored: false,
       incomplete: false,
+      suggestion: {
+        gameId: 1201,
+        title: 'Moss & Machine',
+        year: 2023,
+        coverUrl: '/mock-covers/mock-4.svg',
+        confidence: 96,
+        tone: 'success',
+      },
+      likelyNonGame: false,
     },
     {
-      fingerprint: 'candidate-paper-harbor',
+      fingerprint: 'candidate-frostbyte-arcade',
       watch: 'watched-games',
-      root: 'D:\\Jogos\\Paper Harbor',
-      title: 'Paper Harbor',
-      targets: ['D:\\Jogos\\Paper Harbor\\paper.exe'],
-      selectedTarget: 'D:\\Jogos\\Paper Harbor\\paper.exe',
-      evidence: [{ kind: 'executable', value: 'paper.exe', strong: true }],
+      root: 'D:\\Jogos\\FrostbyteArcade',
+      title: 'Frostbyte Arcade',
+      targets: ['D:\\Jogos\\FrostbyteArcade\\frostbyte.exe'],
+      selectedTarget: 'D:\\Jogos\\FrostbyteArcade\\frostbyte.exe',
+      evidence: [{ kind: 'product', value: 'Frostbyte Arcade', strong: true }],
       ignored: false,
       incomplete: false,
+      suggestion: null,
+      likelyNonGame: false,
     },
     {
-      fingerprint: 'candidate-tiny-comet',
+      fingerprint: 'candidate-setup-redist',
       watch: 'watched-games',
-      root: 'D:\\Jogos\\Tiny Comet',
-      title: 'Tiny Comet',
-      targets: [
-        'D:\\Jogos\\Tiny Comet\\comet.exe',
-        'D:\\Jogos\\Tiny Comet\\comet64.exe',
-      ],
-      selectedTarget: 'D:\\Jogos\\Tiny Comet\\comet.exe',
-      evidence: [{ kind: 'executable', value: 'comet.exe', strong: true }],
+      root: 'D:\\Jogos\\Instaladores',
+      title: 'setup_redist',
+      targets: ['D:\\Jogos\\Instaladores\\vc_redist.x64.exe'],
+      selectedTarget: 'D:\\Jogos\\Instaladores\\vc_redist.x64.exe',
+      evidence: [],
       ignored: false,
       incomplete: false,
+      suggestion: null,
+      likelyNonGame: true,
     },
   ];
   local.candidates = candidates;
   local.recentlyAdded = candidates.map((candidate) => candidate.title);
-  local.reviewSelected = [];
+  local.reviewSelected = candidates
+    .filter((candidate) => !candidate.likelyNonGame)
+    .map((candidate) => candidate.fingerprint);
   local.watches = local.watches.length > 0
     ? local.watches
     : [{ id: 'watched-games', path: 'D:\\Jogos', enabled: true }];
@@ -1152,6 +1499,56 @@ function createMockPortsView(scenario: 'default' | 'unavailable'): PortsView {
   };
 }
 
+/** The fixture tools modal for one game, as the host's inspection would return it. */
+function createMockToolModal(
+  entryKey: string,
+  title: string,
+  installDir: string,
+): ToolModalView {
+  const candidates = [
+    {
+      relativeExe: 'bin/x64/Game.exe',
+      label: 'Shipping Executable',
+      architecture: 'x64',
+      preferred: true,
+    },
+    {
+      relativeExe: 'bin/x64/Launcher.exe',
+      label: 'Launcher',
+      architecture: 'x64',
+      preferred: false,
+    },
+  ];
+  const detected = entryKey === MOCK_TOOLS_ANTICHEAT_KEY;
+  return {
+    entryKey,
+    title,
+    installDir,
+    inspection: {
+      entryKey,
+      installDir,
+      candidates,
+      selectedExe: candidates[0].relativeExe,
+      anticheat: detected
+        ? {
+            detected: ['easyAntiCheat'],
+            evidence: ['EasyAntiCheat/EasyAntiCheat_x64.dll'],
+          }
+        : { detected: [], evidence: [] },
+    },
+    tools: [],
+    activeToolId: 'optiscaler',
+    selectedChannel: 'stable',
+    availableVersions: MOCK_TOOL_RELEASES.filter(
+      (release) => release.channel === 'stable',
+    ),
+    selectedVersion: '0.7.9',
+    selectedProxy: 'dxgi',
+    anticheatConfirmed: false,
+    operation: null,
+  };
+}
+
 export function createMockHost(options: {
   signedOut?: boolean;
   /** Signed-in first-run: no library, no connected store and no watched folder. */
@@ -1168,6 +1565,8 @@ export function createMockHost(options: {
   noInstalledLibrary?: boolean;
   /** Watched-folder candidates for the discovered banner and review. */
   discoveries?: boolean;
+  /** A pending DRM-free tracking conflict for the claim dialog. */
+  claim?: boolean;
   /** Starts a rescan on load, for the scanning panel and skeleton states. */
   startScanning?: boolean;
   /** How a saved-view storage write fails: never, once, or every time. */
@@ -1176,19 +1575,37 @@ export function createMockHost(options: {
   portsScenario?: 'default' | 'unavailable';
   catalogScenario?: 'default' | 'error' | 'offline' | 'incomplete';
   failMutations?: boolean;
+  /** Milliseconds one mock add item takes; 0 keeps confirmAdd synchronous for tests. */
+  addBatchDelayMs?: number;
+  /** Keeps a started sign-in pending, so the browser-reopen dialog can be exercised. */
+  signInPending?: boolean;
+  /** Makes Open again report a failure while the attempt keeps waiting. */
+  signInReopenFails?: boolean;
+  /** Signed-in account whose first-sync explanation has not been dismissed yet. */
+  syncFirstRun?: boolean;
+  /** What the mock executable picker does: accept a file, cancel, report a failure, or reject a path outside the game folder. */
+  toolPick?: 'accept' | 'cancel' | 'fail' | 'outside';
 } = {}) {
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
   const snapshot = createDefaultSnapshot();
+  snapshot.tools.catalog = MOCK_TOOL_CATALOG;
+  if (options.syncFirstRun) {
+    // First successful sign-in on this PC: the explanation is still pending.
+    snapshot.sync = { enabled: true, explained: false };
+  }
   // The status bar fixture: the watched folders were checked 12 minutes ago.
   snapshot.localGames.discoveryLastCheckedAt = NOW - 12 * 60;
   if (options.variantLibrary) applyVariantLocalGames(snapshot.localGames);
   if (options.discoveries) applyDiscoveryFixture(snapshot.localGames);
+  if (options.claim) applyClaimFixture(snapshot.localGames);
   if (options.firstRun) {
     snapshot.localGames.watches = [];
     snapshot.localGames.registrations = [];
     snapshot.localGames.profiles = [];
     snapshot.localGames.versions = [];
+    snapshot.localGames.historyBytes = 0;
+    snapshot.localGames.historyCount = 0;
     snapshot.localGames.jobs = [];
     snapshot.localGames.candidates = [];
     snapshot.localGames.recentlyAdded = [];
@@ -1216,6 +1633,8 @@ export function createMockHost(options: {
           : allRows;
   const initialScope: LibraryScope = options.noInstalledLibrary ? 'installed' : 'all';
   let rows = structuredClone(baseRows);
+  /** The GameNode cover each DRM-free row had before a custom cover replaced it in the mock. */
+  const mockGameNodeCovers = new Map<string, string | null>();
   let gridColumns = 1;
   /** The selection the engine keeps while the filters, search or grouping mask it. */
   let selectedKeys = new Set<string>();
@@ -1284,7 +1703,9 @@ export function createMockHost(options: {
   let lastSavedView: SavedViewNotice | null = null;
   let lastHidden: HiddenNotice | null = null;
   let organizationRun = 0;
-  const collections = options.firstRun || options.emptyLibrary ? [] : MOCK_COLLECTIONS;
+  const collections: Array<{ id: string; name: string }> =
+    options.firstRun || options.emptyLibrary ? [] : MOCK_COLLECTIONS.map((c) => ({ ...c }));
+  let createdCollections = 0;
   // The batch GameNode writes. The failure toggle stands in for a failed request.
   let batchRun = 0;
   let lastAdd: AddSummary | null = null;
@@ -1443,6 +1864,7 @@ export function createMockHost(options: {
   function openAddForGame(gameId: number, title: string, coverUrl?: string | null) {
     const lib = snapshot.library;
     if (!lib) return;
+    if (reopenAddRun()) return;
     const existing = catalogMetadata.get(gameId);
     const resolvedTitle = title.trim() || existing?.title || `Game ${gameId}`;
     const resolvedCover = coverUrl ?? existing?.coverUrl ?? null;
@@ -1458,6 +1880,7 @@ export function createMockHost(options: {
           target: { game: gameId },
           entryKey: null,
           title: resolvedTitle,
+          coverFile: null,
           matched: true,
         },
       ],
@@ -1466,12 +1889,14 @@ export function createMockHost(options: {
       status: 'playing',
       appliedStatus: 'playing',
       appliedFrom: null,
-      collections: { loaded: [{ id: 'favorites', name: 'Favorites', picked: false }] },
+      collections: { loaded: addCollectionOptions([]) },
       progress: null,
+      items: [],
       error: null,
       canConfirm: true,
       blocked: null,
       summary: null,
+      newCollection: null,
     };
   }
 
@@ -2201,25 +2626,320 @@ export function createMockHost(options: {
     return batchRun;
   }
 
+  /** Mirrors the engine: the first picked collection with a default decides the status. */
+  function refreshAppliedAddStatus(dialog: NonNullable<LibraryView['addDialog']>) {
+    const collections = dialog.collections;
+    const picked = typeof collections === 'object' && 'loaded' in collections
+      ? collections.loaded.filter((collection) => collection.picked)
+      : [];
+    const deciding = picked.find((collection) => collection.defaultStatus != null);
+    dialog.appliedStatus = deciding?.defaultStatus ?? dialog.status;
+    dialog.appliedFrom = deciding?.name ?? null;
+  }
+
   function pickedCollections(dialog: NonNullable<LibraryView['addDialog']>): string[] {
     const collections = dialog.collections;
     if (typeof collections !== 'object' || !('loaded' in collections)) return [];
     return collections.loaded.filter((collection) => collection.picked).map((collection) => collection.id);
   }
 
+  /** The collections the dialog lists, with their counts from the mock account library. */
+  function addCollectionOptions(picked: string[]): Array<{
+    id: string;
+    name: string;
+    defaultStatus: EntryStatus | null;
+    picked: boolean;
+    entryCount: number | null;
+  }> {
+    return collections.map((collection) => ({
+      id: collection.id,
+      name: collection.name,
+      defaultStatus: null,
+      picked: picked.includes(collection.id),
+      entryCount: rows.filter((row) =>
+        row.gamenode?.collectionIds.includes(collection.id),
+      ).length,
+    }));
+  }
+
+  /** A batch add that outlives its dialog, mirroring the engine's single active run. */
+  interface MockAddRun {
+    runId: number;
+    items: AddItem[];
+    gameIds: Array<number | null>;
+    targets: NonNullable<LibraryView['addDialog']>['targets'];
+    mode: NonNullable<LibraryView['addDialog']>['mode'];
+    editingExisting: boolean;
+    status: EntryStatus;
+    appliedStatus: EntryStatus;
+    picked: string[];
+    next: number;
+    created: Array<{ gameId: number; entryId: string }>;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+
+  /** How long one mock add item takes. Zero keeps the mock synchronous for tests. */
+  const addStepDelay = options.addBatchDelayMs ?? 0;
+  let addRun: MockAddRun | null = null;
+
+  function addRunProgress(): { done: number; total: number } {
+    if (!addRun) return { done: 0, total: 0 };
+    return {
+      done: addRun.items.filter((item) =>
+        item.state !== 'waiting' && item.state !== 'adding').length,
+      total: addRun.items.length,
+    };
+  }
+
+  function syncAddRunIntoDialog() {
+    const lib = snapshot.library;
+    if (!lib?.addDialog || !addRun) return;
+    lib.addDialog.items = addRun.items.map((item) => ({ ...item }));
+    lib.addDialog.progress = addRunProgress();
+  }
+
+  function cancelAddRun() {
+    if (addRun?.timer) clearTimeout(addRun.timer);
+    addRun = null;
+  }
+
+  function finishAddRun() {
+    const run = addRun;
+    const lib = snapshot.library;
+    if (!run) return;
+    const items = run.items.map((item) => ({ ...item }));
+    const added = items.filter((item) => item.state === 'added').length;
+    const alreadyPresent = items.filter((item) => item.state === 'alreadyPresent').length;
+    const skipped = items.filter((item) => item.state === 'skipped').length;
+    const failed = items.filter((item) => item.state === 'failed').length;
+    lastAdd = {
+      runId: run.runId,
+      undoable: run.created.length > 0,
+      items,
+      added,
+      alreadyPresent,
+      skipped,
+      failed,
+    };
+    createdByLastAdd = run.created;
+    addRun = null;
+    if (lib) {
+      lib.addSummary = lastAdd;
+      if (lib.addDialog) {
+        lib.addDialog = {
+          ...lib.addDialog,
+          items,
+          progress: { done: items.length, total: items.length },
+          summary: lastAdd,
+          error: null,
+          canConfirm: false,
+        };
+      }
+    }
+    // The notice survives the library view, so a batch that ends while the account changes is
+    // still reported. A single-game run keeps its previous silent behavior unless it added.
+    snapshot.addNotice = {
+      accountId: 'mock-user',
+      batch: run.items.length > 1,
+      summary: lastAdd,
+    };
+    publish();
+  }
+
+  /** Stops a hidden batch when the mock account signs out, counting the rest as not added. */
+  function stopAddRunForSignOut() {
+    const run = addRun;
+    if (!run) return;
+    if (run.timer) clearTimeout(run.timer);
+    for (const item of run.items) {
+      if (item.state === 'waiting' || item.state === 'adding') {
+        item.state = 'failed';
+        item.error = 'rejected';
+      }
+    }
+    const items = run.items.map((item) => ({ ...item }));
+    lastAdd = {
+      runId: run.runId,
+      undoable: run.created.length > 0,
+      items,
+      added: items.filter((item) => item.state === 'added').length,
+      alreadyPresent: items.filter((item) => item.state === 'alreadyPresent').length,
+      skipped: items.filter((item) => item.state === 'skipped').length,
+      failed: items.filter((item) => item.state === 'failed').length,
+    };
+    createdByLastAdd = run.created;
+    addRun = null;
+    snapshot.addNotice = {
+      accountId: 'mock-user',
+      batch: run.items.length > 1,
+      summary: lastAdd,
+    };
+  }
+
+  function resolveAddItem(index: number) {
+    const run = addRun;
+    if (!run) return;
+    const item = run.items[index];
+    const gameId = run.gameIds[index];
+    const row = gameId == null
+      ? undefined
+      : rows.find((candidate) => getMatchedGameId(candidate.status) === gameId);
+    if (gameId == null) {
+      item.state = 'skipped';
+      return;
+    }
+    if (row?.gamenode || accountLibraryGameIds.has(gameId)) {
+      item.state = 'alreadyPresent';
+      item.status = row?.gamenode?.status ?? null;
+      return;
+    }
+    if (options.failMutations) {
+      item.state = 'failed';
+      item.error = 'failed';
+      return;
+    }
+    const entryId = `entry-${gameId}-${run.runId}`;
+    if (row) {
+      row.gamenode = {
+        status: run.appliedStatus,
+        collectionIds: [...run.picked],
+        entryId,
+      };
+    }
+    accountLibraryGameIds.add(gameId);
+    run.created.push({ gameId, entryId });
+    item.state = 'added';
+    item.status = run.appliedStatus;
+  }
+
+  function advanceAddRun() {
+    const run = addRun;
+    const lib = snapshot.library;
+    if (!run) return;
+    if (!lib) {
+      cancelAddRun();
+      return;
+    }
+    if (run.next >= run.items.length) {
+      finishAddRun();
+      return;
+    }
+    const index = run.next;
+    run.next += 1;
+    const item = run.items[index];
+    if (run.gameIds[index] == null) {
+      item.state = 'skipped';
+      syncAddRunIntoDialog();
+      publish();
+      advanceAddRun();
+      return;
+    }
+    item.state = 'adding';
+    syncAddRunIntoDialog();
+    publish();
+    const step = () => {
+      if (!addRun) return;
+      resolveAddItem(index);
+      addRun.timer = null;
+      syncAddRunIntoDialog();
+      publish();
+      advanceAddRun();
+    };
+    if (addStepDelay > 0) {
+      run.timer = setTimeout(step, addStepDelay);
+    } else {
+      step();
+    }
+  }
+
+  /** Reopens the running batch in the dialog without starting another run. */
+  function reopenAddRun(): boolean {
+    const lib = snapshot.library;
+    const run = addRun;
+    if (!lib || !run) return false;
+    lib.addDialog = {
+      targets: run.targets,
+      mode: run.mode,
+      editingExisting: run.editingExisting,
+      status: run.status,
+      appliedStatus: run.appliedStatus,
+      appliedFrom: null,
+      collections: { loaded: addCollectionOptions(run.picked) },
+      progress: addRunProgress(),
+      items: run.items.map((item) => ({ ...item })),
+      error: null,
+      canConfirm: false,
+      blocked: null,
+      summary: null,
+      newCollection: null,
+    };
+    return true;
+  }
+
   /** Mirrors the engine's add run: absent matched games are created, existing ones are untouched. */
+  function mockToolEntry(entryKey: string | null | undefined) {
+    const key =
+      entryKey ??
+      (snapshot.library?.selected.length === 1
+        ? snapshot.library.selected[0]
+        : null);
+    if (!key) return null;
+    const row = rows.find((candidate) => candidate.key === key);
+    if (!row) return null;
+    // The detail pane uses the same folder, so the target path and Browse agree.
+    return { key, title: row.title, installDir: `/games/${row.title}` };
+  }
+
+  /** Opens the tools modal the same way the context menu and detail actions do. */
+  function openMockTools(entryKey?: string | null) {
+    const entry = mockToolEntry(entryKey);
+    if (!entry) return;
+    const modal = createMockToolModal(
+      entry.key,
+      entry.title,
+      entry.installDir,
+    );
+    // Reopening a game keeps the tool it already installed, as the host's installations do.
+    const installed = snapshot.tools.installedByEntry[entry.key] ?? [];
+    if (installed.length > 0) {
+      const tool = installed[0];
+      modal.tools = installed;
+      modal.selectedChannel = tool.channel;
+      modal.selectedVersion = tool.version;
+      modal.selectedProxy = (tool.proxyDll?.replace(/\.dll$/i, '') ??
+        modal.selectedProxy) as ToolModalView['selectedProxy'];
+    }
+    snapshot.tools.modal = modal;
+  }
+
+  function installedMockTool(modal: ToolModalView) {
+    const version = modal.selectedVersion ?? modal.availableVersions[0]?.version;
+    if (!version) return;
+    const tool: ToolModalView['tools'][number] = {
+      toolId: modal.activeToolId,
+      name:
+        snapshot.tools.catalog.find((item) => item.id === modal.activeToolId)
+          ?.name ?? modal.activeToolId,
+      channel: modal.selectedChannel,
+      version,
+      proxyDll: `${modal.selectedProxy}.dll`,
+      targetExe: modal.inspection?.selectedExe ?? '',
+      state: 'installed',
+      summary: `Installed version ${version}`,
+    };
+    modal.tools = [tool];
+    modal.operation = null;
+    snapshot.tools.installedByEntry[modal.entryKey] = [tool];
+  }
+
   function confirmAdd() {
     const lib = snapshot.library;
     const dialog = lib?.addDialog;
-    if (!lib || !dialog) return;
-    const run = nextBatchRun();
+    if (!lib || !dialog || dialog.summary || addRun) return;
+    const runId = nextBatchRun();
     const picked = pickedCollections(dialog);
-    const items: AddSummary['items'] = [];
-    const created: Array<{ gameId: number; entryId: string }> = [];
-    let added = 0;
-    let alreadyPresent = 0;
-    let skipped = 0;
-    let failed = 0;
+    const items: AddItem[] = [];
+    const gameIds: Array<number | null> = [];
     for (const target of dialog.targets) {
       let row: Row | undefined;
       let gameId: number | null = null;
@@ -2231,59 +2951,45 @@ export function createMockHost(options: {
         gameId = addTarget.game;
         row = rows.find((item) => getMatchedGameId(item.status) === gameId);
       }
-      const title = row?.title ?? target.title;
-      if (gameId == null) {
-        skipped += 1;
-        items.push({ target: target.target, entryKey: target.entryKey, title, outcome: 'skipped', status: null });
-        continue;
-      }
-      if (row?.gamenode || accountLibraryGameIds.has(gameId)) {
-        alreadyPresent += 1;
-        items.push({
-          target: target.target,
-          entryKey: target.entryKey,
-          title,
-          outcome: 'alreadyPresent',
-          status: row?.gamenode?.status ?? null,
-        });
-        continue;
-      }
-      if (options.failMutations) {
-        failed += 1;
-        items.push({ target: target.target, entryKey: target.entryKey, title, outcome: 'failed', status: null });
-        continue;
-      }
-      const entryId = `entry-${gameId}-${run}`;
-      if (row) {
-        row.gamenode = {
-          status: dialog.appliedStatus,
-          collectionIds: [...picked],
-          entryId,
-        };
-      }
-      accountLibraryGameIds.add(gameId);
-      created.push({ gameId, entryId });
-      added += 1;
       items.push({
         target: target.target,
         entryKey: target.entryKey,
-        title,
-        outcome: 'added',
-        status: dialog.appliedStatus,
+        title: row?.title ?? target.title,
+        state: 'waiting',
+        status: null,
+        error: null,
       });
+      gameIds.push(gameId);
     }
-    lastAdd = {
-      runId: run,
-      undoable: created.length > 0,
+    // A new run replaces the previous summary: only the latest add can be undone.
+    lastAdd = null;
+    createdByLastAdd = [];
+    lib.addSummary = null;
+    snapshot.addNotice = null;
+    addRun = {
+      runId,
       items,
-      added,
-      alreadyPresent,
-      skipped,
-      failed,
+      gameIds,
+      targets: dialog.targets,
+      mode: dialog.mode,
+      editingExisting: dialog.editingExisting,
+      status: dialog.status,
+      appliedStatus: dialog.appliedStatus,
+      picked,
+      next: 0,
+      created: [],
+      timer: null,
     };
-    createdByLastAdd = created;
-    lib.addSummary = lastAdd;
-    lib.addDialog = { ...dialog, summary: lastAdd };
+    lib.addDialog = {
+      ...dialog,
+      items: items.map((item) => ({ ...item })),
+      progress: { done: 0, total: items.length },
+      summary: null,
+      error: null,
+      canConfirm: false,
+    };
+    publish();
+    advanceAddRun();
   }
 
   /** Mirrors Undo add: delete exactly the entries the latest run created. */
@@ -2436,7 +3142,19 @@ export function createMockHost(options: {
     }
   }
 
-  function signIn() {
+  function signIn(provider: Provider = 'google') {
+    snapshot.notice = null;
+    if (options.signInPending) {
+      snapshot.auth = {
+        pending: {
+          provider,
+          awaitingBrowser: true,
+          canReopen: true,
+          reopenFailed: false,
+        },
+      };
+      return;
+    }
     accountGeneration += 1;
     for (const pending of pendingViewWrites.values()) clearTimeout(pending.timer);
     pendingViewWrites.clear();
@@ -2623,8 +3341,8 @@ export function createMockHost(options: {
             unlocked: MOCK_ACHIEVEMENTS.filter((achievement) => achievement.unlocked).length,
             total: MOCK_ACHIEVEMENTS.length,
             latestUnlock: {
-              id: 'ACH_FIRST',
-              name: 'First steps',
+              id: 'ACH_00',
+              name: 'Achievement 1',
               unlockedAt: NOW - 300,
             },
             lastSuccessAt: NOW - 60,
@@ -2790,7 +3508,23 @@ export function createMockHost(options: {
           input.openAddForGame.coverUrl,
         );
       } else if ('setMatchQuery' in input && lib.matchDialog) lib.matchDialog.query = input.setMatchQuery;
-      else if ('pickMatch' in input && lib.matchDialog) {
+      else if ('selectMatch' in input && lib.matchDialog) {
+        const offered = [
+          ...lib.matchDialog.candidates,
+          ...lib.matchDialog.results,
+        ].find((option) => option.gameId === input.selectMatch.gameId);
+        if (offered) lib.matchDialog.selected = offered;
+      } else if ('confirmMatch' in input && lib.matchDialog) {
+        const selected = lib.matchDialog.selected;
+        if (selected) {
+          const row = rows.find((item) => item.key === lib.matchDialog?.entryKey);
+          if (row) {
+            row.status = { matched: { gameId: selected.gameId, source: 'chosen' } };
+            row.matchedName = selected.name;
+          }
+          lib.matchDialog = null;
+        }
+      } else if ('pickMatch' in input && lib.matchDialog) {
         const row = rows.find((item) => item.key === lib.matchDialog?.entryKey);
         if (row) { row.status = { matched: { gameId: input.pickMatch.gameId, source: 'chosen' } }; row.matchedName = row.title; }
         lib.matchDialog = null;
@@ -2810,10 +3544,21 @@ export function createMockHost(options: {
           row.matchedName = null;
           if (lib.matchDialog?.entryKey === key) lib.matchDialog = null;
         }
-      } else if ('setAddStatus' in input && lib.addDialog) lib.addDialog.status = input.setAddStatus;
-      else if ('toggleAddCollection' in input && lib.addDialog && typeof lib.addDialog.collections === 'object' && 'loaded' in lib.addDialog.collections) {
+      } else if ('setAddStatus' in input && lib.addDialog) {
+        lib.addDialog.status = input.setAddStatus;
+        refreshAppliedAddStatus(lib.addDialog);
+      } else if ('toggleAddCollection' in input && lib.addDialog && typeof lib.addDialog.collections === 'object' && 'loaded' in lib.addDialog.collections) {
         const collection = lib.addDialog.collections.loaded.find((item) => item.id === input.toggleAddCollection);
         if (collection) collection.picked = !collection.picked;
+        refreshAppliedAddStatus(lib.addDialog);
+      }
+      else if ('setNewCollectionName' in input && lib.addDialog?.newCollection) {
+        const draft = lib.addDialog.newCollection;
+        if (!draft.creating) {
+          draft.name = input.setNewCollectionName;
+          draft.canCreate = draft.name.trim().length > 0;
+          draft.error = null;
+        }
       }
     } else if (input === 'selectAll') {
       const visible = lib.rows.map((row) => row.key);
@@ -2830,33 +3575,107 @@ export function createMockHost(options: {
     else if (input === 'closeMatch') lib.matchDialog = null;
     else if (input === 'openMatch') {
       const row = rows.find((item) => item.key === lib.focused);
-      if (row) lib.matchDialog = { entryKey: row.key, detectedName: row.detectedName, providerName: row.providerName, query: row.title, searching: false, candidates: [{ gameId: 100, name: row.title, current: false }], results: [], noResults: false, current: row.status, canClear: typeof row.status === 'object' };
+      if (row) {
+        const candidates = mockMatchCandidates(row);
+        lib.matchDialog = {
+          entryKey: row.key,
+          detectedName: row.detectedName,
+          providerName: row.providerName,
+          query: row.title,
+          searching: false,
+          candidates,
+          results: [],
+          selected: candidates[0] ?? null,
+          noResults: false,
+          current: row.status,
+          canClear: typeof row.status === 'object',
+        };
+      }
     } else if (input === 'searchMatch' && lib.matchDialog) {
-      lib.matchDialog.results = [{ gameId: 100, name: lib.matchDialog.query, current: false }];
+      lib.matchDialog.results = mockMatchResults(lib.matchDialog.query);
+      if (!lib.matchDialog.selected) {
+        const offered = [...lib.matchDialog.candidates, ...lib.matchDialog.results];
+        lib.matchDialog.selected =
+          offered.sort((left, right) => right.confidence - left.confidence)[0] ?? null;
+      }
     } else if (input === 'openAdd') {
-      lib.addDialog = {
-        targets: lib.rows
-          .filter((row) => selectedKeys.has(row.key))
-          .map((row) => ({
-            target: { row: row.key },
-            entryKey: row.key,
-            title: row.title,
-            matched: typeof row.status === 'object',
-          })),
-        mode: 'library',
-        editingExisting: false,
-        status: 'playing',
-        appliedStatus: 'playing',
-        appliedFrom: null,
-        collections: { loaded: [{ id: 'favorites', name: 'Favorites', picked: false }] },
-        progress: null,
-        error: null,
-        canConfirm: true,
-        blocked: null,
-        summary: null,
-      };
-    } else if (input === 'closeAdd') lib.addDialog = null;
-    else if (input === 'confirmAdd') confirmAdd();
+      // One run at a time: an Add while a batch is going reopens its progress.
+      if (!reopenAddRun()) {
+        lib.addDialog = {
+          targets: lib.rows
+            .filter((row) => selectedKeys.has(row.key))
+            .map((row) => ({
+              target: { row: row.key },
+              entryKey: row.key,
+              title: row.title,
+              coverFile: row.coverFile,
+              matched: typeof row.status === 'object',
+            })),
+          mode: 'library',
+          editingExisting: false,
+          status: 'playing',
+          appliedStatus: 'playing',
+          appliedFrom: null,
+          collections: { loaded: addCollectionOptions([]) },
+          progress: null,
+          items: [],
+          error: null,
+          canConfirm: true,
+          blocked: null,
+          summary: null,
+          newCollection: null,
+        };
+      }
+    } else if (input === 'closeAdd') {
+      // A batch keeps going after its dialog closes; a single-game run is abandoned.
+      const run = addRun;
+      if (!run || run.items.length <= 1) cancelAddRun();
+      lib.addDialog = null;
+    } else if (input === 'hideAdd') {
+      const run = addRun;
+      if (!run || run.items.length <= 1) cancelAddRun();
+      lib.addDialog = null;
+    } else if (input === 'startNewCollection') {
+      if (lib.addDialog && !lib.addDialog.summary && !lib.addDialog.newCollection) {
+        lib.addDialog.newCollection = {
+          name: '',
+          creating: false,
+          canCreate: false,
+          error: null,
+        };
+      }
+    } else if (input === 'createCollection') {
+      const dialog = lib.addDialog;
+      const draft = dialog?.newCollection;
+      const name = draft?.name.trim() ?? '';
+      if (dialog && draft && draft.canCreate && name) {
+        if (name === MOCK_LIMIT_COLLECTION_NAME) {
+          draft.error = 'limitReached';
+          draft.canCreate = true;
+        } else if (options.failMutations) {
+          draft.error = 'failed';
+          draft.canCreate = true;
+        } else {
+          draft.creating = true;
+          draft.canCreate = false;
+          const finish = () => {
+            createdCollections += 1;
+            const id = `collection-${createdCollections}`;
+            collections.push({ id, name });
+            const current = snapshot.library?.addDialog;
+            if (!current?.newCollection) return;
+            const picked = [...pickedCollections(current), id];
+            current.collections = { loaded: addCollectionOptions(picked) };
+            current.newCollection = null;
+            publish();
+          };
+          if (addStepDelay > 0) setTimeout(finish, addStepDelay);
+          else finish();
+        }
+      }
+    } else if (input === 'cancelNewCollection') {
+      if (lib.addDialog) lib.addDialog.newCollection = null;
+    } else if (input === 'confirmAdd') confirmAdd();
     reconcileViewHighlight();
   }
   return {
@@ -2932,6 +3751,7 @@ export function createMockHost(options: {
       if (cmd === 'dispatch_auth') {
         const input = args.input as AuthInput;
         if (input === 'signOut') {
+          stopAddRunForSignOut();
           accountGeneration += 1;
           for (const pending of pendingViewWrites.values()) clearTimeout(pending.timer);
           pendingViewWrites.clear();
@@ -2950,7 +3770,33 @@ export function createMockHost(options: {
           };
           appliedViewPayload = null;
           appliedViewId = null;
-        } else if (typeof input === 'object' && 'startSignIn' in input) signIn();
+        } else if (typeof input === 'object' && 'startSignIn' in input) {
+          signIn(input.startSignIn);
+        } else if (input === 'reopenBrowser') {
+          if (
+            typeof snapshot.auth === 'object' &&
+            snapshot.auth !== null &&
+            'pending' in snapshot.auth
+          ) {
+            snapshot.auth = {
+              pending: {
+                ...snapshot.auth.pending,
+                reopenFailed: options.signInReopenFails ?? false,
+              },
+            };
+          }
+        } else if (input === 'cancelSignIn') {
+          if (
+            typeof snapshot.auth === 'object' &&
+            snapshot.auth !== null &&
+            'pending' in snapshot.auth
+          ) {
+            snapshot.auth = 'signedOut';
+            snapshot.notice = 'signInCancelled';
+          }
+        }
+      } else if (cmd === 'sign_in_cover_wall') {
+        return [...MOCK_COVER_WALL];
       } else if (cmd === 'library_input') libraryInput(args.input as LibraryInput);
       else if (cmd === 'remove_entry') {
         const key = args.key as string;
@@ -2958,6 +3804,153 @@ export function createMockHost(options: {
         selectedKeys.delete(key);
         if (focusedKey === key) focusedKey = null;
       } else if (cmd === 'remove_local_game') { /* the mock has no DRM-free registrations */ }
+      else if (cmd === 'resolve_local_claim') {
+        const transfer = args.transfer as boolean;
+        const claim = snapshot.localGames.pendingClaim;
+        snapshot.localGames.pendingClaim = null;
+        if (claim && !transfer) {
+          selectedKeys = new Set([claim.storeKey]);
+          focusedKey = claim.storeKey;
+        }
+        publish();
+      } else if (cmd === 'cancel_local_claim') {
+        snapshot.localGames.pendingClaim = null;
+        publish();
+      } else if (cmd === 'select_local_candidate') {
+        const fingerprint = args.fingerprint as string;
+        const candidate = snapshot.localGames.candidates.find(
+          (item) => item.fingerprint === fingerprint && !item.ignored,
+        );
+        if (!candidate) return undefined;
+        const selected = snapshot.localGames.reviewSelected;
+        snapshot.localGames.reviewSelected = selected.includes(fingerprint)
+          ? selected.filter((item) => item !== fingerprint)
+          : [...selected, fingerprint];
+        publish();
+      } else if (cmd === 'set_local_candidate_executable') {
+        const fingerprint = args.fingerprint as string;
+        const executable = args.executable as string;
+        const candidate = snapshot.localGames.candidates.find(
+          (item) => item.fingerprint === fingerprint,
+        );
+        if (!candidate) throw 'invalidTarget';
+        if (
+          !candidate.targets.some(
+            (target) => target.toLowerCase() === executable.toLowerCase(),
+          )
+        ) {
+          throw 'invalidTarget';
+        }
+        candidate.selectedTarget = executable;
+        candidate.likelyNonGame = candidateLikelyNonGame(candidate);
+        publish();
+      } else if (cmd === 'review_selected_local_candidates') {
+        const add = args.add as boolean;
+        const allowRediscovery = args.allowRediscovery as boolean;
+        const selected = new Set(snapshot.localGames.reviewSelected);
+        if (add) {
+          snapshot.localGames.candidates = snapshot.localGames.candidates.filter(
+            (candidate) => !selected.has(candidate.fingerprint),
+          );
+        } else {
+          snapshot.localGames.candidates = snapshot.localGames.candidates.flatMap(
+            (candidate) => {
+              if (!selected.has(candidate.fingerprint)) return [candidate];
+              return allowRediscovery
+                ? []
+                : [{ ...candidate, ignored: true }];
+            },
+          );
+        }
+        snapshot.localGames.reviewSelected = snapshot.localGames.reviewSelected.filter(
+          (fingerprint) =>
+            snapshot.localGames.candidates.some(
+              (candidate) => candidate.fingerprint === fingerprint && !candidate.ignored,
+            ),
+        );
+        publish();
+      } else if (cmd === 'reset_local_ignores') {
+        for (const candidate of snapshot.localGames.candidates) {
+          candidate.ignored = false;
+        }
+        snapshot.localGames.reviewSelected = snapshot.localGames.candidates
+          .filter((candidate) => !candidate.likelyNonGame)
+          .map((candidate) => candidate.fingerprint);
+        publish();
+      }
+      else if (cmd === 'pick_local_cover') {
+        const id = (args.entryKey as string).replace(/^manual:/, '');
+        const registration = snapshot.localGames.registrations.find(
+          (item) => item.id === id,
+        );
+        if (!registration) throw 'invalidTarget';
+        return 'mock-6.svg';
+      } else if (cmd === 'discard_local_cover') {
+        // Pending covers live in the editor state; the mock has no file to delete.
+      } else if (cmd === 'edit_local_game') {
+        const value = args.value as Registration;
+        const registration = snapshot.localGames.registrations.find(
+          (item) => item.id === value.id,
+        );
+        if (!registration) throw 'invalidTarget';
+        Object.assign(registration, value, {
+          customCover: value.customCover ?? null,
+        });
+        const row = rows.find((item) => item.key === `manual:${registration.id}`);
+        if (row) {
+          if (!mockGameNodeCovers.has(row.key)) {
+            mockGameNodeCovers.set(row.key, row.coverFile ?? null);
+          }
+          row.gameCoverFile = mockGameNodeCovers.get(row.key) ?? null;
+          row.coverFile = registration.customCover ?? row.gameCoverFile;
+        }
+      } else if (cmd === 'set_local_backup_retention') {
+        const id = (args.entryKey as string).replace(/^manual:/, '');
+        const retention = Number(args.retention);
+        if (![5, 10, 20, 50].includes(retention)) {
+          throw { code: 'invalidRetention' };
+        }
+        const profile = [...snapshot.localGames.profiles]
+          .reverse()
+          .find((item) => item.installation === id);
+        if (!profile) throw { code: 'invalidTarget' };
+        profile.retention = retention;
+      } else if (cmd === 'set_local_profile_automatic') {
+        const id = (args.id as string).replace(/^manual:/, '');
+        const profile = [...snapshot.localGames.profiles]
+          .reverse()
+          .find((item) => item.installation === id);
+        if (!profile) throw { code: 'invalidTarget' };
+        profile.automatic = args.automatic as boolean;
+      } else if (cmd === 'backup_local_now') {
+        const id = (args.id as string).replace(/^manual:/, '');
+        const profile = [...snapshot.localGames.profiles]
+          .reverse()
+          .find((item) => item.installation === id);
+        if (!profile) throw { code: 'invalidTarget' };
+        const createdAt = Math.floor(Date.now() / 1000);
+        snapshot.localGames.versions = [
+          {
+            installation: id,
+            profile: profile.id,
+            destination: `D:\\Backups\\${id}`,
+            id: `manual-backup-${createdAt}`,
+            label: new Date(createdAt * 1000).toISOString().slice(0, 19).replace('T', ' '),
+            bytes: 7_100_000,
+            createdAt,
+            reason: 'manual',
+            playSeconds: null,
+          },
+          ...snapshot.localGames.versions,
+        ];
+        snapshot.localGames.historyBytes = snapshot.localGames.versions.reduce(
+          (total, version) => total + version.bytes,
+          0,
+        );
+        snapshot.localGames.historyCount = snapshot.localGames.versions.length;
+      } else if (cmd === 'load_local_history' || cmd === 'preview_local_restore' || cmd === 'cancel_local_restore' || cmd === 'confirm_local_restore') {
+        // The fixture history is already loaded; restore previews are host-owned.
+      }
       else if (cmd === 'set_sync_enabled') snapshot.sync.enabled = args.enabled as boolean;
       else if (cmd === 'dismiss_sync_explanation') snapshot.sync.explained = true;
       else if (cmd === 'set_playtime_source') snapshot.playtimeSource = args.source as Snapshot['playtimeSource'];
@@ -3019,8 +4012,15 @@ export function createMockHost(options: {
       } else if (cmd === 'achievement_list') {
         const key = (args.key as string | undefined) ?? '';
         const filter = (args.filter as string | undefined) ?? 'all';
+        const sort = (args.sort as string | undefined) ?? 'mostRecent';
         if (!key.startsWith('steam:')) return null;
-        return mockAchievementList(filter);
+        return mockAchievementList(filter, sort);
+      } else if (cmd === 'open_achievements_page') {
+        const key = (args.entryKey as string | undefined) ?? '';
+        const appId = key.startsWith('steam:') ? key.slice('steam:'.length) : '';
+        if (!/^\d+$/.test(appId)) throw { code: 'unsupported' };
+        console.info('[UI mock] openAchievementsPage', appId);
+        return undefined;
       } else if (cmd === 'ports_detail') {
         const entry = ports.entries.find((item) => item.catalogId === args.catalogId);
         return entry ? mockDetailFor(entry) : null;
@@ -3078,6 +4078,113 @@ export function createMockHost(options: {
         return mockPortToolsCache();
       } else if (cmd === 'ports_clear_cache') {
         return clearMockPortCache();
+      } else if (cmd === 'open_tools') {
+        openMockTools(args.entryKey as string | null | undefined);
+      } else if (cmd === 'open_tools_for_selected') {
+        openMockTools();
+      } else if (cmd === 'close_tools') {
+        snapshot.tools.modal = null;
+      } else if (cmd === 'select_tool_channel') {
+        const modal = snapshot.tools.modal;
+        const channel = args.channel as ToolChannel;
+        if (modal) {
+          modal.selectedChannel = channel;
+          modal.availableVersions = MOCK_TOOL_RELEASES.filter(
+            (release) => release.channel === channel,
+          );
+          modal.selectedVersion = modal.availableVersions[0]?.version ?? null;
+          modal.operation = null;
+        }
+      } else if (cmd === 'refresh_tool_versions') {
+        const modal = snapshot.tools.modal;
+        if (modal) {
+          modal.availableVersions = MOCK_TOOL_RELEASES.filter(
+            (release) => release.channel === modal.selectedChannel,
+          );
+          modal.selectedVersion =
+            modal.availableVersions[0]?.version ?? modal.selectedVersion;
+        }
+      } else if (cmd === 'select_tool_version') {
+        const modal = snapshot.tools.modal;
+        if (modal) modal.selectedVersion = args.version as string;
+      } else if (cmd === 'select_tool_target_exe') {
+        const modal = snapshot.tools.modal;
+        if (modal?.inspection) {
+          modal.inspection.selectedExe = args.relativeExe as string;
+        }
+      } else if (cmd === 'pick_tool_target_exe') {
+        // Parity with the host's executable picker: a chosen file is selected through the same
+        // command the candidate list uses; cancelling keeps the target and a failure reports it.
+        const modal = snapshot.tools.modal;
+        if (options.toolPick === 'cancel') {
+          // The native dialog was dismissed.
+        } else if (options.toolPick === 'fail') {
+          if (modal) {
+            modal.operation = {
+              failed: {
+                code: 'pickerFailed',
+                message: 'The executable picker could not open.',
+              },
+            };
+          }
+        } else if (options.toolPick === 'outside') {
+          if (modal) {
+            modal.operation = {
+              failed: {
+                code: 'targetOutsideInstallDir',
+                message: 'Target executable path escapes the game directory',
+              },
+            };
+          }
+        } else if (modal?.inspection) {
+          modal.inspection.selectedExe = 'bin/x64/picked.exe';
+          if (
+            modal.operation &&
+            typeof modal.operation === 'object' &&
+            'failed' in modal.operation
+          ) {
+            modal.operation = null;
+          }
+        }
+      } else if (cmd === 'select_tool_proxy') {
+        const modal = snapshot.tools.modal;
+        if (modal) modal.selectedProxy = args.proxy as ToolModalView['selectedProxy'];
+      } else if (cmd === 'set_tool_anticheat_confirmed') {
+        const modal = snapshot.tools.modal;
+        if (modal) modal.anticheatConfirmed = args.confirmed as boolean;
+      } else if (cmd === 'set_tool_reset_config') {
+        // The reset choice is not part of the view; the host keeps it for the install request.
+      } else if (cmd === 'install_or_update_tool') {
+        const modal = snapshot.tools.modal;
+        if (modal) {
+          const hasWarning = (modal.inspection?.anticheat.detected.length ?? 0) > 0;
+          if (hasWarning && !modal.anticheatConfirmed) {
+            modal.operation = {
+              failed: {
+                message: 'Anti-cheat warning must be confirmed before installing',
+              },
+            };
+          } else {
+            installedMockTool(modal);
+          }
+        }
+      } else if (cmd === 'uninstall_tool') {
+        const modal = snapshot.tools.modal;
+        if (modal) {
+          modal.tools = [];
+          modal.operation = null;
+          delete snapshot.tools.installedByEntry[modal.entryKey];
+        }
+      } else if (cmd === 'open_tool_source') {
+        console.info('[UI mock] openToolSource', args.url);
+      } else if (cmd === 'clear_tool_cache') {
+        snapshot.tools.totalCacheBytes = 0;
+        snapshot.tools.totalCacheArchives = 0;
+        for (const modal of [snapshot.tools.modal]) {
+          for (const release of modal?.availableVersions ?? []) {
+            release.cachedPath = null;
+          }
+        }
       }
       else if (cmd === 'open_install_folder') { /* the mock has no file manager */ }
       else { console.warn(`[UI mock] Unsupported command: ${cmd}`); return; }
@@ -3114,6 +4221,7 @@ export const mockHost = createMockHost({
   emptyLibrary: requestedParams.get('library') === 'empty',
   noInstalledLibrary: requestedParams.get('library') === 'no-installed',
   discoveries: requestedParams.get('discoveries') === '1',
+  claim: requestedParams.get('claim') === '1',
   startScanning: requestedParams.get('scanning') === '1',
   viewWriteFailure:
     requestedParams.get('viewWrite') === 'fail-once'
@@ -3130,4 +4238,22 @@ export const mockHost = createMockHost({
     ? requestedCatalogScenario
     : undefined,
   failMutations: requestedParams.get('mutations') === 'fail',
+  // `?scenario=signed-out&signin=pending` keeps the browser round trip open; `reopen=fail`
+  // makes Open again report the localized error without ending the attempt.
+  signInPending: requestedParams.get('signin') === 'pending',
+  signInReopenFails: requestedParams.get('reopen') === 'fail',
+  // First successful sign-in on this PC: the sync explanation is pending. Keep on dismisses it;
+  // Turn off disables sync and then dismisses it in the same action.
+  syncFirstRun: requestedParams.get('sync') === 'first',
+  // `?toolpick=cancel`, `?toolpick=fail` or `?toolpick=outside` exercises the Browse… failure paths.
+  toolPick:
+    requestedParams.get('toolpick') === 'cancel'
+      ? 'cancel'
+      : requestedParams.get('toolpick') === 'fail'
+        ? 'fail'
+        : requestedParams.get('toolpick') === 'outside'
+          ? 'outside'
+          : 'accept',
+  // The browser mock shows the batch one game at a time; tests pass 0 for a synchronous run.
+  addBatchDelayMs: 650,
 });

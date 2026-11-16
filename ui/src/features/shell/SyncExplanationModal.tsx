@@ -1,9 +1,10 @@
-import { useContext } from 'react';
+import { useContext, useRef, useState } from 'react';
 import { MantineContext, MantineProvider } from '@mantine/core';
-import { AppModal } from '../../components/AppModal';
+import { IconCloudCheck } from '@tabler/icons-react';
+import { ConfirmDialog } from '../../components/dialog';
+import { Button, Checklist } from '../../components/ui';
 import { commands } from '../../api/commands';
 import { useAppInfo, useAuth } from '../../api/useSnapshot';
-import { openSettingsModal } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { appTheme } from '../../AppProviders';
 
@@ -17,82 +18,96 @@ interface SyncExplanationDialogProps extends SyncExplanationModalProps {
   backgroundSupported: boolean;
 }
 
+/**
+ * D12: first-use explanation of what sync sends and what stays on this PC.
+ * The list mirrors `desktop-sync`; statuses and collections are sent only
+ * through explicit actions, so they are not listed here.
+ */
 function SyncExplanationDialog({
   onDismiss,
   className,
   backgroundSupported,
 }: SyncExplanationDialogProps) {
   const { t } = useI18n();
+  const keepSyncRef = useRef<HTMLButtonElement>(null);
+  const [turningOff, setTurningOff] = useState(false);
 
-  const handleDismiss = () => {
-    commands.dismissSyncExplanation();
+  const dismiss = () => {
+    void commands.dismissSyncExplanation();
     onDismiss?.();
   };
 
-  const handleOpenSettings = () => {
-    commands.dismissSyncExplanation();
-    openSettingsModal('account');
-    onDismiss?.();
+  const handleTurnSyncOff = async () => {
+    if (turningOff) return;
+    setTurningOff(true);
+    try {
+      await commands.setSyncEnabled(false);
+      await commands.dismissSyncExplanation();
+      onDismiss?.();
+    } catch {
+      // Keep the explanation blocking writes when sync could not be disabled:
+      // dismissing it here would let queued playtime and favorites leave.
+    } finally {
+      setTurningOff(false);
+    }
   };
 
   return (
-    <AppModal.Root
-      opened
-      onClose={handleDismiss}
-      centered
-      size="520px"
-      zIndex={1000}
-      padding={0}
-      transitionProps={{ duration: 0 }}
+    <ConfirmDialog
+      tone="success"
+      icon={IconCloudCheck}
+      size={480}
+      title={t('app.playtimeSync')}
+      description={t('app.syncExplanationDescription')}
+      initialFocusRef={keepSyncRef}
+      onClose={dismiss}
+      testId="sync-explanation-modal"
       className={className}
+      actions={
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            loading={turningOff}
+            data-testid="sync-turn-off-button"
+            onClick={() => void handleTurnSyncOff()}
+          >
+            {t('app.turnSyncOff')}
+          </Button>
+          <span aria-hidden="true" className="flex-1" />
+          <Button
+            ref={keepSyncRef}
+            variant="primary"
+            size="sm"
+            data-testid="sync-primary-button"
+            onClick={dismiss}
+          >
+            {t('app.keepSyncOn')}
+          </Button>
+        </>
+      }
     >
-      <AppModal.Overlay backgroundOpacity={0.7} />
-      <AppModal.Content
-        data-testid="sync-explanation-modal"
-        classNames={{
-          content:
-            'flex flex-col gap-md rounded-md border border-border-subtle bg-secondary p-[24px] shadow-modal',
-        }}
-      >
-        <AppModal.Title className="text-lg font-semibold text-text-default">
-          {t('Sync with GameNode')}
-        </AppModal.Title>
-
-        <p className="text-sm leading-[1.5] text-text-dimmed">
-          {t(
-            'Sync is on. Store playtime totals and favorite changes are sent to your GameNode account. You can turn sync off in Settings and keep using your library.',
-          )}
-        </p>
-
+      <div className="flex flex-col gap-compact">
+        <Checklist
+          variant="inset"
+          items={[
+            { kind: 'positive', label: t('app.syncSendsPlaytime') },
+            { kind: 'positive', label: t('app.syncSendsDetectedGames') },
+            { kind: 'positive', label: t('app.syncSendsFavorites') },
+            { kind: 'negative', label: t('app.syncStaysSaveFiles') },
+            { kind: 'negative', label: t('app.syncStaysInstallPaths') },
+          ]}
+        />
         {backgroundSupported && (
-          <p className="text-[13px] leading-[1.4] text-text-dimmed">
-            {t(
-              'Closing the window keeps GameNode running in the tray. Use Quit to exit.',
-            )}
+          <p
+            data-testid="sync-tray-note"
+            className="text-xs leading-note text-text-dimmed"
+          >
+            {t('app.closingTheWindowKeepsGamenodeRunningIn')}
           </p>
         )}
-
-        <div className="mt-compact flex items-center gap-sm">
-          <button
-            type="button"
-            data-testid="sync-primary-button"
-            onClick={handleDismiss}
-            className="h-control rounded-sm bg-brand px-md text-sm font-medium text-on-primary hover:bg-brand-4"
-          >
-            {t('Got it')}
-          </button>
-
-          <button
-            type="button"
-            data-testid="sync-secondary-button"
-            onClick={handleOpenSettings}
-            className="h-control rounded-sm border border-border-subtle bg-transparent px-md text-sm font-medium text-text-default hover:bg-raised"
-          >
-            {t('Open settings')}
-          </button>
-        </div>
-      </AppModal.Content>
-    </AppModal.Root>
+      </div>
+    </ConfirmDialog>
   );
 }
 

@@ -23,6 +23,7 @@ fn row(provider: &str, id: &str, title: &str, status: MatchStatus) -> Row {
         shared: false,
         status,
         cover_file: None,
+        game_cover_file: None,
         release_year: None,
         added_at: 0,
         is_favorite: false,
@@ -479,6 +480,7 @@ fn the_machine_shows_only_installed_games_with_matched_titles_and_covers() {
             cover_url: None,
             cover_file: Some("7.jpg".to_owned()),
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };
@@ -1544,6 +1546,7 @@ fn saved_view_counts_use_each_views_own_payload() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
             GameRecord {
                 game_id: 2,
@@ -1552,6 +1555,7 @@ fn saved_view_counts_use_each_views_own_payload() {
                 cover_url: None,
                 cover_file: None,
                 cover_failed_at: None,
+                platforms: Vec::new(),
             },
         ],
         ..LibraryCache::default()
@@ -1976,6 +1980,7 @@ fn provider_counts_follow_every_facet_except_the_sidebar_and_stay_raw_for_facts(
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         favorites: vec![crate::library::store::FavoriteRecord {
             account_id: "u1".to_owned(),
@@ -2020,4 +2025,62 @@ fn provider_counts_follow_every_facet_except_the_sidebar_and_stay_raw_for_facts(
         .find(|count| count.id == "steam")
         .unwrap();
     assert_eq!(steam.count, 1);
+}
+
+#[test]
+fn a_local_custom_cover_wins_over_the_gamenode_cover_and_survives_a_match() {
+    let game = |id: u64, cover: &str| GameRecord {
+        game_id: id,
+        name: "Game".into(),
+        release_year: None,
+        cover_url: None,
+        cover_file: Some(cover.into()),
+        cover_failed_at: None,
+        platforms: vec![],
+    };
+    let cache = LibraryCache {
+        entries: vec![stored("manual", "1", "Game", true)],
+        games: vec![game(7, "7.jpg"), game(8, "8.jpg")],
+        ..LibraryCache::default()
+    };
+    let (mut machine, _) = loaded(false, cache);
+    let key = "manual:1".to_owned();
+    machine.set_local_inference(key.clone(), Some(7), None);
+    machine.replace_local_covers(std::collections::BTreeMap::from([(
+        key.clone(),
+        "local-1-0123456789abcdef.webp".to_owned(),
+    )]));
+
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(
+        row.cover_file.as_deref(),
+        Some("local-1-0123456789abcdef.webp")
+    );
+    assert_eq!(row.game_cover_file.as_deref(), Some("7.jpg"));
+
+    // A new match changes the GameNode cover underneath, never the custom one.
+    machine.set_local_inference(key.clone(), Some(8), None);
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(
+        row.cover_file.as_deref(),
+        Some("local-1-0123456789abcdef.webp")
+    );
+    assert_eq!(row.game_cover_file.as_deref(), Some("8.jpg"));
+
+    // Clearing it falls back to the matched game's cover.
+    machine.replace_local_covers(std::collections::BTreeMap::new());
+    let row = machine
+        .all_rows()
+        .into_iter()
+        .find(|row| row.key == key)
+        .unwrap();
+    assert_eq!(row.cover_file.as_deref(), Some("8.jpg"));
 }

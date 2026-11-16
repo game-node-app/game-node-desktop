@@ -1897,6 +1897,7 @@ impl Engine {
                     cover_url: game.cover_url.clone(),
                     cover_file: None,
                     cover_failed_at: None,
+                    platforms: game.platforms.clone(),
                 })
         });
         let inference = inference(&completion.match_input, &registration, &account, &decision);

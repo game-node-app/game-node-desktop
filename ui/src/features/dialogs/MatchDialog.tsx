@@ -1,9 +1,51 @@
 import React, { useEffect, useRef } from 'react';
-import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useAuth, useLibraryView, coverAssetUrl, type MatchOption } from '../../api';
+import {
+  IconCircleX,
+  IconLink,
+  IconSearch,
+  IconSparkles,
+} from '@tabler/icons-react';
+import { DialogShell } from '../../components/dialog';
+import {
+  Button,
+  Checklist,
+  Field,
+  OptionCard,
+  OptionCardGroup,
+  Pill,
+  SectionLabel,
+  TextInput,
+  type ChecklistItem,
+} from '../../components/ui';
+import {
+  commands,
+  coverAssetUrl,
+  useAuth,
+  useLibraryView,
+  type MatchOption,
+  type MatchReason,
+} from '../../api';
 import { useI18n } from '../../i18n';
 import { formatI18n, formatReason } from '../library/formatters';
 import { useBatchMatchDriver } from '../library/batchMatchQueue';
+
+const DEFAULT_SIZE = { width: 820, height: 540 };
+const MIN_SIZE = { width: 640, height: 420 };
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/** The option meta line: `<year> · <platforms>`, omitting whatever is unknown. */
+function optionMeta(
+  option: Pick<MatchOption, 'releaseYear' | 'platforms'>,
+): string | undefined {
+  const parts = [
+    option.releaseYear != null ? String(option.releaseYear) : null,
+    option.platforms.length > 0 ? option.platforms.join(', ') : null,
+  ].filter((part): part is string => part != null && part.length > 0);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
 
 export const MatchDialog: React.FC = () => {
   const library = useLibraryView();
@@ -35,19 +77,25 @@ export const MatchDialog: React.FC = () => {
     commands.libraryInput('searchMatch');
   };
 
-  const handlePickMatch = (gameId: number) => {
-    commands.libraryInput({
-      pickMatch: {
-        gameId,
-        now: Math.floor(Date.now() / 1000),
-      },
-    });
+  const handleSelect = (gameId: number) => {
+    commands.libraryInput({ selectMatch: { gameId } });
+  };
+
+  const handleConfirmOption = (gameId: number) => {
+    // Confirming an option also selects it, so Enter or a double-click on any row matches that
+    // row even when the preview pointed elsewhere.
+    handleSelect(gameId);
+    commands.libraryInput({ confirmMatch: { now: nowSeconds() } });
+  };
+
+  const handleConfirm = () => {
+    commands.libraryInput({ confirmMatch: { now: nowSeconds() } });
   };
 
   const handleMarkNoGame = () => {
     commands.libraryInput({
       markNoGame: {
-        now: Math.floor(Date.now() / 1000),
+        now: nowSeconds(),
       },
     });
   };
@@ -60,146 +108,192 @@ export const MatchDialog: React.FC = () => {
     commands.libraryInput('closeMatch');
   };
 
+  const reasonItems = (option: MatchOption): ChecklistItem[] =>
+    option.reasons.map((reason: MatchReason) => {
+      if (typeof reason === 'string') {
+        if (reason === 'sameYear') {
+          return {
+            kind: 'positive',
+            label: t('Library::Same release year'),
+          };
+        }
+        if (reason === 'storeIdRecognized') {
+          return {
+            kind: 'positive',
+            label: t('Library::Store ID recognized'),
+          };
+        }
+        return {
+          kind: 'positive',
+          label: t('Detail::Chosen by you'),
+        };
+      }
+      if ('titleSimilarity' in reason) {
+        const percent = reason.titleSimilarity.percent;
+        return {
+          kind: percent >= 80 ? 'positive' : 'warning',
+          label: formatI18n(t('Library::Title {}% similar'), percent),
+        };
+      }
+      return {
+        kind: 'warning',
+        label: formatI18n(
+          t('Library::Different release year ({})'),
+          reason.differentYear.year,
+        ),
+      };
+    });
+
   const renderOptionRow = (option: MatchOption, testIdPrefix: string) => {
     // Covers are served from the local cache over the asset protocol. A search result whose
     // cover is still downloading shows its title until the next snapshot arrives.
     const coverUrl = coverAssetUrl(option.coverFile);
+    const meta = optionMeta(option);
 
     return (
-      <div
+      <OptionCard
         key={option.gameId}
         data-testid={`${testIdPrefix}-${option.gameId}`}
-        onClick={() => handlePickMatch(option.gameId)}
-        className={`flex cursor-pointer select-none items-center gap-sm rounded-sm border px-xs py-compact transition-colors duration-[120ms] ${
-          option.current
-            ? 'border-brand bg-accent-subtle'
-            : 'border-transparent bg-raised'
-        }`}
-      >
-        {/* Cover thumbnail */}
-        <div className="flex h-[42px] w-[32px] shrink-0 items-center justify-center overflow-hidden rounded-xs bg-surface">
-          {coverUrl ? (
-            <img
-              src={coverUrl}
-              alt={option.name}
-              loading="lazy"
-              decoding="async"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <span className="p-[2px] text-center text-[8px] text-text-dimmed">
-              {option.name}
-            </span>
-          )}
-        </div>
-
-        {/* Title and Year */}
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-text-default">
-            {option.name}
-          </div>
-          {option.releaseYear && (
-            <div className="text-xs text-text-dimmed">{option.releaseYear}</div>
-          )}
-        </div>
-
-        {/* Current badge */}
-        {option.current && (
-          <span
-            data-testid="match-current-badge"
-            className="shrink-0 text-xs font-semibold text-brand"
-          >
-            {t('Library::Current')}
+        value={String(option.gameId)}
+        variant="row"
+        title={option.name}
+        meta={meta}
+        onDoubleClick={() => handleConfirmOption(option.gameId)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            handleConfirmOption(option.gameId);
+          }
+        }}
+        leading={
+          <span className="flex h-12 w-9 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-surface">
+            {coverUrl ? (
+              <img
+                src={coverUrl}
+                alt={option.name}
+                loading="lazy"
+                decoding="async"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <span className="p-[2px] text-center text-[8px] text-text-dimmed">
+                {option.name}
+              </span>
+            )}
           </span>
-        )}
-
-        {/* Pick Button */}
-        <button
-          type="button"
-          data-testid={`match-pick-btn-${option.gameId}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            handlePickMatch(option.gameId);
-          }}
-          className="shrink-0 rounded-xs border border-border-subtle px-xs py-1 text-xs text-text-default hover:bg-surface"
-        >
-          {t('Library::Pick match') !== 'Library::Pick match' ? t('Library::Pick match') : 'Pick match'}
-        </button>
-      </div>
+        }
+        trailing={
+          <span className="flex items-center gap-1.5">
+            {option.current && (
+              <span data-testid="match-current-badge">
+                <Pill tone="brand">{t('Library::Current match')}</Pill>
+              </span>
+            )}
+            <Pill tone={option.tone}>{option.confidence}%</Pill>
+          </span>
+        }
+      />
     );
   };
 
+  const optionCount = dialog.candidates.length + dialog.results.length;
+  const listLabel =
+    dialog.candidates.length > 0
+      ? t('Library::Several possible matches')
+      : t('Library::Search results');
+  const countLabel =
+    optionCount === 1
+      ? formatI18n(t('Library::1 result'), optionCount)
+      : formatI18n(t('Library::{} results'), optionCount);
+  const selected = dialog.selected;
+  const selectedCoverUrl = coverAssetUrl(selected?.coverFile);
+
   return (
-    <FloatingModal.Root
-      opened
-      onClose={handleClose}
+    <DialogShell
+      testId="match-dialog"
       geometryKey="match-dialog"
-      defaultSize={{ width: 620, height: 560 }}
-      minSize={{ width: 480, height: 360 }}
-      zIndex={2000}
-      closeOnClickOutside
-    >
-      <FloatingModal.Overlay
-        data-testid="match-dialog-overlay"
-        backgroundOpacity={0.75}
-      />
-      <FloatingModal.Content
-        data-testid="match-dialog"
-        className="flex flex-col bg-secondary"
-      >
-        {/* Header */}
-        <FloatingModal.Header className="px-lg pb-sm pt-lg">
-          <div className="min-w-0">
-            <FloatingModal.Title
-              data-testid="match-dialog-title"
-              className="text-lg font-semibold text-text-default"
-            >
-              {t('Library::Match to a GameNode game')}
-            </FloatingModal.Title>
-            <div
-              data-testid="match-dialog-subtitle"
-              className="mt-1 text-xs text-text-dimmed"
-            >
-              {formatI18n(
-                t('Library::{} from {}') !== 'Library::{} from {}'
-                  ? t('Library::{} from {}')
-                  : '{0} from {1}',
-                dialog.detectedName,
-                dialog.providerName,
-              )}
-            </div>
-          </div>
-        </FloatingModal.Header>
-
-        {/* Search input form */}
-        <form onSubmit={handleSearchSubmit} className="flex gap-compact px-lg pb-sm">
-          <input
-            ref={inputRef}
-            type="text"
-            data-testid="match-search-input"
-            data-autofocus
-            value={dialog.query}
-            onChange={(e) =>
-              commands.libraryInput({ setMatchQuery: e.target.value })
-            }
-            placeholder={t('Library::Search GameNode')}
-            className="h-[34px] flex-1 rounded-sm border border-border-subtle bg-surface px-xs text-sm text-text-default outline-none focus:border-brand"
-          />
-          <button
-            type="submit"
-            data-testid="match-search-submit-btn"
-            className="h-[34px] rounded-sm bg-brand px-md text-sm font-medium text-on-primary hover:bg-brand-4"
+      defaultSize={DEFAULT_SIZE}
+      minSize={MIN_SIZE}
+      onClose={handleClose}
+      title={
+        <span data-testid="match-dialog-title">
+          {t('Library::Match to a GameNode game')}
+        </span>
+      }
+      subtitle={
+        <span data-testid="match-dialog-subtitle">
+          {dialog.detectedName} · {dialog.providerName}
+        </span>
+      }
+      bodyClassName="min-h-0"
+      footerLeading={
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            leftIcon={IconCircleX}
+            data-testid="match-not-a-game-btn"
+            onClick={handleMarkNoGame}
           >
-            {t('Library::Search') !== 'Library::Search' ? t('Library::Search') : 'Search'}
-          </button>
-        </form>
+            {t('Library::Not on GameNode')}
+          </Button>
+          {dialog.canClear && (
+            <Button
+              variant="ghost"
+              size="sm"
+              leftIcon={IconSparkles}
+              data-testid="match-clear-match-btn"
+              onClick={handleClearMatch}
+            >
+              {t('Library::Use the automatic match')}
+            </Button>
+          )}
+        </>
+      }
+      footer={
+        <>
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="match-cancel-btn"
+            onClick={handleClose}
+          >
+            {t('Library::Cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            leftIcon={IconLink}
+            data-testid="match-confirm-btn"
+            disabled={selected == null}
+            onClick={handleConfirm}
+          >
+            {t('Library::Match game')}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex min-h-0 flex-1 flex-row gap-lg">
+        <div className="flex min-h-0 min-w-0 flex-[1.25] flex-col gap-sm">
+          <form onSubmit={handleSearchSubmit}>
+            <Field label={t('Library::Search GameNode')}>
+              <TextInput
+                ref={inputRef}
+                data-testid="match-search-input"
+                data-autofocus
+                leadingIcon={IconSearch}
+                value={dialog.query}
+                onChange={(e) =>
+                  commands.libraryInput({ setMatchQuery: e.target.value })
+                }
+              />
+            </Field>
+          </form>
 
-        {/* Status / Searching / Error notices */}
-        <div className="px-lg">
           {dialog.searching && (
             <div
               data-testid="match-searching-notice"
-              className="mb-compact text-xs text-text-dimmed"
+              className="text-xs text-text-dimmed"
             >
               {t('Library::Searching…')}
             </div>
@@ -208,7 +302,7 @@ export const MatchDialog: React.FC = () => {
           {dialog.noResults && (
             <div
               data-testid="match-no-results-notice"
-              className="mb-compact text-xs text-warning"
+              className="text-xs text-warning"
             >
               {t('Library::No games found. Try different words.')}
             </div>
@@ -217,7 +311,7 @@ export const MatchDialog: React.FC = () => {
           {dialog.error && (
             <div
               data-testid="match-error-notice"
-              className="mb-compact text-xs text-danger"
+              className="text-xs text-danger"
             >
               {dialog.error === 'rejected' &&
                 t('Library::GameNode rejected your session. Sign in again.')}
@@ -232,85 +326,86 @@ export const MatchDialog: React.FC = () => {
           {dialog.searchBlocked && (
             <div
               data-testid="match-search-blocked-notice"
-              className="mb-compact text-xs text-warning"
+              className="text-xs text-warning"
             >
               {formatReason(dialog.searchBlocked, t)}
             </div>
           )}
+
+          <div
+            data-testid="match-options-container"
+            className="flex min-h-0 flex-1 flex-col gap-1"
+          >
+            {optionCount > 0 && (
+              <SectionLabel
+                action={
+                  <span className="text-caption font-normal text-text-dimmed">
+                    {countLabel}
+                  </span>
+                }
+              >
+                {listLabel}
+              </SectionLabel>
+            )}
+            <OptionCardGroup
+              role="listbox"
+              orientation="vertical"
+              aria-label={listLabel}
+              value={selected != null ? String(selected.gameId) : null}
+              onChange={(value) => handleSelect(Number(value))}
+              className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto"
+            >
+              {dialog.candidates.map((candidate) =>
+                renderOptionRow(candidate, 'candidate'),
+              )}
+              {dialog.results.map((result) => renderOptionRow(result, 'result'))}
+            </OptionCardGroup>
+          </div>
         </div>
 
-        {/* Scrollable list of Candidates and Results */}
-        <FloatingModal.Body
-          data-testid="match-options-container"
-          className="gap-sm px-lg pb-md"
+        <div
+          data-testid="match-preview"
+          className="flex min-h-0 flex-1 flex-col gap-sm rounded-md border border-border-subtle bg-body p-[14px]"
         >
-          {/* Candidates */}
-          {dialog.candidates.length > 0 && (
-            <div className="flex flex-col gap-[6px]">
-              <div className="text-xs font-semibold text-text-dimmed">
-                {t('Library::GameNode suggests')}
-              </div>
-              <div className="flex flex-col gap-1">
-                {dialog.candidates.map((c) => renderOptionRow(c, 'candidate'))}
-              </div>
+          {selected == null ? (
+            <div className="flex flex-1 items-center justify-center px-sm text-center text-xs text-text-dimmed">
+              {t('Library::Select a game to see its details.')}
             </div>
-          )}
-
-          {/* Results */}
-          {dialog.results.length > 0 && (
-            <div className="flex flex-col gap-[6px]">
-              <div className="text-xs font-semibold text-text-dimmed">
-                {t('Library::Search results')}
+          ) : (
+            <>
+              <div className="flex items-start gap-sm">
+                <span className="flex h-28 w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-control bg-surface">
+                  {selectedCoverUrl ? (
+                    <img
+                      src={selectedCoverUrl}
+                      alt={selected.name}
+                      loading="lazy"
+                      decoding="async"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </span>
+                <div className="flex min-w-0 flex-col gap-[6px]">
+                  <div className="text-title font-semibold text-text-primary">
+                    {selected.name}
+                  </div>
+                  {selected.releaseYear != null && (
+                    <div className="text-xs text-text-dimmed">
+                      {selected.releaseYear}
+                    </div>
+                  )}
+                  {selected.platforms.length > 0 && (
+                    <Pill tone="neutral">{selected.platforms.join(', ')}</Pill>
+                  )}
+                </div>
               </div>
-              <div className="flex flex-col gap-1">
-                {dialog.results.map((r) => renderOptionRow(r, 'result'))}
-              </div>
-            </div>
+
+              <SectionLabel>{t('Library::Why we suggest it')}</SectionLabel>
+              <Checklist items={reasonItems(selected)} />
+            </>
           )}
-        </FloatingModal.Body>
-
-        {/* Footer Actions */}
-        <FloatingModal.Footer className="flex-wrap justify-between bg-chrome px-lg py-sm">
-          <div className="flex gap-compact">
-            {/* Not a game */}
-            <button
-              type="button"
-              data-testid="match-not-a-game-btn"
-              aria-label="Not a game"
-              onClick={handleMarkNoGame}
-              className="rounded-sm border border-border-subtle px-[14px] py-compact text-xs text-text-default hover:bg-raised"
-            >
-              {t('Library::Not on GameNode')}
-            </button>
-
-            {/* Clear match */}
-            {dialog.canClear && (
-              <button
-                type="button"
-                data-testid="match-clear-match-btn"
-                aria-label="Clear match"
-                onClick={handleClearMatch}
-                className="rounded-sm border border-border-subtle px-[14px] py-compact text-xs text-text-default hover:bg-raised"
-              >
-                {t('Library::Use the automatic match')}
-              </button>
-            )}
-          </div>
-
-          {/* Close */}
-          <button
-            type="button"
-            data-testid="match-close-btn"
-            aria-label="Close"
-            onClick={handleClose}
-            className="ml-auto rounded-sm border border-border-subtle px-md py-compact text-xs text-text-default hover:bg-raised"
-          >
-            {t('Library::Close')}
-          </button>
-        </FloatingModal.Footer>
-
-        <FloatingModal.ResizeHandle />
-      </FloatingModal.Content>
-    </FloatingModal.Root>
+        </div>
+      </div>
+    </DialogShell>
   );
 };

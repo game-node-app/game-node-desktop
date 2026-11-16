@@ -2,8 +2,9 @@ use super::*;
 use gamenode_core::drm_free::Registration;
 use gamenode_core::tools::{
     CachedToolArchive, InMemoryToolStore, MockToolCatalogApi, MockToolInstallerHost, ToolChannel,
-    ToolOperationStatus, ToolRelease, optiscaler_descriptor,
+    ToolOperationErrorCode, ToolOperationStatus, ToolRelease, optiscaler_descriptor,
 };
+use std::collections::VecDeque;
 
 async fn eventually(mut predicate: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -15,6 +16,23 @@ async fn eventually(mut predicate: impl FnMut() -> bool) {
     .unwrap();
 }
 
+#[derive(Default)]
+struct FakeToolPicker {
+    picks: Mutex<VecDeque<Result<Option<String>, String>>>,
+}
+
+impl FakeToolPicker {
+    fn push(&self, pick: Result<Option<String>, String>) {
+        self.picks.lock().unwrap().push_back(pick);
+    }
+}
+
+impl crate::engine::tools::ToolTargetPicker for FakeToolPicker {
+    fn pick(&self, _install_dir: &str) -> Result<Option<String>, String> {
+        self.picks.lock().unwrap().pop_front().unwrap_or(Ok(None))
+    }
+}
+
 struct ToolsHarness {
     harness: Harness,
     #[allow(dead_code)]
@@ -23,6 +41,7 @@ struct ToolsHarness {
     catalog: Arc<MockToolCatalogApi>,
     #[allow(dead_code)]
     installer: Arc<MockToolInstallerHost>,
+    picker: Arc<FakeToolPicker>,
 }
 
 fn tools_harness() -> ToolsHarness {
@@ -39,6 +58,7 @@ fn tools_harness() -> ToolsHarness {
     let store = Arc::new(InMemoryToolStore::default());
     let catalog = Arc::new(MockToolCatalogApi::default());
     let installer = Arc::new(MockToolInstallerHost::default());
+    let picker = Arc::new(FakeToolPicker::default());
 
     let opti = optiscaler_descriptor();
     let stable_release = ToolRelease {
@@ -86,6 +106,7 @@ fn tools_harness() -> ToolsHarness {
         tools: Some(store.clone()),
         tool_catalog: Some(catalog.clone()),
         tool_installer: Some(installer.clone()),
+        tool_picker: Some(picker.clone()),
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -125,6 +146,7 @@ fn tools_harness() -> ToolsHarness {
         settings: Settings::default(),
         library: None,
         launch: None,
+        add_notice: None,
         tools: Default::default(),
         store_accounts: Vec::new(),
         ports: Default::default(),
@@ -163,17 +185,28 @@ fn tools_harness() -> ToolsHarness {
         store,
         catalog,
         installer,
+        picker,
     }
 }
 
 fn add_test_game(h: &ToolsHarness, id: &str, title: &str) {
+    add_test_game_at(
+        h,
+        id,
+        title,
+        &format!("C:/Games/{title}"),
+        &format!("C:/Games/{title}/bin/x64/Game.exe"),
+    );
+}
+
+fn add_test_game_at(h: &ToolsHarness, id: &str, title: &str, root: &str, executable: &str) {
     let reg = Registration {
         id: id.to_string(),
         title: title.to_string(),
-        executable: format!("C:/Games/{title}/bin/x64/Game.exe"),
+        executable: executable.to_string(),
         file_identity: format!("ident_{id}"),
-        root: format!("C:/Games/{title}"),
-        working_directory: format!("C:/Games/{title}"),
+        root: root.to_string(),
+        working_directory: root.to_string(),
         arguments: vec![],
         gameplay: vec![],
         launchers: vec![],
@@ -181,6 +214,7 @@ fn add_test_game(h: &ToolsHarness, id: &str, title: &str) {
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     h.harness.engine.lock().local.registrations.push(reg);
@@ -241,6 +275,110 @@ async fn open_tools_modal_inspects_target_and_loads_versions() {
     // Close tools modal
     th.harness.engine.close_tools();
     assert!(th.harness.engine.snapshot().tools.modal.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browse_picks_an_executable_inside_the_install_folder_and_validates_it() {
+    let th = tools_harness();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    std::fs::create_dir_all(root.join("bin/x64")).unwrap();
+    let initial = root.join("bin/x64/Game.exe");
+    std::fs::write(&initial, b"game").unwrap();
+    let picked = root.join("bin/x64/Picked.exe");
+    std::fs::write(&picked, b"picked").unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside = outside_dir.path().join("Outside.exe");
+    std::fs::write(&outside, b"outside").unwrap();
+    let root_str = root.to_string_lossy().into_owned();
+    add_test_game_at(
+        &th,
+        "game1",
+        "Picker Game",
+        &root_str,
+        &initial.to_string_lossy(),
+    );
+
+    th.harness
+        .engine
+        .open_tools(Some("manual:game1".to_string()));
+    eventually(|| {
+        th.harness
+            .engine
+            .snapshot()
+            .tools
+            .modal
+            .as_ref()
+            .is_some_and(|modal| modal.inspection.is_some())
+    })
+    .await;
+
+    // The chosen file is validated against the install folder and selected through the same
+    // pipeline the candidate list uses.
+    th.picker
+        .push(Ok(Some(picked.to_string_lossy().into_owned())));
+    th.harness.engine.pick_tool_target_exe().await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.inspection.as_ref().unwrap().selected_exe.as_deref(),
+        Some("bin/x64/Picked.exe")
+    );
+    assert!(modal.operation.is_none(), "{:?}", modal.operation);
+
+    // Cancelling the picker keeps the current target.
+    th.picker.push(Ok(None));
+    th.harness.engine.pick_tool_target_exe().await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.inspection.as_ref().unwrap().selected_exe.as_deref(),
+        Some("bin/x64/Picked.exe")
+    );
+
+    // A file outside the install folder is refused by the existing containment rule.
+    th.picker
+        .push(Ok(Some(outside.to_string_lossy().into_owned())));
+    th.harness.engine.pick_tool_target_exe().await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.inspection.as_ref().unwrap().selected_exe.as_deref(),
+        Some("bin/x64/Picked.exe")
+    );
+    assert!(matches!(
+        modal.operation,
+        Some(ToolOperationStatus::Failed {
+            code: Some(ToolOperationErrorCode::TargetOutsideInstallDir),
+            ..
+        })
+    ));
+
+    // A later successful pick clears that picker error.
+    let other = root.join("bin/x64/Other.exe");
+    std::fs::write(&other, b"other").unwrap();
+    th.picker
+        .push(Ok(Some(other.to_string_lossy().into_owned())));
+    th.harness.engine.pick_tool_target_exe().await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.inspection.as_ref().unwrap().selected_exe.as_deref(),
+        Some("bin/x64/Other.exe")
+    );
+    assert!(modal.operation.is_none());
+
+    // A picker failure keeps the target and reports the failure in the modal.
+    th.picker.push(Err("the dialog could not open".to_string()));
+    th.harness.engine.pick_tool_target_exe().await;
+    let modal = th.harness.engine.snapshot().tools.modal.unwrap();
+    assert_eq!(
+        modal.inspection.as_ref().unwrap().selected_exe.as_deref(),
+        Some("bin/x64/Other.exe")
+    );
+    assert!(matches!(
+        modal.operation,
+        Some(ToolOperationStatus::Failed {
+            ref message,
+            code: Some(ToolOperationErrorCode::PickerFailed),
+        }) if message.contains("the dialog could not open")
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

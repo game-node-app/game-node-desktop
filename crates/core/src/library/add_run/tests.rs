@@ -91,9 +91,9 @@ fn a_game_added_elsewhere_before_confirm_is_not_sent_again() {
         summary
             .items
             .iter()
-            .map(|item| item.outcome)
+            .map(|item| item.state)
             .collect::<Vec<_>>(),
-        [AddOutcomeKind::AlreadyPresent]
+        [AddItemState::AlreadyPresent]
     );
     assert_eq!(summary.items[0].status, Some(EntryStatus::Finished));
     assert!(!summary.undoable, "an existing entry is never undoable");
@@ -205,7 +205,12 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
     );
 
     let view = dialog(&mut machine);
-    assert!(view.progress.is_none() && !view.can_confirm);
+    assert_eq!(
+        view.progress,
+        Some(AddProgress { done: 5, total: 5 }),
+        "the finished run shows its final progress"
+    );
+    assert!(!view.can_confirm);
     machine.handle(Input::CloseAdd);
     let view = machine.view().unwrap();
     assert!(view.add_dialog.is_none());
@@ -216,10 +221,10 @@ fn a_mixed_selection_adds_one_game_at_a_time_and_summarizes() {
     );
 }
 
-/// The window reads flat outcome names and the counts; the summary must serialize exactly that
-/// shape (an externally tagged `AddOutcome` object would render every item as failed).
+/// The window reads flat item states and the counts; the summary must serialize exactly that
+/// shape (an externally tagged enum object would render every item as failed).
 #[test]
-fn the_summary_serializes_flat_outcomes_and_their_counts() {
+fn the_summary_serializes_flat_states_and_their_counts() {
     let mut machine = library();
     open_with(&mut machine, &["620", "570"], vec![]);
     let effects = confirm(&mut machine);
@@ -242,15 +247,17 @@ fn the_summary_serializes_flat_outcomes_and_their_counts() {
                     "target": { "row": "steam:570" },
                     "entryKey": "steam:570",
                     "title": "Dota 2",
-                    "outcome": "skipped",
-                    "status": null
+                    "state": "skipped",
+                    "status": null,
+                    "error": null
                 },
                 {
                     "target": { "row": "steam:620" },
                     "entryKey": "steam:620",
                     "title": "Portal 2",
-                    "outcome": "added",
-                    "status": "playing"
+                    "state": "added",
+                    "status": "playing",
+                    "error": null
                 }
             ]
         })
@@ -311,7 +318,7 @@ fn a_failed_game_does_not_stop_the_others() {
 
     let summary = summary(&mut machine);
     assert_eq!((summary.added, summary.failed), (1, 1));
-    assert_eq!(summary.items[0].outcome, AddOutcomeKind::Failed);
+    assert_eq!(summary.items[0].state, AddItemState::Failed);
     assert_eq!(
         machine.last_add.as_ref().unwrap().created,
         [CreatedEntry {
@@ -470,9 +477,9 @@ fn a_rejected_session_ends_the_run() {
 }
 
 #[test]
-fn closing_during_a_run_stops_it_and_ignores_the_answer() {
+fn closing_a_single_game_run_abandons_it_and_ignores_the_answer() {
     let mut machine = library();
-    open_with(&mut machine, &["500", "620"], vec![]);
+    open_with(&mut machine, &["620"], vec![]);
     let effects = confirm(&mut machine);
     let (op, game_id) = reads(&effects)[0];
     let closed = machine.handle(Input::CloseAdd);
@@ -618,6 +625,7 @@ fn only_confirming_the_dialog_can_create_an_entry() {
                             name: "Portal 2".to_owned(),
                             release_year: None,
                             cover_url: None,
+                            platforms: Vec::new(),
                         },
                     }]),
                     now: 3,
@@ -693,4 +701,300 @@ fn only_confirming_the_dialog_can_create_an_entry() {
         "the flow did exercise reads"
     );
     assert!(creates(&all).is_empty(), "{:?}", creates(&all));
+}
+
+fn states(machine: &mut LibraryMachine) -> Vec<AddItemState> {
+    dialog(machine)
+        .items
+        .iter()
+        .map(|item| item.state)
+        .collect()
+}
+
+#[test]
+fn a_batch_lists_waiting_adding_skipped_already_and_added() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "570", "620"], vec![]);
+    // Display order: Dota 2 (unmatched), Left 4 Dead, Portal 2.
+    let effects = confirm(&mut machine);
+    let view = dialog(&mut machine);
+    assert_eq!(view.progress, Some(AddProgress { done: 1, total: 3 }));
+    assert_eq!(
+        states(&mut machine),
+        [
+            AddItemState::Skipped,
+            AddItemState::Adding,
+            AddItemState::Waiting
+        ]
+    );
+
+    let next = read_says(
+        &mut machine,
+        &effects,
+        Ok(Some(entry(Some(EntryStatus::Finished)))),
+    );
+    assert_eq!(reads(&next)[0].1, 7, "the next matched game is handled");
+    assert_eq!(
+        states(&mut machine),
+        [
+            AddItemState::Skipped,
+            AddItemState::AlreadyPresent,
+            AddItemState::Adding
+        ]
+    );
+
+    let next = read_says(&mut machine, &next, Ok(None));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.items.iter().map(|item| item.state).collect::<Vec<_>>(),
+        [
+            AddItemState::Skipped,
+            AddItemState::AlreadyPresent,
+            AddItemState::Added
+        ]
+    );
+    assert_eq!(
+        (view.summary.unwrap().added, view.progress.unwrap().done),
+        (1, 3)
+    );
+}
+
+#[test]
+fn hiding_a_batch_keeps_issuing_creates() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    let effects = confirm(&mut machine);
+    assert_eq!(reads(&effects)[0].1, 8);
+
+    assert!(machine.handle(Input::HideAdd).is_empty());
+    assert!(machine.view().unwrap().add_dialog.is_none());
+    assert!(machine.add_run_active());
+
+    let next = read_says(&mut machine, &effects, Ok(None));
+    assert_eq!(
+        creates(&next).len(),
+        1,
+        "the hidden run still creates the next game"
+    );
+    assert!(machine.add_run_active());
+}
+
+#[test]
+fn a_hidden_batch_is_summarized_once_and_ignores_a_late_answer() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    let effects = confirm(&mut machine);
+    let in_flight = reads(&effects)[0];
+    machine.handle(Input::HideAdd);
+
+    let next = read_says(&mut machine, &effects, Ok(None));
+    let effects = create_and_read_back(&mut machine, &next, EntryStatus::Playing);
+    assert_eq!(reads(&effects)[0].1, 7);
+    let next = read_says(&mut machine, &effects, Ok(None));
+    create_and_read_back(&mut machine, &next, EntryStatus::Playing);
+
+    let run = machine.last_add.as_ref().expect("the run finished").run;
+    assert!(machine.add_runs.is_none());
+    assert_eq!(
+        machine.view().unwrap().add_summary.unwrap().run_id,
+        run,
+        "the notification has the summary after the dialog hid"
+    );
+    // The answer to the first read arrives again: the finished run is not resumed or re-raised.
+    let late = machine.handle(Input::EntryRead {
+        op: in_flight.0,
+        game_id: in_flight.1,
+        result: Ok(None),
+    });
+    assert!(late.is_empty() && creates(&late).is_empty(), "{late:?}");
+    assert_eq!(machine.last_add.as_ref().unwrap().run, run);
+}
+
+#[test]
+fn a_new_add_reopens_the_running_progress() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    confirm(&mut machine);
+    machine.handle(Input::HideAdd);
+    let in_flight = machine.add_runs.as_ref().unwrap().in_flight_game();
+
+    let effects = machine.handle(Input::OpenAdd);
+    assert!(effects.is_empty(), "reopening sends nothing: {effects:?}");
+    let view = dialog(&mut machine);
+    assert_eq!(view.progress, Some(AddProgress { done: 0, total: 2 }));
+    assert_eq!(view.targets.len(), 2);
+    assert_eq!(view.items.len(), 2);
+    assert!(!view.can_confirm, "a running run cannot be confirmed again");
+    assert_eq!(
+        machine.add_runs.as_ref().unwrap().in_flight_game(),
+        in_flight,
+        "the same run is shown, not a new one"
+    );
+
+    // Hide again: the run keeps going.
+    machine.handle(Input::HideAdd);
+    assert!(machine.add_run_active());
+    assert!(machine.view().unwrap().add_dialog.is_none());
+}
+
+#[test]
+fn only_one_add_run_can_be_active() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    let first = confirm(&mut machine);
+    assert!(confirm(&mut machine).is_empty(), "the run is already going");
+
+    machine.handle(Input::HideAdd);
+    assert!(machine.handle(Input::ConfirmAdd).is_empty());
+    assert!(machine.handle(Input::OpenAdd).is_empty());
+    assert_eq!(dialog(&mut machine).progress.unwrap().total, 2);
+    assert!(confirm(&mut machine).is_empty());
+
+    // The original request is still the one that answers.
+    let next = read_says(&mut machine, &first, Ok(None));
+    assert_eq!(creates(&next).len(), 1);
+}
+
+#[test]
+fn sign_out_stops_new_effects_and_counts_the_rest() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "570", "620"], vec![]);
+    let effects = confirm(&mut machine);
+    let in_flight = reads(&effects)[0];
+    machine.handle(Input::HideAdd);
+    // Dota 2 was skipped; Left 4 Dead was being read; Portal 2 was waiting.
+    assert!(machine.add_run_active());
+
+    let effects = machine.handle(Input::SetAccess {
+        access: Access::Unverified,
+        now: NOW,
+    });
+    assert!(
+        effects.iter().all(|effect| !matches!(
+            effect,
+            Effect::CreateEntry { .. } | Effect::ReadEntry { .. }
+        )),
+        "no further request is sent: {effects:?}"
+    );
+    assert!(machine.add_runs.is_none());
+    let summary = machine
+        .view()
+        .unwrap()
+        .add_summary
+        .expect("the run finished");
+    assert_eq!(
+        (
+            summary.added,
+            summary.already_present,
+            summary.skipped,
+            summary.failed
+        ),
+        (0, 0, 1, 2),
+        "the games that were not handled count as not added"
+    );
+    let notice = machine
+        .add_notice()
+        .expect("the stopped batch is reported outside the view");
+    assert!(notice.batch);
+    assert_eq!(notice.account_id.as_deref(), Some("a"));
+    assert_eq!(
+        (
+            notice.summary.added,
+            notice.summary.skipped,
+            notice.summary.failed
+        ),
+        (0, 1, 2)
+    );
+
+    // The answer to the read that was in flight is ignored.
+    let late = machine.handle(Input::EntryRead {
+        op: in_flight.0,
+        game_id: in_flight.1,
+        result: Ok(None),
+    });
+    assert!(late.is_empty() && creates(&late).is_empty(), "{late:?}");
+}
+
+#[test]
+fn a_different_account_stops_the_hidden_run() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    let effects = confirm(&mut machine);
+    let in_flight = reads(&effects)[0];
+    machine.handle(Input::HideAdd);
+    machine.handle(Input::AccountChanged(None));
+    assert!(machine.add_runs.is_none());
+    assert!(machine.view().is_none(), "the previous view is gone");
+
+    let notice = machine
+        .add_notice()
+        .expect("the previous account's outcome survives");
+    assert!(notice.batch);
+    assert_eq!(notice.account_id.as_deref(), Some("a"));
+    assert_eq!(
+        (notice.summary.added, notice.summary.failed),
+        (0, 2),
+        "the read in flight and the waiting game count as not added"
+    );
+    assert_eq!(
+        notice.summary.run_id,
+        machine.last_add_notice.as_ref().unwrap().summary.run_id
+    );
+
+    let late = machine.handle(Input::EntryRead {
+        op: in_flight.0,
+        game_id: in_flight.1,
+        result: Ok(None),
+    });
+    assert!(late.is_empty() && creates(&late).is_empty(), "{late:?}");
+    assert_eq!(
+        machine.add_notice().unwrap().summary,
+        notice.summary,
+        "a stale callback cannot change the reported counts"
+    );
+
+    // The same notice keeps its identity when the next account loads; nothing is re-run.
+    machine.handle(Input::AccountChanged(Some(crate::library::LastAccount {
+        id: "b".to_owned(),
+        name: "User b".to_owned(),
+    })));
+    let switched = machine.add_notice().expect("kept across the switch");
+    assert_eq!(switched.account_id.as_deref(), Some("a"));
+    assert_eq!(switched.summary.run_id, notice.summary.run_id);
+    assert_eq!(machine.account().unwrap().id, "b");
+}
+
+#[test]
+fn an_all_failed_batch_still_publishes_a_notice() {
+    let mut machine = library();
+    open_with(&mut machine, &["500", "620"], vec![]);
+    let effects = confirm(&mut machine);
+    let effects = read_says(&mut machine, &effects, Err(ApiError::Rejected));
+    assert!(effects.is_empty(), "no further request: {effects:?}");
+    let notice = machine.add_notice().expect("an all-failed batch notifies");
+    assert!(notice.batch);
+    assert_eq!(
+        (
+            notice.summary.added,
+            notice.summary.already_present,
+            notice.summary.skipped,
+            notice.summary.failed
+        ),
+        (0, 0, 0, 2)
+    );
+    assert!(
+        machine.last_add.is_some(),
+        "the dialog keeps its summary too"
+    );
+}
+
+#[test]
+fn hiding_a_single_game_run_still_abandons_it() {
+    let mut machine = library();
+    open_with(&mut machine, &["620"], vec![]);
+    confirm(&mut machine);
+    machine.handle(Input::HideAdd);
+    assert!(machine.add_runs.is_none());
+    assert!(machine.last_add.is_none());
 }

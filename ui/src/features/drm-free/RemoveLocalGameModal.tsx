@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { IconX } from '@tabler/icons-react';
-import { AppModal } from '../../components/AppModal';
+import React, { useEffect, useRef, useState } from 'react';
+import { IconFolderOpen, IconTrash } from '@tabler/icons-react';
+import { ConfirmDialog } from '../../components/dialog';
+import { Button, RadioCard, RadioGroup } from '../../components/ui';
 import {
   commands,
   useLibraryView,
@@ -17,6 +18,12 @@ export interface RemoveLocalGameModalProps {
   onClose?: () => void;
 }
 
+/**
+ * D09: removing a game is one destructive action behind two explicit radio
+ * cards. "Remove and don't import again" stays preselected
+ * (`allowRediscovery = false`), matching the safer default and the existing
+ * specification scenario; Figma's frame shows sample state.
+ */
 export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
   open: propOpen,
   entryKey: propEntryKey,
@@ -27,6 +34,7 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
   const library = useLibraryView();
   const localGames = useLocalGames();
   const removeModalEntryKey = useUiStore((s) => s.removeModalEntryKey);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   const effectiveEntryKey =
     propEntryKey ??
@@ -55,6 +63,11 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
     : undefined;
   const title = registration?.title ?? rowTitle ?? 'this game';
 
+  // Every opening starts on the default choice again, even after a cancelled attempt.
+  useEffect(() => {
+    if (isOpen) setAllowRediscovery(false);
+  }, [isOpen, effectiveEntryKey]);
+
   const handleClose = () => {
     uiStore.setState((s) => ({ ...s, removeModalEntryKey: null }));
     onClose?.();
@@ -75,103 +88,78 @@ export const RemoveLocalGameModal: React.FC<RemoveLocalGameModalProps> = ({
     return null;
   }
 
+  const choice = allowRediscovery ? 'rediscover' : 'suppress';
+  const justRemoveDescription = isManual
+    ? t('drmFree.justRemoveDescription')
+    : t('drmFree.storeJustRemoveDescription');
+  const suppressDescription = isManual
+    ? t('drmFree.removeAndDontImportAgainDescription')
+    : t('drmFree.storeRemoveAndDontImportAgainDescription');
+
   return (
-    <AppModal.Root opened onClose={handleClose} centered size={560} transitionProps={{ duration: 0 }}>
-      <AppModal.Overlay backgroundOpacity={0.62} />
-      <AppModal.Content
-        classNames={{
-          content:
-            'flex w-full flex-col overflow-hidden rounded-md border border-border-subtle bg-secondary shadow-alert',
-        }}
-      >
-        {/* Header */}
-        <AppModal.Header className="flex shrink-0 items-center justify-between gap-md border-b border-border-subtle bg-secondary px-control-inline py-md">
-          <div>
-            <AppModal.Title className="text-lg font-semibold text-text-default">
-              {t('drmFree.removeFromLibrary')}
-            </AppModal.Title>
-            <div data-testid="remove-game-title-header" className="text-xs text-text-dimmed">
-              {title}
-            </div>
-          </div>
-          <AppModal.CloseButton
-            aria-label="Close"
-            icon={<IconX size={18} stroke={1.5} />}
-            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
-          />
-        </AppModal.Header>
-
-        {/* Body */}
-        <AppModal.Body className="flex min-h-0 flex-1 flex-col gap-md overflow-y-auto p-control-inline">
-          <div className="text-sm text-text-default">
-            <p className="mb-compact">
-              Are you sure you want to remove{' '}
-              <strong data-testid="remove-game-target-title">{title}</strong> from your library?
-            </p>
-            <p className="text-text-dimmed">
-              Game files and local save backups will not be deleted from your computer.
-            </p>
-          </div>
-
-          {registration?.root && (
-            <div
-              data-testid="remove-install-folder"
-              className="flex flex-wrap items-center justify-between gap-compact rounded-sm border border-border-subtle bg-raised px-3.5 py-sm text-sm text-text-default"
+    <ConfirmDialog
+      tone="danger"
+      icon={IconTrash}
+      size={460}
+      title={t('drmFree.removeGameTitle', { game: title })}
+      description={t('drmFree.removeGameDescription')}
+      initialFocusRef={cancelRef}
+      onClose={handleClose}
+      testId="remove-local-game-dialog"
+      actions={
+        <>
+          {registration?.root ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              leftIcon={IconFolderOpen}
+              data-testid="remove-open-folder"
+              onClick={() => void commands.openInstallFolder(registration.root)}
             >
-              <div className="min-w-0">
-                <div className="text-xs text-text-dimmed">{t('drmFree.installFolder')}</div>
-                <div className="break-all" title={registration.root}>
-                  {registration.root}
-                </div>
-              </div>
-              <button
-                type="button"
-                data-testid="remove-open-folder"
-                onClick={() => void commands.openInstallFolder(registration.root)}
-                className="shrink-0 rounded-sm border border-border-subtle bg-secondary px-2.5 py-1 text-xs font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-              >
-                {t('drmFree.openFolder')}
-              </button>
-            </div>
-          )}
-
-          <label className="flex cursor-pointer items-center gap-2.5 rounded-sm border border-border-subtle bg-raised px-3.5 py-sm text-sm text-text-default">
-            <input
-              type="checkbox"
-              id="allow-rediscovery-checkbox"
-              data-testid="allow-rediscovery-checkbox"
-              checked={allowRediscovery}
-              onChange={(e) => setAllowRediscovery(e.target.checked)}
-              className="h-4 w-4 cursor-pointer accent-brand"
-            />
-            <span>
-              {isManual
-                ? t('drmFree.allowRediscoveryInWatchedFolders')
-                : t('drmFree.allowRediscoveryOnFutureScans')}
-            </span>
-          </label>
-        </AppModal.Body>
-
-        {/* Footer */}
-        <div className="flex shrink-0 justify-end gap-compact border-t border-border-subtle px-control-inline py-md">
-          <button
-            type="button"
+              {t('drmFree.openFolder')}
+            </Button>
+          ) : null}
+          <span aria-hidden="true" className="flex-1" />
+          <Button
+            ref={cancelRef}
+            variant="secondary"
+            size="sm"
+            data-testid="remove-cancel-button"
             onClick={handleClose}
-            className="inline-flex items-center justify-center rounded-sm px-md py-compact text-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             {t('drmFree.cancel')}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            leftIcon={IconTrash}
             data-testid="confirm-remove-button"
-            aria-label={t('drmFree.removeFromLibrary')}
             onClick={handleConfirm}
-            className="inline-flex items-center justify-center rounded-sm border border-transparent bg-danger px-md py-compact text-sm font-semibold text-white transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
           >
-            {t('drmFree.removeFromLibrary')}
-          </button>
-        </div>
-      </AppModal.Content>
-    </AppModal.Root>
+            {t('drmFree.remove')}
+          </Button>
+        </>
+      }
+    >
+      <RadioGroup
+        aria-label={t('drmFree.removeFromLibrary')}
+        value={choice}
+        onChange={(next) => setAllowRediscovery(next === 'rediscover')}
+        className="flex flex-col gap-compact"
+      >
+        <RadioCard
+          value="rediscover"
+          title={t('drmFree.justRemove')}
+          description={justRemoveDescription}
+          data-testid="remove-choice-rediscovery"
+        />
+        <RadioCard
+          value="suppress"
+          title={t('drmFree.removeAndDontImportAgain')}
+          description={suppressDescription}
+          data-testid="remove-choice-suppress"
+        />
+      </RadioGroup>
+    </ConfirmDialog>
   );
 };

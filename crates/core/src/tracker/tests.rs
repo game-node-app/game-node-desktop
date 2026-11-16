@@ -714,6 +714,7 @@ fn saved_relative_registration_paths_match_a_running_process_at_its_full_path() 
         removed: false,
         rediscovery_allowed: false,
         transferred_from: None,
+        custom_cover: None,
         available: true,
     };
     // The saved row predates absolute paths, so the policy has to resolve them against the root.

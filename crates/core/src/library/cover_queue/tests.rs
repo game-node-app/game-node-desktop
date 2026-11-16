@@ -20,6 +20,7 @@ fn game(id: u64, cover_url: Option<String>) -> GameRecord {
         cover_url,
         cover_file: None,
         cover_failed_at: None,
+        platforms: Vec::new(),
     }
 }
 
@@ -297,6 +298,7 @@ fn changing_the_match_points_the_entry_at_the_other_games_cover() {
             name: "Game 2000".to_owned(),
             release_year: None,
             cover_url: good_url(2000),
+            platforms: Vec::new(),
         }]),
     });
     assert_eq!(

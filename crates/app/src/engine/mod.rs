@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gamenode_core::auth::{AuthState, NonceSource, Purpose, RemoteSignOut};
-use gamenode_core::game_api::{ApiError, FavoriteError, GameApi};
+use gamenode_core::game_api::{ApiError, CreateCollectionError, FavoriteError, GameApi};
 use gamenode_core::library::{
     Access, CatalogUpdate, Effect as LibEffect, Input as LibInput, LastAccount, LaunchKind,
     LaunchState, LaunchStatus, LibraryMachine, LibraryStore, ScanOutcome, open_action,
@@ -35,6 +35,7 @@ mod drm_free;
 pub mod pc_ports;
 mod playtime;
 mod providers;
+mod sign_in;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
@@ -62,6 +63,17 @@ pub enum GameNodePageError {
     Browser,
 }
 
+/// Why a provider's achievements page could not be opened. The code is stable; the UI words the
+/// message and never receives or passes the URL itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "code")]
+pub enum AchievementPageError {
+    /// The entry's provider publishes no achievements page, or its id is not a Steam app id.
+    Unsupported,
+    /// The blocking worker or the system browser failed.
+    Browser,
+}
+
 /// The shortest time between snapshots published for cover completions.
 const COVER_FLUSH_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -74,6 +86,8 @@ pub struct Ports {
     pub tools: Option<Arc<dyn gamenode_core::tools::ToolStore>>,
     pub tool_catalog: Option<Arc<dyn gamenode_core::tools::ToolCatalogApi>>,
     pub tool_installer: Option<Arc<dyn gamenode_core::tools::ToolInstallerHost>>,
+    /// Opens the executable picker for a game's install folder; `None` uses the native dialog.
+    pub tool_picker: Option<Arc<dyn crate::engine::tools::ToolTargetPicker>>,
     pub processes: Arc<dyn gamenode_core::ports::Processes>,
     pub playtime: Arc<dyn gamenode_core::ports::PlaytimeStore>,
     pub playtime_api: Arc<dyn gamenode_core::ports::PlaytimeApi>,
@@ -137,10 +151,28 @@ impl StorageWorker {
 
 struct State {
     pending_claim: Option<gamenode_core::drm_free::PendingClaim>,
+    /// The unsaved registration behind `pending_claim`, kept until the user decides.
+    pending_claim_registration: Option<gamenode_core::drm_free::Registration>,
     local_selection: Option<String>,
     local_generation: u64,
     local_backup_busy: bool,
+    /// Custom-cover files picked in an open editor, by registration id, not committed yet.
+    local_cover_pending: std::collections::BTreeMap<String, String>,
+    /// Incremented when an editor closes or commits, so a pick that finishes late deletes its file.
+    local_cover_epoch: std::collections::BTreeMap<String, u64>,
     local: gamenode_core::drm_free::LocalView,
+    /// Review candidates already seen, so a new snapshot never re-selects a manual choice.
+    local_review_seen: std::collections::BTreeSet<String>,
+    /// Candidate fingerprints waiting for a GameNode suggestion, one request at a time.
+    local_suggestion_queue: std::collections::VecDeque<String>,
+    local_suggestion_queued: std::collections::BTreeSet<String>,
+    local_suggestion_searched: std::collections::BTreeSet<String>,
+    /// Titles with a request in flight, so a generation change cannot queue a duplicate.
+    local_suggestion_in_flight: std::collections::BTreeSet<String>,
+    /// Suggestion results by normalized title, so each new title is searched once.
+    local_suggestion_titles:
+        std::collections::BTreeMap<String, Option<gamenode_core::library::SuggestionView>>,
+    local_suggestion_running: bool,
     tools: gamenode_core::tools::ToolsView,
     tool_reset_config: bool,
     tool_last_fetch: std::collections::HashMap<
@@ -241,10 +273,20 @@ impl Engine {
             local_discovery_again: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(State {
                 pending_claim: None,
+                pending_claim_registration: None,
                 local_selection: None,
                 local_generation: 0,
                 local_backup_busy: false,
+                local_cover_pending: Default::default(),
+                local_cover_epoch: Default::default(),
                 local: Default::default(),
+                local_review_seen: Default::default(),
+                local_suggestion_queue: Default::default(),
+                local_suggestion_queued: Default::default(),
+                local_suggestion_searched: Default::default(),
+                local_suggestion_in_flight: Default::default(),
+                local_suggestion_titles: Default::default(),
+                local_suggestion_running: false,
                 tools: gamenode_core::tools::ToolsView {
                     catalog: tools::builtin_catalog_items(),
                     ..Default::default()
@@ -345,6 +387,15 @@ impl Engine {
 
     pub fn covers_dir(&self) -> &std::path::Path {
         &self.shared.ports.covers_dir
+    }
+
+    /// Cover file names for the sign-in mural, read on a blocking worker. Never fails: a missing
+    /// or unreadable cache renders neutral tiles.
+    pub async fn sign_in_cover_wall(&self) -> Vec<String> {
+        let dir = self.shared.ports.covers_dir.clone();
+        tokio::task::spawn_blocking(move || sign_in::cover_wall(&dir))
+            .await
+            .unwrap_or_default()
     }
 
     pub fn host_files(&self) -> &Arc<dyn gamenode_core::ports::HostFiles> {
@@ -448,6 +499,7 @@ impl Engine {
         );
         snapshot.local_games = state.local.clone();
         snapshot.local_games.pending_claim = state.pending_claim.clone();
+        snapshot.add_notice = state.library.add_notice();
         snapshot.playtime_error = state.playtime.error;
         snapshot.sync = state.playtime.preferences;
         snapshot.playtime_source = state.playtime.source;
@@ -679,6 +731,7 @@ impl Engine {
             || matches!(
                 &input,
                 LibInput::PickMatch { .. }
+                    | LibInput::ConfirmMatch { .. }
                     | LibInput::MarkNoGame { .. }
                     | LibInput::MarkEntryNoGame { .. }
                     | LibInput::ClearMatch
@@ -980,6 +1033,12 @@ impl Engine {
             // A new library installs its cache before it is ready; catalog clears are deferred.
             state.library_loading = account.is_some();
             state.local_generation += 1;
+            // Suggestions belong to the session that asked for them; a new account starts over.
+            state.local_suggestion_queue.clear();
+            state.local_suggestion_queued.clear();
+            state.local_suggestion_searched.clear();
+            state.local_suggestion_in_flight.clear();
+            state.local_suggestion_titles.clear();
         }
         self.run_library(state, LibInput::AccountChanged(account));
         if catalog_changed {
@@ -1417,6 +1476,21 @@ impl Engine {
                     engine.check_rejected(rejected);
                 });
             }
+            LibEffect::CreateCollection { op, name, .. } => {
+                let Some(credential) = credential else {
+                    return self.later(LibInput::CollectionCreated {
+                        op,
+                        result: Err(CreateCollectionError::Rejected),
+                    });
+                };
+                let (engine, api) = (self.clone(), ports.games.clone());
+                self.shared.runtime.spawn(async move {
+                    let result = api.create_collection(&credential, &name).await;
+                    let rejected = matches!(result, Err(CreateCollectionError::Rejected));
+                    engine.library_input(LibInput::CollectionCreated { op, result });
+                    engine.check_rejected(rejected);
+                });
+            }
             LibEffect::CreateEntry {
                 op,
                 game_id,
@@ -1558,13 +1632,31 @@ impl Engine {
                     };
                     // Mark the browser as opened first so a prompt callback is never rejected
                     // for arriving "too early"; a launch failure then cancels the attempt.
-                    engine.dispatch(Input::BrowserOpened { op });
+                    engine.dispatch(Input::BrowserOpened {
+                        op,
+                        url: url.as_str().to_owned(),
+                    });
                     let opened = tokio::task::spawn_blocking(move || browser.open(&url)).await;
                     if !matches!(opened, Ok(Ok(()))) {
                         engine.dispatch(Input::SignInFailed {
                             op,
                             reason: SignInFailure::BrowserLaunch,
                         });
+                    }
+                });
+            }
+            Effect::OpenBrowser { url } => {
+                let (engine, browser) = (self.clone(), ports.browser.clone());
+                self.shared.runtime.spawn(async move {
+                    let parsed = url::Url::parse(&url);
+                    let opened = match parsed {
+                        Ok(parsed) => tokio::task::spawn_blocking(move || browser.open(&parsed))
+                            .await
+                            .unwrap_or(Err(gamenode_core::ports::BrowserError)),
+                        Err(_) => Err(gamenode_core::ports::BrowserError),
+                    };
+                    if opened.is_err() {
+                        engine.dispatch(Input::BrowserReopenFailed { url });
                     }
                 });
             }

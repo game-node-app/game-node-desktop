@@ -138,6 +138,7 @@ impl From<Achievement> for proto::Achievement {
             icon_gray_url: achievement.icon_gray_url,
             unlocked: achievement.unlocked,
             unlocked_at: achievement.unlocked_at,
+            global_percent: achievement.global_percent.map(u32::from),
         }
     }
 }
@@ -165,6 +166,11 @@ impl TryFrom<proto::Achievement> for Achievement {
             icon_gray_url: achievement.icon_gray_url,
             unlocked: achievement.unlocked,
             unlocked_at: achievement.unlocked_at,
+            global_percent: achievement
+                .global_percent
+                .map(u16::try_from)
+                .transpose()
+                .map_err(|_| WireError)?,
         })
     }
 }

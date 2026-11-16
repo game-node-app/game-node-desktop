@@ -1,5 +1,5 @@
 //! Conservative identity inference. Similarity alone never authorizes discovery or a match.
-use super::{Evidence, EvidenceKind};
+use super::{Candidate, Evidence, EvidenceKind};
 use crate::game_api::GameSummary;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use unicode_normalization::UnicodeNormalization;
@@ -43,6 +43,7 @@ pub fn maintenance(name: &str) -> bool {
     ]
     .iter()
     .any(|word| lower.starts_with(word))
+        || lower.contains("redist")
         || [
             "editor",
             "config",
@@ -55,6 +56,25 @@ pub fn maintenance(name: &str) -> bool {
         .iter()
         .any(|word| lower.ends_with(word))
 }
+fn file_name(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/']).find(|part| !part.is_empty())
+}
+
+/// True when a candidate has no positive game evidence and its selected executable or folder
+/// name matches [`maintenance`], the same list discovery filtering uses. The shared list keeps
+/// filtering and review flagging from drifting apart.
+pub fn likely_non_game(candidate: &Candidate) -> bool {
+    if candidate.evidence.iter().any(|evidence| evidence.strong) {
+        return false;
+    }
+    let executable = candidate
+        .selected_target
+        .as_deref()
+        .or_else(|| candidate.targets.first().map(String::as_str));
+    executable.and_then(file_name).is_some_and(maintenance)
+        || file_name(&candidate.root).is_some_and(maintenance)
+}
+
 pub fn meaningful(title: &str) -> bool {
     let mut normalized = normalized(title);
     if let Some(stem) = normalized.strip_suffix(".exe") {
@@ -441,6 +461,7 @@ pub fn profile(
         registry: vec![],
         support: super::SaveSupport::Supported,
         automatic: None,
+        retention: None,
     })
 }
 
@@ -558,6 +579,7 @@ mod tests {
             name: "Portal".into(),
             release_year: None,
             cover_url: None,
+            platforms: Vec::new(),
         };
         assert_eq!(unique_exact(&i, std::slice::from_ref(&g), true), Some(1));
         assert_eq!(unique_exact(&i, &[g], false), None);
@@ -590,6 +612,60 @@ mod tests {
             strong: false,
         };
         assert!(infer(&[product, conflicting]).unwrap().conflict);
+    }
+
+    #[test]
+    fn likely_non_games_reuse_the_discovery_maintenance_list() {
+        let candidate = |root: &str, target: &str, evidence: Vec<Evidence>| Candidate {
+            fingerprint: "fingerprint".into(),
+            watch: "watch".into(),
+            root: root.into(),
+            title: "Candidate".into(),
+            targets: (!target.is_empty())
+                .then(|| vec![target.to_owned()])
+                .unwrap_or_default(),
+            selected_target: (!target.is_empty()).then(|| target.to_owned()),
+            evidence,
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        };
+
+        let redistributable = candidate(
+            r"D:\Jogos\Instaladores",
+            r"D:\Jogos\Instaladores\vc_redist.x64.exe",
+            vec![],
+        );
+        assert!(maintenance("vc_redist.x64.exe"));
+        assert!(likely_non_game(&redistributable));
+
+        let game = candidate(
+            r"D:\Jogos\Moss & Machine",
+            r"D:\Jogos\Moss & Machine\MossMachine.exe",
+            vec![Evidence {
+                kind: EvidenceKind::Product,
+                value: "Moss & Machine".into(),
+                strong: true,
+            }],
+        );
+        assert!(!likely_non_game(&game));
+
+        // Positive evidence wins even when the names look like a tool.
+        let evidenced_tool = candidate(
+            r"D:\Jogos\Setup",
+            r"D:\Jogos\Setup\setup.exe",
+            vec![Evidence {
+                kind: EvidenceKind::Product,
+                value: "Setup".into(),
+                strong: true,
+            }],
+        );
+        assert!(!likely_non_game(&evidenced_tool));
+
+        // The folder name alone can flag a candidate with no executable.
+        let folder_only = candidate(r"D:\Jogos\updater", "", vec![]);
+        assert!(likely_non_game(&folder_only));
     }
 
     #[test]

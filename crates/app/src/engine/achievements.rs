@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gamenode_core::achievements::{
-    AchievementFilter, AchievementGameState, AchievementListView, AchievementRecord,
-    RefreshTrigger, StoredAchievementGame, StoredAchievementSummary, is_stale, mask_hidden,
-    ordered_achievements, summarize,
+    AchievementCounts, AchievementFilter, AchievementGameState, AchievementListView,
+    AchievementRecord, AchievementSort, RefreshTrigger, StoredAchievementGame,
+    StoredAchievementSummary, is_stale, mask_hidden, ordered_achievements, summarize,
 };
 use gamenode_core::library::CatalogError;
 use gamenode_plugin_protocol::models;
@@ -774,6 +774,7 @@ impl Engine {
         &self,
         key: String,
         filter: AchievementFilter,
+        sort: AchievementSort,
     ) -> Result<Option<AchievementListView>, String> {
         let Some((provider, entry_id)) = split_entry_key(&key) else {
             return Ok(None);
@@ -784,6 +785,8 @@ impl Engine {
         // Each provider's icons are trusted only on the hosts its own descriptor declares. A
         // provider without declared hosts gets an empty set and every icon stays a placeholder.
         let hosts = icon_hosts(&provider);
+        let provider_name = provider_name(&provider);
+        let has_provider_page = provider_has_achievements_page(&provider, &entry_id);
         let library = self.shared.ports.library.clone();
         let achievements = self.shared.ports.achievements.clone();
         let result =
@@ -799,7 +802,12 @@ impl Engine {
                         connected: false,
                         state: None,
                         last_success_at: None,
+                        refreshed_at: None,
                         failure: None,
+                        counts: AchievementCounts::default(),
+                        has_rarity: false,
+                        provider_name,
+                        has_provider_page,
                         achievements: Vec::new(),
                     }));
                 };
@@ -809,13 +817,25 @@ impl Engine {
                 else {
                     return Ok(None);
                 };
-                let mut records = ordered_achievements(&game.achievements, filter);
+                // Counts describe the whole cached list, so they stay stable while a filter is
+                // active. Sorting and masking run here, on the storage worker, never in React.
+                let counts = AchievementCounts::from_records(&game.achievements);
+                let has_rarity = game
+                    .achievements
+                    .iter()
+                    .any(|achievement| achievement.global_percent.is_some());
+                let mut records = ordered_achievements(&game.achievements, filter, sort);
                 mask_hidden(&mut records);
                 Ok(Some(AchievementListView {
                     connected: true,
                     state: Some(game.state),
                     last_success_at: game.last_success_at,
+                    refreshed_at: game.last_success_at,
                     failure: game.failure,
+                    counts,
+                    has_rarity,
+                    provider_name,
+                    has_provider_page,
                     achievements: records,
                 }))
             })
@@ -860,6 +880,47 @@ impl Engine {
         }
         Ok(view)
     }
+
+    /// Opens the provider's public achievements page for `key` in the default browser. The URL is
+    /// resolved here; the UI never passes one. Other providers are refused, and a browser failure
+    /// becomes a typed error the UI localizes.
+    pub async fn open_achievements_page(&self, key: String) -> Result<(), AchievementPageError> {
+        let Some((provider, entry_id)) = split_entry_key(&key) else {
+            return Err(AchievementPageError::Unsupported);
+        };
+        let url =
+            achievements_page_url(&provider, &entry_id).ok_or(AchievementPageError::Unsupported)?;
+        let browser = self.shared.ports.browser.clone();
+        self.shared
+            .runtime
+            .spawn_blocking(move || browser.open(&url))
+            .await
+            .map_err(|_| AchievementPageError::Browser)?
+            .map_err(|_| AchievementPageError::Browser)
+    }
+}
+
+/// The public achievements page of a provider, when it has one. Only Steam publishes one today;
+/// its URL takes the app id from the entry key.
+pub(super) fn achievements_page_url(provider: &str, entry_id: &str) -> Option<url::Url> {
+    if provider != "steam" || entry_id.is_empty() || !entry_id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    url::Url::parse(&format!(
+        "https://steamcommunity.com/stats/{entry_id}/achievements"
+    ))
+    .ok()
+}
+
+/// The provider display name used by provider-named achievement copy.
+pub(super) fn provider_name(provider: &str) -> String {
+    crate::plugin_host::descriptor_for_provider(provider)
+        .map(|descriptor| descriptor.name.clone())
+        .unwrap_or_else(|| provider.to_owned())
+}
+
+fn provider_has_achievements_page(provider: &str, entry_id: &str) -> bool {
+    achievements_page_url(provider, entry_id).is_some()
 }
 
 /// The achievement icon hosts declared by the descriptor of the provider that reported an entry.
@@ -903,6 +964,7 @@ fn achievement_records(achievements: Vec<models::Achievement>) -> Vec<Achievemen
             icon_gray_url: achievement.icon_gray_url,
             unlocked: achievement.unlocked,
             unlocked_at: achievement.unlocked_at,
+            global_percent: achievement.global_percent,
             position: i64::try_from(position).unwrap_or(i64::MAX),
         })
         .collect()

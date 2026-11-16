@@ -47,6 +47,16 @@ export function isShortcutBlockedByOverlay(
   if (typeof document !== 'undefined' && document.querySelector('[role="menu"]')) {
     return true;
   }
+  // Dialogs opened from inside the library (such as the achievement list) keep their open state
+  // in the component, not in `uiStore`. React bubbles their keys through the portal to the
+  // library, so Escape would close the dialog and also clear the selection that owns the
+  // trigger, and focus restoration would find nothing to return to.
+  if (
+    typeof document !== 'undefined' &&
+    document.querySelector('[role="dialog"], [role="alertdialog"]')
+  ) {
+    return true;
+  }
   return Boolean(library?.addDialog || library?.matchDialog);
 }
 

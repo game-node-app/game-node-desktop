@@ -230,6 +230,40 @@ fn achievement_outcomes_reject_unrequested_ids_and_oversized_batches() {
 }
 
 #[test]
+fn achievement_rarity_is_optional_in_legacy_json_and_round_trips_on_the_wire() {
+    use gamenode_plugin_protocol::models::Achievement;
+
+    let legacy: Achievement = serde_json::from_value(serde_json::json!({
+        "id": "ACH_WIN",
+        "name": "Win",
+        "description": "Win once",
+        "hidden": false,
+        "iconUrl": "https://cdn.example/a.jpg",
+        "iconGrayUrl": "https://cdn.example/a_gray.jpg",
+        "unlocked": true,
+        "unlockedAt": 1_700_000_000
+    }))
+    .unwrap();
+    assert_eq!(legacy.global_percent, None, "an old payload has no rarity");
+
+    let with_rarity = Achievement {
+        global_percent: Some(420),
+        ..legacy
+    };
+    let wire = gamenode_plugin_protocol::proto::Achievement::from(with_rarity.clone());
+    assert_eq!(wire.global_percent, Some(420));
+    let restored = Achievement::try_from(wire).unwrap();
+    assert_eq!(restored, with_rarity);
+    assert_eq!(restored.global_percent, Some(420));
+
+    let too_large = gamenode_plugin_protocol::proto::Achievement {
+        global_percent: Some(u32::from(u16::MAX) + 1),
+        ..gamenode_plugin_protocol::proto::Achievement::default()
+    };
+    assert!(Achievement::try_from(too_large).is_err());
+}
+
+#[test]
 fn counter_last_played_round_trips_absent_and_present_values() {
     let absent = CounterObservation {
         id: "620".into(),

@@ -1,7 +1,14 @@
-import React from 'react';
-import { IconLoader2, IconX } from '@tabler/icons-react';
-import { FloatingModal } from '../../components/FloatingModal';
+import React, { useEffect, useState } from 'react';
+import {
+  IconAlertTriangle,
+  IconLink,
+  IconLoader2,
+  IconPlus,
+} from '@tabler/icons-react';
 import { commands, useLocalGames } from '../../api';
+import type { Candidate } from '../../api/types';
+import { DialogShell } from '../../components/dialog';
+import { Button, Checkbox, GameCover, Pill, SelectField } from '../../components/ui';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 
@@ -10,12 +17,23 @@ export interface DiscoveryModalProps {
   onClose?: () => void;
 }
 
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, onClose }) => {
   const { t } = useI18n();
   const localGames = useLocalGames();
   const discoveryModalOpen = useUiStore((s) => s.discoveryModalOpen);
+  const [allowRediscovery, setAllowRediscovery] = useState(true);
 
   const isOpen = propOpen !== undefined ? propOpen : discoveryModalOpen;
+
+  useEffect(() => {
+    if (isOpen) {
+      setAllowRediscovery(true);
+    }
+  }, [isOpen]);
 
   const handleClose = () => {
     commands.dismissLocalDiscovered();
@@ -27,189 +45,270 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({ open: propOpen, 
     return null;
   }
 
-  const activeCandidates = localGames.candidates.filter((c) => !c.ignored);
+  const activeCandidates = localGames.candidates.filter((candidate) => !candidate.ignored);
+  const selected = new Set(localGames.reviewSelected);
+  const selectedCount = activeCandidates.filter((candidate) =>
+    selected.has(candidate.fingerprint),
+  ).length;
+  const allSelected = activeCandidates.length > 0 && selectedCount === activeCandidates.length;
+  const someSelected = selectedCount > 0 && !allSelected;
+
+  const handleToggle = (fingerprint: string) => {
+    commands.selectLocalCandidate(fingerprint);
+  };
+
+  const handleToggleAll = (checked: boolean) => {
+    for (const candidate of activeCandidates) {
+      const isSelected = selected.has(candidate.fingerprint);
+      if (checked !== isSelected) {
+        commands.selectLocalCandidate(candidate.fingerprint);
+      }
+    }
+  };
+
+  const handleTarget = (fingerprint: string, executable: string) => {
+    commands.setLocalCandidateExecutable(fingerprint, executable);
+  };
+
+  const handleAdd = () => {
+    commands.reviewSelectedLocalCandidates(true, allowRediscovery);
+  };
+
+  const handleIgnore = () => {
+    commands.reviewSelectedLocalCandidates(false, allowRediscovery);
+  };
+
+  const gamenodeCell = (candidate: Candidate) => {
+    const suggestion = candidate.suggestion;
+    if (candidate.likelyNonGame) {
+      return (
+        <Pill tone="neutral" icon={IconAlertTriangle}>
+          {t('drmFree.probablyNotAGame')}
+        </Pill>
+      );
+    }
+    if (suggestion) {
+      const label = suggestion.year
+        ? `${suggestion.title} (${suggestion.year})`
+        : suggestion.title;
+      return (
+        <Pill tone={suggestion.tone} icon={IconLink}>
+          {label}
+        </Pill>
+      );
+    }
+    return (
+      <Pill tone="warning" icon={IconAlertTriangle}>
+        {t('drmFree.noMatch')}
+      </Pill>
+    );
+  };
+
+  const subtitle =
+    activeCandidates.length === 1
+      ? t('drmFree.oneNewGameInWatchedFolders')
+      : t('drmFree.newGamesInWatchedFolders', { n: activeCandidates.length });
+  const addLabel =
+    selectedCount === 1
+      ? t('drmFree.addOneGame')
+      : t('drmFree.addNGames', { n: selectedCount });
 
   return (
-    <FloatingModal.Root
-      opened
+    <DialogShell
+      title={t('drmFree.discoveredGames')}
+      subtitle={activeCandidates.length > 0 ? subtitle : undefined}
       onClose={handleClose}
       geometryKey="discovery"
-      defaultSize={{ width: 720, height: 560 }}
-      minSize={{ width: 520, height: 400 }}
-      zIndex={1000}
-      closeOnClickOutside
-    >
-      <FloatingModal.Overlay backgroundOpacity={0.62} />
-      <FloatingModal.Content className="flex flex-col bg-chrome">
-        {/* Header */}
-        <FloatingModal.Header className="bg-chrome px-control-inline py-md">
-          <div>
-            <FloatingModal.Title className="text-lg font-semibold text-text-default">
-              {t('drmFree.watchedFolders')}
-            </FloatingModal.Title>
-            <div className="text-xs text-text-dimmed">
-              {activeCandidates.length === 1
-                ? '1 game discovered'
-                : `${activeCandidates.length} games discovered`}
-            </div>
-          </div>
-          <FloatingModal.CloseButton
-            aria-label="Close"
-            icon={<IconX size={18} stroke={1.5} />}
-            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
+      defaultSize={{ width: 720, height: 460 }}
+      minSize={{ width: 600, height: 320 }}
+      testId="discovery-modal"
+      closeTestId="discovery-close-button"
+      bodyClassName="!gap-sm !px-lg !py-compact"
+      footerLeading={
+        <label className="flex items-center gap-compact text-xs text-text-secondary">
+          <Checkbox
+            checked={allowRediscovery}
+            disabled={selectedCount === 0}
+            onChange={(event) => setAllowRediscovery(event.currentTarget.checked)}
+            aria-label={t('drmFree.allowRediscoveryFutureScans')}
+            data-testid="allow-rediscovery-checkbox"
           />
-        </FloatingModal.Header>
+          <span>{t('drmFree.allowRediscoveryFutureScans')}</span>
+        </label>
+      }
+      footer={
+        <div className="flex items-center gap-compact">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleIgnore}
+            disabled={selectedCount === 0}
+            data-testid="ignore-selected-button"
+          >
+            {t('drmFree.ignoreSelected')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            leftIcon={IconPlus}
+            onClick={handleAdd}
+            disabled={selectedCount === 0}
+            data-testid="add-selected-button"
+          >
+            {addLabel}
+          </Button>
+        </div>
+      }
+    >
+      {localGames.discoveryScanning && (
+        <div
+          data-testid="discovery-scanning-banner"
+          className="flex items-center gap-compact rounded-sm border border-brand bg-accent-subtle px-md py-sm text-text-default"
+        >
+          <IconLoader2
+            size={16}
+            stroke={1.5}
+            className="animate-spin text-brand motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+          <span>{t('drmFree.checkingWatchedFolders')}</span>
+        </div>
+      )}
 
-        {/* Content */}
-        <FloatingModal.Body className="gap-md p-control-inline">
-          {/* Scanning banner */}
-          {localGames.discoveryScanning && (
-            <div
-              data-testid="discovery-scanning-banner"
-              className="flex items-center gap-compact rounded-sm border border-brand bg-accent-subtle px-md py-sm text-text-default"
-            >
-              <IconLoader2 size={16} stroke={1.5} className="animate-spin text-brand" aria-hidden="true" />
-              <span>{t('drmFree.checkingWatchedFolders')}</span>
-            </div>
-          )}
+      {localGames.discoveryError && (
+        <div
+          data-testid="discovery-error-banner"
+          className="rounded-sm border border-danger bg-danger-subtle px-md py-sm text-text-default"
+        >
+          {localGames.discoveryError}
+        </div>
+      )}
 
-          {/* Error banner */}
-          {localGames.discoveryError && (
-            <div
-              data-testid="discovery-error-banner"
-              className="rounded-sm border border-danger bg-danger-subtle px-md py-sm text-text-default"
-            >
-              {localGames.discoveryError}
-            </div>
-          )}
+      {localGames.discoveryIncomplete.length > 0 && (
+        <div
+          data-testid="discovery-incomplete-banner"
+          className="rounded-sm border border-warning bg-warning-subtle px-md py-sm text-text-default"
+        >
+          {t('drmFree.discoveryIncompleteIn', {
+            folders: localGames.discoveryIncomplete.join(', '),
+          })}
+        </div>
+      )}
 
-          {/* Incomplete warning banner */}
-          {localGames.discoveryIncomplete.length > 0 && (
-            <div
-              data-testid="discovery-incomplete-banner"
-              className="rounded-sm border border-warning bg-warning-subtle px-md py-sm text-text-default"
-            >
-              Discovery incomplete in: {localGames.discoveryIncomplete.join(', ')}
-            </div>
-          )}
-
-          {/* Candidates list */}
-          {activeCandidates.length === 0 ? (
-            <div className="rounded-sm py-xl text-center text-text-dimmed">
-              No discovered games found in watched folders.
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2.5">
+      {activeCandidates.length === 0 ? (
+        <div className="py-xl text-center text-xs text-text-dimmed">
+          {t('drmFree.noDiscoveredGames')}
+        </div>
+      ) : (
+        <div className="min-w-0 overflow-x-auto">
+          <table
+            data-testid="discovery-table"
+            className="w-full table-fixed border-collapse"
+          >
+            <colgroup>
+              <col className="w-4" />
+              <col className="w-[42px]" />
+              <col />
+              <col className="w-[190px]" />
+              <col className="w-[170px]" />
+            </colgroup>
+            <thead>
+              <tr className="border-b border-border-subtle">
+                <th scope="col" className="py-compact pr-compact text-left align-middle">
+                  <Checkbox
+                    checked={allSelected}
+                    indeterminate={someSelected}
+                    disabled={activeCandidates.length === 0}
+                    onChange={(event) => handleToggleAll(event.currentTarget.checked)}
+                    aria-label={t('drmFree.selectAllCandidates')}
+                    data-testid="candidate-select-all"
+                  />
+                </th>
+                <th scope="col" className="py-compact pr-compact" aria-hidden="true" />
+                <th scope="col" className="py-compact pr-compact text-left text-caption font-semibold uppercase tracking-overline text-text-muted">
+                  {t('drmFree.gameColumn')}
+                </th>
+                <th scope="col" className="py-compact pr-compact text-left text-caption font-semibold uppercase tracking-overline text-text-muted">
+                  {t('drmFree.executableColumn')}
+                </th>
+                <th scope="col" className="py-compact text-left text-caption font-semibold uppercase tracking-overline text-text-muted">
+                  {t('drmFree.gamenodeColumn')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
               {activeCandidates.map((candidate) => {
-                const isSelected = localGames.reviewSelected.includes(candidate.fingerprint);
-                const currentExe = candidate.selectedTarget ?? candidate.targets[0] ?? '';
-
+                const currentExe =
+                  candidate.selectedTarget ?? candidate.targets[0] ?? '';
                 return (
-                  <div
+                  <tr
                     key={candidate.fingerprint}
                     data-testid={`candidate-row-${candidate.fingerprint}`}
-                    className="flex flex-col gap-compact rounded-sm border border-border-subtle bg-secondary px-md py-3.5"
+                    className="border-b border-border-subtle last:border-b-0"
                   >
-                    <div className="flex items-start gap-sm">
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${candidate.title}`}
+                    <td className="py-[10px] pr-compact align-middle">
+                      <Checkbox
+                        checked={selected.has(candidate.fingerprint)}
+                        onChange={() => handleToggle(candidate.fingerprint)}
+                        aria-label={t('drmFree.selectCandidate', {
+                          game: candidate.title,
+                        })}
                         data-testid={`candidate-checkbox-${candidate.fingerprint}`}
-                        checked={isSelected}
-                        onChange={() => commands.selectLocalCandidate(candidate.fingerprint)}
-                        className="mt-1 h-4 w-4 cursor-pointer accent-brand"
                       />
-                      <div className="flex-1">
-                        <div className="text-md font-semibold text-text-default">
+                    </td>
+                    <td className="py-[10px] pr-compact align-middle">
+                      <div className="h-10 w-[30px] overflow-hidden rounded-thumb">
+                        <GameCover
+                          src={candidate.suggestion?.coverUrl ?? null}
+                          title={candidate.title}
+                        />
+                      </div>
+                    </td>
+                    <td className="min-w-0 py-[10px] pr-compact align-middle">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="truncate text-body font-semibold text-text-primary">
                           {candidate.title}
-                        </div>
-                        <div className="break-all text-xs text-text-dimmed">
-                          {candidate.root}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Target Executable selection */}
-                    {candidate.targets.length > 0 && (
-                      <div className="flex items-center gap-compact pl-7">
-                        <span className="whitespace-nowrap text-xs text-text-dimmed">
-                          {t('drmFree.executable')}:
                         </span>
-                        {candidate.targets.length === 1 ? (
-                          <span className="text-xs text-text-default">{candidate.targets[0]}</span>
-                        ) : (
-                          <select
-                            aria-label={`Target executable for ${candidate.title}`}
-                            data-testid={`candidate-target-select-${candidate.fingerprint}`}
-                            value={currentExe}
-                            onChange={(e) =>
-                              commands.setLocalCandidateExecutable(
-                                candidate.fingerprint,
-                                e.target.value,
-                              )
-                            }
-                            className="flex-1 cursor-pointer rounded-sm border border-border-subtle bg-raised px-compact py-1 text-xs text-text-default focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                          >
-                            {candidate.targets.map((tgt) => (
-                              <option key={tgt} value={tgt}>
-                                {tgt}
-                              </option>
-                            ))}
-                          </select>
-                        )}
+                        <span
+                          className="truncate text-caption text-text-dimmed"
+                          title={candidate.root}
+                        >
+                          {candidate.root}
+                        </span>
                       </div>
-                    )}
-                  </div>
+                    </td>
+                    <td className="py-[10px] pr-compact align-middle">
+                      <SelectField
+                        size="compact"
+                        options={candidate.targets.map((target) => ({
+                          value: target,
+                          label: fileName(target),
+                        }))}
+                        value={currentExe}
+                        onChange={(value) =>
+                          handleTarget(candidate.fingerprint, value)
+                        }
+                        aria-label={t('drmFree.targetExecutableFor', {
+                          game: candidate.title,
+                        })}
+                        data-testid={`candidate-target-select-${candidate.fingerprint}`}
+                      />
+                    </td>
+                    <td className="min-w-0 py-[10px] align-middle">
+                      <div
+                        data-testid={`candidate-gamenode-${candidate.fingerprint}`}
+                        className="min-w-0"
+                      >
+                        {gamenodeCell(candidate)}
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
-          )}
-        </FloatingModal.Body>
-
-        {/* Footer */}
-        <FloatingModal.Footer className="justify-between px-control-inline py-md">
-          <button
-            type="button"
-            data-testid="rescan-folders-button"
-            aria-label={t('drmFree.rescanWatchedFolders')}
-            onClick={() => commands.rescanLocalFolders()}
-            className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-          >
-            {t('drmFree.rescanWatchedFolders')}
-          </button>
-
-          <div className="flex gap-compact">
-            <button
-              type="button"
-              data-testid="ignore-selected-button"
-              onClick={() => commands.reviewSelectedLocalCandidates(false)}
-              disabled={localGames.reviewSelected.length === 0}
-              className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t('drmFree.ignoreSelected')}
-            </button>
-            <button
-              type="button"
-              data-testid="add-selected-button"
-              onClick={() => commands.reviewSelectedLocalCandidates(true)}
-              disabled={localGames.reviewSelected.length === 0}
-              className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t('drmFree.addSelected')}
-            </button>
-            <button
-              type="button"
-              data-testid="discovery-close-button"
-              onClick={handleClose}
-              className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-            >
-              {t('drmFree.close')}
-            </button>
-          </div>
-        </FloatingModal.Footer>
-
-        <FloatingModal.ResizeHandle />
-      </FloatingModal.Content>
-    </FloatingModal.Root>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </DialogShell>
   );
 };

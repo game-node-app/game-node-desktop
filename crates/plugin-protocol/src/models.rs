@@ -200,6 +200,10 @@ pub struct Achievement {
     pub unlocked: bool,
     /// Unix seconds Steam reported. An unlocked achievement without a time has `None`.
     pub unlocked_at: Option<i64>,
+    /// Global unlock percentage in hundredths of a percent (420 = 4.2%). `None` when the
+    /// provider publishes no rarity; the serde default keeps older plugin payloads parseable.
+    #[serde(default)]
+    pub global_percent: Option<u16>,
 }
 
 /// One game's complete achievement result.

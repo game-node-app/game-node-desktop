@@ -1,0 +1,33 @@
+# Shared shells (derived from every frame in section 5369:2801 "02 · Diálogos e modais")
+
+## FloatingModal work surface (MatchDialog, AddDialog, batch progress, Achievements, SaveProtection,
+## GameTools, LocalGameEditor, Discovery)
+F [Dialog] Wx? col XH bg=secondary bd1=#333333 r12 sh(0,20,48,0,#0000008C) clip
+ F [Cabeçalho] row gap12 p16/20/14/20 ai:center FH bd0/0/1/0=border/subtle
+  I dots-vertical 16:text/muted            (drag affordance; the whole header is the drag handle)
+  [optional] REC cover 30x40 r4            (AddDialog only)
+  F col gap2 FH
+   T title 16/600 text/primary
+   T subtitle 12/400 text-dimmed           ("<game> · <provider>" or a summary line)
+  I x 16:text/secondary                    (close button, 28x28 hit area)
+ F [Corpo] col gap16 p20 FH                (MatchDialog: row gap20 p20; Discovery: col p8/20/8/20)
+ F [Rodapé] row gap8 p14/20/14/20 ai:center FH bg=surface bd1/0/0/0=border/subtle
+  [left actions] ; F [spacer] FX ; [right actions: Secondary SM then Primary SM]
+
+## AppModal confirmation (Remove, Discard, ClaimConflict, SyncExplanation, Sign-in pending)
+F [Confirm] Wx? col gap14 p24 bg=secondary bd1=#333333 r12 sh(0,20,48,0,#0000008C)
+ F [tone circle] 40x40 r999 bg=<tone>-subtle ; I <icon> 20:<tone>
+ T title 17/600 text/primary
+ T body 13/400 text/secondary lh20
+ [optional content block: cards, option radios, checklist]
+ F [actions] row gap8 pt6 jc:max (Ghost left action + spacer when present)
+
+## Fields
+ F [field] col gap6
+  T label 12/500 text/secondary
+  F [input] 34h row gap8 p0/10/0/10 ai:center bg=surface bd1=border/subtle r6   (focus: bd1=primary)
+   I leading 14:text-dimmed (optional: search, folder, file-text, terminal-2, database)
+   T value 13/400 text/primary ellipsis FH
+   I chevron-down 14:text-dimmed (select only)
+ F [textarea] 64h p8/10/0/10 bg=surface bd1=border/subtle r6 ; T 13/400 lh19
+ Button beside a field: Secondary MD (36h) aligned to the field bottom (row gap8 ai:max)

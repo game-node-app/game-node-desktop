@@ -342,6 +342,7 @@ impl ProviderPlugin for SteamPlugin {
                                                 icon_gray_url: achievement.icon_gray_url,
                                                 unlocked: achievement.unlocked,
                                                 unlocked_at: achievement.unlocked_at,
+                                                global_percent: achievement.global_percent,
                                             })
                                             .collect(),
                                     },

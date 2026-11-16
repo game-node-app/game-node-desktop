@@ -13,6 +13,7 @@ import {
   type StoreAccountView,
 } from '../../api/types';
 import { I18nProvider } from '../../i18n';
+import { APP_INFO_QUERY_KEY } from '../../api/useSnapshot';
 import { resetUiStore, uiStore } from '../../store/uiStore';
 import { ResizeHandle } from './ResizeHandle';
 import { Sidebar } from './Sidebar';
@@ -281,25 +282,56 @@ describe('features/shell', () => {
   });
 
   describe('SyncExplanationModal', () => {
-    it('dismisses through the primary action', () => {
+    it('keeps sync on and lists what leaves and what stays', () => {
       const dismissSpy = vi.spyOn(commands, 'dismissSyncExplanation').mockResolvedValue();
       renderWithProviders(<SyncExplanationModal forceOpen />);
 
       expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
-        'Sync with GameNode',
+        'Playtime and sync',
       );
+      expect(
+        screen.getByText('Playtime and sessions from stores and the built-in tracker'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Games detected on this PC and their matches'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Favorites')).toBeInTheDocument();
+      expect(screen.getByText('Save files (stay on this PC)')).toBeInTheDocument();
+      expect(screen.getByText('Install paths and executables')).toBeInTheDocument();
+      expect(screen.queryByText('Status and collections you choose')).toBeNull();
+      expect(screen.queryByTestId('sync-tray-note')).toBeNull();
+
       fireEvent.click(screen.getByTestId('sync-primary-button'));
       expect(dismissSpy).toHaveBeenCalled();
     });
 
-    it('opens Settings from the secondary action and dismisses', () => {
+    it('turns sync off before dismissing', async () => {
+      const calls: string[] = [];
+      vi.spyOn(commands, 'setSyncEnabled').mockImplementation(async () => {
+        calls.push('setSyncEnabled');
+      });
+      vi.spyOn(commands, 'dismissSyncExplanation').mockImplementation(async () => {
+        calls.push('dismissSyncExplanation');
+      });
+      renderWithProviders(<SyncExplanationModal forceOpen />);
+
+      fireEvent.click(screen.getByTestId('sync-turn-off-button'));
+
+      await waitFor(() =>
+        expect(calls).toEqual(['setSyncEnabled', 'dismissSyncExplanation']),
+      );
+    });
+
+    it('keeps the explanation blocking writes when turning sync off fails', async () => {
+      vi.spyOn(commands, 'setSyncEnabled').mockRejectedValue(new Error('offline'));
       const dismissSpy = vi.spyOn(commands, 'dismissSyncExplanation').mockResolvedValue();
       renderWithProviders(<SyncExplanationModal forceOpen />);
 
-      fireEvent.click(screen.getByTestId('sync-secondary-button'));
-      expect(dismissSpy).toHaveBeenCalled();
-      expect(uiStore.state.settingsOpen).toBe(true);
-      expect(uiStore.state.settingsTopic).toBe('account');
+      fireEvent.click(screen.getByTestId('sync-turn-off-button'));
+
+      await waitFor(() => expect(commands.setSyncEnabled).toHaveBeenCalled());
+      expect(dismissSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId('sync-explanation-modal')).toBeInTheDocument();
     });
 
     it('dismisses on Escape and renders nothing when closed', () => {
@@ -315,9 +347,34 @@ describe('features/shell', () => {
       expect(container.querySelector('[data-testid="sync-explanation-modal"]')).toBeNull();
     });
 
+    it('shows the tray note only when background is supported', () => {
+      queryClient.setQueryData(APP_INFO_QUERY_KEY, {
+        locale: 'en',
+        version: 'mock',
+        backgroundSupported: true,
+      });
+      renderWithProviders(<SyncExplanationModal forceOpen />);
+
+      expect(screen.getByTestId('sync-tray-note')).toHaveTextContent(
+        'Closing the window keeps GameNode running in the tray. Use Quit to exit.',
+      );
+    });
+
     it('localizes the modal in Brazilian Portuguese', () => {
       renderWithProviders(<SyncExplanationModal forceOpen />, 'pt-BR');
-      expect(screen.getByText('Sincronizar com o GameNode')).toBeInTheDocument();
+      expect(screen.getByText('Tempo de jogo e sincronização')).toBeInTheDocument();
+      expect(
+        screen.getByText('Favoritos'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Caminhos de instalação e executáveis'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('sync-turn-off-button')).toHaveTextContent(
+        'Desativar sincronização',
+      );
+      expect(screen.getByTestId('sync-primary-button')).toHaveTextContent(
+        'Manter sincronização',
+      );
     });
   });
 });

@@ -113,6 +113,33 @@
   --font-size-title: 15px;
   --font-size-heading: 22px;
 
+  /* -------------------------------------------------------------------------
+     Desktop dialog redesign tokens.
+
+     Source: Figma section 5369:2801 (2 · Diálogos e modais), transcribed in
+     openspec/changes/redesign-desktop-dialogs/design-reference/tokens.md.
+     Only the values listed there as new live here; colors, radii and the type
+     scale above already cover the rest of the frames.
+     ------------------------------------------------------------------------- */
+
+  --shadow-dialog: 0 20px 48px rgba(0, 0, 0, 0.55);
+  --radius-dialog: var(--radius-palette);
+
+  --font-size-dialog-title: 17px;
+  --font-size-display: 26px;
+  --font-size-hero: 28px;
+
+  --gradient-signin-side: linear-gradient(
+    90deg,
+    rgba(17, 17, 17, 0.25) 0%,
+    rgba(17, 17, 17, 0.95) 100%
+  );
+  --gradient-signin-bottom: linear-gradient(
+    180deg,
+    rgba(22, 22, 22, 0.6) 0%,
+    rgba(22, 22, 22, 1) 100%
+  );
+
   /* Overlay shadows */
   --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55);
   --shadow-notification: 0 10px 28px rgba(0, 0, 0, 0.45);

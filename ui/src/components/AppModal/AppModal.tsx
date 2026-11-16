@@ -4,7 +4,7 @@ import { useFocusRestore } from '../../hooks/useFocusRestore';
 import { useModalLayer } from '../modalLayer';
 
 const DEFAULT_CONTENT_CLASS =
-  'flex flex-col overflow-hidden rounded-md border border-border-subtle';
+  'flex flex-col overflow-hidden rounded-dialog border border-border-overlay bg-secondary shadow-dialog';
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');

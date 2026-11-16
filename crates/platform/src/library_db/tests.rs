@@ -38,6 +38,7 @@ fn game(id: u64, cover: Option<&str>) -> GameRecord {
         cover_url: cover.map(str::to_owned),
         cover_file: None,
         cover_failed_at: None,
+        platforms: Vec::new(),
     }
 }
 
@@ -349,6 +350,22 @@ fn game_metadata_keeps_cover_state_until_the_cover_url_changes() {
         (changed.cover_file.as_deref(), changed.cover_failed_at),
         (None, None)
     );
+}
+
+#[test]
+fn game_platforms_survive_a_store_round_trip_and_default_to_none() {
+    let dir = TempDir::new().unwrap();
+    let store = open(&dir).library_store();
+    let mut with_platforms = game(72, None);
+    with_platforms.platforms = vec!["PC".into(), "Switch".into()];
+    store.save_games(&[with_platforms]).unwrap();
+
+    // A row written before the column existed still loads, with no platforms.
+    store.save_games(&[game(73, None)]).unwrap();
+
+    let cache = store.load_cache(None).unwrap();
+    assert_eq!(cache.games[0].platforms, ["PC", "Switch"]);
+    assert_eq!(cache.games[1].platforms, Vec::<String>::new());
 }
 
 #[test]

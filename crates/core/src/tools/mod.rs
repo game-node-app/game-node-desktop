@@ -364,6 +364,17 @@ pub struct ToolModalView {
     pub operation: Option<ToolOperationStatus>,
 }
 
+/// Machine-readable error code for localized error display in the game tools modal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolOperationErrorCode {
+    PickerUnsupported,
+    PickerFailed,
+    TargetOutsideInstallDir,
+    TargetExeNotFound,
+    InstallDirNotFound,
+}
+
 /// Transient operation status for the modal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -379,6 +390,8 @@ pub enum ToolOperationStatus {
     Uninstalling,
     Failed {
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ToolOperationErrorCode>,
     },
 }
 

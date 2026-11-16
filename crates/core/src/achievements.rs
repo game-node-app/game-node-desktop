@@ -3,6 +3,8 @@
 //! The data is keyed by provider and connected store account, independently of any GameNode
 //! account. Core keeps no file, database or network access here.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ports::StorageError;
@@ -52,6 +54,41 @@ pub enum AchievementFilter {
     Locked,
 }
 
+/// How the full achievement list is ordered. Sorting runs in core on the storage worker.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AchievementSort {
+    /// Unlocked newest first, then unlocked without a time, then locked. The default order.
+    #[default]
+    MostRecent,
+    /// Lowest global percentage first; rows without rarity last.
+    Rarest,
+    /// Highest global percentage first; rows without rarity last.
+    MostCommon,
+    /// Alphabetical by displayed label; rows without rarity are unaffected.
+    Name,
+}
+
+/// The segment counts of the full list. They ignore the active filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AchievementCounts {
+    pub all: usize,
+    pub unlocked: usize,
+    pub locked: usize,
+}
+
+impl AchievementCounts {
+    pub fn from_records(achievements: &[AchievementRecord]) -> Self {
+        let unlocked = achievements.iter().filter(|row| row.unlocked).count();
+        Self {
+            all: achievements.len(),
+            unlocked,
+            locked: achievements.len() - unlocked,
+        }
+    }
+}
+
 /// One achievement definition joined with the connected account's unlock state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +101,10 @@ pub struct AchievementRecord {
     pub icon_gray_url: String,
     pub unlocked: bool,
     pub unlocked_at: Option<i64>,
+    /// Global unlock percentage in hundredths of a percent (420 = 4.2%), when the provider
+    /// publishes rarity.
+    #[serde(default)]
+    pub global_percent: Option<u16>,
     /// The provider's schema order, used as the stable order among locked achievements.
     pub position: i64,
 }
@@ -124,7 +165,17 @@ pub struct AchievementListView {
     /// `None` means the game has never been read.
     pub state: Option<AchievementGameState>,
     pub last_success_at: Option<i64>,
+    /// The successful read the footer's relative time is based on.
+    pub refreshed_at: Option<i64>,
     pub failure: Option<crate::library::CatalogError>,
+    /// Counts for the all/unlocked/locked segments, independent of the active filter.
+    pub counts: AchievementCounts,
+    /// Whether any stored achievement of this game has a global percentage.
+    pub has_rarity: bool,
+    /// The provider's display name, for provider-named copy such as the footer.
+    pub provider_name: String,
+    /// Whether the provider publishes a public achievements page for the game.
+    pub has_provider_page: bool,
     /// Ordered and hidden-masked before serialization.
     pub achievements: Vec<AchievementRecord>,
 }
@@ -220,11 +271,20 @@ fn short_failed_retry(state: &StoredAchievementSummary) -> bool {
             ))
 }
 
-/// The list order: unlocked achievements first, newest known unlock first, then unlocked entries
-/// without a time in schema order, then locked entries in schema order.
+/// The label used only for ordering a locked hidden achievement. Its real name never leaves the
+/// store, and the UI renders its own translated generic label; a stable placeholder keeps the
+/// order independent of the hidden text.
+const HIDDEN_SORT_LABEL: &str = "Hidden achievement";
+
+/// The list order for the chosen sort, applied inside the filter. `MostRecent` puts unlocked
+/// achievements first (newest known unlock first, then unlocked entries without a time in schema
+/// order, then locked entries in schema order). The rarity sorts mix unlocked and locked and put
+/// rows without a percentage last; `Name` uses the displayed label, so a locked hidden achievement
+/// sorts by its generic label.
 pub fn ordered_achievements(
     achievements: &[AchievementRecord],
     filter: AchievementFilter,
+    sort: AchievementSort,
 ) -> Vec<AchievementRecord> {
     let mut rows: Vec<AchievementRecord> = achievements
         .iter()
@@ -235,15 +295,59 @@ pub fn ordered_achievements(
         })
         .cloned()
         .collect();
-    rows.sort_by_key(|achievement| {
-        let group = match (achievement.unlocked, achievement.unlocked_at) {
-            (true, Some(at)) => (0, std::cmp::Reverse(at)),
-            (true, None) => (1, std::cmp::Reverse(0)),
-            (false, _) => (2, std::cmp::Reverse(0)),
-        };
-        (group.0, group.1, achievement.position)
-    });
+    match sort {
+        AchievementSort::MostRecent => rows.sort_by_key(|achievement| {
+            let group = match (achievement.unlocked, achievement.unlocked_at) {
+                (true, Some(at)) => (0, std::cmp::Reverse(at)),
+                (true, None) => (1, std::cmp::Reverse(0)),
+                (false, _) => (2, std::cmp::Reverse(0)),
+            };
+            (group.0, group.1, achievement.position)
+        }),
+        AchievementSort::Rarest => rows.sort_by_key(|achievement| {
+            // Missing rarity comes after every row that has one; position keeps ties stable.
+            (
+                achievement.global_percent.is_none(),
+                achievement.global_percent,
+                achievement.position,
+            )
+        }),
+        AchievementSort::MostCommon => rows.sort_by_key(|achievement| {
+            (
+                achievement.global_percent.is_none(),
+                std::cmp::Reverse(achievement.global_percent),
+                achievement.position,
+            )
+        }),
+        AchievementSort::Name => rows.sort_by(|left, right| {
+            sort_label(left)
+                .to_lowercase()
+                .cmp(&sort_label(right).to_lowercase())
+                .then(left.position.cmp(&right.position))
+        }),
+    }
     rows
+}
+
+fn sort_label(achievement: &AchievementRecord) -> &str {
+    if achievement.hidden && !achievement.unlocked {
+        HIDDEN_SORT_LABEL
+    } else {
+        &achievement.name
+    }
+}
+
+/// Keeps the previous global percentage for achievements whose refresh returned none. A provider
+/// that fails only the rarity request must not erase values it reported before.
+pub fn keep_previous_rarity(
+    achievements: &mut [AchievementRecord],
+    previous: &BTreeMap<String, u16>,
+) {
+    for achievement in achievements {
+        if achievement.global_percent.is_none() {
+            achievement.global_percent = previous.get(&achievement.id).copied();
+        }
+    }
 }
 
 /// Removes a locked hidden achievement's store text before it can reach the WebView. The hidden
@@ -352,6 +456,7 @@ mod tests {
             icon_gray_url: String::new(),
             unlocked,
             unlocked_at: at,
+            global_percent: None,
             position,
         }
     }
@@ -384,7 +489,8 @@ mod tests {
             achievement("new", true, Some(300), 3),
             achievement("locked-b", false, None, 4),
         ];
-        let ordered = ordered_achievements(&rows, AchievementFilter::All);
+        let ordered =
+            ordered_achievements(&rows, AchievementFilter::All, AchievementSort::MostRecent);
         assert_eq!(
             ordered
                 .iter()
@@ -393,18 +499,123 @@ mod tests {
             ["new", "old", "no-time", "locked-a", "locked-b"]
         );
         assert_eq!(
-            ordered_achievements(&rows, AchievementFilter::Unlocked)
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
+            ordered_achievements(
+                &rows,
+                AchievementFilter::Unlocked,
+                AchievementSort::MostRecent,
+            )
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
             ["new", "old", "no-time"]
         );
         assert_eq!(
-            ordered_achievements(&rows, AchievementFilter::Locked)
+            ordered_achievements(
+                &rows,
+                AchievementFilter::Locked,
+                AchievementSort::MostRecent,
+            )
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+            ["locked-a", "locked-b"]
+        );
+    }
+
+    #[test]
+    fn rarity_sorts_mix_unlocks_and_put_missing_values_last() {
+        let mut rows = vec![
+            achievement("no-rarity", false, None, 0),
+            achievement("common", true, Some(100), 1),
+            achievement("rare", false, None, 2),
+            achievement("mid", true, Some(200), 3),
+        ];
+        rows[1].global_percent = Some(1_890);
+        rows[2].global_percent = Some(420);
+        rows[3].global_percent = Some(50);
+        assert_eq!(
+            ordered_achievements(&rows, AchievementFilter::All, AchievementSort::Rarest)
                 .iter()
                 .map(|row| row.id.as_str())
                 .collect::<Vec<_>>(),
-            ["locked-a", "locked-b"]
+            ["mid", "rare", "common", "no-rarity"]
+        );
+        assert_eq!(
+            ordered_achievements(&rows, AchievementFilter::All, AchievementSort::MostCommon)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["common", "rare", "mid", "no-rarity"]
+        );
+        assert_eq!(
+            ordered_achievements(&rows, AchievementFilter::Unlocked, AchievementSort::Rarest)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["mid", "common"],
+            "the chosen sort applies inside the filter"
+        );
+    }
+
+    #[test]
+    fn name_sort_uses_the_generic_label_for_a_locked_hidden_achievement() {
+        let rows = vec![
+            achievement("alpha", false, None, 0),
+            AchievementRecord {
+                name: "Zzz secret".into(),
+                position: 2,
+                ..achievement("secret", false, None, 2)
+            },
+            achievement("zulu", true, Some(10), 1),
+        ];
+        let ordered = ordered_achievements(&rows, AchievementFilter::All, AchievementSort::Name);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["secret", "alpha", "zulu"],
+            "the hidden row sorts by its generic label, never by its real name"
+        );
+    }
+
+    #[test]
+    fn counts_cover_all_unlocked_and_locked_regardless_of_the_filter() {
+        let rows = vec![
+            achievement("a", true, Some(10), 0),
+            achievement("b", false, None, 1),
+            achievement("c", true, None, 2),
+        ];
+        assert_eq!(
+            AchievementCounts::from_records(&rows),
+            AchievementCounts {
+                all: 3,
+                unlocked: 2,
+                locked: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_refresh_without_rarity_keeps_previous_values_by_id() {
+        let mut rows = vec![
+            achievement("kept", false, None, 0),
+            achievement("new", false, None, 1),
+            achievement("refreshed", false, None, 2),
+        ];
+        rows[2].global_percent = Some(1_000);
+        let previous = std::collections::BTreeMap::from([
+            ("kept".to_owned(), 420),
+            ("refreshed".to_owned(), 50),
+            ("removed".to_owned(), 900),
+        ]);
+        keep_previous_rarity(&mut rows, &previous);
+        assert_eq!(rows[0].global_percent, Some(420));
+        assert_eq!(rows[1].global_percent, None, "a new id has no history");
+        assert_eq!(
+            rows[2].global_percent,
+            Some(1_000),
+            "a reported value wins over the stored one"
         );
     }
 

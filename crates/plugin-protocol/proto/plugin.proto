@@ -345,6 +345,9 @@ message Achievement {
   string icon_gray_url = 6;
   bool unlocked = 7;
   optional int64 unlocked_at = 8;
+  // Global unlock percentage in hundredths of a percent (420 = 4.2%). Optional because a
+  // provider may not publish rarity; old plugins leave it unset.
+  optional uint32 global_percent = 9;
 }
 
 message AchievementGame {

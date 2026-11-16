@@ -20,6 +20,7 @@ fn summary(id: u64, name: &str, year: Option<i32>) -> GameSummary {
         cover_url: Some(format!(
             "//images.igdb.com/igdb/image/upload/t_thumb/co{id}.jpg"
         )),
+        platforms: Vec::new(),
     }
 }
 

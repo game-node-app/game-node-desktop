@@ -208,6 +208,10 @@ pub struct GameRecord {
     pub cover_file: Option<String>,
     /// Unix seconds of the last failed cover download; the next scan retries.
     pub cover_failed_at: Option<i64>,
+    /// Platform abbreviations a search answer reported. Persisted so a stored game keeps the
+    /// platforms it already received; lookups and old rows start empty.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 /// The account's favorite state for one GameNode game.

@@ -19,6 +19,10 @@ pub enum AuthView {
     Pending {
         provider: Provider,
         awaiting_browser: bool,
+        /// Whether the browser address for this attempt is known and can be opened again.
+        can_reopen: bool,
+        /// The last attempt to open the browser again failed. The attempt keeps waiting.
+        reopen_failed: bool,
     },
     /// Validating a session with GameNode.
     Verifying,
@@ -47,6 +51,10 @@ pub struct Snapshot {
     pub library: Option<LibraryView>,
     /// The latest Play or Install, while it is opening or after it failed.
     pub launch: Option<LaunchStatus>,
+    /// The latest finished add run, kept outside `library` so a hidden batch stopped by
+    /// sign-out still reports its outcome after the library view is gone.
+    #[serde(default)]
+    pub add_notice: Option<crate::library::AddNoticeView>,
     /// Scalable game tools management and modal view.
     pub tools: crate::tools::ToolsView,
     /// One entry per store provider that declares a catalog, with no secret fields.
@@ -66,9 +74,16 @@ impl Snapshot {
         let auth = match machine.state() {
             AuthState::Starting => AuthView::Starting,
             AuthState::SignedOut => AuthView::SignedOut,
-            AuthState::Pending { provider, stage } => AuthView::Pending {
+            AuthState::Pending {
+                provider,
+                stage,
+                browser_url,
+                reopen_failed,
+            } => AuthView::Pending {
                 provider: *provider,
                 awaiting_browser: *stage == Stage::AwaitingBrowser,
+                can_reopen: browser_url.is_some(),
+                reopen_failed: *reopen_failed,
             },
             AuthState::Verifying(_) => AuthView::Verifying,
             AuthState::SignedIn(user) => AuthView::SignedIn { user: user.clone() },
@@ -87,6 +102,7 @@ impl Snapshot {
             settings,
             library,
             launch,
+            add_notice: None,
             tools: Default::default(),
             store_accounts: Vec::new(),
             ports: crate::ports::PortsView::default(),

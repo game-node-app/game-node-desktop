@@ -1,0 +1,28 @@
+### 5371:3285 Tela de entrada  1440x900  (wrapper 5371:3379 "Tela de entrada (SignedOutView)")
+### Annotation: Mural de capas do lado esquerdo; provedores como botões largos; "Usar sem conta" é uma proposta (NOVO).
+F [Tela de entrada] 1440x900 row bg=background clip
+ F [Arte] 760x900 col p48 jc:max bg=bg/sidebar clip
+  [mural de capas] absolute 760x900: 25 rects 150x200 r8 op0.55 gradient fills (placeholders for real covers)
+   5 columns at x = -30, 132, 294, 456, 618 (column pitch 162 = 150 + 12 gap)
+   odd columns (1,3,5) y = -60, 152, 364, 576, 788 ; even columns (2,4) y = 30, 242, 454, 666, 878 (row pitch 212)
+   gradients cycle: #5A1E0E→#F2913D, #0E2A47→#4FC3C9, #1B1446→#8E7CF0, #0F3B2A→#9AD97A, #2B0F3A→#F25FA0,
+                    #3A1A0B→#C46A2C, #3B3020→#E8D7A8, #1C1C24→#6C7A99, #240B36→#00B8E6, #14261A→#7FB069,
+                    #0B1E2D→#A9D6E5, #2A1220→#D46A6A
+  [overlay 1] full rect, linear grad (horizontal, left→right) #111111 @25% → #111111 @95%
+  [overlay 2] full rect, linear grad (vertical, top→bottom) #161616 @60% → #161616 @100%
+  F col gap8 520w (bottom-left, over the overlays)
+   T "Todas as suas lojas, um só lugar." 28/600 text/primary
+   T "Steam, Epic Games Store e jogos DRM-free sincronizados com o seu perfil GameNode." 15/400 text/secondary lh22
+ F [Entrada] 680x900 col jc:center ai:center FF
+  F col gap20 400w
+   brand/gamenode-wordmark 83x32
+   F col gap6 ; T "Boas-vindas ao GameNode" 26/600 text/primary ; T "Entre com sua conta GameNode pelo navegador." 14/400 text/secondary
+   F col gap10
+    provider buttons 400x44 row gap12 p0/14/0/14 ai:center bg=bg/raised bd1=border/subtle r8:
+    F [badge] 22x22 bg=#3A3A3A r5 ; T "G"|"D"|"X" 12/700 text/primary (centered)
+    T "Continuar com Google" | "Continuar com Discord" | "Continuar com Twitter" 14/500 text/primary FH
+    I external-link 14:text-dimmed
+   F row gap8 ai:center ; I lock 14:text-dimmed ; T "Entre com segurança pelo seu navegador padrão." 12/400 text-dimmed
+   F [divider] 400x1 bg=border/subtle                       (OUT OF SCOPE: drop together with the card below)
+   F [OUT OF SCOPE — "Usar sem conta"] row gap10 p12 bg=surface bd1=border/subtle r8 ; I books 16 ; "Usar sem conta (NOVO)" / "Biblioteca local e lançador funcionam; sincronização fica desligada." ; I chevron-right
+  T "GameNode Desktop · versão 0.9.0" 11/400 text/muted  absolute bottom-right of the 680 pane (x 489, y 868 → right 24, bottom 20)

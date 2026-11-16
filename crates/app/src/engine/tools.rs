@@ -2,16 +2,25 @@
 //! transactional installation, update, rollback, anti-cheat guards, and cache management.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use gamenode_core::drm_free::LocalError;
 use gamenode_core::tools::{
-    GameToolView, InstallRequest, ProxyDllName, ToolCatalogItemView, ToolChannel, ToolId,
-    ToolModalView, ToolOperationStatus, builtin_tools, evaluate_anticheat, find_tool,
+    GameToolView, InstallRequest, ProxyDllName, ToolCatalogItemView, ToolChannel, ToolError,
+    ToolId, ToolModalView, ToolOperationErrorCode, ToolOperationStatus, builtin_tools,
+    evaluate_anticheat, find_tool,
 };
 
 use super::Engine;
 
 const RELEASE_CACHE_MAX_AGE: Duration = Duration::from_secs(3600);
+
+/// Opens the native executable picker for a game's install folder. Tests inject a fake so the
+/// accepted, cancelled and failed paths do not need a real dialog.
+pub trait ToolTargetPicker: Send + Sync {
+    fn pick(&self, install_dir: &str) -> Result<Option<String>, String>;
+}
 
 impl Engine {
     /// Dispatches startup recovery of incomplete tool jobs and initializes installed tools
@@ -485,6 +494,117 @@ impl Engine {
         }
     }
 
+    /// Opens the executable picker for the open game's install folder on a worker, then feeds the
+    /// chosen file through [`Self::select_tool_target_exe`] after the existing containment rules.
+    /// Cancelling, or a pick outside the folder, leaves the current target untouched.
+    pub async fn pick_tool_target_exe(&self) {
+        let Some((entry_key, install_dir)) = ({
+            let state = self.lock();
+            state
+                .tools
+                .modal
+                .as_ref()
+                .map(|modal| (modal.entry_key.clone(), modal.install_dir.clone()))
+        }) else {
+            return;
+        };
+        let picker = self.shared.ports.tool_picker.clone();
+        let folder = install_dir.clone();
+        let picked = self
+            .shared
+            .runtime
+            .spawn_blocking(move || {
+                let raw_pick = match picker {
+                    Some(picker) => picker
+                        .pick(&folder)
+                        .map_err(|message| (ToolOperationErrorCode::PickerFailed, message)),
+                    None => gamenode_platform::installations::pick_executable_in(&folder).map_err(
+                        |error| match error {
+                            LocalError::Unsupported => (
+                                ToolOperationErrorCode::PickerUnsupported,
+                                "the executable picker is unsupported on this platform".to_string(),
+                            ),
+                            other => (ToolOperationErrorCode::PickerFailed, other.to_string()),
+                        },
+                    ),
+                }?;
+                let Some(path) = raw_pick else {
+                    return Ok(None);
+                };
+                gamenode_platform::tools::inspect::validate_target_within_install_dir(
+                    Path::new(&folder),
+                    &path,
+                )
+                .map(|(_, relative_exe)| Some(relative_exe))
+                .map_err(|error| {
+                    let code = match &error {
+                        ToolError::PathEscapesInstallDir(_) => {
+                            ToolOperationErrorCode::TargetOutsideInstallDir
+                        }
+                        ToolError::TargetExeNotFound(_) => {
+                            ToolOperationErrorCode::TargetExeNotFound
+                        }
+                        ToolError::InstallDirNotFound(_) => {
+                            ToolOperationErrorCode::InstallDirNotFound
+                        }
+                        _ => ToolOperationErrorCode::PickerFailed,
+                    };
+                    (code, error.to_string())
+                })
+            })
+            .await;
+        match picked {
+            Ok(Ok(Some(relative_exe))) => {
+                let still_open = {
+                    let state = self.lock();
+                    state
+                        .tools
+                        .modal
+                        .as_ref()
+                        .is_some_and(|modal| modal.entry_key == entry_key)
+                };
+                if !still_open {
+                    return;
+                }
+                self.select_tool_target_exe(relative_exe);
+                // A previous picker failure is resolved by a successful choice.
+                let mut state = self.lock();
+                if let Some(modal) = &mut state.tools.modal
+                    && modal.entry_key == entry_key
+                    && matches!(modal.operation, Some(ToolOperationStatus::Failed { .. }))
+                {
+                    modal.operation = None;
+                    self.publish(&mut state);
+                }
+            }
+            // The user cancelled the dialog: the current target stays.
+            Ok(Ok(None)) => {}
+            Ok(Err((code, message))) => {
+                self.report_tool_target_error(&entry_key, Some(code), message);
+            }
+            Err(error) => self.report_tool_target_error(
+                &entry_key,
+                Some(ToolOperationErrorCode::PickerFailed),
+                format!("the executable picker stopped: {error}"),
+            ),
+        }
+    }
+
+    fn report_tool_target_error(
+        &self,
+        entry_key: &str,
+        code: Option<ToolOperationErrorCode>,
+        message: String,
+    ) {
+        let mut state = self.lock();
+        if let Some(modal) = &mut state.tools.modal
+            && modal.entry_key == entry_key
+        {
+            modal.operation = Some(ToolOperationStatus::Failed { message, code });
+            self.publish(&mut state);
+        }
+    }
+
     /// Selects the proxy DLL filename (e.g. `dxgi.dll`).
     pub fn select_tool_proxy(&self, proxy: String) {
         if let Some(parsed) = ProxyDllName::parse_flexible(&proxy) {
@@ -561,6 +681,7 @@ impl Engine {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "Game is currently running; stop the game before modifying tools"
                             .to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -573,6 +694,7 @@ impl Engine {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "Anti-cheat warning must be confirmed before installing"
                             .to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -584,6 +706,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "No target executable selected".to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -595,6 +718,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: "No version selected".to_string(),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -612,6 +736,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: format!("Release not found for version {selected_version}"),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -623,6 +748,7 @@ impl Engine {
                 if let Some(modal) = &mut state.tools.modal {
                     modal.operation = Some(ToolOperationStatus::Failed {
                         message: format!("Tool not found: {active_tool_id}"),
+                        code: None,
                     });
                 }
                 self.publish(&mut state);
@@ -673,6 +799,7 @@ impl Engine {
             if let Some(modal) = &mut state.tools.modal {
                 modal.operation = Some(ToolOperationStatus::Failed {
                     message: "Tools ports are not configured".to_string(),
+                    code: None,
                 });
                 self.publish(&mut state);
             }
@@ -726,6 +853,7 @@ impl Engine {
             if let Some(modal) = &mut state.tools.modal {
                 modal.operation = Some(ToolOperationStatus::Failed {
                     message: "Tools ports are not configured".to_string(),
+                    code: None,
                 });
                 self.publish(&mut state);
             }
@@ -840,7 +968,10 @@ impl Engine {
                     modal.operation = None;
                 }
                 Err(err_msg) => {
-                    modal.operation = Some(ToolOperationStatus::Failed { message: err_msg });
+                    modal.operation = Some(ToolOperationStatus::Failed {
+                        message: err_msg,
+                        code: None,
+                    });
                 }
             }
         }

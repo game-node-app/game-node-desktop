@@ -6,7 +6,8 @@ use super::*;
 static ACHIEVEMENT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use gamenode_core::achievements::{
-    AchievementFilter, AchievementGameState, AchievementRecord, AchievementSummaryView,
+    AchievementFilter, AchievementGameState, AchievementRecord, AchievementSort,
+    AchievementSummaryView,
 };
 use gamenode_core::library::{LibraryCache, ProviderScanState, StoredEntry};
 use gamenode_plugin_protocol::models;
@@ -92,6 +93,7 @@ fn record(
         icon_gray_url: String::new(),
         unlocked,
         unlocked_at: at,
+        global_percent: None,
         position,
     }
 }
@@ -334,24 +336,23 @@ async fn a_full_list_is_ordered_masked_and_needs_no_gamenode_request() {
     let h = harness(FakeApi::new(), FakeCreds::with(Some("stored")));
     *h.store.cache.lock().unwrap() = cache(&["620"]);
     h.store.store_accounts.lock().unwrap().push(store_account());
+    let mut locked_secret = record("locked-secret", false, None, true, 0);
+    locked_secret.global_percent = Some(710);
+    let mut old = record("old", true, Some(100), false, 1);
+    old.global_percent = Some(1_890);
+    let mut new = record("new", true, Some(300), false, 2);
+    new.global_percent = Some(420);
     h.achievements
-        .save_ready(
-            "steam",
-            "A",
-            "620",
-            "en",
-            &[
-                record("locked-secret", false, None, true, 0),
-                record("old", true, Some(100), false, 1),
-                record("new", true, Some(300), false, 2),
-            ],
-            100,
-        )
+        .save_ready("steam", "A", "620", "en", &[locked_secret, old, new], 100)
         .unwrap();
     let before = h.api.lookups.lock().unwrap().len();
     let view = h
         .engine
-        .achievement_list("steam:620".to_owned(), AchievementFilter::All)
+        .achievement_list(
+            "steam:620".to_owned(),
+            AchievementFilter::All,
+            AchievementSort::MostRecent,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -368,32 +369,144 @@ async fn a_full_list_is_ordered_masked_and_needs_no_gamenode_request() {
     assert_eq!(view.achievements[2].description, "");
     assert!(view.achievements[2].hidden);
     assert_eq!(
+        view.counts,
+        gamenode_core::achievements::AchievementCounts {
+            all: 3,
+            unlocked: 2,
+            locked: 1,
+        }
+    );
+    assert_eq!(view.refreshed_at, Some(100));
+    assert!(view.has_rarity);
+    assert_eq!(view.provider_name, "Steam");
+    assert!(view.has_provider_page);
+    assert_eq!(
         h.api.lookups.lock().unwrap().len(),
         before,
         "the list never reaches GameNode"
     );
 
+    let rarest = h
+        .engine
+        .achievement_list(
+            "steam:620".to_owned(),
+            AchievementFilter::All,
+            AchievementSort::Rarest,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rarest
+            .achievements
+            .iter()
+            .map(|achievement| achievement.id.as_str())
+            .collect::<Vec<_>>(),
+        ["new", "locked-secret", "old"]
+    );
+    let by_name = h
+        .engine
+        .achievement_list(
+            "steam:620".to_owned(),
+            AchievementFilter::All,
+            AchievementSort::Name,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        by_name
+            .achievements
+            .iter()
+            .map(|achievement| achievement.id.as_str())
+            .collect::<Vec<_>>(),
+        ["locked-secret", "new", "old"],
+        "the hidden row sorts by its generic label and keeps its text masked"
+    );
+    assert_eq!(by_name.achievements[0].name, "");
+
     let unlocked = h
         .engine
-        .achievement_list("steam:620".to_owned(), AchievementFilter::Unlocked)
+        .achievement_list(
+            "steam:620".to_owned(),
+            AchievementFilter::Unlocked,
+            AchievementSort::MostRecent,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(unlocked.achievements.len(), 2);
+    assert_eq!(
+        unlocked.counts,
+        gamenode_core::achievements::AchievementCounts {
+            all: 3,
+            unlocked: 2,
+            locked: 1,
+        },
+        "counts ignore the active filter"
+    );
 
     let none = h
         .engine
-        .achievement_list("steam:240".to_owned(), AchievementFilter::All)
+        .achievement_list(
+            "steam:240".to_owned(),
+            AchievementFilter::All,
+            AchievementSort::MostRecent,
+        )
         .await
         .unwrap();
     assert!(none.is_none(), "a game never read has no cached row");
 
     let unsupported = h
         .engine
-        .achievement_list("manual:1".to_owned(), AchievementFilter::All)
+        .achievement_list(
+            "manual:1".to_owned(),
+            AchievementFilter::All,
+            AchievementSort::MostRecent,
+        )
         .await
         .unwrap();
     assert!(unsupported.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_achievements_page_url_is_resolved_by_the_host_and_other_providers_are_refused() {
+    let h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.engine
+        .open_achievements_page("steam:620".to_owned())
+        .await
+        .expect("the Steam page opens");
+    assert_eq!(
+        h.browser
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|url| url.as_str())
+            .collect::<Vec<_>>(),
+        ["https://steamcommunity.com/stats/620/achievements"]
+    );
+
+    assert_eq!(
+        h.engine.open_achievements_page("epic:1".to_owned()).await,
+        Err(crate::engine::AchievementPageError::Unsupported),
+        "a provider without a public page is refused"
+    );
+    assert_eq!(
+        h.engine
+            .open_achievements_page("steam:not-an-app".to_owned())
+            .await,
+        Err(crate::engine::AchievementPageError::Unsupported)
+    );
+
+    *h.browser.fail.lock().unwrap() = true;
+    assert_eq!(
+        h.engine
+            .open_achievements_page("steam:620".to_owned())
+            .await,
+        Err(crate::engine::AchievementPageError::Browser),
+        "a browser failure stays a typed error for the UI to localize"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -954,6 +1067,7 @@ async fn results_from_a_signed_out_or_replaced_account_write_nothing() {
                     icon_gray_url: String::new(),
                     unlocked: true,
                     unlocked_at: Some(200),
+                    global_percent: None,
                 }],
             }],
             "en",
@@ -997,6 +1111,7 @@ async fn results_from_a_signed_out_or_replaced_account_write_nothing() {
                     icon_gray_url: String::new(),
                     unlocked: true,
                     unlocked_at: Some(200),
+                    global_percent: None,
                 }],
             }],
             "en",

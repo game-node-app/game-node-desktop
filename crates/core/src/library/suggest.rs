@@ -150,6 +150,11 @@ fn percent(confidence: f32) -> u8 {
     (confidence * 100.0).round().clamp(0.0, 100.0) as u8
 }
 
+/// The whole-percent form of a confidence or title similarity, clamped to `0..=100`.
+pub(super) fn percent_of(score: f32) -> u8 {
+    percent(score)
+}
+
 /// Scores the search results for a detected title and returns the best two at or above the
 /// threshold. Ties are deterministic: higher confidence, then title, then game id.
 pub fn rank_suggestions(
@@ -194,10 +199,11 @@ fn game_summary(record: &GameRecord) -> GameSummary {
         name: record.name.clone(),
         release_year: record.release_year,
         cover_url: record.cover_url.clone(),
+        platforms: record.platforms.clone(),
     }
 }
 
-fn search_query(entry: &StoredEntry) -> String {
+pub(super) fn search_query(entry: &StoredEntry) -> String {
     entry
         .name
         .as_deref()
@@ -207,7 +213,7 @@ fn search_query(entry: &StoredEntry) -> String {
         .to_owned()
 }
 
-fn detected_years(entry: &StoredEntry) -> Vec<i32> {
+pub(super) fn detected_years(entry: &StoredEntry) -> Vec<i32> {
     let mut text = entry.install_dir.clone();
     if let Some(name) = &entry.name {
         text.push(' ');

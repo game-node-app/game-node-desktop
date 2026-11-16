@@ -55,6 +55,9 @@ const config: Config = {
         control: 'var(--radius-control)',
         popover: 'var(--radius-popover)',
         palette: 'var(--radius-palette)',
+        // Dialog redesign alias, from
+        // openspec/changes/redesign-desktop-dialogs/design-reference/tokens.md.
+        dialog: 'var(--radius-dialog)',
       },
       fontSize: {
         xs: 'var(--font-size-xs)',
@@ -69,6 +72,18 @@ const config: Config = {
         body: 'var(--font-size-body)',
         title: 'var(--font-size-title)',
         heading: 'var(--font-size-heading)',
+        // Dialog redesign sizes, from
+        // openspec/changes/redesign-desktop-dialogs/design-reference/tokens.md.
+        'dialog-title': 'var(--font-size-dialog-title)',
+        display: 'var(--font-size-display)',
+        hero: 'var(--font-size-hero)',
+      },
+      lineHeight: {
+        // Dialog redesign line heights, from design-reference/tokens.md.
+        note: '17px',
+        field: '19px',
+        'body-relaxed': '20px',
+        hero: '22px',
       },
       letterSpacing: {
         // Uppercase section labels and the DESKTOP badge; stat/table labels.
@@ -152,6 +167,13 @@ const config: Config = {
         menu: '0 12px 32px rgba(0, 0, 0, 0.5)',
         popover: 'var(--shadow-popover)',
         notification: 'var(--shadow-notification)',
+        // Dialog redesign shadow, from design-reference/tokens.md.
+        dialog: 'var(--shadow-dialog)',
+      },
+      backgroundImage: {
+        // Sign-in art overlays, from design-reference/tokens.md.
+        'signin-side': 'var(--gradient-signin-side)',
+        'signin-bottom': 'var(--gradient-signin-bottom)',
       },
       maxWidth: {
         modal: 'var(--modal-max-width)',

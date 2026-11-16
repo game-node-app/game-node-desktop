@@ -206,13 +206,14 @@ describe('SettingsModal Feature Suite', () => {
   });
 
   describe('Dirty-State Discard Confirmation & Esc Handling', () => {
-    it('prompts discard confirmation when switching topics with dirty backup destination', () => {
+    it('lists the pending fields, focuses Keep editing, and Discard runs the pending topic change', async () => {
       openSettingsModal('backups');
       renderSettings('en', {
         localGames: {
           ...createDefaultSnapshot().localGames,
           settings: {
             automatic: true,
+            retention: 10,
             destination: '/original/backups',
           },
         },
@@ -230,29 +231,26 @@ describe('SettingsModal Feature Suite', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Account' }));
 
       // Discard confirmation dialog must be shown
-      const alertdialog = screen.getByRole('alertdialog');
-      expect(alertdialog).toBeInTheDocument();
-      expect(within(alertdialog).getByText('Discard unsaved changes?')).toBeInTheDocument();
+      const discardDialog = screen.getByRole('dialog', { name: 'Discard changes?' });
+      expect(discardDialog).toBeInTheDocument();
+      expect(within(discardDialog).getByText('Backup destination')).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('discard-keep-editing')).toHaveFocus());
       expect(uiStore.state.settingsTopic).toBe('backups');
 
-      // Click Keep editing / Cancel
-      fireEvent.click(within(alertdialog).getByRole('button', { name: /Keep editing|Cancel/i }));
+      // Keep editing: dialog closes, still on backups and input still dirty
+      fireEvent.click(within(discardDialog).getByTestId('discard-keep-editing'));
 
-      // Dialog closed, still on backups and input still dirty
-      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByTestId('discard-changes-dialog')).toBeNull();
       expect(screen.getByLabelText(/Backup destination/i)).toHaveValue('/modified/backups');
       expect(uiStore.state.settingsTopic).toBe('backups');
 
-      // Try switching again to 'account'
+      // Try switching again to 'account' and discard
       fireEvent.click(screen.getByRole('button', { name: 'Account' }));
-      const alertdialog2 = screen.getByRole('alertdialog');
-      expect(alertdialog2).toBeInTheDocument();
-
-      // Click Discard
-      fireEvent.click(within(alertdialog2).getByRole('button', { name: 'Discard' }));
+      const discardDialog2 = screen.getByRole('dialog', { name: 'Discard changes?' });
+      fireEvent.click(within(discardDialog2).getByTestId('discard-confirm'));
 
       // Confirmation dialog closes, topic switches to Account, draft reverted
-      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByTestId('discard-changes-dialog')).toBeNull();
       expect(uiStore.state.settingsTopic).toBe('account');
       expect(uiStore.state.backupDestinationDraft).toBeNull();
     });
@@ -264,6 +262,7 @@ describe('SettingsModal Feature Suite', () => {
           ...createDefaultSnapshot().localGames,
           settings: {
             automatic: true,
+            retention: 10,
             destination: '/saved/path',
           },
         },
@@ -276,34 +275,34 @@ describe('SettingsModal Feature Suite', () => {
       fireEvent.keyDown(window, { key: 'Escape' });
 
       // Discard dialog should open, SettingsModal should NOT close yet
-      const alertdialog = screen.getByRole('alertdialog');
-      expect(alertdialog).toBeInTheDocument();
+      expect(screen.getByTestId('discard-changes-dialog')).toBeInTheDocument();
       expect(screen.getByRole('dialog', { name: /Settings/i })).toBeInTheDocument();
 
       // Press Escape again inside discard dialog -> cancels discard dialog
       fireEvent.keyDown(window, { key: 'Escape' });
-      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(screen.queryByTestId('discard-changes-dialog')).toBeNull();
       expect(screen.getByRole('dialog', { name: /Settings/i })).toBeInTheDocument();
 
       // Trigger discard confirmation again and confirm discard
       fireEvent.keyDown(window, { key: 'Escape' });
-      const alertdialog2 = screen.getByRole('alertdialog');
-      expect(alertdialog2).toBeInTheDocument();
+      const discardDialog = screen.getByTestId('discard-changes-dialog');
+      expect(discardDialog).toBeInTheDocument();
 
-      fireEvent.click(within(alertdialog2).getByRole('button', { name: 'Discard' }));
+      fireEvent.click(within(discardDialog).getByTestId('discard-confirm'));
 
       // Now SettingsModal closes
       expect(screen.queryByRole('dialog', { name: /Settings/i })).toBeNull();
       expect(uiStore.state.settingsOpen).toBe(false);
     });
 
-    it('prompts discard confirmation in pt-BR with localized strings', () => {
+    it('prompts discard confirmation in pt-BR with localized strings', async () => {
       openSettingsModal('backups');
       renderSettings('pt-BR', {
         localGames: {
           ...createDefaultSnapshot().localGames,
           settings: {
             automatic: true,
+            retention: 10,
             destination: '/meus/backups',
           },
         },
@@ -314,11 +313,14 @@ describe('SettingsModal Feature Suite', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Conta' }));
 
-      const alertdialog = screen.getByRole('alertdialog');
-      expect(alertdialog).toBeInTheDocument();
-      expect(within(alertdialog).getByText('Descartar alterações não salvas?')).toBeInTheDocument();
-      expect(within(alertdialog).getByRole('button', { name: 'Descartar' })).toBeInTheDocument();
-      expect(within(alertdialog).getByRole('button', { name: /Continuar editando|Cancelar/i })).toBeInTheDocument();
+      const discardDialog = screen.getByRole('dialog', { name: 'Descartar alterações?' });
+      expect(discardDialog).toBeInTheDocument();
+      expect(within(discardDialog).getByText('Destino dos backups')).toBeInTheDocument();
+      expect(within(discardDialog).getByTestId('discard-confirm')).toHaveTextContent('Descartar');
+      expect(within(discardDialog).getByTestId('discard-keep-editing')).toHaveTextContent(
+        'Continuar editando',
+      );
+      await waitFor(() => expect(screen.getByTestId('discard-keep-editing')).toHaveFocus());
     });
   });
 
@@ -595,6 +597,7 @@ describe('SettingsModal Feature Suite', () => {
           ...createDefaultSnapshot().localGames,
           settings: {
             automatic: true,
+            retention: 10,
             destination: '/default/destination',
           },
         },

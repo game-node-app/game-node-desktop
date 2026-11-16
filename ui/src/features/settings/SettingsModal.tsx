@@ -95,6 +95,9 @@ export const SettingsModal: React.FC = () => {
   const currentDestination = localGames?.settings?.destination ?? '';
   const isDirty =
     backupDestinationDraft !== null && backupDestinationDraft !== currentDestination;
+  // Localized names of every field with a pending edit. Only the backup
+  // destination is a draft today; a future draft adds its label here.
+  const pendingChanges = isDirty ? [t('drmFree.backupDestination')] : [];
 
   // Reset scroll position when topic changes
   useEffect(() => {
@@ -310,6 +313,7 @@ export const SettingsModal: React.FC = () => {
       {/* Overlays on top of settings modal */}
       {discardBackupConfirmOpen && (
         <DiscardChangesDialog
+          pendingChanges={pendingChanges}
           onCancel={handleCancelDiscard}
           onConfirm={handleConfirmDiscard}
         />

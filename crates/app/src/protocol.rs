@@ -1543,6 +1543,7 @@ mod tests {
                     source: MatchSource::Automatic,
                 },
                 cover_file: None,
+                game_cover_file: None,
                 release_year: Some(2011),
                 added_at: 0,
                 is_favorite: false,

@@ -550,6 +550,7 @@ async fn full_provider_restores_logs_in_syncs_and_handles_failed_then_successful
                 icon_gray_url: "https://cdn.example/a_gray.jpg".into(),
                 unlocked: true,
                 unlocked_at: Some(1_700_000_000),
+                global_percent: None,
             }],
         }))
     );

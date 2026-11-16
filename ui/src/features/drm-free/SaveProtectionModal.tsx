@@ -1,9 +1,37 @@
-import React, { useState, useEffect } from 'react';
-import { IconX } from '@tabler/icons-react';
-import { FloatingModal } from '../../components/FloatingModal';
-import { commands, useLocalGames, type SaveSupport } from '../../api';
+import React, { useEffect, useState } from 'react';
+import {
+  IconArchive,
+  IconArrowBackUp,
+  IconChevronDown,
+  IconDatabase,
+  IconFolder,
+  IconFolderOpen,
+  IconHistory,
+  IconShieldCheck,
+  IconShieldOff,
+} from '@tabler/icons-react';
+import { DialogShell } from '../../components/dialog';
+import {
+  Button,
+  Field,
+  InsetCard,
+  Pill,
+  SectionLabel,
+  SelectField,
+  Switch,
+  TextInput,
+  type PillTone,
+} from '../../components/ui';
+import {
+  commands,
+  useLocalGames,
+  type BackupVersion,
+  type JobState,
+  type SaveSupport,
+} from '../../api';
 import { uiStore, useUiStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { formatDuration } from '../library/formatters';
 
 export interface SaveProtectionModalProps {
   installationId?: string | null;
@@ -17,35 +45,134 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-export function formatSaveSupport(support?: SaveSupport): string {
-  switch (support) {
-    case 'supported':
-      return 'Supported';
-    case 'needsSelection':
-      return 'Needs selection';
-    case 'unsupported':
-      return 'Unsupported';
-    case 'noSaves':
-      return 'Supported · No saves found yet';
+const RETENTION_OPTIONS = [5, 10, 20, 50] as const;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfLocalDay(seconds: number): number {
+  const date = new Date(seconds * 1000);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function backupTimeLabel(
+  version: BackupVersion,
+  nowSeconds: number,
+  locale: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  if (version.createdAt == null) return version.label;
+  const created = version.createdAt;
+  const days = Math.round(
+    (startOfLocalDay(nowSeconds) - startOfLocalDay(created)) / DAY_MS,
+  );
+  const time = new Intl.DateTimeFormat(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(created * 1000));
+  if (days <= 0) return t('drmFree.todayAt', { time });
+  if (days === 1) return t('drmFree.yesterdayAt', { time });
+  const date = new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'short',
+  }).format(new Date(created * 1000));
+  return t('drmFree.dateAt', { date, time });
+}
+
+function versionKey(version: BackupVersion): string {
+  return `${version.profile.length}:${version.profile}:${version.id.length}:${version.id}:${version.destination}`;
+}
+
+function reasonLabel(
+  version: BackupVersion,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  switch (version.reason) {
+    case 'afterSession':
+      return version.playSeconds != null
+        ? t('drmFree.afterPlaySessionDuration', {
+            duration: formatDuration(version.playSeconds, t),
+          })
+        : t('drmFree.afterPlaySession');
+    case 'manual':
+      return t('drmFree.manualBackup');
+    case 'recovery':
+      return t('drmFree.recoveryBackup');
     default:
-      return 'Not configured';
+      return null;
   }
 }
 
-const sectionCardClass =
-  'flex flex-col gap-sm rounded-md border border-border-subtle bg-secondary p-md';
-const smallButtonClass =
-  'inline-flex items-center justify-center whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-3.5 py-compact text-xs font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50';
-const pathRowClass =
-  'break-all rounded-sm border border-border-subtle bg-chrome px-2.5 py-1.5 text-xs';
-const smallInputClass =
-  'min-w-0 flex-1 rounded-sm border border-border-subtle bg-chrome px-sm py-compact text-xs text-text-default placeholder:text-text-dimmed focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand';
+function reasonIcon(version: BackupVersion) {
+  switch (version.reason) {
+    case 'manual':
+      return { Icon: IconArchive, className: 'text-text-secondary' };
+    case 'recovery':
+      return { Icon: IconShieldCheck, className: 'text-warning' };
+    default:
+      return { Icon: IconHistory, className: 'text-text-secondary' };
+  }
+}
+
+function supportLabel(
+  support: SaveSupport | undefined,
+  t: (key: string) => string,
+): string {
+  switch (support) {
+    case 'supported':
+      return t('drmFree.supportSupported');
+    case 'needsSelection':
+      return t('drmFree.supportNeedsSelection');
+    case 'unsupported':
+      return t('drmFree.supportUnsupported');
+    case 'noSaves':
+      return t('drmFree.supportNoSaves');
+    default:
+      return t('drmFree.supportNotConfigured');
+  }
+}
+
+function supportTone(support: SaveSupport | undefined): PillTone {
+  if (support === 'supported') return 'success';
+  if (support === 'unsupported') return 'danger';
+  if (support === 'needsSelection') return 'warning';
+  return 'neutral';
+}
+
+function jobLabel(
+  state: JobState,
+  t: (key: string) => string,
+): string {
+  switch (state) {
+    case 'queued':
+      return t('drmFree.queued');
+    case 'running':
+      return t('drmFree.running');
+    case 'unchanged':
+      return t('drmFree.unchanged');
+    case 'successful':
+      return t('drmFree.backupCompleted');
+    case 'partial':
+      return t('drmFree.partialFailure');
+    case 'failed':
+      return t('drmFree.backupFailed');
+    case 'cancelled':
+      return t('drmFree.cancelled');
+    default:
+      return state;
+  }
+}
+
+function jobTone(state: JobState): PillTone {
+  if (state === 'successful' || state === 'unchanged') return 'success';
+  if (state === 'failed' || state === 'partial') return 'danger';
+  if (state === 'queued' || state === 'running') return 'brand';
+  return 'neutral';
+}
 
 export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
   installationId: propInstallationId,
   onClose,
 }) => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const localGames = useLocalGames();
   const saveProtectionEntryKey = useUiStore((s) => s.saveProtectionEntryKey);
 
@@ -65,12 +192,21 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
     profileJobs.find((j) => j.state === 'running') ??
     profileJobs.find((j) => j.state === 'queued') ??
     profileJobs.sort((a, b) => b.readyAt - a.readyAt)[0];
-  const versions = localGames.versions.filter((v) => v.installation === id);
+  const versions = localGames.versions
+    .filter((v) => v.installation === id)
+    .slice()
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 
   const title = registration?.title ?? profile?.title ?? id;
 
   const [customLocation, setCustomLocation] = useState('');
   const [profileTitleInput, setProfileTitleInput] = useState('');
+  const [filesOpen, setFilesOpen] = useState(false);
+
+  useEffect(() => {
+    setFilesOpen(false);
+    setCustomLocation('');
+  }, [effectiveKey]);
 
   useEffect(() => {
     if (profile?.title) {
@@ -107,337 +243,397 @@ export const SaveProtectionModal: React.FC<SaveProtectionModalProps> = ({
       ? profile.automatic
       : localGames.settings.automatic;
 
-  const supportToneClass =
-    profile?.support === 'supported'
-      ? 'bg-success-subtle text-success'
-      : profile?.support === 'unsupported'
-        ? 'bg-danger-subtle text-danger'
-        : 'bg-warning-subtle text-warning';
+  const configuredRetention =
+    profile?.retention &&
+    RETENTION_OPTIONS.includes(profile.retention as (typeof RETENTION_OPTIONS)[number])
+      ? profile.retention
+      : RETENTION_OPTIONS.includes(localGames.settings.retention as (typeof RETENTION_OPTIONS)[number])
+        ? localGames.settings.retention
+        : 10;
 
-  const jobToneClass =
-    job?.state === 'successful' || job?.state === 'unchanged'
-      ? 'bg-success-subtle text-success'
-      : job?.state === 'failed'
-        ? 'bg-danger-subtle text-danger'
-        : 'bg-accent-subtle text-brand';
+  const historyBytes = versions.reduce(
+    (total, version) => total + version.bytes,
+    0,
+  );
+  const historyCount = versions.length;
+  const saveFolder = profile?.files[0] ?? t('drmFree.noSaveLocationsResolvedYet');
+  const backupFolder = versions[0]?.destination ?? localGames.settings.destination;
+  const busy = job?.state === 'running' || job?.state === 'queued';
+  const nowSeconds = Math.floor(Date.now() / 1000);
 
   return (
-    <FloatingModal.Root
-      opened
-      onClose={handleClose}
+    <DialogShell
+      title={t('drmFree.localSaveProtection')}
+      subtitle={`${title} · ${t('Detail::DRM-free')}`}
       geometryKey="save-protection"
-      defaultSize={{ width: 720, height: 600 }}
-      minSize={{ width: 560, height: 420 }}
-      zIndex={1000}
-      closeOnClickOutside
+      defaultSize={{ width: 580, height: 700 }}
+      minSize={{ width: 480, height: 480 }}
+      bodyClassName="[&>*]:shrink-0"
+      onClose={handleClose}
+      testId="save-protection-modal"
+      footerLeading={
+        <>
+          <Button
+            size="sm"
+            variant="secondary"
+            leftIcon={IconArchive}
+            data-testid="backup-local-now-button"
+            disabled={!profile || busy || Boolean(localGames.restore)}
+            onClick={() => commands.backupLocalNow(id)}
+          >
+            {t('drmFree.backUpNow')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            leftIcon={IconFolderOpen}
+            disabled={!backupFolder}
+            onClick={() => {
+              if (backupFolder) void commands.openInstallFolder(backupFolder);
+            }}
+          >
+            {t('drmFree.openFolder')}
+          </Button>
+        </>
+      }
+      footer={
+        <Button size="sm" variant="primary" onClick={handleClose}>
+          {t('drmFree.close')}
+        </Button>
+      }
     >
-      <FloatingModal.Overlay backgroundOpacity={0.62} />
-      <FloatingModal.Content className="flex flex-col bg-chrome">
-        {/* Header */}
-        <FloatingModal.Header className="bg-chrome px-control-inline py-md">
+      {localGames.restore ? (
+        <div
+          data-testid="restore-confirmation-view"
+          className="flex flex-col gap-md rounded-md border border-warning bg-warning-subtle p-md"
+        >
           <div>
-            <FloatingModal.Title className="text-lg font-semibold text-text-default">
-              {t('drmFree.localSaveProtection')}
-            </FloatingModal.Title>
-            <div className="text-xs text-text-dimmed">{title}</div>
+            <h3 className="text-body font-semibold text-warning">
+              {t('drmFree.restorePreview')}
+            </h3>
+            <p className="mt-1 text-xs leading-note text-text-secondary">
+              {t('drmFree.restoreReplacesTheseTargetsAfterPreservingA')}
+            </p>
           </div>
-          <FloatingModal.CloseButton
-            aria-label="Close"
-            icon={<IconX size={18} stroke={1.5} />}
-            className="rounded-sm text-text-dimmed transition-colors hover:bg-raised hover:text-text-default"
-          />
-        </FloatingModal.Header>
 
-        {/* Content */}
-        <FloatingModal.Body className="gap-lg p-control-inline">
-          {/* Two-step Restore Confirmation View */}
-          {localGames.restore ? (
-            <div
-              data-testid="restore-confirmation-view"
-              className="flex flex-col gap-md rounded-md border border-warning bg-secondary p-lg"
+          <div className="max-h-[160px] overflow-y-auto rounded-control border border-border-subtle bg-body p-sm font-mono text-xs text-text-default">
+            {localGames.restore.targets.length === 0 ? (
+              <span className="text-text-dimmed">
+                {t('drmFree.noSaveFilesExistOnDiskYet')}
+              </span>
+            ) : (
+              localGames.restore.targets.map((target, index) => (
+                <div key={`${target}-${index}`} className="break-all py-0.5">
+                  {target}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="flex justify-end gap-compact">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => commands.cancelLocalRestore()}
             >
-              <div>
-                <h3 className="text-md text-warning">{t('drmFree.restorePreview')}</h3>
-                <p className="mt-1 text-sm text-text-default">
-                  {t('drmFree.restoreReplacesTheseTargetsAfterPreservingA')}
-                </p>
-              </div>
-
-              <div className="max-h-[160px] overflow-y-auto rounded-sm border border-border-subtle bg-chrome p-sm font-mono text-xs">
-                {localGames.restore.targets.length === 0 ? (
-                  <span className="text-text-dimmed">No files will be modified.</span>
-                ) : (
-                  localGames.restore.targets.map((tgt, i) => (
-                    <div key={i} className="break-all py-0.5">
-                      {tgt}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="flex justify-end gap-compact">
-                <button
-                  type="button"
-                  onClick={() => commands.cancelLocalRestore()}
-                  className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-                >
-                  {t('drmFree.cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => commands.confirmLocalRestore()}
-                  className="inline-flex items-center justify-center rounded-sm border border-transparent bg-danger px-md py-compact text-sm font-semibold text-white transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
-                >
-                  {t('drmFree.confirmRestore')}
-                </button>
-              </div>
+              {t('drmFree.cancel')}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => commands.confirmLocalRestore()}
+            >
+              {t('drmFree.confirmRestore')}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {hasOverlappingSaves && (
+            <div
+              data-testid="overlapping-saves-banner"
+              className="rounded-md border border-warning bg-warning-subtle px-sm py-compact text-xs leading-note text-text-default"
+            >
+              {t('drmFree.anotherInstallationSharesTheseSavesBackupAnd')}
             </div>
-          ) : (
-            <>
-              {/* Overlapping saves warning banner */}
-              {hasOverlappingSaves && (
-                <div
-                  data-testid="overlapping-saves-banner"
-                  className="rounded-sm border border-warning bg-warning-subtle px-md py-sm text-sm text-text-default"
-                >
-                  {t('drmFree.anotherInstallationSharesTheseSavesBackupAnd')}
-                </div>
-              )}
+          )}
 
-              {/* Profile summary card */}
-              <div className={sectionCardClass}>
-                <div className="flex items-center justify-between gap-sm">
-                  <div>
-                    <div className="text-md font-semibold text-text-default">
-                      {profile?.title || t('drmFree.noSaveProfileChooseASaveLocation')}
-                    </div>
-                    <div data-testid="save-support-text" className="text-xs text-text-dimmed">
-                      Support: {formatSaveSupport(profile?.support)}
-                    </div>
-                  </div>
-                  <span
-                    data-testid="save-support-badge"
-                    className={`rounded-sm px-2.5 py-1 text-xs font-semibold ${supportToneClass}`}
-                  >
-                    {profile?.support ?? 'not configured'}
-                  </span>
-                </div>
-
-                {/* Backed-up files */}
-                <div>
-                  <div className="mb-1.5 text-xs font-semibold text-text-dimmed">
-                    {t('drmFree.saveFoldersFiles')}:
-                  </div>
-                  {profile && profile.files.length > 0 ? (
-                    <div className="flex flex-col gap-1">
-                      {profile.files.map((file, i) => (
-                        <div key={i} className={`${pathRowClass} text-text-default`}>
-                          {file}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-xs text-text-dimmed">
-                      {t('drmFree.noSaveLocationsResolvedYet')}
-                    </div>
-                  )}
-                </div>
-
-                {/* Backed-up registry keys */}
-                {profile && profile.registry.length > 0 && (
-                  <div>
-                    <div className="mb-1.5 text-xs font-semibold text-text-dimmed">
-                      {t('drmFree.registryKeys')}:
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      {profile.registry.map((reg, i) => (
-                        <div key={i} className={`${pathRowClass} text-text-dimmed`}>
-                          {reg}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Automatic backup toggle */}
-              <div className="flex items-center justify-between gap-md rounded-md border border-border-subtle bg-secondary px-md py-3.5">
-                <div>
-                  <div className="text-sm font-semibold text-text-default">
-                    {t('drmFree.backUpThisGameAutomatically')}
-                  </div>
-                  <div className="text-xs text-text-dimmed">
-                    {t('drmFree.createsALocalSnapshotAfterEachPlay')}
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  aria-label="Back up this game automatically"
+          <InsetCard
+            icon={isAutoBackupChecked ? IconShieldCheck : IconShieldOff}
+            iconClassName={isAutoBackupChecked ? 'text-success' : 'text-text-muted'}
+            title={
+              isAutoBackupChecked
+                ? t('drmFree.protectionOn')
+                : t('drmFree.protectionOff')
+            }
+            description={
+              isAutoBackupChecked
+                ? t('drmFree.protectionOnDescription')
+                : t('drmFree.protectionOffDescription')
+            }
+            trailing={
+              <div className="flex items-center gap-sm">
+                <span data-testid="save-support-badge">
+                  <Pill tone={supportTone(profile?.support)}>
+                    {supportLabel(profile?.support, t)}
+                  </Pill>
+                </span>
+                <Switch
+                  aria-label={t('drmFree.protectionOn')}
                   data-testid="automatic-backup-toggle"
                   checked={isAutoBackupChecked}
-                  onChange={(e) => commands.setLocalProfileAutomatic(id, e.target.checked)}
-                  className="h-4 w-4 cursor-pointer accent-brand"
+                  disabled={!profile}
+                  onChange={(event) =>
+                    commands.setLocalProfileAutomatic(
+                      id,
+                      event.currentTarget.checked,
+                    )
+                  }
                 />
               </div>
+            }
+          />
 
-              {/* Custom save path & profile override */}
-              <div className={sectionCardClass}>
-                <div className="text-sm font-semibold text-text-default">
-                  {t('drmFree.saveLocationProfileOverride')}
-                </div>
+          <Field label={t('drmFree.saveFolder')}>
+            <div className="flex items-end gap-compact">
+              <TextInput
+                readOnly
+                leadingIcon={IconFolder}
+                value={saveFolder}
+                aria-label={t('drmFree.saveFolder')}
+              />
+              <Button
+                size="md"
+                variant="secondary"
+                disabled={!profile}
+                onClick={() => commands.pickLocalSaves(id, true)}
+              >
+                {t('drmFree.change')}
+              </Button>
+            </div>
+          </Field>
 
-                <div className="flex gap-compact">
-                  <button
-                    type="button"
-                    onClick={() => commands.pickLocalSaves(id, true)}
-                    className={smallButtonClass}
-                  >
-                    Browse folder
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => commands.pickLocalSaves(id, false)}
-                    className={smallButtonClass}
-                  >
-                    Browse file
-                  </button>
-                </div>
+          <div className="grid grid-cols-2 gap-md">
+            <Field label={t('drmFree.keep')}>
+              <SelectField
+                aria-label={t('drmFree.keep')}
+                value={String(configuredRetention)}
+                disabled={!profile}
+                onChange={(value) =>
+                  commands.setLocalBackupRetention(effectiveKey, Number(value))
+                }
+                options={RETENTION_OPTIONS.map((value) => ({
+                  value: String(value),
+                  label: t('drmFree.mostRecentCopies', { n: value }),
+                }))}
+              />
+            </Field>
+            <Field label={t('drmFree.spaceUsed')}>
+              <TextInput
+                readOnly
+                leadingIcon={IconDatabase}
+                aria-label={t('drmFree.spaceUsed')}
+                value={t('drmFree.spaceUsedValue', {
+                  size: formatBytes(historyBytes),
+                  n: historyCount,
+                })}
+              />
+            </Field>
+          </div>
 
-                {/* Custom location input */}
-                <div className="flex gap-compact">
-                  <input
-                    type="text"
-                    placeholder="Custom save file or folder"
-                    aria-label="Custom save path"
-                    value={customLocation}
-                    onChange={(e) => setCustomLocation(e.target.value)}
-                    className={smallInputClass}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => commands.configureLocalSaves(id, customLocation)}
-                    disabled={!customLocation.trim()}
-                    className={smallButtonClass}
-                  >
-                    Save path
-                  </button>
-                </div>
-
-                {/* Profile title override */}
-                <div className="flex gap-compact">
-                  <input
-                    type="text"
-                    placeholder="Exact save profile title"
-                    aria-label="Save profile title"
-                    value={profileTitleInput}
-                    onChange={(e) => setProfileTitleInput(e.target.value)}
-                    className={smallInputClass}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => commands.chooseLocalSaveProfile(id, profileTitleInput)}
-                    disabled={!profileTitleInput.trim()}
-                    className={smallButtonClass}
-                  >
-                    {t('drmFree.changeSaveProfile')}
-                  </button>
-                </div>
-              </div>
-
-              {/* Backup Now & Job Status */}
-              <div className="flex items-center justify-between gap-md rounded-md border border-border-subtle bg-secondary px-md py-3.5">
-                <div>
-                  <div className="text-sm font-semibold text-text-default">Immediate backup</div>
-                  {job && (
-                    <div className="mt-1 flex items-center gap-compact">
-                      <span
-                        data-testid="backup-job-state-badge"
-                        className={`rounded-sm px-2 py-0.5 text-xs font-semibold ${jobToneClass}`}
-                      >
-                        {job.state}
-                      </span>
-                      {job.error && (
-                        <span className="text-xs text-danger">{job.error}</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  data-testid="backup-local-now-button"
-                  onClick={() => commands.backupLocalNow(id)}
-                  disabled={job?.state === 'running' || job?.state === 'queued'}
-                  className="inline-flex items-center justify-center rounded-sm border border-transparent bg-brand px-md py-compact text-sm font-semibold text-on-primary transition-colors hover:bg-brand-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {t('drmFree.backupNow')}
-                </button>
-              </div>
-
-              {/* Backup History */}
-              <div className={sectionCardClass}>
-                <div className="flex items-center justify-between gap-sm">
-                  <div className="text-sm font-semibold text-text-default">Backup history</div>
-                  <button
-                    type="button"
-                    onClick={() => commands.loadLocalHistory(id)}
-                    className="inline-flex cursor-pointer items-center justify-center rounded-sm border border-border-subtle bg-transparent px-2.5 py-1 text-xs text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-                  >
-                    Refresh
-                  </button>
-                </div>
-
-                {versions.length === 0 ? (
-                  <div className="p-md text-center text-xs text-text-dimmed">
-                    No backups recorded yet.
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-compact">
-                    {versions.map((ver) => {
-                      const versionKey = `${ver.profile.length}:${ver.profile}:${ver.id.length}:${ver.id}:${ver.destination}`;
-
-                      return (
-                        <div
-                          key={ver.id}
-                          data-testid={`backup-version-${ver.id}`}
-                          className="flex items-center justify-between gap-sm rounded-sm border border-border-subtle bg-chrome px-3.5 py-2.5"
-                        >
-                          <div>
-                            <div className="text-sm font-medium text-text-default">{ver.label}</div>
-                            <div className="text-xs text-text-dimmed">
-                              {formatBytes(ver.bytes)} · {ver.destination}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => commands.previewLocalRestore(versionKey)}
-                            className="inline-flex cursor-pointer items-center justify-center whitespace-nowrap rounded-sm border border-border-subtle bg-raised px-3.5 py-1.5 text-xs text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-                          >
-                            Restore
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
+          <div className="flex flex-col gap-1">
+            <SectionLabel>{t('drmFree.backupHistory')}</SectionLabel>
+            <p className="text-xs leading-note text-text-dimmed">
+              {t('drmFree.backupHistoryDescription')}
+            </p>
+            {job && (
+              <div className="flex items-center gap-compact pt-1">
+                <span data-testid="backup-job-state-badge">
+                  <Pill tone={jobTone(job.state)}>{jobLabel(job.state, t)}</Pill>
+                </span>
+                {job.error && (
+                  <span className="min-w-0 flex-1 truncate text-xs text-danger">
+                    {job.error}
+                  </span>
                 )}
               </div>
-            </>
-          )}
-        </FloatingModal.Body>
+            )}
+          </div>
 
-        {/* Footer */}
-        <FloatingModal.Footer className="px-control-inline py-md">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="inline-flex items-center justify-center rounded-sm border border-border-subtle bg-raised px-md py-compact text-sm font-medium text-text-default transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          <div
+            data-testid="backup-history"
+            className="shrink-0 overflow-hidden rounded-md border border-border-subtle"
           >
-            {t('drmFree.close')}
-          </button>
-        </FloatingModal.Footer>
+            {versions.length === 0 ? (
+              <div className="p-md text-center text-xs text-text-dimmed">
+                {t('drmFree.noCopiesYet')}
+              </div>
+            ) : (
+              versions.map((version) => {
+                const { Icon, className } = reasonIcon(version);
+                const reason = reasonLabel(version, t);
+                return (
+                  <div
+                    key={`${version.profile}:${version.id}:${version.destination}`}
+                    data-testid={`backup-version-${version.id}`}
+                    data-reason={version.reason ?? 'unknown'}
+                    className="flex items-center gap-sm border-b border-border-subtle px-sm py-[10px] last:border-b-0"
+                  >
+                    <Icon
+                      size={16}
+                      stroke={2}
+                      aria-hidden="true"
+                      className={`shrink-0 ${className}`}
+                    />
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate text-body font-medium text-text-primary">
+                        {backupTimeLabel(version, nowSeconds, locale, t)}
+                      </span>
+                      {reason && (
+                        <span className="truncate text-[11px] text-text-dimmed">
+                          {reason}
+                        </span>
+                      )}
+                    </div>
+                    <span className="shrink-0 text-xs text-text-dimmed">
+                      {formatBytes(version.bytes)}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      leftIcon={IconArrowBackUp}
+                      onClick={() => commands.previewLocalRestore(versionKey(version))}
+                    >
+                      {t('drmFree.restore')}
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
 
-        <FloatingModal.ResizeHandle />
-      </FloatingModal.Content>
-    </FloatingModal.Root>
+          <div className="flex flex-col gap-compact">
+            <button
+              type="button"
+              aria-expanded={filesOpen}
+              data-testid="protected-files-toggle"
+              onClick={() => setFilesOpen((open) => !open)}
+              className="flex items-center gap-[6px] self-start text-xs font-medium text-text-secondary transition-colors hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            >
+              <IconChevronDown
+                size={14}
+                stroke={2}
+                aria-hidden="true"
+                className={`text-text-dimmed transition-transform ${filesOpen ? '' : '-rotate-90'}`}
+              />
+              {t('drmFree.protectedFiles')}
+            </button>
+
+            {filesOpen && (
+              <div className="flex flex-col gap-sm rounded-md border border-border-subtle bg-body p-sm">
+                <p className="text-xs leading-note text-text-dimmed">
+                  {t('drmFree.protectedFilesDescription')}
+                </p>
+                <div className="flex flex-col gap-1">
+                  <SectionLabel>{t('drmFree.saveFoldersFiles')}</SectionLabel>
+                  {profile && profile.files.length > 0 ? (
+                    profile.files.map((file) => (
+                      <div
+                        key={file}
+                        className="break-all rounded-control border border-border-subtle bg-surface px-xs py-1 text-xs text-text-default"
+                      >
+                        {file}
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-xs text-text-dimmed">
+                      {t('drmFree.noSaveLocationsResolvedYet')}
+                    </span>
+                  )}
+                </div>
+                {profile && profile.registry.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <SectionLabel>{t('drmFree.registryKeys')}</SectionLabel>
+                    {profile.registry.map((key) => (
+                      <div
+                        key={key}
+                        className="break-all rounded-control border border-border-subtle bg-surface px-xs py-1 text-xs text-text-dimmed"
+                      >
+                        {key}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-compact">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!profile}
+                    onClick={() => commands.pickLocalSaves(id, true)}
+                  >
+                    {t('drmFree.changeSaveFolder')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!profile}
+                    onClick={() => commands.pickLocalSaves(id, false)}
+                  >
+                    {t('drmFree.changeSaveFile')}
+                  </Button>
+                </div>
+
+                <SectionLabel>{t('drmFree.saveLocationProfileOverride')}</SectionLabel>
+
+                <Field label={t('drmFree.savePathPlaceholder')}>
+                  <div className="flex items-end gap-compact">
+                    <TextInput
+                      placeholder={t('drmFree.savePathPlaceholder')}
+                      aria-label={t('drmFree.savePathPlaceholder')}
+                      value={customLocation}
+                      onChange={(event) => setCustomLocation(event.target.value)}
+                    />
+                    <Button
+                      size="md"
+                      variant="secondary"
+                      disabled={!profile || !customLocation.trim()}
+                      onClick={() =>
+                        commands.configureLocalSaves(id, customLocation)
+                      }
+                    >
+                      {t('drmFree.useThisSaveLocation')}
+                    </Button>
+                  </div>
+                </Field>
+
+                <Field label={t('drmFree.saveProfile')}>
+                  <div className="flex items-end gap-compact">
+                    <TextInput
+                      placeholder={t('drmFree.saveProfileTitlePlaceholder')}
+                      aria-label={t('drmFree.saveProfileTitlePlaceholder')}
+                      value={profileTitleInput}
+                      onChange={(event) =>
+                        setProfileTitleInput(event.target.value)
+                      }
+                    />
+                    <Button
+                      size="md"
+                      variant="secondary"
+                      disabled={!profile || !profileTitleInput.trim()}
+                      onClick={() =>
+                        commands.chooseLocalSaveProfile(id, profileTitleInput)
+                      }
+                    >
+                      {t('drmFree.changeSaveProfile')}
+                    </Button>
+                  </div>
+                </Field>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </DialogShell>
   );
 };

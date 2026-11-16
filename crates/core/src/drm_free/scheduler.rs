@@ -36,6 +36,7 @@ pub fn automatic_job(
         ready_at: last_exit.saturating_add(13),
         backup_id: None,
         error: None,
+        play_seconds: None,
     })
 }
 pub fn ready(
@@ -79,6 +80,7 @@ mod tests {
             ready_at: 0,
             backup_id: None,
             error: None,
+            play_seconds: None,
         };
         for (now, expected) in [(1, 31), (32, 152), (153, 753)] {
             failed(&mut job, "offline".into(), now);

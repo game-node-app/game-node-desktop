@@ -73,6 +73,7 @@ async fn ready_with_source(source: PlaytimeSource) -> Harness {
             name: "Portal 2".into(),
             release_year: None,
             cover_url: None,
+            platforms: Vec::new(),
         },
     }]));
     let mut h = harness(api, FakeCreds::with(None));
@@ -439,6 +440,7 @@ async fn two_entries_of_one_game_submit_one_summed_total_and_do_not_ping_pong() 
                 name: "Portal 2".into(),
                 release_year: None,
                 cover_url: None,
+                platforms: Vec::new(),
             },
         },
         ExternalMatch {
@@ -448,6 +450,7 @@ async fn two_entries_of_one_game_submit_one_summed_total_and_do_not_ping_pong() 
                 name: "Portal 2".into(),
                 release_year: None,
                 cover_url: None,
+                platforms: Vec::new(),
             },
         },
     ]));

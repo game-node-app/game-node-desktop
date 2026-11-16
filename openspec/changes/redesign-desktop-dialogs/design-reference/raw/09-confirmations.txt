@@ -1,0 +1,51 @@
+### AppModal confirmations (shell in 00-shared-shell.txt)
+
+### 5371:3091 Remover jogo (460)  (wrapper 5371:3127 "Remover jogo (RemoveLocalGameModal · AppModal)")
+### Annotation: As duas saídas viram escolhas explícitas com consequência descrita, e uma única ação destrutiva.
+ circle danger-subtle ; I trash 20:danger
+ T "Remover Rune & Rail da biblioteca?" 17/600 ; T "Os arquivos do jogo no disco não são apagados." 13/400 text/secondary lh20
+ F [option selected] row gap12 p12 bg=accent/subtle bd1=primary r8
+  ELL radio 16 bd5=primary ; F col gap3 [T "Apenas remover" 13/600 text/primary ; T "Pode voltar na próxima verificação das pastas monitoradas." 12/400 text-dimmed lh17]
+ F [option] row gap12 p12 bg=surface bd1=border/subtle r8
+  ELL radio 16 bd1.5=text/muted ; F col gap3 [T "Remover e não importar mais" 13/600 text/primary ; T "A pasta passa a ser ignorada. Desfaça em Configurações › Jogos DRM-free." 12/400 text-dimmed lh17]
+ actions: C <Button Secondary SM> "Cancelar" ; C <Button Danger SM> "Remover" icons=trash bg=danger
+
+### 5371:3131 Descartar alterações (400)  (wrapper 5371:3157 "Descartar alterações (AppModal)")
+### Annotation: Lista o que será perdido (NOVO).
+ circle warning-subtle ; I alert-triangle 20:warning
+ T "Descartar alterações?" ; T "Você tem alterações não salvas. Deseja descartá-las?"
+ F [list] col gap4 p10 bg=background bd1=border/subtle r8
+  rows row gap8 ai:center ; ELL 6x6 bg=primary ; T 12/400 text-default
+  "Destino dos backups" ; "Proteção automática"
+ actions: C <Button Secondary SM> "Continuar editando" ; C <Button Danger SM> "Descartar"
+
+### 5371:3161 Conflito de monitoramento (520)  (wrapper 5371:3206 "Conflito de monitoramento (ClaimConflictModal)")
+### Annotation: Mostra os dois cadastros lado a lado antes da escolha (NOVO).
+ circle warning-subtle ; I link 20:warning
+ T "Este jogo já é monitorado por uma loja"
+ T "Use o item existente ou transfira o monitoramento para o cadastro DRM-free. O tempo será contado uma única vez."
+ F row gap10 ai:center
+  F [card FH] row gap10 p10 bg=background bd1=border/subtle r8 ; REC 28x37 r3 ; col gap2 [T "Paper Kingdoms" 13/600 text/primary ; row gap4 ai:center [I brand-steam 12:text-dimmed ; T "Steam · 15 h" 11/400 text-dimmed]]
+  I chevron-right 16:text/muted
+  F [card FH] same ; col gap2 [T "Paper Kingdoms" ; row gap4 [I folder 12:text-dimmed ; T "DRM-free · D:\Jogos\Paper" 11/400 text-dimmed ellipsis]]
+ actions: C <Button Ghost SM> "Cancelar" ; spacer ; C <Button Secondary SM> "Usar item existente" ; C <Button Primary SM> "Transferir monitoramento"
+
+### 5371:3210 Tempo de jogo e sincronização (480)  (wrapper 5371:3250 "Explicação da sincronização (SyncExplanation)")
+### Annotation: O que sai e o que fica no PC (NOVO), em vez de só um parágrafo.
+ circle success-subtle ; I cloud-check 20:success
+ T "Tempo de jogo e sincronização"
+ T "A sincronização está ativada. O tempo de jogo da loja é enviado à sua conta GameNode. Você pode desativar a sincronização nas Configurações e continuar usando sua biblioteca."
+ F [list] col gap8 p12 bg=background bd1=border/subtle r8
+  row gap8 ai:center ; I circle-check 14:success ; T "Tempo de jogo das lojas e do contador interno" 12/400 text-default
+  row gap8 ; I circle-check 14:success ; T "Status e coleções que você escolher" 12/400 text-default   (see design.md: replaced by the real sync scope)
+  row gap8 ; I circle-x 14:text/muted ; T "Arquivos de save (ficam só neste PC)" 12/400 text-dimmed
+  row gap8 ; I circle-x 14:text/muted ; T "Caminhos de instalação e executáveis" 12/400 text-dimmed
+ actions: C <Button Ghost SM> "Desativar sincronização" ; spacer ; C <Button Primary SM> "Manter sincronização"
+
+### 5371:3254 Entrada em andamento (420)  (wrapper 5371:3281 "Entrada em andamento")
+### Annotation: Estado intermediário do login pelo navegador.
+ circle accent/subtle ; I external-link 20:primary
+ T "Conclua a entrada no navegador."
+ T "Abrimos a página do GameNode no seu navegador padrão. Volte para cá quando terminar."
+ F [status] row gap10 p10 ai:center bg=background bd1=border/subtle r8 ; I loader-2 16:primary (spinning) ; T "Aguardando confirmação…" 12/400 text/secondary
+ actions: C <Button Ghost SM> "Abrir de novo" icons=external-link ; spacer ; C <Button Secondary SM> "Cancelar entrada"

@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use gamenode_core::callback::Provider;
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::game_api::{
-    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
-    GameSummary, LibraryEntry,
+    AccountEntry, ApiError, Collection, CoverError, CreateCollectionError, ExternalMatch,
+    FavoriteError, GameApi, GameSummary, LibraryEntry,
 };
 use gamenode_core::library::cover::CoverUrl;
 use gamenode_core::library::{EntryStatus, LibraryMachine};
@@ -78,10 +79,16 @@ struct FakeApi {
     artworks_fetched: Mutex<Vec<u64>>,
     artwork_result: Mutex<Option<Result<Option<Vec<u8>>, ApiError>>>,
     search_result: Mutex<Option<Result<gamenode_core::game_api::SearchPage, ApiError>>>,
+    /// Every title that reached `search_page`, in order.
+    searches: Mutex<Vec<String>>,
     entry: Mutex<Option<Result<Option<LibraryEntry>, ApiError>>>,
     /// What GameNode answers to the complete account library read and its collections.
     account_entries: Mutex<Option<Result<Vec<AccountEntry>, ApiError>>>,
     collections_result: Mutex<Option<Result<Vec<Collection>, ApiError>>>,
+    /// Collection names that reached the create endpoint.
+    collections_created: Mutex<Vec<String>>,
+    /// What the create endpoint answers, when it must not succeed.
+    create_collection_result: Mutex<Option<Result<(), CreateCollectionError>>>,
     account_library_reads: Mutex<usize>,
     collection_reads: Mutex<usize>,
     created: Mutex<Vec<u64>>,
@@ -205,6 +212,7 @@ impl GameApi for FakeApi {
         query: &str,
     ) -> Result<gamenode_core::game_api::SearchPage, ApiError> {
         self.pause().await;
+        self.searches.lock().unwrap().push(query.to_owned());
         if let Some(result) = self.search_result.lock().unwrap().clone() {
             return result;
         }
@@ -245,6 +253,28 @@ impl GameApi for FakeApi {
             .unwrap()
             .clone()
             .unwrap_or(Ok(vec![]))
+    }
+    async fn create_collection(
+        &self,
+        _credential: &SessionCredential,
+        name: &str,
+    ) -> Result<(), CreateCollectionError> {
+        self.pause().await;
+        let mut created = self.collections_created.lock().unwrap();
+        created.push(name.to_owned());
+        let run = created.len();
+        if let Some(result) = *self.create_collection_result.lock().unwrap() {
+            return result;
+        }
+        // The server returns no body; a later list shows the new collection, as the real one does.
+        if let Some(Ok(collections)) = self.collections_result.lock().unwrap().as_mut() {
+            collections.push(Collection {
+                id: format!("created-{run}"),
+                name: name.to_owned(),
+                default_status: None,
+            });
+        }
+        Ok(())
     }
     async fn list_library_entries(
         &self,
@@ -553,6 +583,7 @@ fn harness_with_providers(
         tools: None,
         tool_catalog: None,
         tool_installer: None,
+        tool_picker: None,
         processes: processes.clone(),
         playtime: Arc::new(playtime_db.playtime_store()),
         playtime_api: api.clone(),
@@ -596,6 +627,7 @@ fn harness_with_providers(
         settings: Settings::default(),
         library: None,
         launch: None,
+        add_notice: None,
         tools: Default::default(),
         store_accounts: Vec::new(),
         ports: Default::default(),
@@ -699,7 +731,8 @@ async fn fixture_browser_flow_signs_in_stores_and_shows_the_user() {
             s.auth,
             AuthView::Pending {
                 provider: Provider::Discord,
-                awaiting_browser: true
+                awaiting_browser: true,
+                ..
             }
         )
     })
@@ -743,6 +776,89 @@ async fn fixture_browser_flow_signs_in_stores_and_shows_the_user() {
     }
     assert_eq!(h.creds.stored().as_deref(), Some("signed.token+/=="));
     assert_eq!(snapshot.notice, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reopen_failure_keeps_the_pending_attempt_and_reports_it() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.engine.dispatch(Input::StartSignIn(Provider::Google));
+    h.until("awaiting", |s| {
+        matches!(
+            s.auth,
+            AuthView::Pending {
+                awaiting_browser: true,
+                can_reopen: true,
+                ..
+            }
+        )
+    })
+    .await;
+    // Let the initial launch finish before failing only the reopen.
+    for _ in 0..100 {
+        if !h.browser.opened.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    *h.browser.fail.lock().unwrap() = true;
+    h.engine.dispatch(Input::ReopenBrowser);
+
+    let snapshot = h
+        .until("reopen failed", |s| {
+            matches!(
+                s.auth,
+                AuthView::Pending {
+                    awaiting_browser: true,
+                    can_reopen: true,
+                    reopen_failed: true,
+                    ..
+                }
+            )
+        })
+        .await;
+    assert!(matches!(
+        snapshot.auth,
+        AuthView::Pending {
+            reopen_failed: true,
+            ..
+        }
+    ));
+    let callback = h.callback("tok");
+    h.engine.dispatch(Input::CallbackReceived(callback));
+    let snapshot = h
+        .until("signed in", |s| matches!(s.auth, AuthView::SignedIn { .. }))
+        .await;
+    assert!(matches!(snapshot.auth, AuthView::SignedIn { .. }));
+    assert_eq!(h.creds.stored().as_deref(), Some("tok"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cover_wall_returns_recent_valid_covers_up_to_twenty_five() {
+    let h = harness(FakeApi::new(), FakeCreds::with(None));
+    for index in 0..30_u64 {
+        let file = File::create(h.covers.path().join(format!("{index}.jpg"))).unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(index))
+            .unwrap();
+    }
+    let hidden = File::create(h.covers.path().join(".hidden.jpg")).unwrap();
+    hidden
+        .set_modified(UNIX_EPOCH + Duration::from_secs(1000))
+        .unwrap();
+    std::fs::create_dir(h.covers.path().join("artworks-v2")).unwrap();
+
+    let wall = h.engine.sign_in_cover_wall().await;
+    assert_eq!(wall.len(), 25);
+    assert_eq!(wall.first().map(String::as_str), Some("29.jpg"));
+    assert_eq!(wall.last().map(String::as_str), Some("5.jpg"));
+    assert!(!wall.iter().any(|name| name == ".hidden.jpg"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cover_wall_is_empty_when_the_cache_is_missing() {
+    let h = harness(FakeApi::new(), FakeCreds::with(None));
+    std::fs::remove_dir_all(h.covers.path()).unwrap();
+    assert!(h.engine.sign_in_cover_wall().await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

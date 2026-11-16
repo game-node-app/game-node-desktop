@@ -1,0 +1,27 @@
+### 5370:3062 Ferramentas do jogo  (wrapper 5370:3167 "Ferramentas do jogo (GameToolsPanel)")
+### Annotation: Canal, versão e DLL lado a lado; o aviso de anti-cheat bloqueia a instalação até a confirmação.
+F [Ferramentas do jogo] 600x616 col (same shell)
+ F [Cabeçalho] I dots-vertical ; col gap2 [T "Ferramentas do jogo" 16/600 ; T "Emberfall: Iron Trail · Steam" 12/400 text-dimmed] ; I x
+ F [Corpo] col gap16 p20
+  F [tool card] row gap12 p12 ai:center bg=background bd1=border/subtle r8
+   F [icon box] 40x40 bg=accent/subtle r8 ; I bolt 20:primary
+   F col gap2 FH ; T "OptiScaler" 14/600 text/primary ; T "Upscaling FSR, XeSS e DLSS em jogos compatíveis" 12/400 text-dimmed
+   C <Pill Neutral> "Não instalado"
+  F row gap12
+   F [field HH] T "Canal" 12/500 text/secondary ; segmented [track row gap2 p3 bg=bg/canvas bd1=border/subtle r8 ; segments h26 p0/14 r5 ; active bg=bg/raised "Estável" 12/600 text/primary ; inactive "Nightly" 12/400 text/secondary]
+   F [field FH] T "Versão" ; select "0.7.4 (recomendada)"
+   F [field FH] T "Nome da DLL proxy" ; select "dxgi.dll"
+  F row gap8 ai:max
+   F [field FH] T "Executável de destino" ; input [I file-text 14:text-dimmed ; T "D:\Steam\steamapps\common\Emberfall\Emberfall-Win64.exe" ellipsis]
+   C <Button Secondary MD> "Procurar…"
+  F col gap4
+   T "Executáveis candidatos detectados (selecione para substituir):" 12/400 text-dimmed
+   radio rows 558x32 row gap10 p0/10/0/10 ai:center r6:
+   selected   bg=bg/raised ; ELL radio 16x16 bd5=primary r999 ; T "Binaries\Win64\Emberfall-Win64.exe" 12/400 text/primary
+   unselected ELL radio 16x16 bd1.5=text/muted ; T "Emberfall.exe (inicializador)" 12/400 text-default
+  F row gap10 ai:center ; C <Checkbox Checked> ; T "Redefinir OptiScaler.ini para os padrões ao atualizar" 13/400 text-default
+  F [danger callout] col gap8 p12 bg=danger-subtle bd1=danger r8
+   F row gap8 ai:center ; I alert-triangle 16:danger ; T "Anti-cheat detectado (Easy Anti-Cheat)" 13/600 text/primary
+   T "Instalar DLLs proxy em jogos online com anti-cheat pode resultar em banimento." 12/400 text/secondary lh17
+   F row gap10 ai:center ; C <Checkbox Unchecked> ; T "Compreendo o risco do anti-cheat e desejo prosseguir mesmo assim" 12/400 text/primary
+ F [Rodapé] I download 14:text-dimmed ; T "Download de 38 MB, verificado por SHA-256" 12/400 text-dimmed ; spacer ; C <Button Secondary SM> "Cancelar" ; C <Button Primary SM> "Instalar OptiScaler" icons=download op0.45 (disabled until the anti-cheat risk is confirmed)

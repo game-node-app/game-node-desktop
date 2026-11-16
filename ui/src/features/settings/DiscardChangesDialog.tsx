@@ -1,84 +1,67 @@
-import React, { useEffect, useRef } from 'react';
-import { AppModal } from '../../components/AppModal';
+import React, { useRef } from 'react';
+import { IconAlertTriangle } from '@tabler/icons-react';
+import { ConfirmDialog } from '../../components/dialog';
+import { Button, Checklist } from '../../components/ui';
 import { useI18n } from '../../i18n';
-import {
-  settingsButtonDanger,
-  settingsButtonSecondary,
-} from './settingsClasses';
-import { PlainModalScrollArea } from './PlainModalScrollArea';
 
 export interface DiscardChangesDialogProps {
+  /** Localized labels of the fields with pending edits, in the order they appear. */
+  pendingChanges: string[];
   onCancel: () => void;
   onConfirm: () => void;
 }
 
+/**
+ * D10: the discard confirmation lists what will be lost and starts focus on
+ * the non-destructive action, so a stray Enter keeps editing.
+ */
 export const DiscardChangesDialog: React.FC<DiscardChangesDialogProps> = ({
+  pendingChanges,
   onCancel,
   onConfirm,
 }) => {
-  const { t, locale } = useI18n();
-  const cancelBtnRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    cancelBtnRef.current?.focus();
-  }, []);
-
-  const title =
-    locale === 'pt-BR'
-      ? 'Descartar alterações não salvas?'
-      : 'Discard unsaved changes?';
-
-  const message =
-    t('You have unsaved changes. Do you want to discard them?') ||
-    (locale === 'pt-BR'
-      ? 'Você tem alterações não salvas. Deseja descartá-las?'
-      : 'You have unsaved changes. Do you want to discard them?');
+  const { t } = useI18n();
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <AppModal.Root
-      opened
+    <ConfirmDialog
+      tone="warning"
+      icon={IconAlertTriangle}
+      size={400}
+      title={t('settings.discardChanges')}
+      description={t('settings.youHaveUnsavedChangesDoYouWant')}
+      initialFocusRef={keepEditingRef}
       onClose={onCancel}
-      centered
-      zIndex={1010}
-      scrollAreaComponent={PlainModalScrollArea}
-      withinPortal
+      testId="discard-changes-dialog"
+      actions={
+        <>
+          <Button
+            ref={keepEditingRef}
+            variant="secondary"
+            size="sm"
+            data-testid="discard-keep-editing"
+            onClick={onCancel}
+          >
+            {t('settings.keepEditing')}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            data-testid="discard-confirm"
+            onClick={onConfirm}
+          >
+            {t('settings.discard')}
+          </Button>
+        </>
+      }
     >
-      <AppModal.Overlay backgroundOpacity={0.65} />
-      <AppModal.Content
-        classNames={{
-          content:
-            'w-[90%] max-w-[480px] flex-none rounded-md border border-border-subtle bg-secondary p-6 text-white shadow-alert',
-        }}
-      >
-        <div
-          role="alertdialog"
-          aria-labelledby="discard-dialog-title"
-          className="flex flex-col gap-md"
-        >
-          <h2 id="discard-dialog-title" className="text-lg font-bold text-white">
-            {title}
-          </h2>
-          <p className="text-sm text-[var(--settings-text-secondary)]">{message}</p>
-          <div className="mt-compact flex justify-end gap-[10px]">
-            <button
-              ref={cancelBtnRef}
-              type="button"
-              className={settingsButtonSecondary}
-              onClick={onCancel}
-              aria-label={locale === 'pt-BR' ? 'Continuar editando' : 'Keep editing'}
-            >
-              {t('Cancel') || 'Cancel'}
-            </button>
-            <button
-              type="button"
-              className={settingsButtonDanger}
-              onClick={onConfirm}
-            >
-              {t('Discard') || 'Discard'}
-            </button>
-          </div>
-        </div>
-      </AppModal.Content>
-    </AppModal.Root>
+      <Checklist
+        variant="bullet"
+        items={pendingChanges.map((label) => ({
+          kind: 'positive' as const,
+          label,
+        }))}
+      />
+    </ConfirmDialog>
   );
 };

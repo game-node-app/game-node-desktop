@@ -306,6 +306,16 @@ fn reconcile(active: &Path) -> Result<(), LocalError> {
     }
     Ok(())
 }
+/// The full-version limit passed to the helper. A profile override wins over the default.
+pub fn retention_limit(profile: &SaveProfile) -> u8 {
+    profile
+        .retention
+        .filter(|value| valid_retention(*value))
+        .unwrap_or(DEFAULT_RETENTION)
+}
+fn retention_arguments(profile: &SaveProfile) -> [String; 2] {
+    ["--full-limit".into(), retention_limit(profile).to_string()]
+}
 impl BackupEngine for Ludusavi {
     fn execute(
         &self,
@@ -440,7 +450,7 @@ impl Ludusavi {
                     return Err(failed("recovery backup failed; restore aborted"));
                 }
                 std::fs::create_dir_all(&active).map_err(failed)?;
-                std::fs::write(active.join(".gamenode-restore-recovery.json"), serde_json::to_vec(&serde_json::json!({"backup":backup,"recovery":Self::namespace(&recovery)?,"preview":preview})).map_err(failed)?).map_err(failed)?;
+                std::fs::write(active.join(".gamenode-restore-recovery.json"), serde_json::to_vec(&serde_json::json!({"backup":backup,"recovery":Self::namespace(&recovery)?,"preview":preview,"state":report.state})).map_err(failed)?).map_err(failed)?;
                 ensure_stopped(&request.installation)?;
             }
 
@@ -481,10 +491,11 @@ impl Ludusavi {
                 BackupOperation::Preview | BackupOperation::RestorePreview { .. } => {
                     args.push("--preview".into())
                 }
-                BackupOperation::Backup => args.extend(
-                    ["--force", "--full-limit", "10", "--differential-limit", "0"]
-                        .map(str::to_owned),
-                ),
+                BackupOperation::Backup => {
+                    args.extend(["--force".to_owned()]);
+                    args.extend(retention_arguments(&request.profile));
+                    args.extend(["--differential-limit".to_owned(), "0".to_owned()]);
+                }
                 BackupOperation::Restore { .. } => args.push("--force".into()),
                 _ => {}
             }
@@ -626,6 +637,35 @@ pub fn validate_destination(destination: &Path, protected: &[PathBuf]) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn profile_with_retention(retention: Option<u8>) -> SaveProfile {
+        SaveProfile {
+            id: "profile".into(),
+            installation: "installation".into(),
+            revision: 1,
+            title: "Fixture".into(),
+            manifest_hash: "hash".into(),
+            definition: "{}".into(),
+            files: vec![],
+            registry: vec![],
+            support: SaveSupport::Supported,
+            automatic: None,
+            retention,
+        }
+    }
+    #[test]
+    fn full_limit_defaults_to_ten_and_follows_the_profile_setting() {
+        assert_eq!(retention_limit(&profile_with_retention(None)), 10);
+        assert_eq!(retention_limit(&profile_with_retention(Some(50))), 50);
+        assert_eq!(
+            retention_arguments(&profile_with_retention(Some(5))),
+            ["--full-limit".to_owned(), "5".to_owned()]
+        );
+        assert_eq!(
+            retention_limit(&profile_with_retention(Some(7))),
+            10,
+            "unknown values fall back to the default instead of reaching the helper"
+        );
+    }
     #[test]
     fn partial_errors_and_glob_literals_are_preserved() {
         assert!(has_failure(
@@ -700,6 +740,7 @@ mod adapter_windows_tests {
             registry: vec![],
             support: SaveSupport::Supported,
             automatic: None,
+            retention: None,
         };
         let mut request = BackupRequest {
             job_id: Some("job-fixture".into()),

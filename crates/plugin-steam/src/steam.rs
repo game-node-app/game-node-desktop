@@ -72,6 +72,16 @@ pub struct SteamAchievement {
     pub icon_gray_url: String,
     pub unlocked: bool,
     pub unlocked_at: Option<i64>,
+    /// Global unlock percentage in hundredths of a percent (420 = 4.2%).
+    pub global_percent: Option<u16>,
+}
+
+/// One row of Steam's public global achievement percentages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamAchievementGlobal {
+    pub api_name: String,
+    /// Hundredths of a percent (420 = 4.2%).
+    pub percent: u16,
 }
 
 /// Steam text occasionally contains tabs and C1 controls. They are valid JSON strings but the
@@ -192,6 +202,16 @@ pub trait SteamWebApi: Send + Sync {
     ) -> Result<Option<Vec<SteamAchievementState>>, SteamError> {
         let _ = (session, app_id, language);
         Err(SteamError::Changed)
+    }
+
+    /// The game's public global achievement percentages. This endpoint needs no session or key;
+    /// a provider that publishes no rarity returns an empty list.
+    async fn achievement_global_percentages(
+        &self,
+        app_id: &str,
+    ) -> Result<Vec<SteamAchievementGlobal>, SteamError> {
+        let _ = app_id;
+        Ok(Vec::new())
     }
 }
 

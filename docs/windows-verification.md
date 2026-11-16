@@ -245,3 +245,39 @@ is not added to the repository. Browser reference comparisons and integrated
 test results are in
 `openspec/changes/redesign-desktop-library/acceptance-notes.md`.
 
+### Dialog redesign native acceptance — 2026-11-16 (partial)
+
+Installed the current working tree with `scripts/install-windows-wsl.sh` on
+the existing Windows session at 150% scaling. The working tree was based on
+`d5292f119cce89985cb755e6fe4851dff4d1dd0f` with uncommitted source changes. The
+packaged and installed `gamenode.exe` had the same SHA-256:
+`5b46984e35fd2c3d57d95dea09bc82496eb5cbcf919041c634edb293ae8c18b2`.
+The installed app opened the real cached library in pt-BR.
+
+Verified on the installed executable:
+
+- [x] Open a DRM-free game's **Game settings**, choose **Change cover…**, and
+  select a 900×1200 PNG through the native Windows file picker. The picker
+  opened with the PNG/JPEG/WebP filter and returned the chosen file.
+- [x] The host wrote a lossless WebP cover named
+  `local-d1b57c6a-19f4-42b9-a4a2-11ced0add9be-e9b31920e4a3d9ed.webp` in the
+  cover cache; its VP8L header reports 600×800. The editor displayed it and
+  **Save** persisted `customCover` in the registration.
+- [x] The custom cover took precedence in the library tile and the detail pane.
+- [x] Reopening the editor and choosing **Use the GameNode cover**, then
+  **Save**, cleared `customCover` and deleted the local WebP; the GameNode
+  cover returned in the tile and detail pane.
+
+Not executed in this native session, so task 11.5 remains open:
+
+- [ ] Reopen the browser during a pending sign-in. The installed app has an
+  active real GameNode session; testing this path would require signing out,
+  and the session could not be restored without user credentials. No credential
+  handling, sign-out or session change was performed.
+- [ ] Open in Steam from the achievement list.
+- [ ] Backup retention with the bundled Ludusavi helper.
+
+This record proves the native image picker, re-encode, save and clear paths. It
+does not prove browser reopen, the provider achievements page or Ludusavi
+retention on Windows.
+

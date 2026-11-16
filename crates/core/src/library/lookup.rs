@@ -166,6 +166,14 @@ impl LibraryMachine {
                 cover_failed_at: existing
                     .filter(|_| !cover_changed)
                     .and_then(|game| game.cover_failed_at),
+                platforms: if summary.platforms.is_empty() {
+                    // The answer did not carry platforms; keep what the game already had.
+                    existing
+                        .map(|game| game.platforms.clone())
+                        .unwrap_or_default()
+                } else {
+                    summary.platforms.clone()
+                },
             };
             self.games.insert(record.game_id, record.clone());
             changed.insert(record.game_id, record);

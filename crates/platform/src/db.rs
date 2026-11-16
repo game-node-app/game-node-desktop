@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -69,6 +69,26 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "library_organization",
         sql: include_str!("../migrations/0010_library_organization.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "game_platforms",
+        sql: include_str!("../migrations/0011_game_platforms.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "achievement_rarity",
+        sql: include_str!("../migrations/0012_achievement_rarity.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "backup_metadata",
+        sql: include_str!("../migrations/0013_backup_metadata.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "local_cover",
+        sql: include_str!("../migrations/0014_local_cover.sql"),
     },
 ];
 
@@ -379,9 +399,95 @@ mod tests {
                 (7, "favorites".to_string()),
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
-                (10, "library_organization".to_string())
+                (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn backup_metadata_migration_adds_the_table_and_defaults_legacy_retention() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..12]).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('backup_settings', ?1)",
+                [r#"{"automatic":true,"destination":"D:\\Backups"}"#],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(14, "local_cover".to_owned()))
+        );
+        let payload: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='backup_settings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<gamenode_core::drm_free::BackupSettings>(&payload)
+                .unwrap()
+                .retention,
+            10
+        );
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('backup_version_meta')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 6);
+    }
+
+    #[test]
+    fn local_cover_migration_makes_the_field_explicit_and_keeps_legacy_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..13]).unwrap();
+            conn.execute(
+                "INSERT INTO manual_registrations (id, file_identity, removed, payload)
+                 VALUES ('reg1', 'fi', 0, ?1)",
+                [r#"{"id":"reg1","title":"Game","executable":"C:/Game/game.exe","fileIdentity":"fi","root":"C:/Game","workingDirectory":"C:/Game","arguments":[],"gameplay":[],"launchers":[],"revision":1,"removed":false,"available":true}"#],
+            )
+            .unwrap();
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(14, "local_cover".to_owned()))
+        );
+        let kind: String = conn
+            .query_row(
+                "SELECT json_type(payload, '$.customCover') FROM manual_registrations WHERE id='reg1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "null");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM manual_registrations WHERE id='reg1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let registration: gamenode_core::drm_free::Registration =
+            serde_json::from_str(&payload).unwrap();
+        assert_eq!(registration.custom_cover, None);
     }
 
     #[test]
@@ -476,13 +582,13 @@ mod tests {
         }
     }
 
-    const V11_OK: Migration = Migration {
-        version: 11,
+    const V15_OK: Migration = Migration {
+        version: 15,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V11_BAD: Migration = Migration {
-        version: 11,
+    const V15_BAD: Migration = Migration {
+        version: 15,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -509,7 +615,11 @@ mod tests {
             MIGRATIONS[7],
             MIGRATIONS[8],
             MIGRATIONS[9],
-            V11_OK,
+            MIGRATIONS[10],
+            MIGRATIONS[11],
+            MIGRATIONS[12],
+            MIGRATIONS[13],
+            V15_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -525,7 +635,11 @@ mod tests {
                 (8, "ports".into()),
                 (9, "achievements".into()),
                 (10, "library_organization".into()),
-                (11, "add_notes".into())
+                (11, "game_platforms".into()),
+                (12, "achievement_rarity".into()),
+                (13, "backup_metadata".into()),
+                (14, "local_cover".into()),
+                (15, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -567,11 +681,15 @@ mod tests {
                 MIGRATIONS[7],
                 MIGRATIONS[8],
                 MIGRATIONS[9],
-                V11_BAD,
+                MIGRATIONS[10],
+                MIGRATIONS[11],
+                MIGRATIONS[12],
+                MIGRATIONS[13],
+                V15_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 11 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 15 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -587,6 +705,10 @@ mod tests {
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
                 (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
         let leaked: i64 = conn
@@ -618,19 +740,23 @@ mod tests {
                     MIGRATIONS[7],
                     MIGRATIONS[8],
                     MIGRATIONS[9],
-                    V11_OK,
+                    MIGRATIONS[10],
+                    MIGRATIONS[11],
+                    MIGRATIONS[12],
+                    MIGRATIONS[13],
+                    V15_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 10
+        let err = open(&path).unwrap_err(); // this build only knows schema 14
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 11,
-                supported: 10
+                found: 15,
+                supported: 14
             }
         );
         assert_eq!(
@@ -652,7 +778,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 10,
+                found: 14,
                 supported: 7
             }
         );
@@ -694,6 +820,10 @@ mod tests {
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
                 (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
         for table in [
@@ -734,7 +864,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 10,
+                found: 14,
                 supported: 1
             }
         );
@@ -759,7 +889,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V11_OK
+            ..V15_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -802,6 +932,10 @@ mod tests {
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
                 (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
 
@@ -821,7 +955,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(title, "{\"title\":\"Game 1\"}");
+        assert_eq!(title, "{\"title\":\"Game 1\",\"customCover\":null}");
         let width: String = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'window.width'",
@@ -933,6 +1067,10 @@ mod tests {
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
                 (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
 
@@ -1131,6 +1269,10 @@ mod tests {
                 (8, "ports".to_string()),
                 (9, "achievements".to_string()),
                 (10, "library_organization".to_string()),
+                (11, "game_platforms".to_string()),
+                (12, "achievement_rarity".to_string()),
+                (13, "backup_metadata".to_string()),
+                (14, "local_cover".to_string())
             ]
         );
 
@@ -1195,7 +1337,7 @@ mod tests {
             ),
             (
                 "SELECT payload FROM manual_registrations WHERE id = 'reg1'",
-                "{\"title\":\"Game 1\"}",
+                "{\"title\":\"Game 1\",\"customCover\":null}",
             ),
             (
                 "SELECT payload FROM discovery_watches WHERE id = 'w1'",
@@ -1377,10 +1519,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(10, "library_organization".to_owned()))
+            Some(&(14, "local_cover".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1480,10 +1622,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(10, "library_organization".to_owned()))
+            Some(&(14, "local_cover".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1658,10 +1800,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(10, "library_organization".to_owned()))
+            Some(&(14, "local_cover".to_owned()))
         );
 
         // Every table that existed at schema 9 keeps its row.
@@ -1733,7 +1875,7 @@ mod tests {
             ),
             (
                 "SELECT payload FROM manual_registrations WHERE id = 'reg1'",
-                "{\"title\":\"Game 1\"}",
+                "{\"title\":\"Game 1\",\"customCover\":null}",
             ),
             (
                 "SELECT payload FROM discovery_watches WHERE id = 'w1'",
@@ -1862,6 +2004,64 @@ mod tests {
     }
 
     #[test]
+    fn a_populated_schema11_profile_upgrades_to_schema12_with_nullable_rarity() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        {
+            let conn = open_with(&path, &MIGRATIONS[..11]).unwrap();
+            conn.execute_batch(
+                r#"
+                INSERT INTO achievement_games
+                    (provider, store_account_id, entry_id, state, language, last_success_at,
+                     last_attempt_at, failure)
+                VALUES ('steam', '76561198000000000', '620', 'ready', 'english', 500, 500, NULL);
+                INSERT INTO achievements
+                    (provider, store_account_id, entry_id, achievement_id, name, description,
+                     hidden, icon_url, icon_gray_url, unlocked, unlocked_at, position)
+                VALUES ('steam', '76561198000000000', '620', 'ach1', 'First', 'Do it', 0,
+                        'https://images.example/icon.png', 'https://images.example/gray.png',
+                        1, 510, 0);
+                "#,
+            )
+            .unwrap();
+            assert_eq!(
+                versions(&conn).last(),
+                Some(&(11, "game_platforms".to_owned()))
+            );
+        }
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let conn = store.conn();
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(
+            versions(&conn).last(),
+            Some(&(14, "local_cover".to_owned()))
+        );
+        let (name, rarity): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT name, global_percent FROM achievements WHERE achievement_id = 'ach1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "First");
+        assert_eq!(rarity, None, "an upgraded row starts without rarity");
+        conn.execute(
+            "UPDATE achievements SET global_percent = 420 WHERE achievement_id = 'ach1'",
+            [],
+        )
+        .unwrap();
+        let rarity: i64 = conn
+            .query_row(
+                "SELECT global_percent FROM achievements WHERE achievement_id = 'ach1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rarity, 420);
+    }
+
+    #[test]
     fn database_never_holds_credentials_or_callback_urls() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -1892,6 +2092,7 @@ mod tests {
                 "auto_matches",
                 "backup_destinations",
                 "backup_jobs",
+                "backup_version_meta",
                 "chosen_matches",
                 "discovery_candidates",
                 "discovery_watches",

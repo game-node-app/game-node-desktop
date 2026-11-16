@@ -175,6 +175,8 @@ impl DiscoveryHost for WindowsDiscovery {
                         evidence,
                         ignored: false,
                         incomplete,
+                        suggestion: None,
+                        likely_non_game: false,
                     });
                 }
             }

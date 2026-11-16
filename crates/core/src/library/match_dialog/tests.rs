@@ -15,6 +15,7 @@ fn game(id: u64, name: &str) -> GameSummary {
         cover_url: Some(format!(
             "//images.igdb.com/igdb/image/upload/t_thumb/{id}.jpg"
         )),
+        platforms: Vec::new(),
     }
 }
 
@@ -26,6 +27,7 @@ fn record_of(id: u64, name: &str) -> GameRecord {
         cover_url: None,
         cover_file: None,
         cover_failed_at: None,
+        platforms: Vec::new(),
     }
 }
 
@@ -654,4 +656,298 @@ fn changing_the_account_closes_the_dialog() {
     machine.handle(Input::AccountChanged(None));
     assert!(machine.view().is_none());
     assert!(machine.dialog.is_none());
+}
+
+/// A verified library whose entry was detected with a year and has two server candidates: the
+/// exact game (2024) and a similarly named one from another year (2019). The candidates arrive in
+/// reverse confidence order, and the exact one carries platforms.
+fn year_library() -> LibraryMachine {
+    let mut cache = LibraryCache::default();
+    cache
+        .entries
+        .push(stored("steam", "900", "Hollow Mountain 2024", true));
+    cache.auto_matches.push(AutoMatch {
+        category: 1,
+        uid: "900".to_owned(),
+        game_ids: vec![101, 100],
+        checked_at: NOW,
+    });
+    cache.games = vec![
+        GameRecord {
+            game_id: 100,
+            name: "Hollow Mountain".to_owned(),
+            release_year: Some(2024),
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+            platforms: vec!["PC".to_owned(), "Switch".to_owned()],
+        },
+        GameRecord {
+            game_id: 101,
+            name: "Hollow Hearth".to_owned(),
+            release_year: Some(2019),
+            cover_url: None,
+            cover_file: None,
+            cover_failed_at: None,
+            platforms: vec!["PC".to_owned()],
+        },
+    ];
+    let (mut machine, _) = loaded(false, cache);
+    let op = machine.scan.as_ref().unwrap().op;
+    machine.handle(Input::ProviderScanned {
+        op,
+        provider: "steam".to_owned(),
+        result: Ok(vec![record("900", "Hollow Mountain 2024", "/g")]),
+        now: NOW,
+    });
+    machine.handle(Input::SetAccess {
+        access: Access::Verified,
+        now: NOW,
+    });
+    machine
+}
+
+#[test]
+fn opening_selects_the_current_match_before_a_search_answer() {
+    let mut machine = library();
+    open(&mut machine, "620");
+    let view = dialog(&mut machine);
+    let selected = view.selected.expect("the current match is preselected");
+    assert_eq!(selected.game_id, 7);
+    assert!(selected.current);
+    assert!(
+        !selected.reasons.contains(&MatchReason::ChosenByYou),
+        "an automatic match is not a choice by the user"
+    );
+}
+
+#[test]
+fn opening_without_a_current_match_selects_the_most_confident_candidate() {
+    let mut machine = library();
+    open(&mut machine, "70");
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.candidates
+            .iter()
+            .map(|candidate| candidate.game_id)
+            .collect::<Vec<_>>(),
+        [20, 21],
+        "candidates are ordered by confidence"
+    );
+    assert_eq!(
+        view.selected.as_ref().map(|selected| selected.game_id),
+        Some(20),
+        "the exact title is the best option"
+    );
+    assert!(
+        view.selected
+            .as_ref()
+            .is_some_and(|selected| !selected.reasons.contains(&MatchReason::SameYear)),
+        "no year was detected in Half-Life's name or path"
+    );
+}
+
+#[test]
+fn candidates_are_ordered_by_confidence_and_expose_platforms() {
+    let mut machine = year_library();
+    open(&mut machine, "900");
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.candidates
+            .iter()
+            .map(|candidate| candidate.game_id)
+            .collect::<Vec<_>>(),
+        [100, 101],
+        "the server's order is replaced by confidence order"
+    );
+    assert_eq!(
+        view.selected.as_ref().map(|selected| selected.game_id),
+        Some(100)
+    );
+    assert_eq!(view.candidates[0].platforms, ["PC", "Switch"]);
+    assert!(view.candidates[0].confidence > view.candidates[1].confidence);
+}
+
+#[test]
+fn reasons_appear_only_under_their_conditions() {
+    let mut machine = year_library();
+    open(&mut machine, "900");
+
+    let exact = dialog(&mut machine).candidates.remove(0);
+    assert!(
+        matches!(
+            exact.reasons.first(),
+            Some(MatchReason::TitleSimilarity { percent }) if *percent >= 80
+        ),
+        "{:?}",
+        exact.reasons
+    );
+    assert!(exact.reasons.contains(&MatchReason::SameYear));
+    assert!(exact.reasons.contains(&MatchReason::StoreIdRecognized));
+    assert!(
+        !exact
+            .reasons
+            .iter()
+            .any(|reason| matches!(reason, MatchReason::DifferentYear { .. }))
+    );
+    assert!(!exact.reasons.contains(&MatchReason::ChosenByYou));
+
+    let other = dialog(&mut machine).candidates.remove(1);
+    assert!(
+        other
+            .reasons
+            .contains(&MatchReason::DifferentYear { year: 2019 }),
+        "{:?}",
+        other.reasons
+    );
+    assert!(!other.reasons.contains(&MatchReason::SameYear));
+    assert!(
+        matches!(
+            other.reasons.first(),
+            Some(MatchReason::TitleSimilarity { percent }) if *percent < 80
+        ),
+        "a weak title match is a warning reason"
+    );
+    assert!(other.reasons.contains(&MatchReason::StoreIdRecognized));
+
+    // Search results did not come from the store id, so they never say it was recognized.
+    let (op, _) = searches(&machine.handle(Input::SearchMatch)).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![game(300, "Something Else")]),
+    });
+    machine.handle(Input::SelectMatch { game_id: 300 });
+    let selected = dialog(&mut machine).selected.unwrap();
+    assert!(!selected.reasons.contains(&MatchReason::StoreIdRecognized));
+}
+
+#[test]
+fn a_detected_year_absent_from_the_entry_adds_no_year_reason() {
+    let mut machine = library();
+    let (op, _) = searches(&open(&mut machine, "570")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![game(40, "Dota 2")]),
+    });
+    machine.handle(Input::SelectMatch { game_id: 40 });
+    let selected = dialog(&mut machine).selected.unwrap();
+    assert!(
+        !selected.reasons.iter().any(|reason| matches!(
+            reason,
+            MatchReason::SameYear | MatchReason::DifferentYear { .. }
+        )),
+        "no year was detected in Dota 2's name or path"
+    );
+}
+
+#[test]
+fn choosing_a_match_and_reopening_shows_chosen_by_you() {
+    let mut machine = year_library();
+    open(&mut machine, "900");
+    machine.handle(Input::SelectMatch { game_id: 100 });
+    machine.handle(Input::ConfirmMatch { now: NOW + 1 });
+    assert_eq!(status(&machine, "900").game_id(), Some(100));
+
+    open(&mut machine, "900");
+    let selected = dialog(&mut machine).selected.unwrap();
+    assert_eq!(selected.game_id, 100);
+    assert!(selected.current);
+    assert!(selected.reasons.contains(&MatchReason::ChosenByYou));
+}
+
+#[test]
+fn selecting_an_option_does_not_change_the_entry() {
+    let mut machine = year_library();
+    open(&mut machine, "900");
+    let effects = machine.handle(Input::SelectMatch { game_id: 101 });
+    assert!(effects.is_empty());
+    assert_eq!(status(&machine, "900").game_id(), None);
+    assert!(machine.view().unwrap().match_dialog.is_some());
+    assert!(machine.chosen_match(&entry_key("steam", "900")).is_none());
+}
+
+#[test]
+fn confirming_without_a_selection_does_nothing() {
+    let mut machine = library();
+    open(&mut machine, "570");
+    assert!(dialog(&mut machine).selected.is_none());
+    assert!(machine.handle(Input::ConfirmMatch { now: NOW }).is_empty());
+    assert_eq!(status(&machine, "570"), MatchStatus::Unmatched);
+    assert!(
+        machine.view().unwrap().match_dialog.is_some(),
+        "the dialog stays open"
+    );
+}
+
+#[test]
+fn confirming_matches_the_selected_option() {
+    let mut machine = library();
+    let (op, _) = searches(&open(&mut machine, "570")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![game(40, "Dota 2"), game(41, "Dota Underlords")]),
+    });
+    // The best option is preselected.
+    assert_eq!(
+        dialog(&mut machine).selected.as_ref().map(|o| o.game_id),
+        Some(40)
+    );
+    machine.handle(Input::SelectMatch { game_id: 41 });
+    let effects = without_reads(machine.handle(Input::ConfirmMatch { now: NOW + 1 }));
+    assert_eq!(
+        status(&machine, "570"),
+        MatchStatus::Matched {
+            game_id: 41,
+            source: MatchSource::Chosen
+        }
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [
+            Effect::PersistMatches { games, .. },
+            Effect::PersistChoice { choice, .. },
+            ..
+        ] if games[0].game_id == 41 && choice.game_id == Some(41)
+    ));
+    assert!(machine.view().unwrap().match_dialog.is_none());
+}
+
+#[test]
+fn a_users_selection_survives_a_later_search_answer() {
+    let mut machine = library();
+    let (op, _) = searches(&open(&mut machine, "570")).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![game(40, "Dota 2"), game(41, "Dota Underlords")]),
+    });
+    machine.handle(Input::SelectMatch { game_id: 41 });
+    assert_eq!(
+        dialog(&mut machine).selected.as_ref().map(|o| o.game_id),
+        Some(41)
+    );
+
+    let (op, _) = searches(&machine.handle(Input::SearchMatch)).remove(0);
+    machine.handle(Input::MatchSearched {
+        op,
+        result: Ok(vec![game(42, "Dota 2 Beta"), game(43, "Dota 2 Test")]),
+    });
+    let view = dialog(&mut machine);
+    assert_eq!(
+        view.selected.as_ref().map(|selected| selected.game_id),
+        Some(41),
+        "the best new result did not replace the user's choice"
+    );
+    assert_eq!(view.selected.unwrap().name, "Dota Underlords");
+}
+
+#[test]
+fn a_selection_the_dialog_does_not_offer_is_ignored() {
+    let mut machine = library();
+    open(&mut machine, "570");
+    assert!(
+        machine
+            .handle(Input::SelectMatch { game_id: 12345 })
+            .is_empty()
+    );
+    assert!(dialog(&mut machine).selected.is_none());
 }

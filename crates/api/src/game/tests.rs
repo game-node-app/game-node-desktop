@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gamenode_core::SessionCredential;
 use gamenode_core::game_api::{
-    AccountEntry, ApiError, Collection, CoverError, ExternalMatch, FavoriteError, GameApi,
-    GameSummary, LibraryEntry, MAX_COVER_BYTES,
+    AccountEntry, ApiError, Collection, CoverError, CreateCollectionError, ExternalMatch,
+    FavoriteError, GameApi, GameSummary, LibraryEntry, MAX_COVER_BYTES,
 };
 use gamenode_core::library::membership::EntryStatus;
 use httpmock::HttpMockRequest;
@@ -108,6 +108,7 @@ fn summary(id: u64, name: &str) -> GameSummary {
         cover_url: Some(format!(
             "//images.igdb.com/igdb/image/upload/t_thumb/c{id}.jpg"
         )),
+        platforms: Vec::new(),
     }
 }
 
@@ -415,9 +416,33 @@ async fn search_sends_the_query_and_returns_title_year_and_cover() {
             id: 8,
             name: "Portal".to_owned(),
             release_year: None,
-            cover_url: None
+            cover_url: None,
+            platforms: Vec::new(),
         }
     );
+}
+
+#[tokio::test]
+async fn search_reads_platform_abbreviations_and_treats_missing_or_blank_as_empty() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/search/games");
+        then.status(200).json_body(search_page(vec![
+            json!({ "id": 1, "name": "Multi", "platformsAbbreviations": "PC, Switch" }),
+            json!({ "id": 2, "name": "Missing" }),
+            json!({ "id": 3, "name": "Blank", "platformsAbbreviations": "  " }),
+            json!({ "id": 4, "name": "Spaced", "platformsAbbreviations": " PC ,  PS4 ," }),
+        ]));
+    });
+
+    let found = client(&server)
+        .search_games(&cred(), "platform")
+        .await
+        .unwrap();
+    assert_eq!(found[0].platforms, ["PC", "Switch"]);
+    assert_eq!(found[1].platforms, Vec::<String>::new());
+    assert_eq!(found[2].platforms, Vec::<String>::new());
+    assert_eq!(found[3].platforms, ["PC", "PS4"]);
 }
 
 #[tokio::test]
@@ -1275,4 +1300,116 @@ async fn delete_errors_are_classified_and_the_id_is_checked() {
         );
     }
     any.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn a_collection_is_created_with_its_name_and_no_body_back() {
+    let server = MockServer::start_async().await;
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/collections")
+            .header("authorization", "Bearer tok")
+            .header("capacitor-origin", "app.gamenode://")
+            .json_body(json!({ "name": "Coop no sofá" }));
+        then.status(201);
+    });
+
+    client(&server)
+        .create_collection(&cred(), "Coop no sofá")
+        .await
+        .unwrap();
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn a_collection_name_is_trimmed_and_a_blank_one_is_never_sent() {
+    let server = MockServer::start_async().await;
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/collections")
+            .json_body(json!({ "name": "Coop" }));
+        then.status(201);
+    });
+    client(&server)
+        .create_collection(&cred(), "  Coop  ")
+        .await
+        .unwrap();
+    mock.assert_async().await;
+
+    for blank in ["", "   ", "\t\n"] {
+        assert_eq!(
+            client(&server).create_collection(&cred(), blank).await,
+            Err(CreateCollectionError::Failed),
+            "{blank:?}"
+        );
+    }
+    // Only the one trimmed create reached the server.
+    mock.assert_calls_async(1).await;
+}
+
+#[tokio::test]
+async fn the_collection_limit_is_told_apart_from_other_refusals() {
+    let limit = MockServer::start_async().await;
+    limit.mock(|when, then| {
+        when.method(POST).path("/v1/collections");
+        then.status(403)
+            .json_body(json!({ "code": "collection_limit_reached" }));
+    });
+    assert_eq!(
+        client(&limit).create_collection(&cred(), "Coop").await,
+        Err(CreateCollectionError::LimitReached)
+    );
+
+    for (status, body) in [
+        (403, json!({ "code": "something_else" })),
+        (403, json!({ "message": "Forbidden" })),
+        (403, json!("not an object")),
+        (400, json!({ "code": "collection_limit_reached" })),
+        (500, json!({ "code": "collection_limit_reached" })),
+    ] {
+        let server = MockServer::start_async().await;
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/collections");
+            then.status(status).json_body(body.clone());
+        });
+        assert_eq!(
+            client(&server).create_collection(&cred(), "Coop").await,
+            Err(CreateCollectionError::Failed),
+            "{status} {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refused_collection_create_is_classified_and_not_retried() {
+    for (status, expected) in [
+        (401, CreateCollectionError::Rejected),
+        (400, CreateCollectionError::Failed),
+        (500, CreateCollectionError::Failed),
+    ] {
+        let server = MockServer::start_async().await;
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/collections");
+            then.status(status);
+        });
+        assert_eq!(
+            client(&server).create_collection(&cred(), "Coop").await,
+            Err(expected),
+            "{status}"
+        );
+        mock.assert_calls_async(1).await;
+    }
+}
+
+#[tokio::test]
+async fn a_collection_create_that_times_out_fails() {
+    let server = MockServer::start_async().await;
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/collections");
+        then.status(201).delay(Duration::from_secs(5));
+    });
+    assert_eq!(
+        client(&server).create_collection(&cred(), "Coop").await,
+        Err(CreateCollectionError::Failed)
+    );
 }

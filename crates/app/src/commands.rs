@@ -334,6 +334,12 @@ pub async fn open_gamenode_page(
     engine.open_gamenode_page(page).await
 }
 
+/// Cached cover file names for the signed-out screen's mural; empty when the cache has none.
+#[tauri::command]
+pub async fn sign_in_cover_wall(engine: tauri::State<'_, Engine>) -> Result<Vec<String>, String> {
+    Ok(engine.inner().clone().sign_in_cover_wall().await)
+}
+
 #[tauri::command]
 pub async fn remove_entry(
     engine: tauri::State<'_, Engine>,
@@ -475,8 +481,19 @@ pub async fn achievement_list(
     engine: tauri::State<'_, Engine>,
     key: String,
     filter: gamenode_core::achievements::AchievementFilter,
+    sort: gamenode_core::achievements::AchievementSort,
 ) -> Result<Option<gamenode_core::achievements::AchievementListView>, String> {
-    engine.achievement_list(key, filter).await
+    engine.achievement_list(key, filter, sort).await
+}
+
+/// Opens the provider's public achievements page for an entry. The host resolves the URL; the UI
+/// never passes one. Runs the browser opener on a blocking worker.
+#[tauri::command]
+pub async fn open_achievements_page(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+) -> Result<(), crate::engine::AchievementPageError> {
+    engine.open_achievements_page(entry_key).await
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +538,30 @@ pub async fn pick_local_executable(
 ) -> Result<(), String> {
     engine.pick_local_executable(repair);
     Ok(())
+}
+
+/// Opens the image picker and leaves the converted cover pending for the editor's Save.
+#[tauri::command]
+pub async fn pick_local_cover(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+) -> Result<Option<String>, String> {
+    engine
+        .pick_local_cover(entry_key)
+        .await
+        .map_err(|error| error.code().to_owned())
+}
+
+/// Drops an uncommitted cover when the editor is cancelled or replaced.
+#[tauri::command]
+pub async fn discard_local_cover(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+) -> Result<(), String> {
+    let engine = engine.inner().clone();
+    tokio::task::spawn_blocking(move || engine.discard_local_cover(entry_key))
+        .await
+        .map_err(|_| "coverDiscardFailed".to_owned())
 }
 
 #[tauri::command]
@@ -574,6 +615,19 @@ pub async fn set_local_backup_settings(
     destination: String,
 ) -> Result<(), String> {
     engine.set_local_backup_settings(automatic, destination);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_local_backup_retention(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    retention: u8,
+) -> Result<(), String> {
+    if !gamenode_core::drm_free::valid_retention(retention) {
+        return Err("unsupported retention value".into());
+    }
+    engine.set_local_backup_retention(entry_key, retention);
     Ok(())
 }
 
@@ -680,8 +734,9 @@ pub async fn select_local_candidate(
 pub async fn review_selected_local_candidates(
     engine: tauri::State<'_, Engine>,
     add: bool,
+    allow_rediscovery: bool,
 ) -> Result<(), String> {
-    engine.review_selected_local_candidates(add);
+    engine.review_selected_local_candidates(add, allow_rediscovery);
     Ok(())
 }
 
@@ -797,6 +852,13 @@ pub async fn select_tool_target_exe(
     relative_exe: String,
 ) -> Result<(), String> {
     engine.select_tool_target_exe(relative_exe);
+    Ok(())
+}
+
+/// Opens the native executable picker in the game folder and selects the result on a worker.
+#[tauri::command]
+pub async fn pick_tool_target_exe(engine: tauri::State<'_, Engine>) -> Result<(), String> {
+    engine.pick_tool_target_exe().await;
     Ok(())
 }
 
@@ -1140,6 +1202,15 @@ mod tests {
         let no_session = serde_json::to_value(crate::engine::GameNodePageError::NoSession).unwrap();
         assert_eq!(no_session["code"], "noSession");
         let browser = serde_json::to_value(crate::engine::GameNodePageError::Browser).unwrap();
+        assert_eq!(browser["code"], "browser");
+    }
+
+    #[test]
+    fn achievement_page_errors_use_stable_codes() {
+        let unsupported =
+            serde_json::to_value(crate::engine::AchievementPageError::Unsupported).unwrap();
+        assert_eq!(unsupported["code"], "unsupported");
+        let browser = serde_json::to_value(crate::engine::AchievementPageError::Browser).unwrap();
         assert_eq!(browser["code"], "browser");
     }
 

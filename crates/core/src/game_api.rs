@@ -39,6 +39,22 @@ pub enum ApiError {
     Failed,
 }
 
+/// Why a collection could not be created. A reached account limit is meaningful to the user and
+/// must not read as a generic failure; a rejection goes down the same path as a rejected session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CreateCollectionError {
+    /// The account reached GameNode's collection limit (`403 { code: "collection_limit_reached" }`).
+    #[error("the account reached its GameNode collection limit")]
+    LimitReached,
+    /// The server refused the session (`401`).
+    #[error("GameNode rejected the session")]
+    Rejected,
+    /// The request could not be completed or its answer could not be used.
+    #[error("the collection could not be created")]
+    Failed,
+}
+
 /// Why a favorite change was not confirmed by GameNode. `NotInLibrary` is meaningful (the game
 /// has no collection entry yet) and keeps the change pending instead of retrying tightly; a
 /// separate type keeps that case out of the widely matched [`ApiError`].
@@ -65,6 +81,10 @@ pub struct GameSummary {
     pub release_year: Option<i32>,
     /// The server's cover URL, exactly as sent. It is checked before any download.
     pub cover_url: Option<String>,
+    /// Platform abbreviations from a search answer (`platformsAbbreviations`). Lookups and
+    /// stored games without the field carry none, so the option's meta line omits them.
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +197,19 @@ pub trait GameApi: Send + Sync {
         credential: &SessionCredential,
         user_id: &str,
     ) -> Result<Vec<Collection>, ApiError>;
+
+    /// Creates one of the user's collections (`POST /v1/collections`, `{ name }`). The server
+    /// answers `201` with no body, so the caller re-lists the collections to find the new id.
+    ///
+    /// The server applies its own defaults (visibility) and refuses the request when the account
+    /// reached its collection limit; that refusal is [`CreateCollectionError::LimitReached`].
+    async fn create_collection(
+        &self,
+        _credential: &SessionCredential,
+        _name: &str,
+    ) -> Result<(), CreateCollectionError> {
+        Err(CreateCollectionError::Failed)
+    }
 
     /// Every entry of the user's GameNode library
     /// (`GET /v1/collections-entries/library/:userId`), all game categories, following every

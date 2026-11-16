@@ -1,0 +1,246 @@
+{
+  "description": "Real IGDB cover art bundled for the signed-out cover mural fallback. User cache covers always take priority.",
+  "source": "IGDB (image CDN images.igdb.com), resolved from the local GameNode catalogue metadata.",
+  "count": 25,
+  "examples": [
+    {
+      "title": "Elden Ring",
+      "igdbPage": "https://www.igdb.com/games/elden-ring"
+    },
+    {
+      "title": "Hades",
+      "igdbPage": "https://www.igdb.com/games/hades--1"
+    },
+    {
+      "title": "Baldur's Gate III",
+      "igdbPage": "https://www.igdb.com/games/baldurs-gate-iii"
+    }
+  ],
+  "covers": [
+    {
+      "slug": "elden-ring",
+      "title": "Elden Ring",
+      "gameId": 119133,
+      "releaseYear": 2022,
+      "igdbCoverId": "co4jni",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co4jni.jpg",
+      "localFile": "elden-ring.jpg"
+    },
+    {
+      "slug": "hades",
+      "title": "Hades",
+      "gameId": 113112,
+      "releaseYear": 2020,
+      "igdbCoverId": "cob9kr",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cob9kr.jpg",
+      "localFile": "hades.jpg"
+    },
+    {
+      "slug": "baldurs-gate-iii",
+      "title": "Baldur's Gate III",
+      "gameId": 119171,
+      "releaseYear": 2023,
+      "igdbCoverId": "co670h",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co670h.jpg",
+      "localFile": "baldurs-gate-iii.jpg"
+    },
+    {
+      "slug": "hollow-knight",
+      "title": "Hollow Knight",
+      "gameId": 14593,
+      "releaseYear": 2017,
+      "igdbCoverId": "cobfzp",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cobfzp.jpg",
+      "localFile": "hollow-knight.jpg"
+    },
+    {
+      "slug": "cyberpunk-2077",
+      "title": "Cyberpunk 2077",
+      "gameId": 1877,
+      "releaseYear": 2020,
+      "igdbCoverId": "coaih8",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/coaih8.jpg",
+      "localFile": "cyberpunk-2077.jpg"
+    },
+    {
+      "slug": "stardew-valley",
+      "title": "Stardew Valley",
+      "gameId": 17000,
+      "releaseYear": 2016,
+      "igdbCoverId": "coa93h",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/coa93h.jpg",
+      "localFile": "stardew-valley.jpg"
+    },
+    {
+      "slug": "portal-2",
+      "title": "Portal 2",
+      "gameId": 72,
+      "releaseYear": 2011,
+      "igdbCoverId": "co1rs4",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1rs4.jpg",
+      "localFile": "portal-2.jpg"
+    },
+    {
+      "slug": "the-witcher-3-wild-hunt",
+      "title": "The Witcher 3: Wild Hunt",
+      "gameId": 1942,
+      "releaseYear": 2015,
+      "igdbCoverId": "coaarl",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/coaarl.jpg",
+      "localFile": "the-witcher-3-wild-hunt.jpg"
+    },
+    {
+      "slug": "grand-theft-auto-v",
+      "title": "Grand Theft Auto V",
+      "gameId": 1020,
+      "releaseYear": 2013,
+      "igdbCoverId": "co2lbd",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2lbd.jpg",
+      "localFile": "grand-theft-auto-v.jpg"
+    },
+    {
+      "slug": "celeste",
+      "title": "Celeste",
+      "gameId": 26226,
+      "releaseYear": 2018,
+      "igdbCoverId": "cob9dh",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cob9dh.jpg",
+      "localFile": "celeste.jpg"
+    },
+    {
+      "slug": "terraria",
+      "title": "Terraria",
+      "gameId": 1879,
+      "releaseYear": 2011,
+      "igdbCoverId": "coaamg",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/coaamg.jpg",
+      "localFile": "terraria.jpg"
+    },
+    {
+      "slug": "doom-eternal",
+      "title": "Doom Eternal",
+      "gameId": 103298,
+      "releaseYear": 2020,
+      "igdbCoverId": "co3p5n",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co3p5n.jpg",
+      "localFile": "doom-eternal.jpg"
+    },
+    {
+      "slug": "dark-souls-iii",
+      "title": "Dark Souls III",
+      "gameId": 11133,
+      "releaseYear": 2016,
+      "igdbCoverId": "cob9ed",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cob9ed.jpg",
+      "localFile": "dark-souls-iii.jpg"
+    },
+    {
+      "slug": "mass-effect-2",
+      "title": "Mass Effect 2",
+      "gameId": 74,
+      "releaseYear": 2010,
+      "igdbCoverId": "co20ac",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co20ac.jpg",
+      "localFile": "mass-effect-2.jpg"
+    },
+    {
+      "slug": "disco-elysium",
+      "title": "Disco Elysium",
+      "gameId": 26472,
+      "releaseYear": 2019,
+      "igdbCoverId": "co1sfj",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1sfj.jpg",
+      "localFile": "disco-elysium.jpg"
+    },
+    {
+      "slug": "outer-wilds",
+      "title": "Outer Wilds",
+      "gameId": 11737,
+      "releaseYear": 2019,
+      "igdbCoverId": "co65ac",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co65ac.jpg",
+      "localFile": "outer-wilds.jpg"
+    },
+    {
+      "slug": "ori-and-the-blind-forest",
+      "title": "Ori and the Blind Forest",
+      "gameId": 7344,
+      "releaseYear": 2015,
+      "igdbCoverId": "co1y41",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1y41.jpg",
+      "localFile": "ori-and-the-blind-forest.jpg"
+    },
+    {
+      "slug": "undertale",
+      "title": "Undertale",
+      "gameId": 12517,
+      "releaseYear": 2015,
+      "igdbCoverId": "cob1t2",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cob1t2.jpg",
+      "localFile": "undertale.jpg"
+    },
+    {
+      "slug": "slay-the-spire",
+      "title": "Slay the Spire",
+      "gameId": 40477,
+      "releaseYear": 2019,
+      "igdbCoverId": "co1iyf",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1iyf.jpg",
+      "localFile": "slay-the-spire.jpg"
+    },
+    {
+      "slug": "sekiro-shadows-die-twice",
+      "title": "Sekiro: Shadows Die Twice",
+      "gameId": 76882,
+      "releaseYear": 2019,
+      "igdbCoverId": "co2a23",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2a23.jpg",
+      "localFile": "sekiro-shadows-die-twice.jpg"
+    },
+    {
+      "slug": "the-last-of-us-part-ii-remastered",
+      "title": "The Last of Us Part II Remastered",
+      "gameId": 277143,
+      "releaseYear": 2024,
+      "igdbCoverId": "coa1gr",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/coa1gr.jpg",
+      "localFile": "the-last-of-us-part-ii-remastered.jpg"
+    },
+    {
+      "slug": "factorio",
+      "title": "Factorio",
+      "gameId": 7046,
+      "releaseYear": 2020,
+      "igdbCoverId": "co1tfy",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co1tfy.jpg",
+      "localFile": "factorio.jpg"
+    },
+    {
+      "slug": "vampire-survivors",
+      "title": "Vampire Survivors",
+      "gameId": 186725,
+      "releaseYear": 2022,
+      "igdbCoverId": "co4bzv",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co4bzv.jpg",
+      "localFile": "vampire-survivors.jpg"
+    },
+    {
+      "slug": "death-stranding-directors-cut",
+      "title": "Death Stranding: Director's Cut",
+      "gameId": 152063,
+      "releaseYear": 2021,
+      "igdbCoverId": "cobksg",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/cobksg.jpg",
+      "localFile": "death-stranding-directors-cut.jpg"
+    },
+    {
+      "slug": "control",
+      "title": "Control",
+      "gameId": 103329,
+      "releaseYear": 2019,
+      "igdbCoverId": "co2evj",
+      "igdbImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big/co2evj.jpg",
+      "localFile": "control.jpg"
+    }
+  ]
+}

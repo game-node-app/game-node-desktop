@@ -27,11 +27,10 @@ pub mod view;
 pub use actions::{Actions, Availability, Reason, Why};
 pub use add_dialog::{
     AddDialogView, AddMode, AddProgress, AddProgressView, AddTarget, AddTargetView,
-    CollectionOption, CollectionsView,
+    CollectionOption, CollectionsView, NewCollectionError, NewCollectionView,
 };
 pub use add_run::{
-    AddItem, AddItemView, AddOutcome, AddOutcomeItem, AddOutcomeKind, AddSummary, AddSummaryView,
-    CreatedEntry,
+    AddItem, AddItemState, AddItemView, AddNoticeView, AddSummary, AddSummaryView, CreatedEntry,
 };
 pub use batch::{CollectionRunView, StatusRunView, UndoAddView, UndoState};
 pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
@@ -46,7 +45,7 @@ pub use layout::{
 };
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
 pub use match_dialog::{
-    CandidateOption, MatchDialogView, MatchOption, SearchFailure, SearchResultItem,
+    CandidateOption, MatchDialogView, MatchOption, MatchReason, SearchFailure, SearchResultItem,
 };
 pub use matching::{MatchSource, MatchStatus};
 pub use membership::{EntryStatus, GameStatus, Membership, StandingView};

@@ -14,7 +14,7 @@ import {
   Overlay,
 } from '@mantine/core';
 import type { UseFloatingWindowOptions } from '@mantine/hooks';
-import { IconResize, IconX } from '@tabler/icons-react';
+import { IconDotsVertical, IconResize, IconX } from '@tabler/icons-react';
 import { useFocusRestore } from '../../hooks/useFocusRestore';
 import { useI18n } from '../../i18n';
 import { useModalLayer } from '../modalLayer';
@@ -28,7 +28,7 @@ const EXCLUDE_DRAG_HANDLE_SELECTOR =
   'button, a, input, select, textarea, [data-floating-modal-no-drag]';
 
 const DEFAULT_CONTENT_CLASS =
-  'overflow-hidden rounded-md border border-border-subtle shadow-modal focus:outline-none';
+  'overflow-hidden rounded-dialog border border-border-overlay bg-secondary shadow-dialog focus:outline-none';
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
@@ -270,12 +270,21 @@ const FloatingModalHeader: React.FC<FloatingModalHeaderProps> = ({
       {...props}
       data-floating-modal-handle={context.draggable ? '' : undefined}
       className={cx(
-        'flex shrink-0 items-center justify-between gap-md border-b border-border-subtle px-control-inline py-md',
+        'flex shrink-0 items-center justify-between gap-sm border-b border-border-subtle px-lg pt-md pb-[14px]',
         context.draggable &&
           'cursor-grab touch-none select-none active:cursor-grabbing',
         className,
       )}
     >
+      {context.draggable && (
+        <IconDotsVertical
+          data-floating-modal-drag-icon=""
+          size={16}
+          stroke={2}
+          aria-hidden="true"
+          className="shrink-0 text-text-muted"
+        />
+      )}
       {children}
     </div>
   );
@@ -300,7 +309,10 @@ const FloatingModalTitle: React.FC<FloatingModalTitleProps> = ({
     <h2
       {...props}
       id={id ?? context.titleId}
-      className={cx('text-lg font-semibold text-text-default', className)}
+      className={cx(
+        'truncate text-md font-semibold text-text-primary',
+        className,
+      )}
     >
       {children}
     </h2>
@@ -337,11 +349,11 @@ const FloatingModalCloseButton: React.FC<FloatingModalCloseButtonProps> = ({
       aria-label={ariaLabel ?? t('Close')}
       onClick={handleClick}
       className={cx(
-        'flex shrink-0 items-center justify-center rounded-sm p-compact text-text-dimmed transition-colors hover:bg-raised hover:text-text-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+        'flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-control p-0 text-text-secondary transition-colors hover:bg-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
         className,
       )}
     >
-      {icon ?? <IconX size={18} stroke={1.75} aria-hidden="true" />}
+      {icon ?? <IconX size={16} stroke={2} aria-hidden="true" />}
     </button>
   );
 };

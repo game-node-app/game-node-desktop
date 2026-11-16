@@ -3,6 +3,7 @@ import { getMockHost, mockEnabled } from './mock';
 import type {
   AchievementFilter,
   AchievementListView,
+  AchievementSort,
   AppInfo,
   AuthInput,
   GameNodePage,
@@ -74,6 +75,10 @@ export const commands = {
   dispatchAuth: (input: AuthInput) =>
     safeInvoke<void>('dispatch_auth', { input }, () => undefined),
 
+  /** Cached cover file names for the signed-out screen's mural, most recent first. */
+  signInCoverWall: () =>
+    safeInvoke<string[]>('sign_in_cover_wall', undefined, () => []),
+
   setSyncEnabled: (enabled: boolean) =>
     safeInvoke<void>('set_sync_enabled', { enabled }, () => undefined),
 
@@ -129,12 +134,16 @@ export const commands = {
     safeInvoke<void>('provider_check', { providerId }, () => undefined),
 
   /** The full achievement list, read from the local cache (no GameNode request). */
-  achievementList: (key: string, filter: AchievementFilter) =>
+  achievementList: (key: string, filter: AchievementFilter, sort: AchievementSort) =>
     safeInvoke<AchievementListView | null>(
       'achievement_list',
-      { key, filter },
-      () => ({ connected: false, achievements: [] }),
+      { key, filter, sort },
+      () => null,
     ),
+
+  /** Opens a provider's public achievements page. The host resolves the URL. */
+  openAchievementsPage: (entryKey: string) =>
+    safeInvoke<void>('open_achievements_page', { entryKey }, () => undefined),
 
   removeEntry: (key: string, allowRediscovery: boolean) =>
     safeInvoke<void>('remove_entry', { key, allowRediscovery }, () => undefined),
@@ -142,6 +151,14 @@ export const commands = {
   // DRM-Free & Backups
   pickLocalExecutable: (repair?: string | null) =>
     safeInvoke<void>('pick_local_executable', { repair: repair ?? null }, () => undefined),
+
+  /** Opens the image picker; resolves to the pending cover file, or null when cancelled. */
+  pickLocalCover: (entryKey: string) =>
+    safeInvoke<string | null>('pick_local_cover', { entryKey }, () => null),
+
+  /** Drops an uncommitted cover after the editor closes without saving. */
+  discardLocalCover: (entryKey: string) =>
+    safeInvoke<void>('discard_local_cover', { entryKey }, () => undefined),
 
   addLocalExecutable: (path?: string | null) =>
     safeInvoke<void>('add_local_executable', { path: path ?? null }, () => undefined),
@@ -160,6 +177,9 @@ export const commands = {
 
   setLocalBackupSettings: (automatic: boolean, destination: string) =>
     safeInvoke<void>('set_local_backup_settings', { automatic, destination }, () => undefined),
+
+  setLocalBackupRetention: (entryKey: string, retention: number) =>
+    safeInvoke<void>('set_local_backup_retention', { entryKey, retention }, () => undefined),
 
   pickSaveDestination: () =>
     safeInvoke<string | null>('pick_save_destination', undefined, () => null),
@@ -194,8 +214,12 @@ export const commands = {
   selectLocalCandidate: (fingerprint: string) =>
     safeInvoke<void>('select_local_candidate', { fingerprint }, () => undefined),
 
-  reviewSelectedLocalCandidates: (add: boolean) =>
-    safeInvoke<void>('review_selected_local_candidates', { add }, () => undefined),
+  reviewSelectedLocalCandidates: (add: boolean, allowRediscovery: boolean) =>
+    safeInvoke<void>(
+      'review_selected_local_candidates',
+      { add, allowRediscovery },
+      () => undefined,
+    ),
 
   resetLocalIgnores: () =>
     safeInvoke<void>('reset_local_ignores', undefined, () => undefined),
@@ -242,6 +266,10 @@ export const commands = {
 
   selectToolTargetExe: (relativeExe: string) =>
     safeInvoke<void>('select_tool_target_exe', { relativeExe }, () => undefined),
+
+  /** Opens the executable picker for the open game's folder and selects the chosen file. */
+  pickToolTargetExe: () =>
+    safeInvoke<void>('pick_tool_target_exe', undefined, () => undefined),
 
   selectToolProxy: (proxy: string) =>
     safeInvoke<void>('select_tool_proxy', { proxy }, () => undefined),

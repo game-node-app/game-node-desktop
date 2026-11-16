@@ -715,6 +715,7 @@ fn a_restart_restores_the_highlighted_views_scope_and_drops_an_unknown_marker() 
             cover_url: None,
             cover_file: None,
             cover_failed_at: None,
+            platforms: Vec::new(),
         }],
         ..LibraryCache::default()
     };

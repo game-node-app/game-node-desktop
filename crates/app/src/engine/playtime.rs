@@ -181,9 +181,16 @@ impl Engine {
                     key,
                     play_period,
                     last_gameplay_exit,
+                    play_seconds,
                 } => {
                     self.schedule_exited_game_achievements(&key);
-                    self.queue_local_backup(state, key, play_period, last_gameplay_exit);
+                    self.queue_local_backup(
+                        state,
+                        key,
+                        play_period,
+                        last_gameplay_exit,
+                        play_seconds,
+                    );
                 }
                 TrackEffect::Watch(process) => {
                     let adapter = self.shared.ports.processes.clone();

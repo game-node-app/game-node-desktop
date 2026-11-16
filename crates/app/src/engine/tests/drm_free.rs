@@ -2,6 +2,7 @@ use super::*;
 use gamenode_core::drm_free::{
     Candidate, Evidence, InstallationHost, LocalError, LocalGameStore, Registration, WatchRoot,
 };
+use gamenode_core::playtime::Total;
 use gamenode_core::ports::{PlaytimeStore, ProcessIdentity, ProcessInfo};
 use std::sync::Condvar;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,6 +46,7 @@ impl InstallationHost for Host {
             removed: false,
             rediscovery_allowed: false,
             transferred_from: None,
+            custom_cover: None,
             available: true,
         })
     }
@@ -147,6 +149,175 @@ async fn local_add_cancel_duplicates_repair_and_remove_are_durable_and_do_not_bl
     h.engine.shutdown();
 }
 
+const CLAIM_STEAM_ROOT: &str = "/home/me/.steam/steam/steamapps/common/Portal 2";
+const CLAIM_CUSTOM_COVER: &str = "local-claim-0123456789abcdef.webp";
+
+/// A host whose inspected registration lives under the scanned Steam install folder, so adding
+/// it produces a tracking conflict without writing to the real filesystem.
+struct ClaimHost;
+
+impl InstallationHost for ClaimHost {
+    fn inspect(&self, _path: &str) -> Result<Registration, LocalError> {
+        Ok(Registration {
+            id: "claim-portal".into(),
+            title: "Portal 2".into(),
+            executable: format!("{CLAIM_STEAM_ROOT}/portal2.exe"),
+            file_identity: "claim-portal".into(),
+            root: CLAIM_STEAM_ROOT.into(),
+            working_directory: CLAIM_STEAM_ROOT.into(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            custom_cover: Some(CLAIM_CUSTOM_COVER.into()),
+            available: true,
+        })
+    }
+
+    fn launch(&self, _: &Registration) -> Result<(), LocalError> {
+        Ok(())
+    }
+
+    fn evidence(&self, _: &Registration) -> Result<Vec<Evidence>, LocalError> {
+        Ok(vec![])
+    }
+}
+
+fn portal_2_match() -> gamenode_core::game_api::ExternalMatch {
+    gamenode_core::game_api::ExternalMatch {
+        uid: "620".into(),
+        game: GameSummary {
+            id: 7,
+            name: "Portal 2".into(),
+            release_year: Some(2011),
+            cover_url: Some("//images.igdb.com/igdb/image/upload/t_thumb/co1abc.jpg".into()),
+            platforms: Vec::new(),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claim_carries_both_entries_and_cancel_keeps_store_tracking() {
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(Arc::new(ClaimHost));
+    }
+    h.engine
+        .shared
+        .ports
+        .playtime
+        .save_total(&Total {
+            account_id: "u1".into(),
+            entry_key: "steam:620".into(),
+            total_seconds: 15 * 3600,
+            last_played_at: None,
+            accepted_game_id: None,
+            accepted_seconds: None,
+            rejected_seconds: None,
+        })
+        .unwrap();
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("the Steam game, its cover and playtime", |s| {
+        s.library.as_ref().is_some_and(|library| {
+            library.rows.first().is_some_and(|row| {
+                row.key == "steam:620"
+                    && row.cover_file.as_deref() == Some("7.jpg")
+                    && row.playtime.seconds == Some(15 * 3600)
+            })
+        })
+    })
+    .await;
+
+    h.engine.add_local_executable(Some("IGNORED".to_owned()));
+    let snapshot = h
+        .until("the tracking conflict", |s| {
+            s.local_games.pending_claim.is_some() && !s.local_games.busy
+        })
+        .await;
+    let claim = snapshot.local_games.pending_claim.clone().unwrap();
+    assert_eq!(claim.store_key, "steam:620");
+    assert_eq!(claim.store_entry.title, "Portal 2");
+    assert_eq!(claim.store_entry.provider, "steam");
+    assert_eq!(claim.store_entry.cover_file.as_deref(), Some("7.jpg"));
+    assert_eq!(claim.store_entry.playtime_seconds, Some(15 * 3600));
+    assert_eq!(claim.registration.title, "Portal 2");
+    assert_eq!(claim.registration.root, CLAIM_STEAM_ROOT);
+    assert_eq!(
+        claim.registration.cover_file.as_deref(),
+        Some(CLAIM_CUSTOM_COVER),
+        "the custom cover wins over the matched GameNode cover"
+    );
+    assert!(
+        store.registrations().unwrap().is_empty(),
+        "nothing is saved while the conflict waits for a choice"
+    );
+
+    h.engine.cancel_local_claim();
+    let snapshot = h
+        .until("the conflict canceled", |s| {
+            s.local_games.pending_claim.is_none()
+        })
+        .await;
+    assert!(store.registrations().unwrap().is_empty());
+    let library = snapshot.library.unwrap();
+    assert_eq!(library.rows.len(), 1);
+    assert_eq!(library.rows[0].key, "steam:620");
+
+    // Using the existing item keeps tracking with the store entry and saves nothing.
+    h.engine.add_local_executable(Some("IGNORED".to_owned()));
+    h.until("the conflict again", |s| {
+        s.local_games.pending_claim.is_some() && !s.local_games.busy
+    })
+    .await;
+    h.engine.resolve_local_claim(false);
+    let snapshot = h
+        .until("the store entry chosen", |s| {
+            s.local_games.pending_claim.is_none()
+                && s.library
+                    .as_ref()
+                    .is_some_and(|library| library.selected.contains(&"steam:620".to_owned()))
+        })
+        .await;
+    assert!(store.registrations().unwrap().is_empty());
+    assert_eq!(snapshot.library.unwrap().rows.len(), 1);
+
+    // Moving tracking saves the unsaved registration exactly once, still under the store root.
+    h.engine.add_local_executable(Some("IGNORED".to_owned()));
+    h.until("the conflict once more", |s| {
+        s.local_games.pending_claim.is_some() && !s.local_games.busy
+    })
+    .await;
+    h.engine.resolve_local_claim(true);
+    h.until("tracking moved", |s| {
+        !s.local_games.busy && s.local_games.registrations.len() == 1
+    })
+    .await;
+    let registrations = store.registrations().unwrap();
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[0].id, "claim-portal");
+    assert_eq!(
+        registrations[0].transferred_from.as_deref(),
+        Some("steam:620")
+    );
+    assert_eq!(
+        registrations[0].custom_cover.as_deref(),
+        Some(CLAIM_CUSTOM_COVER)
+    );
+    h.engine.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
     let api = FakeApi::new();
@@ -156,6 +327,7 @@ async fn local_evidence_enrichment_overrides_retries_and_account_switching() {
             name: "Fixture".into(),
             release_year: Some(2020),
             cover_url: None,
+            platforms: Vec::new(),
         }],
         complete: Some(true),
     }));
@@ -743,6 +915,8 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
         evidence: vec![],
         ignored: false,
         incomplete: false,
+        suggestion: None,
+        likely_non_game: false,
     };
     let mut registered = host.inspect(game_exe.to_str().unwrap()).unwrap();
     registered.root = root.join("nested").to_string_lossy().into_owned();
@@ -895,6 +1069,7 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
                     registry: vec![],
                     support: gamenode_core::drm_free::SaveSupport::Supported,
                     automatic: None,
+                    retention: None,
                 },
                 installation: active_reg,
                 destination: "/tmp/backups".into(),
@@ -1038,4 +1213,1481 @@ async fn windows_watched_folder_produces_review_candidates() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_defaults_exclude_likely_non_games_and_keep_manual_choices() {
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api, creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    let game_dir = root.join("Moss & Machine");
+    let installer_dir = root.join("Instaladores");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(&installer_dir).unwrap();
+    let game_exe = std::fs::canonicalize({
+        let path = game_dir.join("MossMachine.exe");
+        std::fs::write(&path, b"game").unwrap();
+        path
+    })
+    .unwrap();
+    let other_exe = std::fs::canonicalize({
+        let path = game_dir.join("MossMachine64.exe");
+        std::fs::write(&path, b"game").unwrap();
+        path
+    })
+    .unwrap();
+    let redist = std::fs::canonicalize({
+        let path = installer_dir.join("vc_redist.x64.exe");
+        std::fs::write(&path, b"tool").unwrap();
+        path
+    })
+    .unwrap();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: root.to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+
+    let game = Candidate {
+        fingerprint: "game".into(),
+        watch: "w1".into(),
+        root: game_dir.to_string_lossy().into_owned(),
+        title: "Moss & Machine".into(),
+        targets: vec![
+            game_exe.to_string_lossy().into_owned(),
+            other_exe.to_string_lossy().into_owned(),
+        ],
+        selected_target: Some(game_exe.to_string_lossy().into_owned()),
+        evidence: vec![Evidence {
+            kind: gamenode_core::drm_free::EvidenceKind::Product,
+            value: "Moss & Machine".into(),
+            strong: true,
+        }],
+        ignored: false,
+        incomplete: false,
+        suggestion: None,
+        likely_non_game: false,
+    };
+    let non_game = Candidate {
+        fingerprint: "redist".into(),
+        watch: "w1".into(),
+        root: installer_dir.to_string_lossy().into_owned(),
+        title: "setup_redist".into(),
+        targets: vec![redist.to_string_lossy().into_owned()],
+        selected_target: Some(redist.to_string_lossy().into_owned()),
+        evidence: vec![],
+        ignored: false,
+        incomplete: false,
+        suggestion: None,
+        likely_non_game: false,
+    };
+    store.save_candidate(&game).unwrap();
+    store.save_candidate(&non_game).unwrap();
+
+    h.engine.refresh_local_games();
+    h.until("review defaults", |snapshot| {
+        snapshot.local_games.candidates.len() == 2
+            && snapshot
+                .local_games
+                .review_selected
+                .contains(&"game".to_string())
+            && !snapshot
+                .local_games
+                .review_selected
+                .contains(&"redist".to_string())
+    })
+    .await;
+    let snapshot = h.engine.snapshot();
+    assert!(
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .find(|candidate| candidate.fingerprint == "redist")
+            .unwrap()
+            .likely_non_game
+    );
+    // A scan hook never auto-adds a likely non-game; it stays in the review.
+    assert!(
+        h.engine
+            .auto_register_candidates(vec![non_game.clone()])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.registrations().unwrap().is_empty());
+
+    // A manual uncheck survives later snapshots.
+    h.engine.select_local_candidate("game".into());
+    h.until("manual uncheck", |snapshot| {
+        !snapshot
+            .local_games
+            .review_selected
+            .contains(&"game".to_string())
+    })
+    .await;
+    h.engine
+        .set_local_candidate_executable("game".into(), other_exe.to_string_lossy().into_owned());
+    h.until("local work finished", |snapshot| !snapshot.local_games.busy)
+        .await;
+    assert!(
+        !h.engine
+            .snapshot()
+            .local_games
+            .review_selected
+            .contains(&"game".to_string())
+    );
+
+    // A candidate that appears later starts selected without redefining the manual choice.
+    let later = Candidate {
+        fingerprint: "later".into(),
+        watch: "w1".into(),
+        root: game_dir.to_string_lossy().into_owned(),
+        title: "Frostbyte Arcade".into(),
+        targets: vec![other_exe.to_string_lossy().into_owned()],
+        selected_target: Some(other_exe.to_string_lossy().into_owned()),
+        evidence: vec![Evidence {
+            kind: gamenode_core::drm_free::EvidenceKind::Product,
+            value: "Frostbyte Arcade".into(),
+            strong: true,
+        }],
+        ignored: false,
+        incomplete: false,
+        suggestion: None,
+        likely_non_game: false,
+    };
+    store.save_candidate(&later).unwrap();
+    h.engine.refresh_local_games();
+    h.until("new candidate default", |snapshot| {
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .any(|candidate| candidate.fingerprint == "later")
+            && snapshot
+                .local_games
+                .review_selected
+                .contains(&"later".to_string())
+            && !snapshot
+                .local_games
+                .review_selected
+                .contains(&"game".to_string())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_are_queued_once_per_title_and_added_as_automatic_matches() {
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+    *api.search_result.lock().unwrap() = Some(Ok(gamenode_core::game_api::SearchPage {
+        games: vec![GameSummary {
+            id: 42,
+            name: "Moss & Machine".into(),
+            release_year: Some(2023),
+            cover_url: None,
+            platforms: vec![],
+        }],
+        complete: Some(true),
+    }));
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: root.to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+    for (fingerprint, title) in [
+        ("moss-a", "Moss & Machine"),
+        ("moss-b", "Moss & Machine"),
+        ("frost", "Frostbyte Arcade"),
+    ] {
+        let directory = root.join(fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        let candidate = Candidate {
+            fingerprint: fingerprint.into(),
+            watch: "w1".into(),
+            root: directory.to_string_lossy().into_owned(),
+            title: title.into(),
+            targets: vec![exe.to_string_lossy().into_owned()],
+            selected_target: Some(exe.to_string_lossy().into_owned()),
+            evidence: vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Product,
+                value: title.into(),
+                strong: true,
+            }],
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        };
+        store.save_candidate(&candidate).unwrap();
+    }
+
+    h.engine.refresh_local_games();
+    h.until("suggestions applied", |snapshot| {
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.title == "Moss & Machine")
+            .all(|candidate| candidate.suggestion.is_some())
+    })
+    .await;
+    eventually(|| {
+        store
+            .candidates()
+            .unwrap()
+            .iter()
+            .filter(|candidate| candidate.title == "Moss & Machine")
+            .all(|candidate| candidate.suggestion.is_some())
+    })
+    .await;
+    // The worker processes one request at a time; wait for the second title before counting.
+    eventually(|| {
+        api.searches
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|query| query == "Frostbyte Arcade")
+    })
+    .await;
+    let searches = api.searches.lock().unwrap().clone();
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|query| *query == "Moss & Machine")
+            .count(),
+        1,
+        "searches={searches:?}"
+    );
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|query| *query == "Frostbyte Arcade")
+            .count(),
+        1,
+        "searches={searches:?}"
+    );
+    // A later refresh reuses the fingerprint cache and makes no new request.
+    let searches_before = api.searches.lock().unwrap().len();
+    h.engine.refresh_local_games();
+    h.until("suggestions reloaded", |snapshot| {
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.title == "Moss & Machine")
+            .all(|candidate| candidate.suggestion.is_some())
+    })
+    .await;
+    assert_eq!(api.searches.lock().unwrap().len(), searches_before);
+    let snapshot = h.engine.snapshot();
+    let moss = snapshot
+        .local_games
+        .candidates
+        .iter()
+        .find(|candidate| candidate.fingerprint == "moss-a")
+        .unwrap();
+    assert!(
+        moss.suggestion.is_some(),
+        "state={:?} store={:?}",
+        snapshot.local_games.candidates,
+        store.candidates()
+    );
+    assert_eq!(moss.suggestion.as_ref().unwrap().game_id, 42);
+    assert!(
+        snapshot
+            .local_games
+            .candidates
+            .iter()
+            .find(|candidate| candidate.fingerprint == "frost")
+            .unwrap()
+            .suggestion
+            .is_none()
+    );
+
+    // Add only the first Moss candidate and check the automatic match it records.
+    h.engine.select_local_candidate("moss-b".into());
+    h.engine.select_local_candidate("frost".into());
+    h.until("only one candidate selected", |snapshot| {
+        snapshot.local_games.review_selected == vec!["moss-a".to_string()]
+    })
+    .await;
+    h.engine.review_selected_local_candidates(true, false);
+    h.until("candidate added", |snapshot| {
+        !snapshot.local_games.busy
+            && snapshot
+                .local_games
+                .registrations
+                .iter()
+                .any(|registration| !registration.removed)
+    })
+    .await;
+    let registration = store
+        .registrations()
+        .unwrap()
+        .into_iter()
+        .find(|registration| !registration.removed)
+        .unwrap();
+    let key = registration.key();
+    h.until("automatic match row", |snapshot| {
+        snapshot.library.as_ref().is_some_and(|library| {
+            library.rows.iter().any(|row| {
+                row.key == key
+                    && matches!(
+                        row.status,
+                        gamenode_core::library::MatchStatus::Matched {
+                            source: gamenode_core::library::MatchSource::Automatic,
+                            ..
+                        }
+                    )
+            })
+        })
+    })
+    .await;
+    assert!(h.engine.lock().library.chosen_match(&key).is_none());
+    let account = h.engine.lock().library.account().unwrap().id.clone();
+    assert!(store.inferences(&account).unwrap().iter().any(|inference| {
+        inference.installation == registration.id && inference.game_id == Some(42)
+    }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_search_every_pending_title_from_a_bounded_queue() {
+    const CANDIDATES: usize = 105;
+
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+    // One request every couple of milliseconds, so the queue and in-flight bounds can be seen.
+    *api.delay.lock().unwrap() = Duration::from_millis(1);
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: root.to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+    for index in 0..CANDIDATES {
+        let fingerprint = format!("queued-{index}");
+        let title = format!("Queue Fixture {index}");
+        let directory = root.join(&fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        let candidate = Candidate {
+            fingerprint: fingerprint.clone(),
+            watch: "w1".into(),
+            root: directory.to_string_lossy().into_owned(),
+            title: title.clone(),
+            targets: vec![exe.to_string_lossy().into_owned()],
+            selected_target: Some(exe.to_string_lossy().into_owned()),
+            evidence: vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Product,
+                value: title,
+                strong: true,
+            }],
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        };
+        store.save_candidate(&candidate).unwrap();
+    }
+
+    // One refresh is the only trigger: the bounded queue refills itself as it drains.
+    h.engine.refresh_local_games();
+    assert!(
+        h.engine.lock().local_suggestion_queue.len() <= 100,
+        "the first batch stays within the bound"
+    );
+
+    let mut max_queue = 0;
+    let mut max_in_flight = 0;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            {
+                let state = h.engine.lock();
+                max_queue = max_queue.max(state.local_suggestion_queue.len());
+                max_in_flight = max_in_flight.max(state.local_suggestion_in_flight.len());
+            }
+            if api.searches.lock().unwrap().len() >= CANDIDATES {
+                let state = h.engine.lock();
+                if state.local_suggestion_in_flight.is_empty()
+                    && !state.local_suggestion_running
+                    && state.local_suggestion_queue.is_empty()
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("every queued title is searched without another refresh");
+
+    assert!(max_queue <= 100, "queue stayed bounded: {max_queue}");
+    assert!(max_in_flight <= 1, "one request at a time: {max_in_flight}");
+    let searches = api.searches.lock().unwrap().clone();
+    assert_eq!(searches.len(), CANDIDATES);
+    let unique: std::collections::BTreeSet<&String> = searches.iter().collect();
+    assert_eq!(
+        unique.len(),
+        CANDIDATES,
+        "each fingerprint is searched once"
+    );
+    for index in 0..CANDIDATES {
+        assert!(
+            searches.contains(&format!("Queue Fixture {index}")),
+            "missing title {index}"
+        );
+    }
+
+    let state = h.engine.lock();
+    assert!(state.local_suggestion_queue.is_empty());
+    assert!(state.local_suggestion_queued.is_empty());
+    assert!(state.local_suggestion_in_flight.is_empty());
+    assert!(
+        state.local_suggestion_searched.len() >= CANDIDATES,
+        "every candidate was answered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_cache_an_offline_answer_and_do_not_repeat_it() {
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+    *api.search_result.lock().unwrap() = Some(Err(ApiError::Failed));
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: root.to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+    for (fingerprint, title) in [
+        ("offline-a", "Offline Alpha"),
+        ("offline-b", "Offline Beta"),
+    ] {
+        let directory = root.join(fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        let candidate = Candidate {
+            fingerprint: fingerprint.into(),
+            watch: "w1".into(),
+            root: directory.to_string_lossy().into_owned(),
+            title: title.into(),
+            targets: vec![exe.to_string_lossy().into_owned()],
+            selected_target: Some(exe.to_string_lossy().into_owned()),
+            evidence: vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Product,
+                value: title.into(),
+                strong: true,
+            }],
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        };
+        store.save_candidate(&candidate).unwrap();
+    }
+
+    h.engine.refresh_local_games();
+    eventually(|| api.searches.lock().unwrap().len() >= 2).await;
+    let searches = api.searches.lock().unwrap().clone();
+    assert_eq!(searches.len(), 2);
+    {
+        let state = h.engine.lock();
+        assert_eq!(state.local_suggestion_searched.len(), 2);
+        assert!(state.local_suggestion_titles.values().all(Option::is_none));
+    }
+
+    // The failed answer is cached: a later refresh sends nothing again.
+    h.engine.refresh_local_games();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(api.searches.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_make_no_requests_without_a_verified_session() {
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    let fixture = tempfile::tempdir().unwrap();
+    let exe = std::fs::canonicalize({
+        let path = fixture.path().join("offline.exe");
+        std::fs::write(&path, b"game").unwrap();
+        path
+    })
+    .unwrap();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: fixture.path().to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+    store
+        .save_candidate(&Candidate {
+            fingerprint: "offline".into(),
+            watch: "w1".into(),
+            root: fixture.path().to_string_lossy().into_owned(),
+            title: "Offline Game".into(),
+            targets: vec![exe.to_string_lossy().into_owned()],
+            selected_target: Some(exe.to_string_lossy().into_owned()),
+            evidence: vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Product,
+                value: "Offline Game".into(),
+                strong: true,
+            }],
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        })
+        .unwrap();
+    h.engine.refresh_local_games();
+    h.until("offline candidate loaded", |snapshot| {
+        snapshot.local_games.candidates.len() == 1
+    })
+    .await;
+    assert!(api.searches.lock().unwrap().is_empty());
+
+    // The review still adds the candidate with no request; it starts selected by default.
+    h.until("offline candidate selected", |snapshot| {
+        snapshot.local_games.review_selected == vec!["offline".to_string()]
+    })
+    .await;
+    h.engine.review_selected_local_candidates(true, false);
+    h.until("offline candidate added", |snapshot| {
+        !snapshot.local_games.busy
+            && snapshot
+                .local_games
+                .registrations
+                .iter()
+                .any(|registration| !registration.removed)
+    })
+    .await;
+    assert!(api.searches.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ignoring_discoveries_deletes_only_rediscoverable_candidates() {
+    let api = FakeApi::new();
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api, creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+    let fixture = tempfile::tempdir().unwrap();
+    let watch = WatchRoot {
+        id: "w1".into(),
+        path: fixture.path().to_string_lossy().into_owned(),
+        enabled: true,
+    };
+    store.save_watch(&watch).unwrap();
+    let mut candidates = Vec::new();
+    for (fingerprint, title) in [
+        ("rediscover", "Moss & Machine"),
+        ("keep", "Frostbyte Arcade"),
+    ] {
+        let directory = fixture.path().join(fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        let candidate = Candidate {
+            fingerprint: fingerprint.into(),
+            watch: "w1".into(),
+            root: directory.to_string_lossy().into_owned(),
+            title: title.into(),
+            targets: vec![exe.to_string_lossy().into_owned()],
+            selected_target: Some(exe.to_string_lossy().into_owned()),
+            evidence: vec![Evidence {
+                kind: gamenode_core::drm_free::EvidenceKind::Product,
+                value: title.into(),
+                strong: true,
+            }],
+            ignored: false,
+            incomplete: false,
+            suggestion: None,
+            likely_non_game: false,
+        };
+        store.save_candidate(&candidate).unwrap();
+        candidates.push(candidate);
+    }
+    h.engine.refresh_local_games();
+    h.until("both candidates selected", |snapshot| {
+        snapshot.local_games.candidates.len() == 2
+            && snapshot.local_games.review_selected.len() == 2
+    })
+    .await;
+
+    // Ignore the first with rediscovery: its record is forgotten.
+    h.engine.select_local_candidate("keep".into());
+    h.until("only the rediscoverable candidate selected", |snapshot| {
+        snapshot.local_games.review_selected == vec!["rediscover".to_string()]
+    })
+    .await;
+    h.engine.review_selected_local_candidates(false, true);
+    h.until("rediscoverable candidate ignored", |snapshot| {
+        !snapshot.local_games.busy
+            && !snapshot
+                .local_games
+                .candidates
+                .iter()
+                .any(|candidate| candidate.fingerprint == "rediscover")
+    })
+    .await;
+    assert!(
+        store
+            .candidates()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate.fingerprint != "rediscover")
+    );
+
+    // Ignore the second permanently: the record stays, marked ignored.
+    h.engine.select_local_candidate("keep".into());
+    h.until("permanent candidate selected", |snapshot| {
+        snapshot.local_games.review_selected == vec!["keep".to_string()]
+    })
+    .await;
+    h.engine.review_selected_local_candidates(false, false);
+    h.until("permanent candidate ignored", |snapshot| {
+        !snapshot.local_games.busy
+            && snapshot
+                .local_games
+                .candidates
+                .iter()
+                .any(|candidate| candidate.fingerprint == "keep" && candidate.ignored)
+    })
+    .await;
+    assert!(
+        store
+            .candidates()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.fingerprint == "keep" && candidate.ignored)
+    );
+
+    // A later scan finds the same installation again; the permanently ignored one is not
+    // re-proposed, while the forgotten one comes back and starts selected.
+    let rediscover = candidates
+        .iter()
+        .find(|candidate| candidate.fingerprint == "rediscover")
+        .unwrap()
+        .clone();
+    store.save_candidate(&rediscover).unwrap();
+    h.engine.rescan_local_folders();
+    h.until("rediscoverable candidate proposed again", |snapshot| {
+        snapshot.local_games.discovery_completed
+            && !snapshot.local_games.discovery_scanning
+            && snapshot
+                .local_games
+                .candidates
+                .iter()
+                .any(|candidate| candidate.fingerprint == "rediscover" && !candidate.ignored)
+            && snapshot
+                .local_games
+                .review_selected
+                .contains(&"rediscover".to_string())
+    })
+    .await;
+    let saved = store.candidates().unwrap();
+    assert!(
+        saved
+            .iter()
+            .any(|candidate| candidate.fingerprint == "rediscover" && !candidate.ignored)
+    );
+    assert!(
+        saved
+            .iter()
+            .any(|candidate| candidate.fingerprint == "keep" && candidate.ignored)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_refill_across_100_boundary_persists_shared_title_matches() {
+    const TOTAL: usize = 105;
+
+    let api = FakeApi::new();
+    *api.search_result.lock().unwrap() = Some(Ok(gamenode_core::game_api::SearchPage {
+        games: vec![GameSummary {
+            id: 901,
+            name: "Boundary Match".into(),
+            release_year: None,
+            cover_url: Some("//images.igdb.com/igdb/image/upload/t_thumb/co901.jpg".into()),
+            platforms: Vec::new(),
+        }],
+        complete: Some(true),
+    }));
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    store
+        .save_watch(&WatchRoot {
+            id: "w1".into(),
+            path: root.to_string_lossy().into_owned(),
+            enabled: true,
+        })
+        .unwrap();
+
+    // Candidates 102 and 104 are beyond the 100-item initial queue limit and share one title.
+    for index in 0..TOTAL {
+        let fingerprint = format!("bound-{index}");
+        let title = if index == 102 || index == 104 {
+            "Boundary Match".to_string()
+        } else {
+            format!("Unmatched Fixture {index}")
+        };
+        let directory = root.join(&fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        store
+            .save_candidate(&Candidate {
+                fingerprint,
+                watch: "w1".into(),
+                root: directory.to_string_lossy().into_owned(),
+                title: title.clone(),
+                targets: vec![exe.to_string_lossy().into_owned()],
+                selected_target: Some(exe.to_string_lossy().into_owned()),
+                evidence: vec![Evidence {
+                    kind: gamenode_core::drm_free::EvidenceKind::Product,
+                    value: title,
+                    strong: true,
+                }],
+                ignored: false,
+                incomplete: false,
+                suggestion: None,
+                likely_non_game: false,
+            })
+            .unwrap();
+    }
+
+    h.engine.refresh_local_games();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let done = {
+                let state = h.engine.lock();
+                !state.local_suggestion_running
+                    && state.local_suggestion_queue.is_empty()
+                    && state.local_suggestion_in_flight.is_empty()
+                    && state.local_suggestion_searched.len() >= TOTAL
+            };
+            let persisted = store.candidates().unwrap();
+            let both_saved = ["bound-102", "bound-104"].iter().all(|fp| {
+                persisted
+                    .iter()
+                    .find(|c| c.fingerprint == *fp)
+                    .and_then(|c| c.suggestion.as_ref())
+                    .is_some_and(|s| s.game_id == 901)
+            });
+            if done && both_saved {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("refill searches beyond 100 and persists shared-title matches");
+
+    let searches = api.searches.lock().unwrap().clone();
+    assert_eq!(
+        searches.iter().filter(|q| *q == "Boundary Match").count(),
+        1,
+        "shared title beyond the 100-item boundary is searched only once"
+    );
+    assert_eq!(searches.len(), TOTAL - 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_suggestions_stop_and_clear_queue_when_session_is_rejected() {
+    let api = FakeApi::new();
+    *api.search_result.lock().unwrap() = Some(Err(ApiError::Rejected));
+    let creds = FakeCreds::with(None);
+    let mut h = harness(api.clone(), creds);
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().to_path_buf();
+    store
+        .save_watch(&WatchRoot {
+            id: "w1".into(),
+            path: root.to_string_lossy().into_owned(),
+            enabled: true,
+        })
+        .unwrap();
+    for (fingerprint, title) in [("rej-1", "Rejected One"), ("rej-2", "Rejected Two")] {
+        let directory = root.join(fingerprint);
+        std::fs::create_dir_all(&directory).unwrap();
+        let exe = std::fs::canonicalize({
+            let path = directory.join(format!("{fingerprint}.exe"));
+            std::fs::write(&path, b"game").unwrap();
+            path
+        })
+        .unwrap();
+        store
+            .save_candidate(&Candidate {
+                fingerprint: fingerprint.into(),
+                watch: "w1".into(),
+                root: directory.to_string_lossy().into_owned(),
+                title: title.into(),
+                targets: vec![exe.to_string_lossy().into_owned()],
+                selected_target: Some(exe.to_string_lossy().into_owned()),
+                evidence: vec![Evidence {
+                    kind: gamenode_core::drm_free::EvidenceKind::Product,
+                    value: title.into(),
+                    strong: true,
+                }],
+                ignored: false,
+                incomplete: false,
+                suggestion: None,
+                likely_non_game: false,
+            })
+            .unwrap();
+    }
+
+    h.engine.refresh_local_games();
+    eventually(|| {
+        let state = h.engine.lock();
+        !api.searches.lock().unwrap().is_empty()
+            && !state.local_suggestion_running
+            && state.local_suggestion_queue.is_empty()
+            && state.local_suggestion_queued.is_empty()
+            && state.local_suggestion_in_flight.is_empty()
+    })
+    .await;
+
+    assert_eq!(api.searches.lock().unwrap().len(), 1);
+    let state = h.engine.lock();
+    assert!(state.local_suggestion_titles.is_empty());
+    assert!(state.local_suggestion_searched.is_empty());
+}
+
+#[derive(Default)]
+struct ScriptedBackups {
+    runs: Mutex<
+        Vec<Result<gamenode_core::drm_free::BackupReport, gamenode_core::drm_free::LocalError>>,
+    >,
+    history: AtomicUsize,
+    requests: Mutex<Vec<gamenode_core::drm_free::BackupRequest>>,
+}
+
+impl gamenode_core::drm_free::BackupEngine for ScriptedBackups {
+    fn execute(
+        &self,
+        request: &gamenode_core::drm_free::BackupRequest,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<gamenode_core::drm_free::BackupReport, gamenode_core::drm_free::LocalError> {
+        use gamenode_core::drm_free::{BackupOperation, BackupReport, JobState};
+        self.requests.lock().unwrap().push(request.clone());
+        match &request.operation {
+            BackupOperation::Backup => self.runs.lock().unwrap().remove(0),
+            BackupOperation::History => {
+                let index = self.history.fetch_add(1, Ordering::SeqCst) + 1;
+                let title = request.profile.title.clone();
+                Ok(BackupReport {
+                    state: JobState::Successful,
+                    json: serde_json::json!({
+                        "games": {
+                            title: {
+                                "backups": [{
+                                    "name": format!("backup-{index}"),
+                                    "when": "2026-11-15 14:20:00"
+                                }]
+                            }
+                        }
+                    })
+                    .to_string(),
+                })
+            }
+            BackupOperation::RestorePreview { .. } => Ok(BackupReport {
+                state: JobState::Successful,
+                json: serde_json::json!({"overall": {"totalBytes": 7_100_000}}).to_string(),
+            }),
+            _ => Ok(BackupReport {
+                state: JobState::Successful,
+                json: "{}".into(),
+            }),
+        }
+    }
+}
+
+fn backup_fixture() -> (
+    gamenode_core::drm_free::Registration,
+    gamenode_core::drm_free::SaveProfile,
+) {
+    use gamenode_core::drm_free::{Registration, SaveProfile, SaveSupport};
+    (
+        Registration {
+            id: "game".into(),
+            title: "Fixture".into(),
+            executable: "/games/fixture/fixture.exe".into(),
+            file_identity: "fixture".into(),
+            root: "/games/fixture".into(),
+            working_directory: "/games/fixture".into(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            custom_cover: None,
+            available: true,
+        },
+        SaveProfile {
+            id: "profile".into(),
+            installation: "game".into(),
+            revision: 1,
+            title: "Fixture".into(),
+            manifest_hash: "hash".into(),
+            definition: "{}".into(),
+            files: vec![],
+            registry: vec![],
+            support: SaveSupport::Supported,
+            automatic: None,
+            retention: None,
+        },
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_origins_are_recorded_only_for_successful_changed_runs() {
+    use gamenode_core::drm_free::{
+        BackupJob, BackupReason, BackupReport, BackupSettings, JobState, LocalError,
+    };
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let backups = Arc::new(ScriptedBackups::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.backups = Some(backups.clone());
+    }
+    let (registration, profile) = backup_fixture();
+    store.save_registration(&registration).unwrap();
+    store.save_profile(&profile).unwrap();
+
+    let job = |id: &str, period: Option<&str>, seconds: Option<u32>| BackupJob {
+        id: id.into(),
+        installation: "game".into(),
+        profile: "profile".into(),
+        revision: 1,
+        play_period: period.map(str::to_owned),
+        destination: "/backups".into(),
+        state: JobState::Queued,
+        attempts: 0,
+        ready_at: 0,
+        backup_id: None,
+        error: None,
+        play_seconds: seconds,
+    };
+
+    // 1. Automatic after-session success records the session length.
+    backups.runs.lock().unwrap().push(Ok(BackupReport {
+        state: JobState::Successful,
+        json: "{}".into(),
+    }));
+    let automatic = job("automatic", Some("session"), Some(42 * 60));
+    store.save_job(&automatic).unwrap();
+    {
+        let mut state = h.engine.lock();
+        state.local.registrations = vec![registration.clone()];
+        state.local.profiles = vec![profile.clone()];
+        state.local.jobs = vec![automatic.clone()];
+        state.local.settings = BackupSettings {
+            automatic: true,
+            destination: "/backups".into(),
+            retention: 10,
+        };
+        h.engine.drive_local_backups(&mut state, 100);
+    }
+    eventually(|| {
+        store
+            .jobs()
+            .unwrap()
+            .iter()
+            .find(|job| job.id == "automatic")
+            .is_some_and(|job| job.state == JobState::Successful)
+    })
+    .await;
+    eventually(|| !h.engine.lock().local_backup_busy).await;
+    let meta = store.backup_version_meta("game").unwrap();
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta[0].reason, BackupReason::AfterSession);
+    assert_eq!(meta[0].play_seconds, Some(42 * 60));
+    assert_eq!(
+        backups
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rfind(|request| {
+                request.operation == gamenode_core::drm_free::BackupOperation::Backup
+            })
+            .unwrap()
+            .profile
+            .retention,
+        Some(10),
+        "the helper limit follows the settings default"
+    );
+
+    // 2. Backup now records manual origin without a session length; the configured
+    // retention becomes the helper limit.
+    backups.runs.lock().unwrap().push(Ok(BackupReport {
+        state: JobState::Successful,
+        json: "{}".into(),
+    }));
+    let manual = job("manual", None, None);
+    store.save_job(&manual).unwrap();
+    {
+        let mut state = h.engine.lock();
+        state.local.jobs = store.jobs().unwrap();
+        state.local.settings.retention = 50;
+        h.engine.drive_local_backups(&mut state, 200);
+    }
+    eventually(|| store.backup_version_meta("game").unwrap().len() == 2).await;
+    eventually(|| !h.engine.lock().local_backup_busy).await;
+    let meta = store.backup_version_meta("game").unwrap();
+    assert_eq!(meta[1].reason, BackupReason::Manual);
+    assert_eq!(meta[1].play_seconds, None);
+    assert_eq!(
+        backups
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rfind(|request| {
+                request.operation == gamenode_core::drm_free::BackupOperation::Backup
+            })
+            .unwrap()
+            .profile
+            .retention,
+        Some(50),
+        "the helper limit follows the configured setting"
+    );
+
+    // 3. Unchanged data adds no version and no origin row.
+    backups.runs.lock().unwrap().push(Ok(BackupReport {
+        state: JobState::Unchanged,
+        json: "{}".into(),
+    }));
+    let unchanged = job("unchanged", Some("session-2"), Some(60));
+    store.save_job(&unchanged).unwrap();
+    {
+        let mut state = h.engine.lock();
+        state.local.jobs = store.jobs().unwrap();
+        h.engine.drive_local_backups(&mut state, 300);
+    }
+    eventually(|| {
+        store
+            .jobs()
+            .unwrap()
+            .iter()
+            .find(|job| job.id == "unchanged")
+            .is_some_and(|job| job.state == JobState::Unchanged)
+    })
+    .await;
+    eventually(|| !h.engine.lock().local_backup_busy).await;
+    assert_eq!(store.backup_version_meta("game").unwrap().len(), 2);
+
+    // 4. A failed run records no origin and stays queued for retry.
+    backups
+        .runs
+        .lock()
+        .unwrap()
+        .push(Err(LocalError::Failed("disk full".into())));
+    let failed = job("failed", Some("session-3"), Some(120));
+    store.save_job(&failed).unwrap();
+    {
+        let mut state = h.engine.lock();
+        state.local.jobs = store.jobs().unwrap();
+        h.engine.drive_local_backups(&mut state, 400);
+    }
+    eventually(|| {
+        store
+            .jobs()
+            .unwrap()
+            .iter()
+            .find(|job| job.id == "failed")
+            .is_some_and(|job| job.state == JobState::Queued && job.attempts == 1)
+    })
+    .await;
+    assert_eq!(store.backup_version_meta("game").unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retention_is_validated_and_isolated_per_installation() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+    }
+    let (registration, mut profile) = backup_fixture();
+    store.save_registration(&registration).unwrap();
+    store.save_profile(&profile).unwrap();
+    let mut other = profile.clone();
+    other.id = "other-profile".into();
+    other.installation = "other".into();
+    profile.retention = Some(20);
+    store.save_profile(&profile).unwrap();
+    store.save_profile(&other).unwrap();
+
+    h.engine
+        .set_local_backup_retention("manual:game".into(), 50);
+    eventually(|| {
+        store
+            .profiles()
+            .unwrap()
+            .iter()
+            .find(|profile| profile.id == "profile")
+            .is_some_and(|profile| profile.retention == Some(50))
+    })
+    .await;
+    assert_eq!(
+        store
+            .profiles()
+            .unwrap()
+            .iter()
+            .find(|profile| profile.id == "other-profile")
+            .unwrap()
+            .retention,
+        None
+    );
+
+    h.engine.set_local_backup_retention("manual:game".into(), 7);
+    eventually(|| h.engine.snapshot().local_games.error.is_some()).await;
+    assert_eq!(
+        store
+            .profiles()
+            .unwrap()
+            .iter()
+            .find(|profile| profile.id == "profile")
+            .unwrap()
+            .retention,
+        Some(50)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_custom_cover_commits_survives_a_match_and_cleans_up_on_replace_cancel_and_clear() {
+    use gamenode_core::library::store::GameRecord;
+
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    let host = Arc::new(Host::default());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(host.clone());
+        shared.state.get_mut().unwrap().library = LibraryMachine::new(
+            crate::providers::load_bundled(Platform::Windows).providers,
+            Default::default(),
+        );
+    }
+    h.signed_out().await;
+    h.sign_in("token").await;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let executable = fixture.path().join("game.exe");
+    std::fs::write(&executable, b"fixture").unwrap();
+    h.engine
+        .add_local_executable(Some(executable.to_string_lossy().into_owned()));
+    h.until("local game added", |s| {
+        s.local_games.registrations.len() == 1 && !s.local_games.busy
+    })
+    .await;
+    let registration = store.registrations().unwrap().remove(0);
+    let key = registration.key();
+    let id = registration.id.clone();
+    let cover = |hash: &str| format!("local-{id}-{hash}.webp");
+
+    let first = cover("aaaaaaaaaaaaaaaa");
+    let second = cover("bbbbbbbbbbbbbbbb");
+    let pending = cover("cccccccccccccccc");
+    for file in [&first, &second, &pending] {
+        std::fs::write(h.covers.path().join(file), b"image").unwrap();
+    }
+
+    let mut value = registration.clone();
+    value.custom_cover = Some(first.clone());
+    h.engine.edit_local_game(value);
+    h.until("custom cover committed", |s| {
+        !s.local_games.busy
+            && s.local_games.registrations[0].custom_cover.as_deref() == Some(&first)
+    })
+    .await;
+
+    // The library row shows the custom cover, and a later match keeps it.
+    h.until("custom cover in the library row", |s| {
+        s.library.as_ref().is_some_and(|library| {
+            library
+                .rows
+                .iter()
+                .any(|row| row.key == key && row.cover_file.as_deref() == Some(&first))
+        })
+    })
+    .await;
+    {
+        let mut state = h.engine.lock();
+        state.library.set_local_inference(
+            key.clone(),
+            Some(10),
+            Some(GameRecord {
+                game_id: 10,
+                name: "Matched".into(),
+                release_year: Some(2020),
+                cover_url: None,
+                cover_file: Some("10.jpg".into()),
+                cover_failed_at: None,
+                platforms: vec![],
+            }),
+        );
+    }
+    let row = h
+        .engine
+        .snapshot()
+        .library
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.key == key)
+        .cloned()
+        .unwrap();
+    assert_eq!(row.cover_file.as_deref(), Some(first.as_str()));
+    assert_eq!(row.game_cover_file.as_deref(), Some("10.jpg"));
+
+    // Replacing the cover deletes the previously committed file.
+    let mut value = store.registrations().unwrap().remove(0);
+    value.custom_cover = Some(second.clone());
+    h.engine.edit_local_game(value);
+    h.until("replacement committed", |s| {
+        !s.local_games.busy
+            && s.local_games.registrations[0].custom_cover.as_deref() == Some(&second)
+    })
+    .await;
+    assert!(!h.covers.path().join(&first).exists());
+    assert!(h.covers.path().join(&second).exists());
+
+    // Cancelling an editor deletes the pending file but keeps the committed one.
+    h.engine
+        .lock()
+        .local_cover_pending
+        .insert(id.clone(), pending.clone());
+    h.engine.discard_local_cover(key.clone());
+    assert!(!h.covers.path().join(&pending).exists());
+    assert!(h.covers.path().join(&second).exists());
+
+    // Clearing returns to the matched GameNode cover and deletes the custom file.
+    let mut value = store.registrations().unwrap().remove(0);
+    value.custom_cover = None;
+    h.engine.edit_local_game(value);
+    h.until("cover cleared", |s| {
+        !s.local_games.busy && s.local_games.registrations[0].custom_cover.is_none()
+    })
+    .await;
+    assert!(!h.covers.path().join(&second).exists());
+    {
+        // The in-memory match this test set is not persisted; re-apply it while checking that the
+        // cleared registration falls back to the GameNode cover.
+        let mut state = h.engine.lock();
+        state.library.set_local_inference(
+            key.clone(),
+            Some(10),
+            Some(GameRecord {
+                game_id: 10,
+                name: "Matched".into(),
+                release_year: Some(2020),
+                cover_url: None,
+                cover_file: Some("10.jpg".into()),
+                cover_failed_at: None,
+                platforms: vec![],
+            }),
+        );
+    }
+    let row = h
+        .engine
+        .snapshot()
+        .library
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.key == key)
+        .cloned()
+        .unwrap();
+    assert_eq!(row.cover_file.as_deref(), Some("10.jpg"));
+    assert_eq!(row.game_cover_file.as_deref(), Some("10.jpg"));
+
+    h.engine.shutdown();
 }

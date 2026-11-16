@@ -59,8 +59,12 @@ pub struct Row {
     /// owned.
     pub shared: bool,
     pub status: MatchStatus,
-    /// File name of the cached cover under the per-user `covers/` folder.
+    /// File name of the cached cover under the per-user `covers/` folder. For a DRM-free entry
+    /// with a custom cover this is that file; otherwise it is the matched GameNode cover.
     pub cover_file: Option<String>,
+    /// The matched GameNode game's cover, even while a DRM-free custom cover is shown.
+    #[serde(default)]
+    pub game_cover_file: Option<String>,
     /// The matched game's release year; unknown for unmatched entries and games without one.
     pub release_year: Option<i32>,
     /// Unix seconds of the scan that first detected the entry.
@@ -341,6 +345,7 @@ impl LibraryMachine {
                     entry_id: entry.id.clone(),
                 })
         });
+        let game_cover_file = game.and_then(|game| game.cover_file.clone());
         Row {
             playtime: self.playtime.get(&entry.key).copied().unwrap_or_default(),
             running: self.running.contains_key(&entry.key),
@@ -360,7 +365,12 @@ impl LibraryMachine {
             owned: entry.owned,
             shared: entry.shared && !entry.owned,
             status,
-            cover_file: game.and_then(|game| game.cover_file.clone()),
+            cover_file: self
+                .local_covers
+                .get(&entry.key)
+                .cloned()
+                .or_else(|| game_cover_file.clone()),
+            game_cover_file,
             release_year: game.and_then(|game| game.release_year),
             added_at: entry.first_seen,
             is_favorite,

@@ -176,6 +176,14 @@ reset it. Use `http://localhost:4777/?scenario=signed-out` to start signed out, 
 state fixtures (`?scenario=first-run` starts the signed-in first-run guide). Add `&steam=expired` (or any store scenario) plus `&locale=pt-BR`
 (or `?locale=pt-BR` on its own) for Portuguese.
 
+Game tools opens from a game's context menu, **More actions** or the PC section of the
+detail pane, and the mock keeps the real channel, version, proxy, candidate, anti-cheat,
+install and uninstall interactions in memory. **Aster Vale** is running, so its tools
+action is disabled. **Infinite Coast** (`steam:9`) detects Easy Anti-Cheat: the danger
+callout shows, Install stays disabled until the confirmation is checked, and Browse…
+selects `bin/x64/picked.exe` through the same selection command as the candidate list.
+**Clockwork Harbor** (`steam:3`) is a clean game with no callout.
+
 The **Stores** settings panel includes the Steam account fixture and bundled plugin
 inventory. Use `&steam=notConnected`, `&steam=signingIn`, `&steam=expired`,
 `&steam=unreachable`, `&steam=credentialError`, `&steam=catalogExpired` or
@@ -254,6 +262,8 @@ with Ctrl/Shift (multi-selection). Add `&locale=pt-BR` for Portuguese.
 | `?viewWrite=fail` | Every saved-view storage write fails |
 | `?mutations=fail` | Add, batch status and add-to-collection GameNode writes fail |
 | `?catalog=error`, `?catalog=offline`, `?catalog=incomplete` | Catalog failure, offline and incomplete answers |
+| `?sync=first` | Signed-in account whose first-sync explanation is pending; **Keep sync on** dismisses it, **Turn sync off** disables sync and then dismisses it |
+| `?toolpick=cancel`, `?toolpick=fail`, `?toolpick=outside` | Browse… in Game tools keeps the current executable on cancel, or reports a picker or outside-folder error |
 
 **L1–L6 and catalog checklist**
 
@@ -362,8 +372,52 @@ parameter) translates the shell, library, menus, notifications and catalog.
 needed. Signing out from the app menu also returns to the signed-out shell, and
 signing back in restores the fixture library.
 
-These control paths document the mock fixtures only. They are not a record of the
-browser visual comparison or of native Windows acceptance.
+**Dialog fixtures**
+
+The redesigned dialogs read the same snapshots and commands as the native host.
+Use the **Details panel** toggle and these fixtures:
+
+- **Match** — `?library=variants`, select **Neon Courier 2088**, then **Review…**.
+  The ambiguous row opens three candidates at 96%, 74% and 38%; selecting one
+  changes the preview and **Match** commits it.
+- **Add to GameNode** — select a matched game and choose **Add to GameNode**. The
+  dialog has the five statuses and collection counts. **New collection** creates a
+  collection; the name **Collection limit** answers with the localized
+  `collection_limit_reached` error and keeps the typed name.
+- **Batch add** — select three games with Ctrl/Shift, choose **Add to GameNode**,
+  then confirm. Each item takes 650 ms in the mock. **Hide** closes the dialog and
+  the run finishes with the usual multi-add notification; signing out while it runs
+  reports the remaining games in that notification without Undo or View on GameNode.
+- **Achievements** — `?library=variants`, select **Aster Vale**, then **See all**.
+  The fixture has 58 achievements with 31 unlocked and one hidden locked row; the
+  sort menu offers most recent, rarest, most common and name.
+- **Save protection** — `?library=variants`, select **Brasa**, then **Local save
+  protection**. The history has four versions: two after-session copies (42 min
+  and 1 h 12 min), one manual copy and one recovery copy. **Keep** changes the
+  per-game retention among 5, 10, 20 and 50; space used and the copy count update
+  in the mock.
+- **Game settings and custom cover** — `?library=variants`, select a DRM-free
+  game, then **Edit…**. **Change cover…** returns the bundled `mock-6.svg`
+  sample; **Cancel** discards the pending cover and reopening shows the previous
+  one.
+- **Discovered games** — `?discoveries=1`, then **Review** in the banner. The
+  three rows show a suggested match, no match, and a likely non-game
+  (`vc_redist.x64.exe`) that starts unchecked. **Allow rediscovery in future
+  scans** starts checked, and the header checkbox drives the **Add N games**
+  count.
+- **Tracking conflict** — `?claim=1` opens the conflict without a watched-folder
+  scan; **Cancel**, **Use existing item** and **Move tracking** are reachable.
+- **Sign-in and mural** — `?scenario=signed-out` shows 12 cached covers plus 13
+  neutral mural tiles; below 860 px the art pane is hidden. Add
+  `&signin=pending` so a provider click stays pending; `&reopen=fail` makes
+  **Open again** report the localized reopen error without ending the attempt.
+
+The first-use sync explanation is reachable with `?sync=first`: **Keep sync on**
+leaves sync enabled and dismisses it, and **Turn sync off** disables sync before
+dismissing it. **Game tools** opens from a game's context menu, **More actions** or
+the PC section of the detail pane, as described above. These control paths document
+the mock fixtures only. They are not a record of the browser visual comparison or of
+native Windows acceptance.
 
 The mock keeps its state in memory and never writes the database. In the native
 host, migration `0010_library_organization.sql` adds the five per-account tables

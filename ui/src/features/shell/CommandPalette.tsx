@@ -373,7 +373,9 @@ export const CommandPalette: React.FC = () => {
         className="fixed inset-0"
         style={{ zIndex: layer.zIndex }}
       >
-        <Overlay backgroundOpacity={0.62} onClick={closePalette} />
+        {/* The scrim dims the shell and sits below the palette in this layer. Mantine's Overlay
+            defaults to z-index 200, which would paint it over the palette and dim the palette too. */}
+        <Overlay backgroundOpacity={0.62} zIndex={0} onClick={closePalette} />
         <FocusTrap active innerRef={rootRef}>
           <div
             ref={rootRef}
@@ -383,7 +385,7 @@ export const CommandPalette: React.FC = () => {
             data-testid="command-palette"
             tabIndex={-1}
             onKeyDown={handleKeyDown}
-            className="absolute left-1/2 top-[96px] flex max-h-[min(520px,calc(100vh_-_140px))] w-[600px] max-w-[calc(100vw_-_32px)] -translate-x-1/2 flex-col overflow-hidden rounded-palette border border-border-overlay bg-secondary shadow-toast focus:outline-none"
+            className="absolute z-10 left-1/2 top-[96px] flex max-h-[min(520px,calc(100vh_-_140px))] w-[600px] max-w-[calc(100vw_-_32px)] -translate-x-1/2 flex-col overflow-hidden rounded-palette border border-border-overlay bg-secondary shadow-toast focus:outline-none"
           >
             <div className="flex h-[52px] shrink-0 items-center gap-[10px] border-b border-border-subtle px-[16px]">
               <IconSearch

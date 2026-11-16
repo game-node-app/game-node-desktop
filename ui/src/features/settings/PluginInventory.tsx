@@ -64,6 +64,11 @@ export const PluginInventory: React.FC = () => {
     },
     enabled: managedPluginId !== null && profileId !== null,
   });
+  useQuery({
+    queryKey: pluginQueryKeys.configuration(managedPluginId ?? ''),
+    queryFn: () => commands.pluginConfigurationState(managedPluginId!),
+    enabled: managedPluginId !== null,
+  });
   const periodicChecks = updatePreferences?.periodicChecks ?? false;
 
   useEffect(() => {

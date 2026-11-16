@@ -272,6 +272,19 @@ impl PluginUpdateService {
         lifecycle.permission_snapshot(plugin_id).await
     }
 
+    pub async fn configuration_state(
+        &self,
+        plugin_id: String,
+    ) -> Result<super::runtime::PluginConfigurationState, tonic::Status> {
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("managed plugin runtime is unavailable"))?;
+        lifecycle.configuration_state(plugin_id).await
+    }
+
     pub fn preferences(&self) -> PluginUpdatePreferences {
         self.preferences
             .lock()
@@ -549,7 +562,7 @@ impl PluginUpdateService {
     }
 }
 
-fn package_key(path: &Path) -> Result<[u8; 32], String> {
+pub(crate) fn package_key(path: &Path) -> Result<[u8; 32], String> {
     let bytes = fs::read(path.join("plugin.json")).map_err(|error| error.to_string())?;
     let manifest = Manifest::parse_json(&bytes).map_err(|error| error.to_string())?;
     decode_publisher_key(&manifest.manifest().publisher.public_key)

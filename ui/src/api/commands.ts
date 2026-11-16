@@ -10,6 +10,7 @@ import type {
   LibraryInput,
   PluginInfo,
   PluginPermissionSnapshot,
+  PluginConfigurationState,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
   PluginUpdateReview,
@@ -143,6 +144,13 @@ export const commands = {
         grantRevision: 0,
         effectiveGrants: [],
       }),
+    ),
+
+  pluginConfigurationState: (pluginId: string) =>
+    safeInvoke<PluginConfigurationState>(
+      'plugin_configuration_state',
+      { pluginId },
+      () => ({ pluginId, available: false, revision: null }),
     ),
 
   pluginUpdatePreferences: () =>

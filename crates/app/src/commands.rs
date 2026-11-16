@@ -401,6 +401,17 @@ pub async fn plugin_permission_snapshot(
 }
 
 #[tauri::command]
+pub async fn plugin_configuration_state(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    plugin_id: String,
+) -> Result<crate::plugin_host::runtime::PluginConfigurationState, String> {
+    updates
+        .configuration_state(plugin_id)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
+#[tauri::command]
 pub async fn plugin_update_preferences(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
 ) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {

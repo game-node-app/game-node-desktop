@@ -502,6 +502,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::clear_tool_cache,
         commands::plugin_inventory,
         commands::plugin_permission_snapshot,
+        commands::plugin_configuration_state,
         commands::plugin_update_preferences,
         commands::plugin_update_available,
         commands::plugin_update_set_periodic_checks,

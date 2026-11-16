@@ -187,6 +187,15 @@ pub struct PluginPermissionSnapshot {
     pub effective_grants: Vec<super::grants::EffectiveGrant>,
 }
 
+/// Host-owned configuration availability and the active signed package revision.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigurationState {
+    pub plugin_id: String,
+    pub available: bool,
+    pub revision: Option<String>,
+}
+
 impl ThirdPartyPluginLifecycle {
     pub fn new(
         api: ProviderApi,
@@ -279,6 +288,94 @@ impl ThirdPartyPluginLifecycle {
             profile_id: profile.profile_id().to_owned(),
             grant_revision,
             effective_grants,
+        })
+    }
+
+    /// Reports only whether the active signed manifest offers host-supported configuration
+    /// modes and which package revision declared them. Plugin-owned preferences are never read.
+    pub async fn configuration_state(
+        &self,
+        plugin_id: String,
+    ) -> Result<PluginConfigurationState, Status> {
+        let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        let [provider_id] = provider_ids.as_slice() else {
+            return Err(Status::failed_precondition(
+                "plugin has no unique registered third-party provider",
+            ));
+        };
+        let (registered_plugin_id, registered_fingerprint) = self
+            .api
+            .third_party_identity(provider_id)
+            .ok_or_else(|| Status::failed_precondition("plugin identity is unavailable"))?;
+        if registered_plugin_id != plugin_id {
+            return Err(Status::failed_precondition(
+                "registered plugin identity changed",
+            ));
+        }
+
+        let registry = self.registry.clone();
+        let lookup_id = plugin_id.clone();
+        let installed = tokio::task::spawn_blocking(move || registry.active(&lookup_id))
+            .await
+            .map_err(|_| Status::internal("plugin package state worker failed"))?
+            .map_err(|_| Status::internal("plugin package state is unavailable"))?;
+        let Some(installed) = installed else {
+            return Ok(PluginConfigurationState {
+                plugin_id,
+                available: false,
+                revision: None,
+            });
+        };
+
+        let package_path = installed.package_path.clone();
+        let package_plugin_id = installed.plugin_id.clone();
+        let trust_dir = self.state.trust_dir();
+        let (publisher_key, trusted_fingerprint) = tokio::task::spawn_blocking(move || {
+            let publisher_key = super::updates::package_key(&package_path)
+                .map_err(|_| Status::failed_precondition("active plugin package is invalid"))?;
+            let trust = super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                .map_err(|_| Status::internal("plugin publisher trust is unavailable"))?;
+            if !trust
+                .is_pinned(&package_plugin_id, &publisher_key)
+                .map_err(|_| Status::internal("plugin publisher trust is invalid"))?
+            {
+                return Err(Status::permission_denied(
+                    "active plugin publisher is not trusted",
+                ));
+            }
+            use sha2::Digest as _;
+            let fingerprint = format!("SHA256:{:x}", sha2::Sha256::digest(publisher_key));
+            Ok((publisher_key, fingerprint))
+        })
+        .await
+        .map_err(|_| Status::internal("plugin publisher trust worker failed"))??;
+        if trusted_fingerprint != registered_fingerprint {
+            return Err(Status::failed_precondition(
+                "active plugin publisher does not match its registration",
+            ));
+        }
+        let report = self
+            .packages
+            .inspect_candidate(
+                &installed.package_path,
+                publisher_key,
+                gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
+            )
+            .await
+            .map_err(|_| Status::failed_precondition("active plugin package is invalid"))?;
+        if report.manifest.id != plugin_id || report.manifest.version != installed.version {
+            return Err(Status::failed_precondition(
+                "active plugin manifest does not match its package revision",
+            ));
+        }
+        let modes = report.manifest.configuration;
+        Ok(PluginConfigurationState {
+            plugin_id,
+            available: modes.external || modes.declarative,
+            revision: Some(format!(
+                "{}:external={}:declarative={}",
+                installed.version, modes.external, modes.declarative
+            )),
         })
     }
 

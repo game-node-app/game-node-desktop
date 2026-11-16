@@ -3,9 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { appTheme } from '../../AppProviders';
-import { commands, type AvailablePluginUpdate, type PluginInfo } from '../../api';
+import {
+  commands,
+  createDefaultSnapshot,
+  SNAPSHOT_QUERY_KEY,
+  type AvailablePluginUpdate,
+  type PluginConfigurationState,
+  type PluginInfo,
+  type PluginPermissionSnapshot,
+} from '../../api';
 import { I18nProvider } from '../../i18n';
 import { PluginInventory } from './PluginInventory';
+import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 
 const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }));
@@ -21,9 +30,16 @@ const plugin: PluginInfo = {
   nativeAccess: ['files', 'network'],
 };
 
-function renderInventory(locale = 'en') {
+function renderInventory(locale = 'en', profileId?: string, seed?: (client: QueryClient) => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  if (profileId) {
+    client.setQueryData(SNAPSHOT_QUERY_KEY, {
+      ...createDefaultSnapshot(),
+      auth: { signedIn: { user: { id: profileId } } },
+    });
+  }
+  seed?.(client);
+  const view = render(
     <MantineProvider theme={appTheme} defaultColorScheme="dark">
       <QueryClientProvider client={client}>
         <I18nProvider initialLocale={locale}>
@@ -32,6 +48,7 @@ function renderInventory(locale = 'en') {
       </QueryClientProvider>
     </MantineProvider>,
   );
+  return { ...view, client };
 }
 
 describe('PluginInventory', () => {
@@ -173,6 +190,84 @@ describe('PluginInventory', () => {
       expect(periodicCheckbox).toBeChecked();
       expect(screen.getByText(/Could not check or review this update/)).toBeInTheDocument();
     });
+  });
+
+  it('caches host permission revisions and configuration metadata without plugin preferences', async () => {
+    const managed: PluginInfo = {
+      ...plugin,
+      pluginId: 'org.example.community',
+      source: 'community',
+      publisherFingerprint: `SHA256:${'a'.repeat(64)}`,
+    };
+    const permissions: PluginPermissionSnapshot = {
+      pluginId: managed.pluginId,
+      publisherFingerprint: managed.publisherFingerprint!,
+      profileId: 'account-one',
+      grantRevision: 7,
+      effectiveGrants: [],
+    };
+    const configuration: PluginConfigurationState = {
+      pluginId: managed.pluginId,
+      available: true,
+      revision: '1.2.0:external=true:declarative=false',
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockResolvedValue(permissions);
+    vi.spyOn(commands, 'pluginConfigurationState').mockResolvedValue(configuration);
+
+    const { client } = renderInventory('en', 'account-one');
+    await waitFor(() => {
+      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId);
+      expect(commands.pluginConfigurationState).toHaveBeenCalledWith(managed.pluginId);
+    });
+    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-one')))
+      .toEqual(permissions);
+    expect(client.getQueryData(pluginQueryKeys.configuration(managed.pluginId)))
+      .toEqual(configuration);
+  });
+
+  it('retains the last host permission and configuration snapshots after read errors', async () => {
+    const managed: PluginInfo = {
+      ...plugin,
+      pluginId: 'org.example.community',
+      source: 'community',
+      publisherFingerprint: `SHA256:${'b'.repeat(64)}`,
+    };
+    const savedPermissions: PluginPermissionSnapshot = {
+      pluginId: managed.pluginId,
+      publisherFingerprint: managed.publisherFingerprint!,
+      profileId: 'account-two',
+      grantRevision: 11,
+      effectiveGrants: [],
+    };
+    const savedConfiguration: PluginConfigurationState = {
+      pluginId: managed.pluginId,
+      available: true,
+      revision: '2.0.0:external=false:declarative=true',
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockRejectedValue(new Error('offline'));
+    vi.spyOn(commands, 'pluginConfigurationState').mockRejectedValue(new Error('offline'));
+
+    const { client } = renderInventory('en', 'account-two', (queryClient) => {
+      queryClient.setQueryData(
+        pluginQueryKeys.permissions(managed.pluginId, 'account-two'),
+        savedPermissions,
+      );
+      queryClient.setQueryData(pluginQueryKeys.configuration(managed.pluginId), savedConfiguration);
+    });
+    await waitFor(() => {
+      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId);
+      expect(commands.pluginConfigurationState).toHaveBeenCalledWith(managed.pluginId);
+    });
+    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-two')))
+      .toEqual(savedPermissions);
+    expect(client.getQueryData(pluginQueryKeys.configuration(managed.pluginId)))
+      .toEqual(savedConfiguration);
   });
 
   it('does not let a stale check response overwrite a newer host update event', async () => {

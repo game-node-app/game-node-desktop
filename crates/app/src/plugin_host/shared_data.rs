@@ -149,6 +149,7 @@ pub struct QueryResult {
 pub struct QueryCursor {
     caller: PluginIdentity,
     dataset_id: String,
+    record_id: Option<String>,
     category: Option<CommonDataCategory>,
     selector: QuerySelector,
     delivery: Delivery,
@@ -161,6 +162,8 @@ pub struct QueryCursor {
 pub struct QueryRequest {
     pub caller: PluginIdentity,
     pub dataset_id: String,
+    /// Optional exact record lookup. Used by Data.Get so owner reads select one record too.
+    pub record_id: Option<String>,
     pub category: Option<CommonDataCategory>,
     /// `None` and an empty selector both mean owner-private records only.
     pub selector: Option<CommonDataSelector>,
@@ -404,6 +407,7 @@ impl DataBroker {
                 Some(cursor) => {
                     if cursor.caller != request.caller
                         || cursor.dataset_id != request.dataset_id
+                        || cursor.record_id != request.record_id
                         || cursor.category != request.category
                         || cursor.selector != selector
                         || cursor.delivery != request.delivery
@@ -423,6 +427,10 @@ impl DataBroker {
                     record.revision > after
                         && record.revision <= snapshot
                         && record.dataset_id == request.dataset_id
+                        && request
+                            .record_id
+                            .as_ref()
+                            .is_none_or(|record_id| &record.record_id == record_id)
                         && request
                             .category
                             .is_none_or(|category| record.category == Some(category))
@@ -468,6 +476,7 @@ impl DataBroker {
         let next_cursor = has_more.then(|| QueryCursor {
             caller: request.caller.clone(),
             dataset_id: request.dataset_id.clone(),
+            record_id: request.record_id.clone(),
             category: request.category,
             selector,
             delivery: request.delivery,
@@ -895,8 +904,12 @@ mod tests {
         fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision {
             let scope_allowed = match &request.scope {
                 AccessScope::Owner => false,
-                AccessScope::Category(category) => self.categories.contains(category),
-                AccessScope::SelectedRecord(record_id) => self.record_ids.contains(record_id),
+                AccessScope::Category(category) => {
+                    request.class == SharingClass::Common && self.categories.contains(category)
+                }
+                AccessScope::SelectedRecord(record_id) => {
+                    request.class == SharingClass::Common && self.record_ids.contains(record_id)
+                }
                 AccessScope::Dataset(_) => false,
             };
             let fields = request
@@ -960,6 +973,7 @@ mod tests {
         QueryRequest {
             caller: caller.clone(),
             dataset_id: "performance.v1".into(),
+            record_id: None,
             category: Some(CommonDataCategory::GamePerformanceHistory),
             selector,
             delivery,
@@ -1272,7 +1286,7 @@ mod tests {
             .find(|record| record.record_id() == receipt.record_id)
             .unwrap();
         assert_eq!(projected.fields().len(), 1);
-        broker
+        let onward_receipt = broker
             .publish_onward(&consumer, &projected, auth.as_ref(), 102)
             .unwrap();
         {
@@ -1308,7 +1322,12 @@ mod tests {
                 103,
             )
             .unwrap();
-        assert!(result.records.is_empty());
+        assert!(
+            result
+                .records
+                .iter()
+                .all(|record| record.record_id() != onward_receipt.record_id)
+        );
     }
 
     #[test]

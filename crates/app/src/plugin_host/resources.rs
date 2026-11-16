@@ -39,6 +39,7 @@ mod saves;
 mod storage;
 mod tools;
 
+use self::mutations::mutation_key;
 use super::files::FileAccess;
 use super::fingerprints;
 use super::intents::Intents;
@@ -1042,6 +1043,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 QueryRequest {
                     caller: identity,
                     dataset_id: request.dataset_id,
+                    record_id: Some(request.record_id.clone()),
                     category: None,
                     selector: Some(selector),
                     delivery: Delivery::Query,
@@ -1101,6 +1103,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 QueryRequest {
                     caller: identity,
                     dataset_id: request.dataset_id,
+                    record_id: None,
                     category: None,
                     selector,
                     delivery: Delivery::History,
@@ -1141,6 +1144,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 QueryRequest {
                     caller: identity,
                     dataset_id: request.dataset_id,
+                    record_id: None,
                     category: None,
                     selector: request.common_data_categories,
                     delivery: Delivery::Live,

@@ -760,8 +760,12 @@ impl SharingPolicies {
 
         let requested_scope_is_explicit = match &request.scope {
             AccessScope::Owner => false,
-            AccessScope::Category(category) => request.category == Some(*category),
-            AccessScope::SelectedRecord(record_id) => record_id == request.record_id,
+            AccessScope::Category(category) => {
+                request.class == SharingClass::Common && request.category == Some(*category)
+            }
+            AccessScope::SelectedRecord(record_id) => {
+                request.class == SharingClass::Common && record_id == request.record_id
+            }
             AccessScope::Dataset(dataset_id) => {
                 request.class != SharingClass::Common && dataset_id == request.dataset_id
             }
@@ -1060,6 +1064,13 @@ mod tests {
         );
         assert_eq!(selected.revision, policies.revision(&recipient));
 
+        let category_query = AccessRequest {
+            record_id: "another-published-record",
+            scope: AccessScope::Category(CommonDataCategory::GamePaths),
+            ..request.clone()
+        };
+        assert!(policies.decide(&category_query).allowed);
+
         let category_without_grant = AccessRequest {
             scope: AccessScope::Category(CommonDataCategory::GamePerformanceHistory),
             category: Some(CommonDataCategory::GamePerformanceHistory),
@@ -1096,7 +1107,7 @@ mod tests {
             record_id: "hardware-record",
             dataset_id: "hardware",
             category: None,
-            scope: AccessScope::SelectedRecord("hardware-record".into()),
+            scope: AccessScope::Dataset("hardware".into()),
             class: SharingClass::Sensitive,
             fields: &available,
             delivery: Delivery::History,
@@ -1173,6 +1184,18 @@ mod tests {
             ..request.clone()
         };
         assert!(!policies.decide(&wrong_dataset).allowed);
+
+        let category_scope = AccessRequest {
+            category: Some(CommonDataCategory::GamePaths),
+            scope: AccessScope::Category(CommonDataCategory::GamePaths),
+            ..request.clone()
+        };
+        assert!(!policies.decide(&category_scope).allowed);
+        let selected_record_scope = AccessRequest {
+            scope: AccessScope::SelectedRecord("record-9".into()),
+            ..request.clone()
+        };
+        assert!(!policies.decide(&selected_record_scope).allowed);
 
         let common_dataset_scope = AccessRequest {
             class: SharingClass::Common,

@@ -127,7 +127,7 @@ fn valid_id(value: &str) -> bool {
 }
 
 impl ResourceApi {
-    fn authorize_commit(
+    pub(super) fn authorize_commit(
         &self,
         context: &ServiceContext,
         permission: &'static str,

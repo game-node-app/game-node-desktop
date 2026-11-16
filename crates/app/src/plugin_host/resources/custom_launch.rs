@@ -13,6 +13,48 @@ use super::{ResourceApi, Scope};
 const MAX_KEY_BYTES: usize = 128;
 const MAX_RECIPE_ID_BYTES: usize = 128;
 
+fn proposal_hash(request: &CustomLaunchRequest) -> [u8; 32] {
+    let mut fields = vec![
+        "custom-launch-propose".to_owned(),
+        request.game_id.clone(),
+        request.installation_id.clone(),
+        request.expected_revision.to_string(),
+        request.executable_handle.clone(),
+        request.uri.clone(),
+        format!("argv:{}", request.argv.len()),
+    ];
+    fields.extend(request.argv.iter().cloned());
+    fields.extend([
+        request.working_directory_handle.clone(),
+        request.runtime_handle.clone(),
+        request.content_id.clone(),
+    ]);
+    let mut environment_set = request.environment_set.iter().collect::<Vec<_>>();
+    environment_set.sort_by(|left, right| left.0.cmp(right.0));
+    fields.push(format!("environment_set:{}", environment_set.len()));
+    for (key, value) in environment_set {
+        fields.push(key.clone());
+        fields.push(value.clone());
+    }
+    let mut environment_unset = request.environment_unset.clone();
+    environment_unset.sort();
+    fields.push(format!("environment_unset:{}", environment_unset.len()));
+    fields.extend(environment_unset);
+    let parts = fields.iter().map(String::as_str).collect::<Vec<_>>();
+    request_hash(&parts)
+}
+
+fn proposed_reply(recipe_id: String, revision: u64) -> CustomLaunchReply {
+    CustomLaunchReply {
+        recipe_id,
+        recipe_revision: revision,
+        job_id: String::new(),
+        state: JobState::Unspecified as i32,
+        refusal_code: String::new(),
+        message: "recipe saved; execution requires a separately approved request".into(),
+    }
+}
+
 pub(super) fn resolve_handle_path(
     files: std::sync::Arc<crate::plugin_host::files::FileAccess>,
     feed: std::sync::Arc<crate::plugin_host::library::LibraryFeed>,
@@ -258,13 +300,27 @@ impl ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::GAME_CUSTOM_LAUNCH)?;
-        if request.idempotency_key.is_empty() || request.idempotency_key.len() > MAX_KEY_BYTES {
+        if request.idempotency_key.is_empty()
+            || request.idempotency_key.len() > MAX_KEY_BYTES
+            || request.idempotency_key.chars().any(char::is_control)
+        {
             return Err(Status::invalid_argument("invalid idempotency key"));
         }
         let context = request
             .context
             .as_ref()
             .ok_or_else(|| Status::unauthenticated("resource context required"))?;
+        let hash = proposal_hash(&request);
+        let lock = self.mutations.lock.lock().await;
+        if let Some(replay) = self
+            .mutations
+            .replay(&caller, &request.idempotency_key, hash)?
+        {
+            return Ok(Response::new(proposed_reply(
+                replay.resource_id,
+                replay.revision,
+            )));
+        }
         let (_entry_key, entry) =
             self.action_target(&caller, context, &request.game_id, &request.installation_id)?;
         if entry.revision != request.expected_revision {
@@ -297,18 +353,25 @@ impl ResourceApi {
         {
             return Err(Status::invalid_argument("invalid custom launch recipe"));
         }
+        self.authorize_commit(context, cap::GAME_CUSTOM_LAUNCH, caller.grant_revision)?;
         let saved = host
             .save_custom_launch_recipe(mutation_owner(&caller), recipe.clone())
             .await?;
         match saved {
-            CustomLaunchMutation::Applied { revision } => Ok(Response::new(CustomLaunchReply {
-                recipe_id: recipe.recipe_id,
-                recipe_revision: revision,
-                job_id: String::new(),
-                state: JobState::Unspecified as i32,
-                refusal_code: String::new(),
-                message: "recipe saved; execution requires a separately approved request".into(),
-            })),
+            CustomLaunchMutation::Applied { revision } => {
+                self.mutations.remember(
+                    &caller,
+                    &request.idempotency_key,
+                    hash,
+                    &MutationReply {
+                        resource_id: recipe.recipe_id.clone(),
+                        revision,
+                        outcome: MutationOutcome::Applied as i32,
+                    },
+                );
+                drop(lock);
+                Ok(Response::new(proposed_reply(recipe.recipe_id, revision)))
+            }
             CustomLaunchMutation::Conflict { .. } => {
                 Err(Status::aborted("recipe revision conflict"))
             }
@@ -475,14 +538,18 @@ impl ResourceApi {
         let mutation = request
             .mutation
             .ok_or_else(|| Status::invalid_argument("mutation context is required"))?;
+        let context = mutation
+            .context
+            .as_ref()
+            .ok_or_else(|| Status::unauthenticated("resource context required"))?;
         let caller = self
             .providers
-            .authorize_resource(mutation.context.as_ref(), cap::GAME_CUSTOM_LAUNCH)?;
+            .authorize_resource(Some(context), cap::GAME_CUSTOM_LAUNCH)?;
         if request.recipe_id.is_empty() || request.recipe_id.len() > MAX_RECIPE_ID_BYTES {
             return Err(Status::invalid_argument("invalid recipe id"));
         }
         let key = mutation.idempotency_key.as_str();
-        if key.is_empty() || key.len() > MAX_KEY_BYTES {
+        if key.is_empty() || key.len() > MAX_KEY_BYTES || key.chars().any(char::is_control) {
             return Err(Status::invalid_argument("invalid idempotency key"));
         }
         let lock = self.mutations.lock.lock().await;
@@ -517,6 +584,7 @@ impl ResourceApi {
         if recipe.game_id != id {
             return Err(Status::not_found("custom launch recipe not found"));
         }
+        self.authorize_commit(context, cap::GAME_CUSTOM_LAUNCH, caller.grant_revision)?;
         let result = host
             .remove_custom_launch_recipe(
                 owner,

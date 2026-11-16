@@ -1088,7 +1088,7 @@ mod custom_launch_tests {
         let recipe = CustomLaunchRecipe {
             game_id: "620".into(),
             installation_id: "steam:620".into(),
-            content_id: "content-variant-1".into(),
+            content_id: String::new(),
             expected_revision: 12,
             executable_handle: "exec-handle".into(),
             uri: String::new(),
@@ -1096,7 +1096,7 @@ mod custom_launch_tests {
             working_directory_handle: "cwd-handle".into(),
             environment_set: [("A".into(), "value with spaces".into())].into(),
             environment_unset: vec!["B".into()],
-            runtime_handle: "runtime-handle".into(),
+            runtime_handle: String::new(),
         };
 
         let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
@@ -1104,7 +1104,6 @@ mod custom_launch_tests {
         assert_eq!(request.context.as_ref(), Some(&context));
         assert_eq!(request.game_id, "620");
         assert_eq!(request.installation_id, "steam:620");
-        assert_eq!(request.content_id, "content-variant-1");
         assert_eq!(request.expected_revision, 12);
         assert_eq!(request.executable_handle, "exec-handle");
         assert!(request.uri.is_empty());
@@ -1115,11 +1114,46 @@ mod custom_launch_tests {
             Some("value with spaces")
         );
         assert_eq!(request.environment_unset, ["B"]);
-        assert_eq!(request.runtime_handle, "runtime-handle");
+        assert!(request.runtime_handle.is_empty());
         assert!(request.recipe_id.is_empty());
         assert_eq!(request.recipe_revision, 0);
         assert_eq!(request.user_intent_id, "intent");
         assert_eq!(request.idempotency_key, "key");
+    }
+
+    #[test]
+    fn runtime_proposal_keeps_content_and_omits_direct_executable() {
+        let context = ServiceContext {
+            provider_id: "fixture".into(),
+            ..Default::default()
+        };
+        let recipe = CustomLaunchRecipe {
+            game_id: "620".into(),
+            installation_id: "steam:620".into(),
+            content_id: "content-variant-1".into(),
+            expected_revision: 12,
+            executable_handle: String::new(),
+            uri: String::new(),
+            argv: vec!["--literal value".into()],
+            working_directory_handle: "cwd-handle".into(),
+            environment_set: [("A".into(), "value with spaces".into())].into(),
+            environment_unset: vec!["B".into()],
+            runtime_handle: "runtime-handle".into(),
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
+
+        assert!(request.executable_handle.is_empty());
+        assert!(request.uri.is_empty());
+        assert_eq!(request.content_id, "content-variant-1");
+        assert_eq!(request.runtime_handle, "runtime-handle");
+        assert_eq!(request.argv, recipe.argv);
+        assert_eq!(request.working_directory_handle, "cwd-handle");
+        assert_eq!(
+            request.environment_set.get("A").map(String::as_str),
+            Some("value with spaces")
+        );
+        assert_eq!(request.environment_unset, ["B"]);
     }
 
     #[test]

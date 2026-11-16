@@ -2,7 +2,7 @@
 
 This follow-up is part of the delivery split documented in `../add-third-party-plugins/delivery-split.md`. Source task IDs are retained for traceability.
 
-- [ ] 1.1 **Source 7.8.** Implement game.custom_launch recipe propose/request/remove with alternate executable/URI, argument vectors, working directory, approved external runtime handles and environment set/unset; verify actual worker-spawned fixture processes receive every field and incapable adapters/URI handlers fail explicitly rather than ignoring environment.
+- [x] 1.1 **Source 7.8.** Implement game.custom_launch recipe propose/request/remove with alternate executable/URI, argument vectors, working directory, approved external runtime handles and environment set/unset; verify actual worker-spawned fixture processes receive every field and incapable adapters/URI handlers fail explicitly rather than ignoring environment.
 
 - [ ] 1.2 **Source 7.9.** Implement per-game/profile plugin-owned overlays for official, third-party and manual games, with independent normal/custom grants and one-use host user intents; verify an extension can target a selected Steam game without provider impersonation, broad library reads or modification of official state.
 

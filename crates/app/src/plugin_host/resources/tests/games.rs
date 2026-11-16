@@ -277,6 +277,98 @@ async fn a_retry_opens_no_second_dialog() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
+    let (fixture, host, _) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let proposal = CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        idempotency_key: "propose-custom-1".into(),
+        uri: "steam://rungameid/3".into(),
+        ..CustomLaunchRequest::default()
+    };
+
+    let first = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let replay = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.recipe_id, first.recipe_id);
+    assert_eq!(replay.recipe_revision, first.recipe_revision);
+    assert_eq!(host.custom_launch_recipes.lock().unwrap().len(), 1);
+
+    let mut changed = proposal;
+    changed.uri = "steam://rungameid/4".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_propose_custom_launch(changed)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+
+    let intent = fixture
+        .intents
+        .issue(fixture.binding(Operation::CustomLaunch, 1))
+        .unwrap();
+    let request = CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        user_intent_id: intent,
+        idempotency_key: "execute-custom-1".into(),
+        recipe_id: first.recipe_id.clone(),
+        recipe_revision: first.recipe_revision,
+        ..CustomLaunchRequest::default()
+    };
+    let reply = fixture
+        .client()
+        .games_request_custom_launch(request)
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&reply.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert!(matches!(
+        host.custom_launch_dispatches.lock().unwrap().as_slice(),
+        [crate::plugin_host::library::CustomLaunchDispatch::Uri { uri, .. }]
+            if uri.as_str() == "steam://rungameid/3"
+    ));
+
+    let removed = fixture
+        .client()
+        .games_remove_custom_launch(CustomLaunchRemoveRequest {
+            mutation: Some(fixture.mutation("remove-custom-1", first.recipe_revision)),
+            game_id: "3".into(),
+            recipe_id: first.recipe_id,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
+    assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pre_issued_intent_skips_the_dialog_and_is_spent_once() {
     // No dialog at all in this build: the intent is enough.
     let (fixture, host, _) = Fixture::game(GRANTS, None).await;

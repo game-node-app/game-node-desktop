@@ -804,6 +804,9 @@ struct FakeHost {
     open_fails: Mutex<Option<tonic::Code>>,
     /// What a launch would start now; tests change it to change the target.
     launch_target: std::sync::atomic::AtomicU64,
+    custom_launch_recipes:
+        Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
+    custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
 }
 
 impl FakeHost {
@@ -941,6 +944,88 @@ impl LibraryHost for FakeHost {
 
     async fn launch_fingerprint(&self, _entry_key: String) -> Result<u64, Status> {
         Ok(self.launch_target.load(Ordering::SeqCst))
+    }
+
+    async fn custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, Status> {
+        Ok(self
+            .custom_launch_recipes
+            .lock()
+            .unwrap()
+            .get(&(owner_key, recipe_id))
+            .cloned())
+    }
+
+    async fn save_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut recipes = self.custom_launch_recipes.lock().unwrap();
+        let key = (owner_key, recipe.recipe_id.clone());
+        if let Some(current) = recipes.get(&key) {
+            return Ok(CustomLaunchMutation::Conflict {
+                current: current.revision,
+            });
+        }
+        let revision = recipe.revision;
+        recipes.insert(key, recipe);
+        Ok(CustomLaunchMutation::Applied { revision })
+    }
+
+    async fn remove_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut recipes = self.custom_launch_recipes.lock().unwrap();
+        let key = (owner_key, recipe_id);
+        let Some(current) = recipes.get(&key) else {
+            return Ok(CustomLaunchMutation::Missing);
+        };
+        if current.revision != expected_revision {
+            return Ok(CustomLaunchMutation::Conflict {
+                current: current.revision,
+            });
+        }
+        let revision = current.revision.saturating_add(1);
+        recipes.remove(&key);
+        Ok(CustomLaunchMutation::Applied { revision })
+    }
+
+    async fn prepare_custom_launch(
+        &self,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+        _executable_path: Option<String>,
+        working_directory_path: Option<String>,
+        _runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
+    ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, Status> {
+        use crate::plugin_host::library::CustomLaunchDispatch;
+        if !recipe.uri.is_empty() {
+            let environment = recipe.environment();
+            return Ok(CustomLaunchDispatch::Uri {
+                uri: url::Url::parse(&recipe.uri)
+                    .map_err(|_| Status::invalid_argument("invalid launch URI"))?,
+                arguments: recipe.arguments,
+                working_directory: working_directory_path.unwrap_or_default(),
+                environment,
+            });
+        }
+        Err(Status::unimplemented("fixture supports URI recipes only"))
+    }
+
+    async fn launch_custom(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    ) -> Result<(), Status> {
+        self.custom_launch_dispatches.lock().unwrap().push(dispatch);
+        Ok(())
     }
 
     fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {

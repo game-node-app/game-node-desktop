@@ -782,7 +782,9 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn unsupported_on_linux() {
-        use gamenode_core::drm_free::{InstallationHost, Registration};
+        use gamenode_core::drm_free::{
+            CustomLaunchCommand, InstallationHost, LaunchEnvironmentDelta, Registration,
+        };
         let host = super::WindowsInstallations;
         let registration = Registration {
             id: "test".into(),
@@ -817,6 +819,16 @@ mod tests {
                 &registration,
                 &gamenode_core::drm_free::LaunchEnvironment::new()
             ),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            host.launch_custom(&CustomLaunchCommand {
+                executable: "game.exe".into(),
+                file_identity: "1:2:3".into(),
+                arguments: vec!["--profile".into()],
+                working_directory: "/game".into(),
+                environment: LaunchEnvironmentDelta::default(),
+            }),
             Err(super::LocalError::Unsupported)
         );
         assert_eq!(

@@ -130,11 +130,12 @@ impl Fixture {
     }
 
     /// What the host binds an intent to for the fixture's own entry.
-    fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
+    async fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
         self.binding_for(operation, target_revision, "3", INSTALLATION, "")
+            .await
     }
 
-    fn binding_for(
+    async fn binding_for(
         &self,
         operation: Operation,
         target_revision: u64,
@@ -152,6 +153,49 @@ impl Fixture {
             .api
             .authorize_resource(Some(&self.context()), permission)
             .unwrap();
+        let (_, entry) = self
+            .feed
+            .target(
+                &super::super::Scope {
+                    own_provider: caller.provider_id.clone(),
+                    read_all: true,
+                    provider_filter: None,
+                },
+                installation_id,
+            )
+            .unwrap();
+        let (recipe, dispatch, resources) = if operation == Operation::CustomLaunch {
+            let host = self.feed.host().unwrap();
+            let recipe = host
+                .custom_launch_recipe(
+                    super::super::mutations::mutation_owner(&caller),
+                    recipe_id.to_owned(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let dispatch = host
+                .prepare_custom_launch(recipe.clone(), None, None, None)
+                .await
+                .unwrap();
+            (Some(recipe), Some(dispatch), Vec::new())
+        } else {
+            (None, None, Vec::new())
+        };
+        let plan = super::super::super::launch_plan::resolve(
+            &caller,
+            &entry,
+            target_revision,
+            recipe.as_ref(),
+            dispatch.as_ref(),
+            &resources,
+        )
+        .unwrap();
+        let plan_fingerprint = if matches!(operation, Operation::Launch | Operation::CustomLaunch) {
+            plan.fingerprint().unwrap()
+        } else {
+            String::new()
+        };
         Binding {
             plugin_id: "fixture.plugin".into(),
             publisher_fingerprint: "ab".repeat(32),
@@ -162,6 +206,7 @@ impl Fixture {
             target_revision,
             recipe_id: recipe_id.into(),
             recipe_revision: u64::from(operation == Operation::CustomLaunch),
+            plan_fingerprint,
         }
     }
 
@@ -372,13 +417,17 @@ async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
 
     let intent = fixture
         .intents
-        .issue(fixture.binding_for(
-            Operation::CustomLaunch,
-            1,
-            "3",
-            INSTALLATION,
-            &first.recipe_id,
-        ))
+        .issue(
+            fixture
+                .binding_for(
+                    Operation::CustomLaunch,
+                    1,
+                    "3",
+                    INSTALLATION,
+                    &first.recipe_id,
+                )
+                .await,
+        )
         .unwrap();
     let request = CustomLaunchRequest {
         context: Some(fixture.context()),
@@ -581,7 +630,7 @@ async fn a_pre_issued_intent_skips_the_dialog_and_is_spent_once() {
     let (fixture, host, _) = Fixture::game(GRANTS, None).await;
     let id = fixture
         .intents
-        .issue(fixture.binding(Operation::Launch, 0))
+        .issue(fixture.binding(Operation::Launch, 0).await)
         .unwrap();
     let reply = fixture.launch_game("one", &id).await.unwrap();
     let done = fixture.ended(&reply.job_id).await;
@@ -607,12 +656,12 @@ async fn an_intent_for_another_operation_target_or_nothing_at_all_is_refused() {
     // Issued for an install: not a launch.
     let install = fixture
         .intents
-        .issue(fixture.binding(Operation::Install, 0))
+        .issue(fixture.binding(Operation::Install, 0).await)
         .unwrap();
     // Issued for a target that is not the current one.
     let stale = fixture
         .intents
-        .issue(fixture.binding(Operation::Launch, 99))
+        .issue(fixture.binding(Operation::Launch, 99).await)
         .unwrap();
     let refusals = [
         fixture.launch_game("a", &install).await.unwrap_err(),
@@ -1012,13 +1061,17 @@ async fn extension_custom_overlay_targets_selected_steam_without_read_or_provide
 
     let intent = fixture
         .intents
-        .issue(fixture.binding_for(
-            Operation::CustomLaunch,
-            1,
-            "5",
-            "id-steam:1",
-            &recipe.recipe_id,
-        ))
+        .issue(
+            fixture
+                .binding_for(
+                    Operation::CustomLaunch,
+                    1,
+                    "5",
+                    "id-steam:1",
+                    &recipe.recipe_id,
+                )
+                .await,
+        )
         .unwrap();
     let request = CustomLaunchRequest {
         context: Some(context),
@@ -1099,7 +1152,11 @@ async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
 
     let intent = fixture
         .intents
-        .issue(fixture.binding_for(Operation::Launch, 1, "5", "id-steam:1", ""))
+        .issue(
+            fixture
+                .binding_for(Operation::Launch, 1, "5", "id-steam:1", "")
+                .await,
+        )
         .unwrap();
     let launched = fixture
         .client()

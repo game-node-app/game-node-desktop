@@ -16,6 +16,7 @@ fn caller(
     ResourceCaller {
         session_id: session.into(),
         provider_id: "provider".into(),
+        package_version: "1.0.0".into(),
         grants: Default::default(),
         grant_revision: 1,
         profile_epoch: epoch,

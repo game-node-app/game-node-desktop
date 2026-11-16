@@ -36,6 +36,7 @@ struct Action {
     key: String,
     custom_recipe: Option<gamenode_core::library::CustomLaunchRecipe>,
     custom_dispatch: Option<crate::plugin_host::library::CustomLaunchDispatch>,
+    custom_resources: Vec<gamenode_core::library::LaunchPlanResource>,
 }
 
 /// How the request was authorized before its job started.
@@ -69,6 +70,7 @@ impl ResourceApi {
         request: CustomLaunchRequest,
         recipe: gamenode_core::library::CustomLaunchRecipe,
         custom_dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+        custom_resources: Vec<gamenode_core::library::LaunchPlanResource>,
     ) -> Result<JobReply, Status> {
         self.request_action(Action {
             context: request.context,
@@ -81,6 +83,7 @@ impl ResourceApi {
             key: request.idempotency_key,
             custom_recipe: Some(recipe),
             custom_dispatch: Some(custom_dispatch),
+            custom_resources,
         })
         .await
     }
@@ -102,6 +105,7 @@ impl ResourceApi {
                 key: request.idempotency_key,
                 custom_recipe: None,
                 custom_dispatch: None,
+                custom_resources: Vec::new(),
             })
             .await?;
         Ok(Response::new(GameLaunchReply {
@@ -128,6 +132,7 @@ impl ResourceApi {
             key: request.idempotency_key,
             custom_recipe: None,
             custom_dispatch: None,
+            custom_resources: Vec::new(),
         })
         .await
         .map(Response::new)
@@ -213,6 +218,22 @@ impl ResourceApi {
         } else {
             0
         };
+        let plan_fingerprint = if launching {
+            let plan = super::super::launch_plan::resolve(
+                &caller,
+                &entry,
+                fingerprint,
+                action.custom_recipe.as_ref(),
+                action.custom_dispatch.as_ref(),
+                &action.custom_resources,
+            )?;
+            tokio::task::spawn_blocking(move || plan.fingerprint())
+                .await
+                .map_err(|_| Status::internal("launch plan fingerprint worker failed"))?
+                .map_err(|_| Status::failed_precondition("the launch plan is invalid"))?
+        } else {
+            String::new()
+        };
         let game = entry.game_id.map(|id| id.to_string()).unwrap_or_default();
         let recipe_revision = action
             .custom_recipe
@@ -233,6 +254,7 @@ impl ResourceApi {
                 .map(|recipe| recipe.recipe_id.clone())
                 .unwrap_or_default(),
             recipe_revision,
+            plan_fingerprint: plan_fingerprint.clone(),
         };
         let custom_recipe_id = action
             .custom_recipe
@@ -253,6 +275,7 @@ impl ResourceApi {
             &action.intent,
             custom_recipe_id,
             &custom_recipe_revision,
+            &plan_fingerprint,
         ]);
 
         // Retries and first requests are decided together, so a retry never spends a second
@@ -296,6 +319,7 @@ impl ResourceApi {
         );
         let custom_recipe = action.custom_recipe.clone();
         let custom_dispatch = action.custom_dispatch.clone();
+        let custom_resources = action.custom_resources.clone();
         let permission = action.permission;
         let run = work(move |ctx| async move {
             api.run_action(
@@ -310,6 +334,7 @@ impl ResourceApi {
                 operation,
                 custom_recipe,
                 custom_dispatch,
+                custom_resources,
             )
             .await
         });
@@ -340,6 +365,7 @@ impl ResourceApi {
                 && approval.target_revision == binding.target_revision
                 && approval.recipe_id == binding.recipe_id
                 && approval.recipe_revision == binding.recipe_revision
+                && approval.plan_fingerprint == binding.plan_fingerprint
         }))
     }
 
@@ -359,6 +385,7 @@ impl ResourceApi {
         operation: Operation,
         custom_recipe: Option<gamenode_core::library::CustomLaunchRecipe>,
         custom_dispatch: Option<crate::plugin_host::library::CustomLaunchDispatch>,
+        custom_resources: Vec<gamenode_core::library::LaunchPlanResource>,
     ) -> Outcome {
         if let Authorized::Ask(pending) = authorized {
             let verdict = tokio::select! {
@@ -425,12 +452,13 @@ impl ResourceApi {
             let Some(dispatch) = custom_dispatch.as_ref() else {
                 return Outcome::failed("unavailable", "the custom launch recipe is unavailable");
             };
-            if let Err(status) = self
+            let current_resources = match self
                 .revalidate_custom_handles(caller, &context, recipe, dispatch)
                 .await
             {
-                return Outcome::stopped(&status);
-            }
+                Ok(resources) => resources,
+                Err(status) => return Outcome::stopped(&status),
+            };
             match host.launch_fingerprint(entry_key.clone()).await {
                 Ok(current) if current == binding.target_revision => {}
                 Ok(_) => {
@@ -459,6 +487,55 @@ impl ResourceApi {
             }
             if let Err(status) = ctx.check() {
                 return Outcome::stopped(&status);
+            }
+            let current_plan = match super::super::launch_plan::resolve(
+                caller,
+                &entry,
+                binding.target_revision,
+                Some(recipe),
+                Some(dispatch),
+                &current_resources,
+            ) {
+                Ok(plan) => plan,
+                Err(status) => return Outcome::stopped(&status),
+            };
+            let current_fingerprint = match tokio::task::spawn_blocking(move || {
+                current_plan.fingerprint()
+            })
+            .await
+            {
+                Ok(Ok(fingerprint)) => fingerprint,
+                _ => {
+                    return Outcome::failed("target_changed", "the launch plan changed; ask again");
+                }
+            };
+            if current_fingerprint != binding.plan_fingerprint {
+                return Outcome::failed("target_changed", "the launch plan changed; ask again");
+            }
+        } else if operation == Operation::Launch {
+            let current_plan = match super::super::launch_plan::resolve(
+                caller,
+                &entry,
+                binding.target_revision,
+                None,
+                None,
+                &custom_resources,
+            ) {
+                Ok(plan) => plan,
+                Err(status) => return Outcome::stopped(&status),
+            };
+            let current_fingerprint = match tokio::task::spawn_blocking(move || {
+                current_plan.fingerprint()
+            })
+            .await
+            {
+                Ok(Ok(fingerprint)) => fingerprint,
+                _ => {
+                    return Outcome::failed("target_changed", "the launch plan changed; ask again");
+                }
+            };
+            if current_fingerprint != binding.plan_fingerprint {
+                return Outcome::failed("target_changed", "the launch plan changed; ask again");
             }
         }
         let dispatch = if operation == Operation::CustomLaunch {
@@ -505,6 +582,7 @@ impl ResourceApi {
             target_revision: binding.target_revision,
             recipe_id: binding.recipe_id.clone(),
             recipe_revision: binding.recipe_revision,
+            plan_fingerprint: binding.plan_fingerprint.clone(),
             game_name: request.game_name.chars().take(120).collect(),
             approved_at: 0,
         };

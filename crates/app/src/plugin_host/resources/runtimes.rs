@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use gamenode_core::library::{
-    ApprovedFileReference, RuntimeArgumentTemplate as CoreArgument, RuntimeContentBinding,
-    RuntimeMutation, RuntimeResource,
+    ApprovedFileReference, LaunchPlanResource, RuntimeArgumentTemplate as CoreArgument,
+    RuntimeContentBinding, RuntimeMutation, RuntimeResource,
 };
 use gamenode_plugin_protocol::{capability as cap, proto::*};
 use tonic::{Request, Response, Status};
@@ -23,6 +23,11 @@ const MAX_RUNTIME_ID_BYTES: usize = 128;
 const MAX_BINDINGS_PER_ENTRY: usize = 512;
 const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+struct ResolvedRuntimePath {
+    path: String,
+    resource: LaunchPlanResource,
+}
 
 fn current_platform() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -248,7 +253,7 @@ impl ResourceApi {
         caller: &ResourceCaller,
         reference: ApprovedFileReference,
         target: Option<(u64, String)>,
-    ) -> Result<String, Status> {
+    ) -> Result<ResolvedRuntimePath, Status> {
         if !reference.validate() {
             return Err(Status::failed_precondition(
                 "approved file reference is invalid",
@@ -297,10 +302,21 @@ impl ResourceApi {
                     "approved file is outside its approved folder",
                 ));
             }
-            canonical
+            let path = canonical
                 .to_str()
                 .map(str::to_owned)
-                .ok_or_else(|| Status::failed_precondition("approved path is not valid Unicode"))
+                .ok_or_else(|| Status::failed_precondition("approved path is not valid Unicode"))?;
+            Ok(ResolvedRuntimePath {
+                path,
+                resource: LaunchPlanResource {
+                    id: format!(
+                        "file-approval:{}:{}",
+                        opened.approval.id,
+                        reference_for_open.relative_path.join("/")
+                    ),
+                    revision: opened.approval.approved_at.max(1) as u64,
+                },
+            })
         })
         .await
     }
@@ -362,6 +378,7 @@ impl ResourceApi {
         let executable = self
             .resolve_reference_path(caller, runtime.executable.clone(), None)
             .await?;
+        let mut resources = vec![executable.resource.clone()];
         let mut content_path = None;
         let mut binding_revision = None;
         if content_id.is_empty() {
@@ -400,25 +417,28 @@ impl ResourceApi {
                 ));
             }
             binding_revision = Some(binding.revision);
-            content_path = Some(
-                self.resolve_reference_path(
+            let content = self
+                .resolve_reference_path(
                     caller,
                     binding.content,
                     Some((game_id, installation_id.to_owned())),
                 )
-                .await?,
-            );
+                .await?;
+            resources.push(content.resource);
+            content_path = Some(content.path);
         }
         self.authorize_commit(context, cap::FILES_READ, caller.grant_revision)?;
         Ok(crate::plugin_host::library::ResolvedRuntimeLaunch {
             runtime_id: runtime.id,
+            version: runtime.version,
             platform: runtime.platform,
-            executable,
+            executable: executable.path,
             content_id: content_id.to_owned(),
             content_path,
             runtime_revision: runtime.revision,
             binding_revision,
             arguments: runtime.launch_arguments,
+            resources,
         })
     }
 

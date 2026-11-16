@@ -16,6 +16,7 @@ fn binding() -> Binding {
         target_revision: 7,
         recipe_id: String::new(),
         recipe_revision: 0,
+        plan_fingerprint: String::new(),
     }
 }
 
@@ -84,6 +85,10 @@ fn an_intent_cannot_be_shifted_to_another_plugin_profile_game_operation_or_revis
         },
         Binding {
             recipe_id: "another-recipe".into(),
+            ..binding()
+        },
+        Binding {
+            plan_fingerprint: "v1:changed".into(),
             ..binding()
         },
     ];

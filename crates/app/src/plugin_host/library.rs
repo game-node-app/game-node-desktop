@@ -603,6 +603,7 @@ pub enum CustomLaunchDispatch {
     Runtime {
         command: gamenode_core::drm_free::CustomLaunchCommand,
         runtime_id: String,
+        runtime_version: String,
         runtime_revision: u64,
         content_id: String,
         binding_revision: Option<u64>,
@@ -621,6 +622,7 @@ pub enum CustomLaunchDispatch {
 #[derive(Clone, Debug)]
 pub struct ResolvedRuntimeLaunch {
     pub runtime_id: String,
+    pub version: String,
     pub platform: String,
     pub executable: String,
     pub content_id: String,
@@ -628,6 +630,7 @@ pub struct ResolvedRuntimeLaunch {
     pub runtime_revision: u64,
     pub binding_revision: Option<u64>,
     pub arguments: Vec<gamenode_core::library::RuntimeArgumentTemplate>,
+    pub resources: Vec<gamenode_core::library::LaunchPlanResource>,
 }
 
 #[async_trait::async_trait]

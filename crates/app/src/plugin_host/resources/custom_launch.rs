@@ -55,6 +55,12 @@ fn proposed_reply(recipe_id: String, revision: u64) -> CustomLaunchReply {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ResolvedLaunchPath {
+    pub path: String,
+    pub resource: gamenode_core::library::LaunchPlanResource,
+}
+
 pub(super) fn resolve_handle_path(
     files: std::sync::Arc<crate::plugin_host::files::FileAccess>,
     feed: std::sync::Arc<crate::plugin_host::library::LibraryFeed>,
@@ -62,7 +68,7 @@ pub(super) fn resolve_handle_path(
     handle: String,
     installation_id: String,
     directory: bool,
-) -> impl FnOnce(&mut crate::plugin_host::storage::Namespace<'_>) -> Result<String, Status>
+) -> impl FnOnce(&mut crate::plugin_host::storage::Namespace<'_>) -> Result<ResolvedLaunchPath, Status>
 + Send
 + 'static {
     move |namespace| {
@@ -96,10 +102,17 @@ pub(super) fn resolve_handle_path(
                 "the handle is outside its approved game folder",
             ));
         }
-        canonical
+        let path = canonical
             .to_str()
             .map(str::to_owned)
-            .ok_or_else(|| Status::failed_precondition("launch path is not valid Unicode"))
+            .ok_or_else(|| Status::failed_precondition("launch path is not valid Unicode"))?;
+        Ok(ResolvedLaunchPath {
+            path,
+            resource: gamenode_core::library::LaunchPlanResource {
+                id: format!("file-approval:{}", opened.approval.id),
+                revision: opened.approval.approved_at.max(1) as u64,
+            },
+        })
     }
 }
 
@@ -136,11 +149,12 @@ impl ResourceApi {
         context: &ServiceContext,
         recipe: &CustomLaunchRecipe,
         dispatch: &crate::plugin_host::library::CustomLaunchDispatch,
-    ) -> Result<(), Status> {
+    ) -> Result<Vec<gamenode_core::library::LaunchPlanResource>, Status> {
         if !recipe.runtime_handle.is_empty() {
             let crate::plugin_host::library::CustomLaunchDispatch::Runtime {
                 command,
                 runtime_id,
+                runtime_version,
                 runtime_revision,
                 content_id,
                 binding_revision,
@@ -165,6 +179,7 @@ impl ResourceApi {
                     &recipe.content_id,
                 )
                 .await?;
+            let mut resources = resolved.resources.clone();
             if resolved.runtime_revision != *runtime_revision
                 || resolved.binding_revision != *binding_revision
             {
@@ -177,8 +192,8 @@ impl ResourceApi {
             } else {
                 self.providers
                     .authorize_resource(Some(context), cap::FILES_READ)?;
-                Some(
-                    self.in_namespace(
+                let working = self
+                    .in_namespace(
                         caller,
                         resolve_handle_path(
                             self.files.clone(),
@@ -189,8 +204,9 @@ impl ResourceApi {
                             true,
                         ),
                     )
-                    .await?,
-                )
+                    .await?;
+                resources.push(working.resource);
+                Some(working.path)
             };
             let host = self
                 .library
@@ -203,16 +219,18 @@ impl ResourceApi {
                 crate::plugin_host::library::CustomLaunchDispatch::Runtime {
                     command: current,
                     runtime_id: current_runtime,
+                    runtime_version: current_version,
                     runtime_revision: current_revision,
                     content_id: current_content,
                     binding_revision: current_binding,
                 } if &current == command
                     && current_runtime == *runtime_id
+                    && current_version == *runtime_version
                     && current_revision == *runtime_revision
                     && current_content == *content_id
                     && current_binding == *binding_revision =>
                 {
-                    return Ok(());
+                    return Ok(resources);
                 }
                 _ => {
                     return Err(Status::failed_precondition(
@@ -223,8 +241,9 @@ impl ResourceApi {
         }
         let is_uri = !recipe.uri.is_empty();
         if recipe.executable_handle.is_empty() && recipe.working_directory_handle.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
+        let mut resources = Vec::new();
         self.providers
             .authorize_resource(Some(context), cap::FILES_READ)?;
         if !is_uri {
@@ -252,11 +271,12 @@ impl ResourceApi {
                     ),
                 )
                 .await?;
-            if executable != command.executable {
+            if executable.path != command.executable {
                 return Err(Status::failed_precondition(
                     "approved executable handle changed during confirmation",
                 ));
             }
+            resources.push(executable.resource);
         }
         if !recipe.working_directory_handle.is_empty() {
             let working_directory = self
@@ -282,13 +302,14 @@ impl ResourceApi {
                     ..
                 } => working_directory,
             };
-            if &working_directory != approved_working_directory {
+            if &working_directory.path != approved_working_directory {
                 return Err(Status::failed_precondition(
                     "approved working directory changed during confirmation",
                 ));
             }
+            resources.push(working_directory.resource);
         }
-        Ok(())
+        Ok(resources)
     }
 
     pub(super) async fn propose_custom_launch(
@@ -446,6 +467,10 @@ impl ResourceApi {
                 .await?,
             )
         };
+        let mut plan_resources = runtime_launch
+            .as_ref()
+            .map(|runtime| runtime.resources.clone())
+            .unwrap_or_default();
         let (executable_path, working_directory_path) =
             if recipe.uri.is_empty() && recipe.runtime_handle.is_empty() {
                 // A custom recipe grant authorizes asking for the launch; file handles remain subject
@@ -466,11 +491,12 @@ impl ResourceApi {
                         ),
                     )
                     .await?;
+                plan_resources.push(executable.resource.clone());
                 let working = if recipe.working_directory_handle.is_empty() {
                     None
                 } else {
-                    Some(
-                        self.in_namespace(
+                    let resolved = self
+                        .in_namespace(
                             &caller,
                             resolve_handle_path(
                                 self.files.clone(),
@@ -481,18 +507,19 @@ impl ResourceApi {
                                 true,
                             ),
                         )
-                        .await?,
-                    )
+                        .await?;
+                    plan_resources.push(resolved.resource.clone());
+                    Some(resolved)
                 };
-                (Some(executable), working)
+                (Some(executable.path), working.map(|path| path.path))
             } else {
                 let working = if recipe.working_directory_handle.is_empty() {
                     None
                 } else {
                     self.providers
                         .authorize_resource(request.context.as_ref(), cap::FILES_READ)?;
-                    Some(
-                        self.in_namespace(
+                    let resolved = self
+                        .in_namespace(
                             &caller,
                             resolve_handle_path(
                                 self.files.clone(),
@@ -503,10 +530,11 @@ impl ResourceApi {
                                 true,
                             ),
                         )
-                        .await?,
-                    )
+                        .await?;
+                    plan_resources.push(resolved.resource.clone());
+                    Some(resolved)
                 };
-                (None, working)
+                (None, working.map(|path| path.path))
             };
         let dispatch = host
             .prepare_custom_launch(
@@ -516,7 +544,7 @@ impl ResourceApi {
                 runtime_launch,
             )
             .await?;
-        self.request_custom_action(request, recipe.clone(), dispatch)
+        self.request_custom_action(request, recipe.clone(), dispatch, plan_resources)
             .await
             .map(|job| {
                 Response::new(CustomLaunchReply {

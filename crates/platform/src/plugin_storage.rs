@@ -29,7 +29,7 @@ pub const ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// The longest an entry may live before it expires (30 days).
 pub const MAX_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const STORE_FILE: &str = "storage.sqlite3";
 /// Longest directory name derived from an identity before it is replaced by a digest.
 const MAX_COMPONENT_BYTES: usize = 120;
@@ -257,6 +257,9 @@ impl DurableStore {
                  PRAGMA user_version = 9;
                  COMMIT;",
             )?;
+        }
+        if version < 10 {
+            conn.execute_batch("BEGIN IMMEDIATE; ALTER TABLE intent_approvals ADD COLUMN plan_fingerprint TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 10; COMMIT;")?;
         }
         Ok(Self { conn })
     }
@@ -520,12 +523,14 @@ pub struct IntentApproval {
     pub recipe_id: String,
     /// The custom recipe revision approved (0 for normal launch and install).
     pub recipe_revision: u64,
+    /// Canonical launch-plan approval fingerprint; empty on legacy approvals that must reconfirm.
+    pub plan_fingerprint: String,
     /// The game's name when approved, for the list; plain text.
     pub game_name: String,
     pub approved_at: i64,
 }
 
-const INTENT_COLUMNS: &str = "id, game_id, installation_id, operation, target_revision, recipe_id, recipe_revision, game_name, approved_at";
+const INTENT_COLUMNS: &str = "id, game_id, installation_id, operation, target_revision, recipe_id, recipe_revision, game_name, approved_at, plan_fingerprint";
 
 fn intent_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<IntentApproval> {
     Ok(IntentApproval {
@@ -538,6 +543,7 @@ fn intent_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<IntentApproval> {
         recipe_revision: row.get::<_, i64>(6)? as u64,
         game_name: row.get(7)?,
         approved_at: row.get(8)?,
+        plan_fingerprint: row.get(9)?,
     })
 }
 
@@ -549,14 +555,14 @@ impl DurableStore {
     ) -> Result<(), PluginStorageError> {
         self.conn.execute(
             "INSERT INTO intent_approvals (id, game_id, installation_id, operation,
-                 target_revision, recipe_id, recipe_revision, game_name, approved_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 target_revision, recipe_id, recipe_revision, game_name, approved_at, plan_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(installation_id, operation) DO UPDATE SET
                  id = excluded.id, game_id = excluded.game_id,
                  target_revision = excluded.target_revision,
                  recipe_id = excluded.recipe_id,
                  recipe_revision = excluded.recipe_revision, game_name = excluded.game_name,
-                 approved_at = excluded.approved_at",
+                 approved_at = excluded.approved_at, plan_fingerprint = excluded.plan_fingerprint",
             params![
                 approval.id,
                 approval.game_id,
@@ -567,6 +573,7 @@ impl DurableStore {
                 approval.recipe_revision as i64,
                 approval.game_name,
                 approval.approved_at,
+                approval.plan_fingerprint,
             ],
         )?;
         Ok(())

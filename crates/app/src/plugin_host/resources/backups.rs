@@ -823,6 +823,7 @@ impl ResourceApi {
             target_revision: frozen.profile.revision,
             recipe_id: String::new(),
             recipe_revision: 0,
+            plan_fingerprint: String::new(),
         };
         // The restore snapshot is not part of a legacy intent binding. Always ask for this exact
         // preview; do not let a launch/install intent authorize a restore.

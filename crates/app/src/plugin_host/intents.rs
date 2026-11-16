@@ -68,6 +68,8 @@ pub struct Binding {
     pub recipe_id: String,
     /// The custom recipe revision for custom launch; 0 for other operations.
     pub recipe_revision: u64,
+    /// Canonical versioned fingerprint of the complete resolved launch plan; empty for install.
+    pub plan_fingerprint: String,
 }
 
 struct Issued {

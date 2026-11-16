@@ -23,6 +23,7 @@ pub mod fingerprints;
 pub mod grants;
 pub mod intents;
 pub mod jobs;
+pub mod launch_plan;
 pub mod library;
 pub mod login;
 pub mod managed_packages;

@@ -13,6 +13,7 @@ mod cover_queue;
 pub mod custom_launch;
 pub mod favorites;
 pub mod launch;
+pub mod launch_plan;
 pub mod layout;
 mod lookup;
 pub mod machine;
@@ -42,6 +43,10 @@ pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
 pub use custom_launch::{CustomLaunchMutation, CustomLaunchRecipe};
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
+};
+pub use launch_plan::{
+    LAUNCH_PLAN_VERSION, LaunchPlan, LaunchPlanComponent, LaunchPlanError, LaunchPlanResource,
+    LaunchPlanTarget,
 };
 pub use layout::{
     AddedFilter, AvailabilityFilter, DAY_SECONDS, FIRST_RELEASE_DECADE, GameNodeStatusFilter,

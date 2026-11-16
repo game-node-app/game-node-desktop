@@ -177,6 +177,7 @@ struct Pending {
 
 struct Session {
     provider: Arc<Provider>,
+    package_version: String,
     credential: [u8; 32],
     grants: BTreeSet<String>,
     kind: i32,
@@ -198,6 +199,7 @@ struct Session {
 pub(crate) struct ResourceCaller {
     pub session_id: String,
     pub provider_id: String,
+    pub package_version: String,
     pub grants: BTreeSet<String>,
     pub grant_revision: u64,
     pub profile_epoch: u64,
@@ -1093,6 +1095,7 @@ impl ProviderApi {
             session_id.clone(),
             Session {
                 provider: pending.provider,
+                package_version: hello.plugin_version.clone(),
                 credential: pending.credential,
                 grants: requested.clone(),
                 kind: hello.session_kind,
@@ -1429,6 +1432,7 @@ impl ProviderApi {
         Ok(ResourceCaller {
             session_id: context.session_id.clone(),
             provider_id: session.provider.registration.provider_id.clone(),
+            package_version: session.package_version.clone(),
             grants: session.grants.clone(),
             grant_revision: session.grant_revision,
             profile_epoch,

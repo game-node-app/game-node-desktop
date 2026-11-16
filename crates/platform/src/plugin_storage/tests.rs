@@ -361,6 +361,7 @@ fn remembered(id: &str, installation: &str, operation: &str) -> IntentApproval {
         target_revision: 7,
         recipe_id: String::new(),
         recipe_revision: 0,
+        plan_fingerprint: "v1:approval-plan".into(),
         game_name: "Game".into(),
         approved_at: 100,
     }
@@ -466,6 +467,10 @@ fn schema_eight_approvals_upgrade_without_losing_their_target_revision() {
     assert_eq!(old.target_revision, 7);
     assert_eq!(old.recipe_id, "");
     assert_eq!(old.recipe_revision, 0);
+    assert!(
+        old.plan_fingerprint.is_empty(),
+        "legacy approvals must reconfirm"
+    );
     let mut custom = remembered("new", "inst", "custom_launch");
     custom.recipe_id = "custom-recipe".into();
     custom.recipe_revision = 3;

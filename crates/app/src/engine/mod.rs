@@ -2047,6 +2047,7 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                 return Ok(CustomLaunchDispatch::Runtime {
                     command,
                     runtime_id: runtime.runtime_id,
+                    runtime_version: runtime.version,
                     runtime_revision: runtime.runtime_revision,
                     content_id: runtime.content_id,
                     binding_revision: runtime.binding_revision,

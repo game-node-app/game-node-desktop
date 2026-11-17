@@ -14,6 +14,17 @@ pub enum ViewMode {
     List,
 }
 
+/// How large the covers in the grid are. The list view ignores it. Older layouts load as
+/// [`CoverSize::Medium`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CoverSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
 /// What the sidebar scopes the library to. A store shortcut is the `All` scope plus one value in
 /// [`LibraryFilters::stores`]; a saved view only highlights itself until its payload is applied.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +404,8 @@ pub const DEFAULT_DETAIL_WIDTH: u32 = 360;
 #[serde(default, rename_all = "camelCase")]
 pub struct LibraryLayout {
     pub view: ViewMode,
+    /// The cover size the grid uses; list view is unaffected.
+    pub cover_size: CoverSize,
     /// The active sidebar scope. A store shortcut is `All` plus one value in `filters.stores`.
     pub scope: LibraryScope,
     pub sort: Sort,
@@ -425,6 +438,7 @@ impl Default for LibraryLayout {
     fn default() -> Self {
         Self {
             view: ViewMode::default(),
+            cover_size: CoverSize::default(),
             scope: LibraryScope::default(),
             sort: Sort::default(),
             filters: LibraryFilters::default(),
@@ -491,6 +505,30 @@ mod tests {
         assert_eq!(normalized.filters.stores, ["steam"]);
         assert!(normalized.legacy_sidebar.is_none());
         assert!(!normalized.filters.availability.installed);
+    }
+
+    #[test]
+    fn a_layout_saved_before_cover_sizes_existed_uses_medium() {
+        let layout: LibraryLayout = serde_json::from_str(r#"{"view":"list"}"#).unwrap();
+        assert_eq!(layout.cover_size, CoverSize::Medium);
+
+        for (size, name) in [
+            (CoverSize::Small, "small"),
+            (CoverSize::Medium, "medium"),
+            (CoverSize::Large, "large"),
+        ] {
+            assert_eq!(serde_json::to_value(size).unwrap(), name);
+            let layout = LibraryLayout {
+                cover_size: size,
+                ..LibraryLayout::default()
+            };
+            let json = serde_json::to_value(&layout).unwrap();
+            assert_eq!(json.get("coverSize"), Some(&serde_json::json!(name)));
+            assert_eq!(
+                serde_json::from_value::<LibraryLayout>(json).unwrap(),
+                layout
+            );
+        }
     }
 
     #[test]
@@ -724,6 +762,7 @@ mod tests {
             Some(&serde_json::json!({ "collection": "backlog" }))
         );
         assert_eq!(json.get("group"), Some(&serde_json::json!("store")));
+        assert_eq!(json.get("coverSize"), Some(&serde_json::json!("medium")));
         assert_eq!(
             json.get("collapsedGroups"),
             Some(&serde_json::json!({ "store": ["epic", "steam"] }))

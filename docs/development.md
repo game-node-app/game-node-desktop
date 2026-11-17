@@ -184,17 +184,36 @@ callout shows, Install stays disabled until the confirmation is checked, and Bro
 selects `bin/x64/picked.exe` through the same selection command as the candidate list.
 **Clockwork Harbor** (`steam:3`) is a clean game with no callout.
 
-The **Stores** settings panel includes the Steam account fixture and bundled plugin
-inventory. Use `&steam=notConnected`, `&steam=signingIn`, `&steam=expired`,
+The **Settings** modal covers the redesigned topics and fixtures. **Stores** uses the
+Steam account fixture; use `&steam=notConnected`, `&steam=signingIn`, `&steam=expired`,
 `&steam=unreachable`, `&steam=credentialError`, `&steam=catalogExpired` or
 `&steam=catalogUnreachable` to exercise account actions and progress. The last two
 stay connected while the catalog reports the problem, so the same banner and
-recovery path is reachable from `catalogError`. The inventory shows trusted origin,
+recovery path is reachable from `catalogError`. Add `&epic=expired` to start the Epic
+card in the expired state while Steam stays connected; it offers **Sign in again**
+and **Remove saved sign-in**. **Plugins** lists two official plugins plus the community
+plugin **Prateleira Local**, which starts stopped so **Start**/sessions and the
+origin filter counts are reachable. The inventory shows trusted origin, version,
 executable/session status, exact granted capability IDs and native OS access
-separately; it contains no credential values. The mock snapshot carries Steam
+separately; it contains no credential values. **Tools** starts with three cached
+OptiScaler archives (including a Nightly and one without a published digest) and the
+tool installed in **Forgotten Atlas** and **Hollow Mountain**, so the OptiScaler card
+counts two games and 0.7.9 starts marked **In use**. The mock snapshot carries Steam
 account and PC ports state together, and the same locale parameter covers English
 and Brazilian Portuguese. Sign-in, check, cancel, focus and sign-out use the
 generic provider command interface.
+
+**Settings fixture states** — every state below is reachable from `VITE_UI_MOCK=1`
+without touching the native host:
+
+| State | How to reach it |
+|---|---|
+| Expired store | `?epic=expired` (or `?steam=expired`) |
+| Unavailable watched folder | `?watches=unavailable` seeds `D:\Jogos` and the unavailable `E:\Itch`; `?library=variants` also includes them |
+| Pending backup changes | Settings › **Backups**, change the destination, the automatic switch or the copies kept; the changed dots and unsaved bar appear until **Save changes** or **Revert** (no fixture is pre-dirty) |
+| Stopped community plugin | Settings › **Plugins**; **Prateleira Local** starts stopped. **Start** creates its session and **Stop** stops it again |
+| Nightly cache | Settings › **Tools** › **Download cache**; 0.8.0-pre1 is the Nightly row and 0.7.9 is In use |
+| Non-Windows mode | `?platform=linux` hides the General › Startup card, the Epic card and the Windows-only Tools/ports surfaces, and makes DRM-free games and Backups report that they are unavailable |
 
 The mock replaces the Tauri command and snapshot-event bridge, including when
 Vite is displayed inside a native dev window. Unsupported commands produce a

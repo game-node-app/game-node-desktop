@@ -899,6 +899,7 @@ async fn reviewed_candidate_lifecycle_ignores_approval_and_watch_removal() {
         id: "w1".into(),
         path: root.to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
 
@@ -1101,6 +1102,7 @@ async fn the_last_watched_folder_check_is_saved_and_reloaded_on_start() {
             id: "watch".into(),
             path: "/games".into(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
     Arc::get_mut(&mut h.engine.shared)
@@ -1147,11 +1149,13 @@ async fn discovery_failure_remains_visible_after_refresh() {
         gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
     );
     let store = Arc::new(database.local_game_store());
+    let fixture = tempfile::tempdir().unwrap();
     store
         .save_watch(&WatchRoot {
             id: "watch".into(),
-            path: "/games".into(),
+            path: fixture.path().to_string_lossy().into_owned(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
     Arc::get_mut(&mut h.engine.shared)
@@ -1187,6 +1191,7 @@ async fn windows_watched_folder_produces_review_candidates() {
             id: "watch".into(),
             path: root,
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
     Arc::get_mut(&mut h.engine.shared)
@@ -1265,6 +1270,7 @@ async fn discovery_defaults_exclude_likely_non_games_and_keep_manual_choices() {
         id: "w1".into(),
         path: root.to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
 
@@ -1433,6 +1439,7 @@ async fn discovery_suggestions_are_queued_once_per_title_and_added_as_automatic_
         id: "w1".into(),
         path: root.to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
     for (fingerprint, title) in [
@@ -1629,6 +1636,7 @@ async fn discovery_suggestions_search_every_pending_title_from_a_bounded_queue()
         id: "w1".into(),
         path: root.to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
     for index in 0..CANDIDATES {
@@ -1749,6 +1757,7 @@ async fn discovery_suggestions_cache_an_offline_answer_and_do_not_repeat_it() {
         id: "w1".into(),
         path: root.to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
     for (fingerprint, title) in [
@@ -1830,6 +1839,7 @@ async fn discovery_suggestions_make_no_requests_without_a_verified_session() {
         id: "w1".into(),
         path: fixture.path().to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
     store
@@ -1902,6 +1912,7 @@ async fn ignoring_discoveries_deletes_only_rediscoverable_candidates() {
         id: "w1".into(),
         path: fixture.path().to_string_lossy().into_owned(),
         enabled: true,
+        ..Default::default()
     };
     store.save_watch(&watch).unwrap();
     let mut candidates = Vec::new();
@@ -2069,6 +2080,7 @@ async fn discovery_suggestions_refill_across_100_boundary_persists_shared_title_
             id: "w1".into(),
             path: root.to_string_lossy().into_owned(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
 
@@ -2175,6 +2187,7 @@ async fn discovery_suggestions_stop_and_clear_queue_when_session_is_rejected() {
             id: "w1".into(),
             path: root.to_string_lossy().into_owned(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
     for (fingerprint, title) in [("rej-1", "Rejected One"), ("rej-2", "Rejected Two")] {
@@ -2690,4 +2703,367 @@ async fn local_custom_cover_commits_survives_a_match_and_cleans_up_on_replace_ca
     assert_eq!(row.game_cover_file.as_deref(), Some("10.jpg"));
 
     h.engine.shutdown();
+}
+
+fn local_discovery_harness() -> (Harness, Arc<dyn LocalGameStore>) {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store: Arc<dyn LocalGameStore> = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+        shared.ports.installations = Some(Arc::new(Host::default()));
+        shared.ports.platform = Platform::Windows;
+    }
+    (h, store)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_preferences_gate_the_startup_reconcile_and_a_later_reconcile_runs() {
+    use gamenode_core::settings::AppPreferencePatch;
+    let (mut h, store) = local_discovery_harness();
+    let fixture = tempfile::tempdir().unwrap();
+    store
+        .save_watch(&WatchRoot {
+            id: "w".into(),
+            path: fixture.path().to_string_lossy().into_owned(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryOnStart(false))
+        .unwrap();
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryRealtime(false))
+        .unwrap();
+    h.signed_out().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let snapshot = h.engine.snapshot();
+    assert_eq!(
+        snapshot.local_games.discovery_last_checked_at, None,
+        "no watched folder is traversed at start"
+    );
+    assert!(!snapshot.local_games.discovery_completed || snapshot.local_games.watches.is_empty());
+
+    // Turning real-time watching back on reconciles missed changes once.
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryRealtime(true))
+        .unwrap();
+    h.until("the resume reconcile completes", |s| {
+        s.local_games.discovery_last_checked_at.is_some()
+            && s.local_games
+                .watches
+                .iter()
+                .any(|watch| watch.last_checked_at.is_some())
+    })
+    .await;
+    let watch = &h.engine.snapshot().local_games.watches[0];
+    assert!(watch.last_checked_at.is_some());
+    assert_eq!(watch.state, gamenode_core::drm_free::WatchState::Idle);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_at_startup_reconciles_once_with_real_time_watching_off() {
+    use gamenode_core::settings::AppPreferencePatch;
+    let (mut h, store) = local_discovery_harness();
+    let fixture = tempfile::tempdir().unwrap();
+    store
+        .save_watch(&WatchRoot {
+            id: "w".into(),
+            path: fixture.path().to_string_lossy().into_owned(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryRealtime(false))
+        .unwrap();
+    h.signed_out().await;
+    h.until("the startup reconcile completes", |s| {
+        s.local_games.discovery_last_checked_at.is_some()
+            && !s.local_games.discovery_scanning
+            && s.local_games
+                .watches
+                .iter()
+                .any(|watch| watch.last_checked_at.is_some())
+    })
+    .await;
+    assert!(
+        h.engine.snapshot().local_games.watches[0]
+            .last_checked_at
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watched_folders_report_their_count_last_check_and_availability() {
+    use gamenode_core::settings::AppPreferencePatch;
+    let (mut h, store) = local_discovery_harness();
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("Game");
+    std::fs::create_dir_all(&root).unwrap();
+    store
+        .save_watch(&WatchRoot {
+            id: "w".into(),
+            path: fixture.path().to_string_lossy().into_owned(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let missing = fixture.path().join("gone");
+    store
+        .save_watch(&WatchRoot {
+            id: "missing".into(),
+            path: missing.to_string_lossy().into_owned(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .save_registration(&Registration {
+            id: "game".into(),
+            title: "Fixture".into(),
+            executable: root.join("game.exe").to_string_lossy().into_owned(),
+            file_identity: "fixture".into(),
+            root: root.to_string_lossy().into_owned(),
+            working_directory: root.to_string_lossy().into_owned(),
+            arguments: vec![],
+            gameplay: vec![],
+            launchers: vec![],
+            revision: 1,
+            removed: false,
+            rediscovery_allowed: false,
+            transferred_from: None,
+            custom_cover: None,
+            available: true,
+        })
+        .unwrap();
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryOnStart(false))
+        .unwrap();
+    h.engine
+        .set_app_preference(AppPreferencePatch::DiscoveryRealtime(false))
+        .unwrap();
+    h.signed_out().await;
+
+    let snapshot = h
+        .until("the watched folders are reported", |s| {
+            s.local_games.watches.len() == 2
+        })
+        .await;
+    let checked = snapshot
+        .local_games
+        .watches
+        .iter()
+        .find(|watch| watch.id == "w")
+        .unwrap();
+    assert_eq!(checked.entry_count, 1);
+    assert_eq!(checked.state, gamenode_core::drm_free::WatchState::Idle);
+    assert_eq!(checked.last_checked_at, None);
+    let missing = snapshot
+        .local_games
+        .watches
+        .iter()
+        .find(|watch| watch.id == "missing")
+        .unwrap();
+    assert_eq!(
+        missing.state,
+        gamenode_core::drm_free::WatchState::Unavailable
+    );
+    assert!(missing.unavailable_since.is_some());
+
+    // An unavailable folder is not traversed and keeps its state.
+    let before = missing.unavailable_since;
+    h.engine.check_local_watch("missing".into());
+    let snapshot = h.engine.snapshot();
+    let missing = snapshot
+        .local_games
+        .watches
+        .iter()
+        .find(|watch| watch.id == "missing")
+        .unwrap();
+    assert_eq!(
+        missing.state,
+        gamenode_core::drm_free::WatchState::Unavailable
+    );
+    assert_eq!(missing.last_checked_at, None);
+    assert_eq!(missing.unavailable_since, before);
+
+    // One folder check reports its completion time and keeps the count.
+    h.engine.check_local_watch("w".into());
+    let snapshot = h
+        .until("the single folder check completes", |s| {
+            s.local_games
+                .watches
+                .iter()
+                .find(|watch| watch.id == "w")
+                .is_some_and(|watch| {
+                    watch.last_checked_at.is_some()
+                        && watch.state == gamenode_core::drm_free::WatchState::Idle
+                })
+        })
+        .await;
+    let checked = snapshot
+        .local_games
+        .watches
+        .iter()
+        .find(|watch| watch.id == "w")
+        .unwrap();
+    assert_eq!(checked.entry_count, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_settings_save_the_default_retention_with_the_other_fields() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+    }
+    h.engine
+        .set_local_backup_settings(false, "/backups".into(), 20)
+        .await
+        .unwrap();
+    let settings = store.backup_settings().unwrap();
+    assert!(!settings.automatic);
+    assert_eq!(settings.destination, "/backups");
+    assert_eq!(settings.retention, 20);
+
+    // An unsupported count is refused and leaves every saved field alone.
+    assert_eq!(
+        h.engine
+            .set_local_backup_settings(true, "/other".into(), 7)
+            .await,
+        Err(gamenode_core::drm_free::LocalError::InvalidTarget)
+    );
+    let settings = store.backup_settings().unwrap();
+    assert!(!settings.automatic);
+    assert_eq!(settings.destination, "/backups");
+    assert_eq!(settings.retention, 20);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_settings_failures_keep_the_previous_values_and_report_to_the_caller() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+    }
+    // A relative destination is not usable; the save is reported as failed rather than silently
+    // accepted after the command returns.
+    assert!(
+        h.engine
+            .set_local_backup_settings(false, "relative/backups".into(), 20)
+            .await
+            .is_err()
+    );
+    let settings = store.backup_settings().unwrap();
+    assert!(settings.automatic);
+    assert_eq!(settings.retention, 10, "all three fields stayed unchanged");
+    assert_ne!(settings.destination, "relative/backups");
+
+    // A second request while one local operation is busy is refused, not dropped.
+    h.engine.lock().local.busy = true;
+    assert_eq!(
+        h.engine
+            .set_local_backup_settings(true, "/backups".into(), 20)
+            .await,
+        Err(gamenode_core::drm_free::LocalError::Busy)
+    );
+    h.engine.lock().local.busy = false;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_usage_counts_versions_and_bytes_per_game_largest_first() {
+    use gamenode_core::drm_free::{BackupSettings, Registration};
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    let database = gamenode_platform::db::SqliteSettingsStore::new(
+        gamenode_platform::db::open(std::path::Path::new(":memory:")).unwrap(),
+    );
+    let store = Arc::new(database.local_game_store());
+    {
+        let shared = Arc::get_mut(&mut h.engine.shared).unwrap();
+        shared.ports.local_games = Some(store.clone());
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let destination = fixture.path().join("backups");
+    let version = |installation: &str, profile: &str, backup: &str, bytes: usize| {
+        let directory = destination
+            .join("manual")
+            .join(installation)
+            .join(profile)
+            .join(backup)
+            .join("files");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("save.dat"), vec![0u8; bytes]).unwrap();
+    };
+    version("brasa", "brasa-profile", "2026-11-15 10-00-00", 100);
+    version("brasa", "brasa-profile", "2026-11-14 10-00-00", 50);
+    version(
+        "drift",
+        "drift-profile_recovery_mock",
+        "2026-11-10 10-00-00",
+        30,
+    );
+    store
+        .save_backup_settings(&BackupSettings {
+            automatic: true,
+            destination: destination.to_string_lossy().into_owned(),
+            retention: 10,
+        })
+        .unwrap();
+    for (id, title, removed) in [("brasa", "Brasa", false), ("drift", "Drift", true)] {
+        let root = fixture.path().join(id);
+        std::fs::create_dir_all(&root).unwrap();
+        store
+            .save_registration(&Registration {
+                id: id.into(),
+                title: title.into(),
+                executable: root.join("game.exe").to_string_lossy().into_owned(),
+                file_identity: id.into(),
+                root: root.to_string_lossy().into_owned(),
+                working_directory: root.to_string_lossy().into_owned(),
+                arguments: vec![],
+                gameplay: vec![],
+                launchers: vec![],
+                revision: 1,
+                removed,
+                rediscovery_allowed: false,
+                transferred_from: None,
+                custom_cover: None,
+                available: true,
+            })
+            .unwrap();
+    }
+
+    let usage = h.engine.local_backup_usage().unwrap();
+    assert_eq!(usage.total_bytes, 180);
+    assert_eq!(usage.total_versions, 3);
+    assert_eq!(
+        usage
+            .games
+            .iter()
+            .map(|game| (
+                game.entry_key.as_str(),
+                game.title.as_str(),
+                game.bytes,
+                game.versions
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("manual:brasa", "Brasa", 150, 2),
+            ("manual:drift", "Drift", 30, 1),
+        ],
+        "largest first, removed games keep their last known title"
+    );
 }

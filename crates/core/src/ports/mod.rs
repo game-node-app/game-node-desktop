@@ -52,7 +52,7 @@ use url::Url;
 use crate::auth::{SessionError, SignInFailure, User};
 use crate::callback::Provider;
 use crate::credential::{SessionCredential, StorageMethod};
-use crate::settings::Settings;
+use crate::settings::{AppPreferences, Settings, WindowGeometry};
 
 /// Failure to read or write local state. Messages are safe to show: no credentials or URLs.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -71,6 +71,14 @@ pub enum StorageError {
 pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Result<Settings, StorageError>;
     fn save(&self, settings: &Settings) -> Result<(), StorageError>;
+
+    /// Persists only window geometry, leaving application preferences and the other settings
+    /// untouched. Geometry and preference saves write disjoint keys, so either may land last.
+    fn save_window(&self, window: Option<WindowGeometry>) -> Result<(), StorageError>;
+
+    /// Persists every application preference as its own key, leaving window geometry and the
+    /// other settings untouched.
+    fn save_preferences(&self, preferences: &AppPreferences) -> Result<(), StorageError>;
 
     /// The last completed watched-folder check, as unix seconds. It lives in the same settings
     /// store so the status bar can show it after a restart.
@@ -229,6 +237,16 @@ pub trait PlaytimeStore: Send + Sync {
     fn save_total(&self, total: &crate::playtime::Total) -> Result<(), StorageError>;
     fn load_sync(&self) -> Result<crate::sync::SyncPreferences, StorageError>;
     fn save_sync(&self, preferences: crate::sync::SyncPreferences) -> Result<(), StorageError>;
+    /// The last completed submission pass for one account, if a pass ever completed.
+    fn load_sync_summary(
+        &self,
+        account: &str,
+    ) -> Result<Option<crate::sync::SyncSummary>, StorageError>;
+    fn save_sync_summary(
+        &self,
+        account: &str,
+        summary: crate::sync::SyncSummary,
+    ) -> Result<(), StorageError>;
 }
 
 /// The absolute provider-total endpoint; measured sessions have no sender in this step.

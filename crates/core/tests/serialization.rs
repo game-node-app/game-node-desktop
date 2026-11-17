@@ -4,8 +4,9 @@ use gamenode_core::Provider;
 use gamenode_core::auth::{AuthMachine, Input};
 use gamenode_core::credential::StorageMethod;
 use gamenode_core::library::{
-    DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource, MatchStatus,
-    Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey, ViewMode,
+    CoverSize, DetailView, EntryStatus, Input as LibraryInput, LibraryFilters, MatchSource,
+    MatchStatus, Membership, Row, SelectMode, SidebarSelection, Sort, SortDirection, SortKey,
+    ViewMode,
 };
 use gamenode_core::library::{FilterCounts, RowGroup, ScopeCounts, TitleSource, TitleSourceKind};
 use gamenode_core::library::{GroupBy, LibraryScope, RowGameNode};
@@ -25,6 +26,7 @@ fn test_snapshot_roundtrip_serialization() {
             y: Some(50),
             maximized: false,
         }),
+        ..Settings::default()
     };
 
     let mut snapshot = Snapshot::new(&machine, StorageMethod::SecretService, settings, None, None);
@@ -47,6 +49,7 @@ fn test_snapshot_roundtrip_serialization() {
     assert!(value.get("auth").is_some());
     assert!(value.get("storage").is_some());
     assert!(value.get("settings").is_some());
+    assert!(value.get("preferences").is_some());
     assert!(value.get("tools").is_some());
     assert_eq!(
         value
@@ -216,6 +219,7 @@ fn test_library_input_serialization() {
         },
         LibraryInput::SetSearch("witcher".into()),
         LibraryInput::SetView(ViewMode::Grid),
+        LibraryInput::SetCoverSize(CoverSize::Large),
         LibraryInput::SetSort(Sort {
             key: SortKey::Title,
             direction: SortDirection::Ascending,
@@ -290,6 +294,10 @@ fn test_library_input_serialization() {
     assert_eq!(
         serde_json::to_value(LibraryInput::SetSidebarCollapsed(true)).unwrap(),
         serde_json::json!({ "setSidebarCollapsed": true })
+    );
+    assert_eq!(
+        serde_json::to_value(LibraryInput::SetCoverSize(CoverSize::Large)).unwrap(),
+        serde_json::json!({ "setCoverSize": "large" })
     );
     // The add dialog's quick collection field and its background batch.
     assert_eq!(

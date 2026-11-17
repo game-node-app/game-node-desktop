@@ -539,6 +539,45 @@ async fn a_scan_is_saved_and_the_signed_in_account_is_remembered() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn detected_stores_report_the_scan_location_and_unreported_ones_keep_it_empty() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    let snapshot = h
+        .until("the scan reports its location", |s| {
+            view(s).is_some_and(|view| {
+                !view.scanning
+                    && view
+                        .providers
+                        .iter()
+                        .any(|provider| provider.id == "steam" && provider.install_root.is_some())
+            })
+        })
+        .await;
+    let providers = &view(&snapshot).unwrap().providers;
+    let steam = providers
+        .iter()
+        .find(|provider| provider.id == "steam")
+        .unwrap();
+    assert_eq!(steam.install_root.as_deref(), Some(STEAM));
+    assert_eq!(steam.library_folders, Some(1));
+    assert_eq!(steam.installed_count, 1);
+    let packagekit = providers
+        .iter()
+        .find(|provider| provider.id == "packagekit")
+        .unwrap();
+    assert_eq!(
+        (
+            packagekit.install_root.as_deref(),
+            packagekit.library_folders
+        ),
+        (None, None),
+        "a provider that reports no location keeps only its installed count"
+    );
+    assert_eq!(packagekit.installed_count, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn verified_lookups_match_games_and_download_covers() {
     let api = FakeApi::new();
     *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
@@ -1642,9 +1681,9 @@ async fn hidden_batch_with_all_failed_or_skipped_items_still_populates_add_notic
     h.until("both games scanned and matched", |s| {
         view(s).is_some_and(|v| {
             v.rows.len() == 2
-                && v.rows
-                    .iter()
-                    .any(|row| row.key == "steam:620" && matches!(row.status, MatchStatus::Matched { .. }))
+                && v.rows.iter().any(|row| {
+                    row.key == "steam:620" && matches!(row.status, MatchStatus::Matched { .. })
+                })
         })
     })
     .await;
@@ -1677,9 +1716,9 @@ async fn hidden_batch_with_all_failed_or_skipped_items_still_populates_add_notic
 
     let snapshot = h
         .until("hidden batch finished with zero added", |s| {
-            s.add_notice.as_ref().is_some_and(|notice| {
-                notice.summary.skipped == 1 && notice.summary.failed == 1
-            })
+            s.add_notice
+                .as_ref()
+                .is_some_and(|notice| notice.summary.skipped == 1 && notice.summary.failed == 1)
         })
         .await;
     let notice = snapshot.add_notice.as_ref().unwrap();
@@ -1891,4 +1930,75 @@ async fn creating_a_collection_from_the_dialog_relists_and_selects_it() {
     );
     assert_eq!(*h.api.collections_created.lock().unwrap(), ["Coop"]);
     assert!(h.api.created.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shared_games_preference_updates_the_library_without_a_sync() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    let shared_only = StoredEntry {
+        key: "steam:900".to_owned(),
+        provider: "steam".to_owned(),
+        store_id: "900".to_owned(),
+        name: Some("Family Game".to_owned()),
+        install_dir: "Family Game".to_owned(),
+        fields: Default::default(),
+        installed: false,
+        owned: false,
+        shared: true,
+        first_seen: 1,
+        last_seen: 1,
+    };
+    *h.store.cache.lock().unwrap() = LibraryCache {
+        entries: vec![cached_portal_2(), shared_only],
+        ..LibraryCache::default()
+    };
+    h.sign_in("token").await;
+    h.until("the shared entry is a row", |s| {
+        view(s).is_some_and(|library| {
+            library.rows.iter().any(|row| row.key == "steam:900") && !library.scanning
+        })
+    })
+    .await;
+
+    h.engine
+        .set_app_preference(gamenode_core::settings::AppPreferencePatch::SharedExcluded(
+            std::collections::BTreeSet::from(["steam".to_owned()]),
+        ))
+        .unwrap();
+    let snapshot = h.engine.snapshot();
+    let library = view(&snapshot).unwrap();
+    assert!(
+        library.rows.iter().all(|row| row.key != "steam:900"),
+        "the shared-only entry leaves the rows immediately"
+    );
+    assert!(
+        library.rows.iter().any(|row| row.key == "steam:620"),
+        "owned and installed entries stay"
+    );
+    let steam = library
+        .providers
+        .iter()
+        .find(|provider| provider.id == "steam")
+        .unwrap();
+    assert_eq!(
+        steam.shared_count, 1,
+        "the store card keeps the catalog count"
+    );
+    assert_eq!(steam.count, 1);
+
+    h.engine
+        .set_app_preference(gamenode_core::settings::AppPreferencePatch::SharedExcluded(
+            std::collections::BTreeSet::new(),
+        ))
+        .unwrap();
+    let snapshot = h.engine.snapshot();
+    assert!(
+        view(&snapshot)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.key == "steam:900"),
+        "turning the preference back on restores the row without a sync"
+    );
 }

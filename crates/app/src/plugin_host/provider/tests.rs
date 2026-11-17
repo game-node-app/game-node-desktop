@@ -233,6 +233,7 @@ async fn real_host_fences_old_account_work_and_keeps_discovery_independent() {
     result.discovery = Some(DiscoveryResult {
         provider_id: "fixture".into(),
         records: vec![],
+        ..Default::default()
     });
     scan_client.finish(result).await.unwrap();
     assert!(
@@ -364,6 +365,7 @@ async fn mismatched_provider_result_is_rejected_without_publishing_state() {
     result.discovery = Some(DiscoveryResult {
         provider_id: "other-provider".into(),
         records: vec![],
+        ..Default::default()
     });
     client.finish(result).await.unwrap();
     assert!(operation.await.unwrap().is_err());

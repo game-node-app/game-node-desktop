@@ -36,7 +36,7 @@ export function isShortcutBlockedByOverlay(
     state.localEditorEntryKey !== null ||
     state.saveProtectionEntryKey !== null ||
     state.removeModalEntryKey !== null ||
-    state.backupDestinationDraft !== null ||
+    state.settingsDraft !== null ||
     state.discardBackupConfirmOpen ||
     (!options?.allowFiltersOpen && state.filtersOpen)
   ) {

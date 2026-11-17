@@ -81,6 +81,16 @@ pub struct ProviderScanState {
     /// Why the latest shared-catalog sync failed; cleared by the next success.
     #[serde(default)]
     pub shared_error: Option<CatalogError>,
+    /// Where the last successful scan found the store, when it reported a location.
+    #[serde(default)]
+    pub install_root: Option<String>,
+    /// How many library folders the last successful scan reported, when it reported them.
+    #[serde(default)]
+    pub library_folders: Option<u32>,
+    /// Whether the last successful local scan found an installed store. Unlike catalog facts this
+    /// ignores ownership, search, facets and hidden entries. `None` until a scan succeeds.
+    #[serde(default)]
+    pub last_detected: Option<bool>,
 }
 
 /// The categories a catalog sync failure is stored and shown under.

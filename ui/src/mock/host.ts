@@ -8,7 +8,10 @@ import {
   getMatchedGameId,
   type AddItem,
   type AddSummary,
+  type AppPreferencePatch,
+  type AppPreferences,
   type AuthInput,
+  type BackupUsageGame,
   type CatalogStatus,
   type CollectionRunView,
   type LibraryInput,
@@ -34,6 +37,7 @@ import {
   type StoreAccountView,
   type SuggestionView,
   type ToolCatalogItemView,
+  type ToolCacheEntryView,
   type ToolChannel,
   type ToolModalView,
   type ToolRelease,
@@ -131,7 +135,7 @@ const MOCK_TOOL_RELEASES: ToolRelease[] = [
     assetName: 'OptiScaler.7z',
     sizeBytes: 39845888,
     sha256: 'sha-0.7.9',
-    cachedPath: null,
+    cachedPath: '/cache/optiscaler-0.7.9.7z',
   },
   {
     toolId: 'optiscaler',
@@ -159,9 +163,19 @@ const MOCK_TOOL_RELEASES: ToolRelease[] = [
     assetName: 'OptiScaler-nightly.7z',
     sizeBytes: 41000000,
     sha256: 'sha-nightly',
-    cachedPath: null,
+    cachedPath: '/cache/optiscaler-nightly.7z',
   },
 ];
+
+/** The Settings › Ferramentas cache fixture: three archives, one without a published digest. */
+const MOCK_TOOL_CACHE_ENTRIES: ToolCacheEntryView[] = MOCK_TOOL_RELEASES.map((release) => ({
+  toolId: release.toolId,
+  version: release.version,
+  channel: release.channel,
+  bytes: release.sizeBytes,
+  sha256Verified: release.sha256 != null,
+  inUse: false,
+}));
 
 /**
  * Cached cover file names for the signed-out mural. Fewer than 25, so the remaining tiles
@@ -365,7 +379,13 @@ function mockAchievementList(filter: string, sort: string) {
 }
 
 const MOCK_PROVIDERS: ProviderRef[] = [
-  { id: 'steam', name: 'Steam' },
+  {
+    id: 'steam',
+    name: 'Steam',
+    installRoot: 'C:\\Program Files (x86)\\Steam',
+    libraryFolders: 4,
+  },
+  // GOG and Epic report no location, so the "detected, no path" state is reachable.
   { id: 'gog', name: 'GOG' },
   { id: 'epic', name: 'Epic Games Store' },
 ];
@@ -566,10 +586,83 @@ function mockPlaytimeLabel(seconds: number | null | undefined): string | null {
   return `${Math.floor((seconds % 3600) / 60)} min`;
 }
 
+/** The two UI languages the host supports, from any raw OS locale. */
+function mockNormalizeLocale(raw: string): string {
+  return raw.trim().toLowerCase().replace('_', '-').startsWith('pt') ? 'pt-BR' : 'en';
+}
+
+/** The language the host would use for the current preference. */
+function mockEffectiveLocale(
+  preferences: AppPreferences,
+  systemLocale: string,
+): string {
+  if (preferences.locale === 'ptBr') return 'pt-BR';
+  if (preferences.locale === 'en') return 'en';
+  return systemLocale;
+}
+
+/** Applies one tagged preference patch, with the same validation the host performs. */
+function applyMockAppPreference(
+  preferences: AppPreferences,
+  patch: AppPreferencePatch,
+): AppPreferences {
+  const entries = patch && typeof patch === 'object' ? Object.entries(patch) : [];
+  if (entries.length !== 1) throw 'invalidPreference';
+  const [key, value] = entries[0];
+  const next = { ...preferences, sharedExcluded: [...preferences.sharedExcluded] };
+  switch (key) {
+    case 'startWithWindows':
+    case 'startMinimized':
+    case 'closeToTray':
+    case 'showStatusBar':
+    case 'discoveryOnStart':
+    case 'discoveryRealtime':
+    case 'toolAutoCheck':
+      if (typeof value !== 'boolean') throw 'invalidPreference';
+      next[key] = value;
+      break;
+    case 'locale':
+      if (!['system', 'en', 'ptBr'].includes(value as string)) throw 'invalidPreference';
+      next.locale = value as AppPreferences['locale'];
+      break;
+    case 'startScope':
+      if (!['last', 'all', 'installed', 'favorites', 'recent'].includes(value as string)) {
+        throw 'invalidPreference';
+      }
+      next.startScope = value as AppPreferences['startScope'];
+      break;
+    case 'toolDefaultChannel':
+      if (!['stable', 'nightly'].includes(value as string)) throw 'invalidPreference';
+      next.toolDefaultChannel = value as ToolChannel;
+      break;
+    case 'sharedExcluded':
+      if (
+        !Array.isArray(value) ||
+        value.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(id))
+      ) {
+        throw 'invalidPreference';
+      }
+      next.sharedExcluded = [...new Set(value)];
+      break;
+    default:
+      throw 'invalidPreference';
+  }
+  return next;
+}
+
 /** Every non-hidden row, independent of filters, for the command palette. */
-function mockPaletteIndex(source: Row[]): PaletteEntry[] {
+function mockPaletteIndex(source: Row[], sharedExcluded: string[] = []): PaletteEntry[] {
   return source
-    .filter((row) => !row.hidden)
+    .filter(
+      (row) =>
+        !row.hidden &&
+        !(
+          row.shared &&
+          !row.owned &&
+          !row.installed &&
+          sharedExcluded.includes(row.provider)
+        ),
+    )
     .map((row) => ({
       key: row.key,
       title: row.title,
@@ -601,6 +694,7 @@ function createLibrary(
   source: Row[],
   initialScope: LibraryScope = 'all',
   providers: ProviderRef[] = MOCK_PROVIDERS,
+  sharedExcluded: string[] = [],
 ): LibraryView {
   const layout = {
     ...createDefaultLibraryLayout(),
@@ -614,6 +708,7 @@ function createLibrary(
     now: NOW,
     providers,
     gamenodeAvailable: true,
+    sharedExcluded,
   });
   return {
     ...createDefaultLibraryView(),
@@ -623,7 +718,12 @@ function createLibrary(
     access: 'verified',
     total: query.total,
     installedTotal: query.installedTotal,
-    providers: providerCounts(source, query.filterCounts.stores, layout.filters.showHidden),
+    providers: providerCounts(
+      source,
+      query.filterCounts.stores,
+      layout.filters.showHidden,
+      providers,
+    ),
     rows: structuredClone(query.rows),
     filterCounts: structuredClone(query.filterCounts),
     scopeCounts: query.scopeCounts,
@@ -631,7 +731,7 @@ function createLibrary(
     titleSource: query.titleSource,
     catalog: { query: '', status: 'idle', results: [], incomplete: false },
     scanProgress: mockScanProgress(source, false),
-    paletteIndex: mockPaletteIndex(source),
+    paletteIndex: mockPaletteIndex(source, sharedExcluded),
     scanning: false,
     failedProviders: [],
     selected: [],
@@ -818,11 +918,36 @@ function applyClaimFixture(local: Snapshot['localGames']) {
   };
 }
 
+/**
+ * The two watched folders behind the Settings › Jogos DRM-free states: one
+ * available and one whose drive is disconnected.
+ */
+function applyWatchFixture(local: Snapshot['localGames']) {
+  local.watches = [
+    {
+      id: 'watched-games',
+      path: 'D:\\Jogos',
+      enabled: true,
+      entryCount: 2,
+      lastCheckedAt: NOW - 12 * 60,
+      state: 'idle',
+      unavailableSince: null,
+    },
+    {
+      id: 'watched-itch',
+      path: 'E:\\Itch',
+      enabled: true,
+      entryCount: 6,
+      lastCheckedAt: NOW - 26 * 3_600,
+      state: 'unavailable',
+      unavailableSince: NOW - 3 * 3_600,
+    },
+  ];
+}
+
 /** The DRM-free registrations, profile, backups and profile history behind the variant rows. */
 function applyVariantLocalGames(local: Snapshot['localGames']) {
-  local.watches = [
-    { id: 'watched-games', path: 'D:\\Jogos', enabled: true },
-  ];
+  applyWatchFixture(local);
   local.registrations = [
     {
       id: 'brasa',
@@ -1053,7 +1178,15 @@ function applyDiscoveryFixture(local: Snapshot['localGames']) {
     .map((candidate) => candidate.fingerprint);
   local.watches = local.watches.length > 0
     ? local.watches
-    : [{ id: 'watched-games', path: 'D:\\Jogos', enabled: true }];
+    : [{
+        id: 'watched-games',
+        path: 'D:\\Jogos',
+        enabled: true,
+        entryCount: 0,
+        lastCheckedAt: NOW - 12 * 60,
+        state: 'idle',
+        unavailableSince: null,
+      }];
   local.discoveryCompleted = true;
 }
 
@@ -1554,8 +1687,13 @@ export function createMockHost(options: {
   /** Signed-in first-run: no library, no connected store and no watched folder. */
   firstRun?: boolean;
   locale?: string;
+  /** Steam account fixture. */
   storeAccount?: MockSteamScenario;
+  /** Epic account fixture, so the expired-Epic state is reachable on its own. */
+  epicAccount?: MockSteamScenario;
   steamStorage?: StorageMethod;
+  /** Seeds the two watched folders, including the unavailable `E:\\Itch` drive. */
+  watches?: 'unavailable';
   largeLibrary?: boolean;
   /** Comprehensive L6 fixture: every match state plus registered DRM-free rows. */
   variantLibrary?: boolean;
@@ -1589,14 +1727,43 @@ export function createMockHost(options: {
   const listeners = new Set<Listener>();
   const progressListeners = new Set<ProgressListener>();
   const snapshot = createDefaultSnapshot();
+  const systemLocale = mockNormalizeLocale(options.locale ?? 'en');
+  const effectiveLocale = () => mockEffectiveLocale(snapshot.preferences, systemLocale);
   snapshot.tools.catalog = MOCK_TOOL_CATALOG;
+  snapshot.tools.cacheEntries = MOCK_TOOL_CACHE_ENTRIES.map((entry) => ({ ...entry }));
+  snapshot.tools.totalCacheBytes = snapshot.tools.cacheEntries.reduce(
+    (total, entry) => total + entry.bytes,
+    0,
+  );
+  snapshot.tools.totalCacheArchives = snapshot.tools.cacheEntries.length;
+  // Two installed games use the cached 0.7.9 archive, so Ferramentas shows
+  // "Em 2 jogos" and the cache row starts marked In use.
+  snapshot.tools.installedByEntry = Object.fromEntries(
+    ['epic:6', 'epic:8'].map((entryKey) => [
+      entryKey,
+      [
+        {
+          toolId: 'optiscaler',
+          name: 'OptiScaler',
+          channel: 'stable' as ToolChannel,
+          version: '0.7.9',
+          proxyDll: 'dxgi.dll',
+          targetExe: 'bin/x64/Launcher.exe',
+          state: 'installed' as const,
+          summary: 'Installed version 0.7.9',
+        },
+      ],
+    ]),
+  );
+  refreshMockToolCacheInUse();
   if (options.syncFirstRun) {
     // First successful sign-in on this PC: the explanation is still pending.
-    snapshot.sync = { enabled: true, explained: false };
+    snapshot.sync = { enabled: true, explained: false, summary: null, running: false };
   }
   // The status bar fixture: the watched folders were checked 12 minutes ago.
   snapshot.localGames.discoveryLastCheckedAt = NOW - 12 * 60;
   if (options.variantLibrary) applyVariantLocalGames(snapshot.localGames);
+  if (options.watches === 'unavailable') applyWatchFixture(snapshot.localGames);
   if (options.discoveries) applyDiscoveryFixture(snapshot.localGames);
   if (options.claim) applyClaimFixture(snapshot.localGames);
   if (options.firstRun) {
@@ -1718,7 +1885,7 @@ export function createMockHost(options: {
   const storeIds: StoreId[] = epicEnabled ? ['steam', 'epic'] : ['steam'];
   const scenarios: Record<StoreId, MockSteamScenario> = {
     steam: options.firstRun ? 'notConnected' : options.storeAccount ?? 'connected',
-    epic: options.firstRun ? 'notConnected' : 'connected',
+    epic: options.firstRun ? 'notConnected' : options.epicAccount ?? 'connected',
   };
   const previousScenarios: Record<StoreId, MockSteamScenario> = {
     steam: scenarios.steam === 'signingIn' ? 'notConnected' : scenarios.steam,
@@ -1729,6 +1896,14 @@ export function createMockHost(options: {
     epic: 'secretService',
   };
   const generations: Record<StoreId, number> = { steam: 0, epic: 0 };
+  /** Plugin process sessions the Settings › Plugins cards show; Stop/Start mutate them. */
+  const pluginSessions: Record<string, 'active' | 'stopped'> = {
+    steam: scenarios.steam === 'notConnected' ? 'stopped' : 'active',
+    epic: scenarios.epic === 'notConnected' ? 'stopped' : 'active',
+    packagekit: 'stopped',
+    // The community plugin fixture starts stopped, so the Start path is visible.
+    community: 'stopped',
+  };
 
   function providerCountsOf(provider: StoreId) {
     return {
@@ -2355,6 +2530,7 @@ export function createMockHost(options: {
       now: NOW,
       providers: queryProviders,
       gamenodeAvailable: true,
+      sharedExcluded: snapshot.preferences.sharedExcluded,
     });
     return query.visibleCount;
   }
@@ -2908,6 +3084,13 @@ export function createMockHost(options: {
       modal.selectedVersion = tool.version;
       modal.selectedProxy = (tool.proxyDll?.replace(/\.dll$/i, '') ??
         modal.selectedProxy) as ToolModalView['selectedProxy'];
+    } else {
+      // A game without an installation opens on the preferred default channel.
+      modal.selectedChannel = snapshot.preferences.toolDefaultChannel;
+      modal.availableVersions = MOCK_TOOL_RELEASES.filter(
+        (release) => release.channel === modal.selectedChannel,
+      );
+      modal.selectedVersion = modal.availableVersions[0]?.version ?? null;
     }
     snapshot.tools.modal = modal;
   }
@@ -2930,6 +3113,17 @@ export function createMockHost(options: {
     modal.tools = [tool];
     modal.operation = null;
     snapshot.tools.installedByEntry[modal.entryKey] = [tool];
+    refreshMockToolCacheInUse();
+  }
+
+  /** Marks a cached archive in use when any game installation references its version. */
+  function refreshMockToolCacheInUse() {
+    const installed = Object.values(snapshot.tools.installedByEntry)
+      .flat()
+      .map((tool) => `${tool.toolId}\u0000${tool.version}`);
+    for (const entry of snapshot.tools.cacheEntries) {
+      entry.inUse = installed.includes(`${entry.toolId}\u0000${entry.version}`);
+    }
   }
 
   function confirmAdd() {
@@ -3184,7 +3378,12 @@ export function createMockHost(options: {
     lastStatusRun = null;
     lastCollectionRun = null;
     createdByLastAdd = [];
-    snapshot.library = createLibrary(rows, initialScope, queryProviders);
+    snapshot.library = createLibrary(
+      rows,
+      initialScope,
+      queryProviders,
+      snapshot.preferences.sharedExcluded,
+    );
     updateLibrary();
   }
   if (!options.signedOut) signIn();
@@ -3196,6 +3395,7 @@ export function createMockHost(options: {
     if (!lib) return;
     const filters = lib.layout.filters;
     const effectiveScope = effectiveScopeOf(lib.layout);
+    const sharedExcluded = snapshot.preferences.sharedExcluded;
     const query = runLibraryQuery({
       rows,
       layout: lib.layout,
@@ -3204,10 +3404,16 @@ export function createMockHost(options: {
       now: NOW,
       providers: queryProviders,
       gamenodeAvailable: true,
+      sharedExcluded,
     });
     lib.total = query.total;
     lib.installedTotal = query.installedTotal;
-    lib.providers = providerCounts(rows, query.filterCounts.stores, filters.showHidden);
+    lib.providers = providerCounts(
+      rows,
+      query.filterCounts.stores,
+      filters.showHidden,
+      queryProviders,
+    );
     lib.rows = structuredClone(query.rows);
     // The engine keeps the internal selection while filters, search or a scope mask it, and
     // projects only the rows in display order into `selected`, `focused`, actions and detail.
@@ -3231,6 +3437,12 @@ export function createMockHost(options: {
       count: rows.filter(
         (row) =>
           (filters.showHidden || !row.hidden) &&
+          !(
+            row.shared &&
+            !row.owned &&
+            !row.installed &&
+            sharedExcluded.includes(row.provider)
+          ) &&
           (row.gamenode?.collectionIds.includes(collection.id) ?? false),
       ).length,
     }));
@@ -3247,7 +3459,7 @@ export function createMockHost(options: {
     lib.catalog = catalogView();
     lib.scanProgress =
       scanProgressOverride ?? mockScanProgress(rows, snapshot.localGames.discoveryScanning);
-    lib.paletteIndex = mockPaletteIndex(rows);
+    lib.paletteIndex = mockPaletteIndex(rows, sharedExcluded);
     if (!scanProgressOverride) lib.scanning = false;
     const availability = filters.availability;
     const installedOnly =
@@ -3429,6 +3641,7 @@ export function createMockHost(options: {
     if (typeof input === 'object') {
       if ('setSearch' in input) lib.search = input.setSearch;
       else if ('setView' in input) lib.layout.view = input.setView;
+      else if ('setCoverSize' in input) lib.layout.coverSize = input.setCoverSize;
       else if ('setFilter' in input) {
         lib.layout.scope = 'all';
         lib.layout.filters.stores =
@@ -3692,6 +3905,7 @@ export function createMockHost(options: {
           providerId: 'steam',
           pluginId: 'org.gamenode.plugin.steam-discovery',
           name: 'Steam',
+          version: '0.1.0',
           source: 'official',
           status: 'installed',
           capabilities: [
@@ -3701,7 +3915,7 @@ export function createMockHost(options: {
             'secrets.write', 'secrets.delete', 'playtime.counter',
             'provider.actions.declare',
           ],
-          session: scenarios.steam === 'notConnected' ? 'stopped' : 'active',
+          session: pluginSessions.steam,
           nativeAccess: platform === 'windows'
             ? ['files', 'network', 'registry']
             : ['files', 'network'],
@@ -3710,6 +3924,7 @@ export function createMockHost(options: {
           providerId: 'epic',
           pluginId: 'org.gamenode.plugin.epic',
           name: 'Epic Games Store',
+          version: '0.1.0',
           source: 'official',
           status: 'installed',
           capabilities: [
@@ -3718,32 +3933,111 @@ export function createMockHost(options: {
             'auth.webview.page.read', 'secrets.read', 'secrets.write',
             'secrets.delete', 'playtime.counter', 'provider.actions.declare',
           ],
-          session: scenarios.epic === 'notConnected' ? 'stopped' : 'active',
+          session: pluginSessions.epic,
           nativeAccess: ['files', 'network', 'registry'],
+        };
+        // One community plugin, stopped, so the origin filter and Start button are
+        // reachable from the default mock (D16).
+        const communityPlugin: PluginInfo = {
+          providerId: 'community',
+          pluginId: 'dev.prateleira.local',
+          name: 'Prateleira Local',
+          version: '0.3.1',
+          source: 'community',
+          status: 'installed',
+          capabilities: ['provider.context.read'],
+          session: pluginSessions.community,
+          nativeAccess: platform === 'linux'
+            ? ['files', 'dbus']
+            : ['files', 'network'],
         };
         if (platform === 'linux') {
           const packageManagerPlugin: PluginInfo = {
             providerId: 'packagekit',
             pluginId: 'org.gamenode.plugin.packagekit-discovery',
             name: 'Gerenciador de pacotes Linux',
+            version: '0.1.0',
             source: 'official',
             status: 'installed',
             capabilities: ['provider.context.read', 'library.discovery'],
-            session: 'stopped',
+            session: pluginSessions.packagekit,
             nativeAccess: ['files', 'process', 'dbus'],
           };
-          return [steamPlugin, packageManagerPlugin];
+          return [steamPlugin, packageManagerPlugin, communityPlugin];
         }
-        return [steamPlugin, epicPlugin];
+        return [steamPlugin, epicPlugin, communityPlugin];
+      }
+      if (cmd === 'plugin_stop' || cmd === 'plugin_start') {
+        const providerId = args.providerId as string;
+        if (!(providerId in pluginSessions)) {
+          throw new Error(`unknown provider: ${providerId}`);
+        }
+        pluginSessions[providerId] = cmd === 'plugin_stop' ? 'stopped' : 'active';
+        const account = snapshot.storeAccounts.find(
+          (candidate) => candidate.provider === providerId,
+        );
+        if (account) {
+          if (cmd === 'plugin_stop') {
+            // Account and sync actions are unavailable until the plugin starts again.
+            account.canSignIn = false;
+            account.canFocusSignIn = false;
+            account.canCancelSignIn = false;
+            account.canCheck = false;
+            account.canSignOut = false;
+            account.canRemoveCredential = false;
+          } else {
+            syncStoreAccounts();
+          }
+        }
+        publish();
+        return undefined;
       }
       if (cmd === 'get_app_info') {
         return {
-          locale: options.locale ?? 'en',
+          locale: effectiveLocale(),
+          systemLocale,
           version: 'mock',
-          backgroundSupported: false,
+          buildDate: '2026-01-01',
+          osVersion: (options.platform ?? 'windows') === 'windows'
+            ? 'Windows 11 Pro (build 26100)'
+            : 'Linux',
+          arch: 'x86_64',
+          backgroundSupported: (options.platform ?? 'windows') === 'windows',
           platform: options.platform ?? 'windows',
           logDirectory: '/tmp/gamenode-logs',
         };
+      }
+      if (cmd === 'system_info_text') {
+        const platform = options.platform ?? 'windows';
+        const plugins = platform === 'linux'
+          ? [
+              ['Steam', '0.1.0', 'official'],
+              ['Gerenciador de pacotes Linux', '0.1.0', 'official'],
+              ['Prateleira Local', '0.3.1', 'community'],
+            ]
+          : [
+              ['Steam', '0.1.0', 'official'],
+              ['Epic Games Store', '0.1.0', 'official'],
+              ['Prateleira Local', '0.3.1', 'community'],
+            ];
+        const lines = [
+          'GameNode Desktop mock',
+          'Build 2026-01-01',
+          `${platform === 'windows' ? 'Windows 11 Pro (build 26100)' : 'Linux'} x86_64`,
+          `Locale: ${effectiveLocale()}`,
+          '',
+          'Plugins:',
+          ...plugins.map(([name, version, source]) => `- ${name} ${version} (${source}, installed)`),
+          '',
+          'Detected stores:',
+          '- Steam: 5 installed',
+          ...(platform === 'windows' ? ['- Epic Games Store: 2 installed'] : []),
+        ];
+        return lines.join('\n');
+      }
+      if (cmd === 'open_gamenode_link') {
+        console.info('[UI mock] openGameNodeLink', args.kind);
+        return undefined;
       }
       if (cmd === 'get_license_notices') return 'Mock UI development session';
       if (cmd === 'get_recent_logs') return '2026-01-01T00:00:00Z INFO gamenode_app: mock log line';
@@ -3904,6 +4198,47 @@ export function createMockHost(options: {
           row.gameCoverFile = mockGameNodeCovers.get(row.key) ?? null;
           row.coverFile = registration.customCover ?? row.gameCoverFile;
         }
+      } else if (cmd === 'set_local_backup_settings') {
+        const retention = Number(args.retention);
+        if (![5, 10, 20, 50].includes(retention)) {
+          throw { code: 'invalidRetention' };
+        }
+        const destination = String(args.destination ?? '').trim();
+        if (destination.length === 0) {
+          throw { code: 'invalidDestination' };
+        }
+        snapshot.localGames.settings = {
+          automatic: args.automatic as boolean,
+          destination,
+          retention,
+        };
+      } else if (cmd === 'local_backup_usage') {
+        const byInstallation = new Map<string, BackupUsageGame>();
+        for (const version of snapshot.localGames.versions) {
+          const installation = version.installation;
+          const registration = snapshot.localGames.registrations.find(
+            (item) => item.id === installation,
+          );
+          const row = rows.find((item) => item.key === `manual:${installation}`);
+          const game = byInstallation.get(installation) ?? {
+            entryKey: `manual:${installation}`,
+            title: registration?.title ?? row?.title ?? installation,
+            coverFile: row?.coverFile ?? null,
+            bytes: 0,
+            versions: 0,
+          };
+          game.bytes += version.bytes;
+          game.versions += 1;
+          byInstallation.set(installation, game);
+        }
+        const games = [...byInstallation.values()].sort(
+          (left, right) => right.bytes - left.bytes,
+        );
+        return {
+          totalBytes: games.reduce((total, game) => total + game.bytes, 0),
+          totalVersions: games.reduce((total, game) => total + game.versions, 0),
+          games,
+        };
       } else if (cmd === 'set_local_backup_retention') {
         const id = (args.entryKey as string).replace(/^manual:/, '');
         const retention = Number(args.retention);
@@ -3953,7 +4288,43 @@ export function createMockHost(options: {
       }
       else if (cmd === 'set_sync_enabled') snapshot.sync.enabled = args.enabled as boolean;
       else if (cmd === 'dismiss_sync_explanation') snapshot.sync.explained = true;
+      else if (cmd === 'sync_now') {
+        const signedIn = typeof snapshot.auth === 'object' && 'signedIn' in snapshot.auth;
+        if (!snapshot.sync.enabled || !signedIn) throw 'syncUnavailable';
+        if (snapshot.sync.running) return undefined;
+        snapshot.sync.running = true;
+        publish();
+        setTimeout(() => {
+          const accepted = rows.filter((row) => (row.playtime?.seconds ?? 0) > 0);
+          snapshot.sync.summary = {
+            completedAt: Math.floor(Date.now() / 1000),
+            acceptedGames: accepted.length,
+            stores: new Set(accepted.map((row) => row.provider)).size,
+            held: 0,
+          };
+          snapshot.sync.running = false;
+          publish();
+        }, 350);
+      } else if (cmd === 'check_local_watch') {
+        const watch = snapshot.localGames.watches.find(
+          (item) => item.id === (args.id as string),
+        );
+        if (!watch || !watch.enabled || watch.state === 'unavailable') return undefined;
+        watch.state = 'checking';
+        publish();
+        setTimeout(() => {
+          watch.state = 'idle';
+          watch.lastCheckedAt = Math.floor(Date.now() / 1000);
+          publish();
+        }, 250);
+      }
       else if (cmd === 'set_playtime_source') snapshot.playtimeSource = args.source as Snapshot['playtimeSource'];
+      else if (cmd === 'set_app_preference') {
+        snapshot.preferences = applyMockAppPreference(
+          snapshot.preferences,
+          args.patch as AppPreferencePatch,
+        );
+      }
       else if (cmd === 'provider_sign_in') {
         const provider = args.providerId as StoreId;
         if (!storeIds.includes(provider)) return undefined;
@@ -4174,12 +4545,15 @@ export function createMockHost(options: {
           modal.tools = [];
           modal.operation = null;
           delete snapshot.tools.installedByEntry[modal.entryKey];
+          refreshMockToolCacheInUse();
         }
       } else if (cmd === 'open_tool_source') {
         console.info('[UI mock] openToolSource', args.url);
       } else if (cmd === 'clear_tool_cache') {
         snapshot.tools.totalCacheBytes = 0;
         snapshot.tools.totalCacheArchives = 0;
+        snapshot.tools.achievementIconCacheBytes = 0;
+        snapshot.tools.cacheEntries = [];
         for (const modal of [snapshot.tools.modal]) {
           for (const release of modal?.availableVersions ?? []) {
             release.cachedPath = null;
@@ -4206,54 +4580,73 @@ function isMockCatalogScenario(
   return value === 'default' || value === 'error' || value === 'offline' || value === 'incomplete';
 }
 
-/** `?steam=expired` (or any `MockSteamScenario`) selects a store-account fixture. */
-const requestedSteamScenario = new URLSearchParams(window.location.search).get('steam');
-const requestedParams = new URLSearchParams(window.location.search);
-const requestedCatalogScenario = requestedParams.get('catalog');
+/**
+ * Maps the documented `VITE_UI_MOCK=1` query parameters to host options. Kept
+ * pure so the scenario table in docs/development.md can be tested without
+ * reloading the module.
+ */
+export function mockHostOptionsFromSearch(
+  search: string,
+): NonNullable<Parameters<typeof createMockHost>[0]> {
+  const requestedParams = new URLSearchParams(search);
+  const requestedSteamScenario = requestedParams.get('steam');
+  const requestedEpicScenario = requestedParams.get('epic');
+  const requestedCatalogScenario = requestedParams.get('catalog');
+  return {
+    signedOut: requestedParams.get('scenario') === 'signed-out',
+    firstRun: requestedParams.get('scenario') === 'first-run',
+    locale: requestedParams.get('locale') === 'pt-BR' ? 'pt-BR' : 'en',
+    storeAccount: isMockSteamScenario(requestedSteamScenario)
+      ? requestedSteamScenario
+      : undefined,
+    epicAccount: isMockSteamScenario(requestedEpicScenario)
+      ? requestedEpicScenario
+      : undefined,
+    // `?watches=unavailable` seeds the two Settings › Jogos DRM-free folder rows.
+    watches:
+      requestedParams.get('watches') === 'unavailable' ? 'unavailable' : undefined,
+    largeLibrary: requestedParams.get('library') === 'large',
+    variantLibrary: requestedParams.get('library') === 'variants',
+    emptyLibrary: requestedParams.get('library') === 'empty',
+    noInstalledLibrary: requestedParams.get('library') === 'no-installed',
+    discoveries: requestedParams.get('discoveries') === '1',
+    claim: requestedParams.get('claim') === '1',
+    startScanning: requestedParams.get('scanning') === '1',
+    viewWriteFailure:
+      requestedParams.get('viewWrite') === 'fail-once'
+        ? 'once'
+        : requestedParams.get('viewWrite') === 'fail'
+          ? 'always'
+          : 'none',
+    // PC ports are Windows-only in this release. The mock is a Windows signed-in build by
+    // default so the destination is visible in a browser on any OS; `?platform=linux`
+    // exercises the hidden case.
+    platform: requestedParams.get('platform') === 'linux' ? 'linux' : 'windows',
+    portsScenario:
+      requestedParams.get('ports') === 'unavailable' ? 'unavailable' : 'default',
+    catalogScenario: isMockCatalogScenario(requestedCatalogScenario)
+      ? requestedCatalogScenario
+      : undefined,
+    failMutations: requestedParams.get('mutations') === 'fail',
+    // `?scenario=signed-out&signin=pending` keeps the browser round trip open; `reopen=fail`
+    // makes Open again report the localized error without ending the attempt.
+    signInPending: requestedParams.get('signin') === 'pending',
+    signInReopenFails: requestedParams.get('reopen') === 'fail',
+    // First successful sign-in on this PC: the sync explanation is pending. Keep on dismisses it;
+    // Turn off disables sync and then dismisses it in the same action.
+    syncFirstRun: requestedParams.get('sync') === 'first',
+    // `?toolpick=cancel`, `?toolpick=fail` or `?toolpick=outside` exercises the Browse… failure paths.
+    toolPick:
+      requestedParams.get('toolpick') === 'cancel'
+        ? 'cancel'
+        : requestedParams.get('toolpick') === 'fail'
+          ? 'fail'
+          : requestedParams.get('toolpick') === 'outside'
+            ? 'outside'
+            : 'accept',
+    // The browser mock shows the batch one game at a time; tests pass 0 for a synchronous run.
+    addBatchDelayMs: 650,
+  };
+}
 
-export const mockHost = createMockHost({
-  signedOut: requestedParams.get('scenario') === 'signed-out',
-  firstRun: requestedParams.get('scenario') === 'first-run',
-  locale: requestedParams.get('locale') === 'pt-BR' ? 'pt-BR' : 'en',
-  storeAccount: isMockSteamScenario(requestedSteamScenario) ? requestedSteamScenario : undefined,
-  largeLibrary: requestedParams.get('library') === 'large',
-  variantLibrary: requestedParams.get('library') === 'variants',
-  emptyLibrary: requestedParams.get('library') === 'empty',
-  noInstalledLibrary: requestedParams.get('library') === 'no-installed',
-  discoveries: requestedParams.get('discoveries') === '1',
-  claim: requestedParams.get('claim') === '1',
-  startScanning: requestedParams.get('scanning') === '1',
-  viewWriteFailure:
-    requestedParams.get('viewWrite') === 'fail-once'
-      ? 'once'
-      : requestedParams.get('viewWrite') === 'fail'
-        ? 'always'
-        : 'none',
-  // PC ports are Windows-only in this release. The mock is a Windows signed-in build by
-  // default so the destination is visible in a browser on any OS; `?platform=linux`
-  // exercises the hidden case.
-  platform: requestedParams.get('platform') === 'linux' ? 'linux' : 'windows',
-  portsScenario: requestedParams.get('ports') === 'unavailable' ? 'unavailable' : 'default',
-  catalogScenario: isMockCatalogScenario(requestedCatalogScenario)
-    ? requestedCatalogScenario
-    : undefined,
-  failMutations: requestedParams.get('mutations') === 'fail',
-  // `?scenario=signed-out&signin=pending` keeps the browser round trip open; `reopen=fail`
-  // makes Open again report the localized error without ending the attempt.
-  signInPending: requestedParams.get('signin') === 'pending',
-  signInReopenFails: requestedParams.get('reopen') === 'fail',
-  // First successful sign-in on this PC: the sync explanation is pending. Keep on dismisses it;
-  // Turn off disables sync and then dismisses it in the same action.
-  syncFirstRun: requestedParams.get('sync') === 'first',
-  // `?toolpick=cancel`, `?toolpick=fail` or `?toolpick=outside` exercises the Browse… failure paths.
-  toolPick:
-    requestedParams.get('toolpick') === 'cancel'
-      ? 'cancel'
-      : requestedParams.get('toolpick') === 'fail'
-        ? 'fail'
-        : requestedParams.get('toolpick') === 'outside'
-          ? 'outside'
-          : 'accept',
-  // The browser mock shows the batch one game at a time; tests pass 0 for a synchronous run.
-  addBatchDelayMs: 650,
-});
+export const mockHost = createMockHost(mockHostOptionsFromSearch(window.location.search));

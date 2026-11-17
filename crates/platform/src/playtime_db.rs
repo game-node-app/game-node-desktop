@@ -2,7 +2,7 @@
 
 use gamenode_core::playtime::{Session, Total};
 use gamenode_core::ports::{PlaytimeStore, StorageError};
-use gamenode_core::sync::SyncPreferences;
+use gamenode_core::sync::{SyncPreferences, SyncSummary};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{Arc, Mutex};
 
@@ -168,6 +168,38 @@ impl PlaytimeStore for SqlitePlaytimeStore {
             tx.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,if value { "1" } else { "0" }]).map_err(failed)?;
         }
         tx.commit().map_err(failed)
+    }
+    fn load_sync_summary(&self, account: &str) -> Result<Option<SyncSummary>, StorageError> {
+        let conn = crate::db::lock(&self.conn);
+        conn.query_row(
+            "SELECT completed_at,accepted_games,stores,held FROM sync_summaries WHERE account_id=?1",
+            [account],
+            |row| {
+                Ok(SyncSummary {
+                    completed_at: row.get(0)?,
+                    accepted_games: u32::try_from(row.get::<_, i64>(1)?).unwrap_or(u32::MAX),
+                    stores: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                    held: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
+                })
+            },
+        )
+        .optional()
+        .map_err(failed)
+    }
+    fn save_sync_summary(&self, account: &str, summary: SyncSummary) -> Result<(), StorageError> {
+        crate::db::lock(&self.conn)
+            .execute(
+                "INSERT INTO sync_summaries (account_id,completed_at,accepted_games,stores,held) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(account_id) DO UPDATE SET completed_at=excluded.completed_at,accepted_games=excluded.accepted_games,stores=excluded.stores,held=excluded.held",
+                params![
+                    account,
+                    summary.completed_at,
+                    summary.accepted_games,
+                    summary.stores,
+                    summary.held
+                ],
+            )
+            .map(drop)
+            .map_err(failed)
     }
 }
 #[cfg(test)]

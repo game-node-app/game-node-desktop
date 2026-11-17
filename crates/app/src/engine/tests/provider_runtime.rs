@@ -140,12 +140,13 @@ impl ProviderRuntime for Runtime {
             return tokio::task::spawn_blocking(move || {
                 let manifest = Self::manifest();
                 if operation == ProviderOperation::Discover {
-                    let records = manifest
-                        .scan(platform, &files, &roots)
+                    let scan = manifest
+                        .scan_with_location(platform, &files, &roots)
                         .map_err(|_| Status::unavailable("fixture scan failed"))?;
                     result.discovery = Some(DiscoveryResult {
                         provider_id: manifest.id,
-                        records: records
+                        records: scan
+                            .records
                             .into_iter()
                             .map(|r| DiscoveryRecord {
                                 id: r.id,
@@ -154,6 +155,8 @@ impl ProviderRuntime for Runtime {
                                 fields: r.fields.into_iter().collect(),
                             })
                             .collect(),
+                        install_root: scan.install_root,
+                        library_folders: scan.library_folders,
                     });
                 } else {
                     let roots = manifest.resolve_roots(platform, &roots);
@@ -350,6 +353,7 @@ impl ProviderRuntime for Scripted {
                     discovery: Some(DiscoveryResult {
                         provider_id: self.provider.into(),
                         records,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },

@@ -56,6 +56,62 @@ export interface Settings {
   window?: WindowGeometry | null;
 }
 
+/** The interface language choice; `system` follows the OS language. */
+export type LocalePreference = 'system' | 'en' | 'ptBr';
+
+/** The sidebar scope the library opens with; `last` keeps the remembered scope. */
+export type StartScopePreference = 'last' | 'all' | 'installed' | 'favorites' | 'recent';
+
+/**
+ * Mirrors `AppPreferences` in `crates/core/src/settings.rs`. Every preference is stored per PC,
+ * independently of the signed-in account.
+ */
+export interface AppPreferences {
+  startWithWindows: boolean;
+  startMinimized: boolean;
+  closeToTray: boolean;
+  locale: LocalePreference;
+  showStatusBar: boolean;
+  startScope: StartScopePreference;
+  discoveryOnStart: boolean;
+  discoveryRealtime: boolean;
+  toolAutoCheck: boolean;
+  toolDefaultChannel: ToolChannel;
+  /** Provider ids whose shared-only entries are left out; empty includes every store. */
+  sharedExcluded: string[];
+}
+
+/** One preference change, matching the externally tagged `AppPreferencePatch` enum. */
+export type AppPreferencePatch =
+  | { startWithWindows: boolean }
+  | { startMinimized: boolean }
+  | { closeToTray: boolean }
+  | { locale: LocalePreference }
+  | { showStatusBar: boolean }
+  | { startScope: StartScopePreference }
+  | { discoveryOnStart: boolean }
+  | { discoveryRealtime: boolean }
+  | { toolAutoCheck: boolean }
+  | { toolDefaultChannel: ToolChannel }
+  | { sharedExcluded: string[] };
+
+/** The defaults the engine loads from a database written before preferences existed. */
+export function createDefaultAppPreferences(): AppPreferences {
+  return {
+    startWithWindows: true,
+    startMinimized: true,
+    closeToTray: true,
+    locale: 'system',
+    showStatusBar: true,
+    startScope: 'last',
+    discoveryOnStart: true,
+    discoveryRealtime: true,
+    toolAutoCheck: true,
+    toolDefaultChannel: 'stable',
+    sharedExcluded: [],
+  };
+}
+
 export type PlaytimeSource = 'internal' | 'store';
 
 export interface PlaytimeView {
@@ -68,6 +124,20 @@ export interface PlaytimeView {
 export interface SyncPreferences {
   enabled: boolean;
   explained: boolean;
+  /** The last completed submission pass for the signed-in account. */
+  summary: SyncSummary | null;
+  /** A submission pass (or Sync now) is running. */
+  running: boolean;
+}
+
+/** The counts one completed playtime submission pass leaves for its account. */
+export interface SyncSummary {
+  /** Unix seconds when the pass completed. */
+  completedAt: number;
+  acceptedGames: number;
+  stores: number;
+  /** Totals still waiting for acceptance, including rejected ones. */
+  held: number;
 }
 
 export interface TrackingView {
@@ -285,6 +355,9 @@ export type EmptyState =
 
 export type ViewMode = 'grid' | 'list';
 
+/** How large the grid covers are; the list view is unaffected. Older layouts use Medium. */
+export type CoverSize = 'small' | 'medium' | 'large';
+
 export type SortKey =
   | 'title'
   | 'provider'
@@ -433,6 +506,7 @@ export function filtersAreDefault(filters: LibraryFilters): boolean {
 export function createDefaultLibraryLayout(): LibraryLayout {
   return {
     view: 'grid',
+    coverSize: 'medium',
     scope: 'all',
     sort: { key: 'title', direction: 'ascending' },
     filters: createDefaultFilters(),
@@ -447,6 +521,8 @@ export function createDefaultLibraryLayout(): LibraryLayout {
 
 export interface LibraryLayout {
   view: ViewMode;
+  /** Absent on payloads older than the cover-size preference; treats as Medium. */
+  coverSize?: CoverSize;
   scope: LibraryScope;
   sort: Sort;
   filters: LibraryFilters;
@@ -470,6 +546,15 @@ export interface ProviderCount {
   sharedCount: number;
   /** The provider's declared shared-access label; only labelled providers offer the filter. */
   sharedLabel: string | null;
+  /** Where the latest scan found the store, when the provider reports a location. */
+  installRoot?: string | null;
+  /** How many library folders that scan reported, when it reports them. */
+  libraryFolders?: number | null;
+  /**
+   * Whether the last local scan found the store. It comes from the scan outcome,
+   * never from the owned/shared catalog counts or the current filters.
+   */
+  detected?: boolean;
 }
 
 /** Mirrors `StoreCount` in `crates/core/src/library/query.rs`. */
@@ -1064,10 +1149,19 @@ export interface Candidate {
   likelyNonGame?: boolean;
 }
 
-export interface WatchRoot {
+export type WatchState = 'idle' | 'checking' | 'unavailable';
+
+export interface WatchView {
   id: string;
   path: string;
   enabled: boolean;
+  /** Library entries whose installation root is inside this folder. */
+  entryCount: number;
+  /** Unix seconds of the last completed check of this folder. */
+  lastCheckedAt: number | null;
+  state: WatchState;
+  /** Unix seconds when the folder became unavailable, while it is. */
+  unavailableSince: number | null;
 }
 
 export type SaveSupport =
@@ -1121,6 +1215,24 @@ export interface BackupSettings {
   destination: string;
   /** Default full-version count for installations without a profile override. */
   retention: number;
+}
+
+/** Space one game's local backups use, recovery snapshots included. */
+export interface BackupUsageGame {
+  /** The library key, `manual:<installation id>`. */
+  entryKey: string;
+  /** The last known title, including for a game that was removed. */
+  title: string;
+  coverFile: string | null;
+  bytes: number;
+  versions: number;
+}
+
+/** Total and per-game space used by local backups, largest game first. */
+export interface BackupUsage {
+  totalBytes: number;
+  totalVersions: number;
+  games: BackupUsageGame[];
 }
 
 export interface BackupVersion {
@@ -1185,7 +1297,7 @@ export interface LocalView {
   discoveryError?: string | null;
   /** Unix seconds of the last completed watched-folder check, kept across restarts. */
   discoveryLastCheckedAt: number | null;
-  watches: WatchRoot[];
+  watches: WatchView[];
   reviewSelected: string[];
   versions: BackupVersion[];
   /** Sum of listed version bytes, recovery snapshots included. */
@@ -1303,12 +1415,27 @@ export interface ToolCatalogItemView {
   sourceUrl: string;
 }
 
+/** One cached tool archive as Settings › Ferramentas lists it. */
+export interface ToolCacheEntryView {
+  toolId: string;
+  version: string;
+  channel: ToolChannel;
+  bytes: number;
+  sha256Verified: boolean;
+  /** Any game installation references this version. */
+  inUse: boolean;
+}
+
 export interface ToolsView {
   installedByEntry: Record<string, GameToolView[]>;
   modal?: ToolModalView | null;
   totalCacheBytes: number;
   totalCacheArchives: number;
+  /** Achievement icons are accounted separately from downloadable tool archives. */
+  achievementIconCacheBytes: number;
   catalog: ToolCatalogItemView[];
+  /** Cached archives from the release cache metadata, with their verification and use state. */
+  cacheEntries: ToolCacheEntryView[];
 }
 
 export type CatalogError =
@@ -1363,6 +1490,8 @@ export interface PluginInfo {
   providerId: string;
   pluginId: string;
   name: string;
+  /** Version from the trusted descriptor, or the build package version. */
+  version: string;
   source: 'official' | 'community';
   status: 'installed' | 'missing' | 'unavailable' | 'failed' | 'incompatible';
   capabilities: string[];
@@ -1380,6 +1509,8 @@ export interface Snapshot {
   notice?: Notice | null;
   storage: StorageMethod;
   settings: Settings;
+  /** PC-wide application preferences, kept per PC and independent of the account. */
+  preferences: AppPreferences;
   library?: LibraryView | null;
   launch?: LaunchStatus | null;
   /**
@@ -1394,8 +1525,17 @@ export interface Snapshot {
 }
 
 export interface AppInfo {
+  /** The effective interface language: the preference, or the normalized OS locale. */
   locale: string;
+  /** The normalized OS locale, so Settings can label "System language" correctly. */
+  systemLocale?: string;
   version: string;
+  /** UTC build date (`SOURCE_DATE_EPOCH` when set, otherwise the compile date). */
+  buildDate?: string;
+  /** A human-readable OS name and version. */
+  osVersion?: string;
+  /** The build target architecture. */
+  arch?: string;
   backgroundSupported: boolean;
   /**
    * Platform reported by the host. Optional because older hosts do not send it; the UI then
@@ -1436,6 +1576,7 @@ export type LibraryInput =
   | { move: { direction: Direction; extend: boolean } }
   | { setColumns: number }
   | { setView: ViewMode }
+  | { setCoverSize: CoverSize }
   | { setFilter: SidebarSelection }
   | { setScope: LibraryScope }
   | { setGroup: GroupBy }
@@ -1483,6 +1624,9 @@ export type LibraryInput =
 
 /** A browser page on the GameNode website. */
 export type GameNodePage = 'library' | { game: { id: number } };
+
+/** Fixed GameNode website links; the UI never passes a URL. `profile` needs a session. */
+export type GameNodeLink = 'website' | 'terms' | 'privacy' | 'reportIssue' | 'profile';
 
 export function getMatchedGameId(status: MatchStatus): number | null {
   if (typeof status === 'object' && 'matched' in status) {
@@ -1661,6 +1805,8 @@ export function createDefaultSnapshot(): Snapshot {
     sync: {
       enabled: true,
       explained: true,
+      summary: null,
+      running: false,
     },
     playtimeSource: 'internal',
     auth: 'signedOut',
@@ -1669,6 +1815,7 @@ export function createDefaultSnapshot(): Snapshot {
     settings: {
       window: null,
     },
+    preferences: createDefaultAppPreferences(),
     library: null,
     launch: null,
     addNotice: null,
@@ -1677,7 +1824,9 @@ export function createDefaultSnapshot(): Snapshot {
       modal: null,
       totalCacheBytes: 0,
       totalCacheArchives: 0,
+      achievementIconCacheBytes: 0,
       catalog: [],
+      cacheEntries: [],
     },
     storeAccounts: [],
     ports: createDefaultPortsView(),

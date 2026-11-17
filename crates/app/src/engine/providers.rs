@@ -297,6 +297,39 @@ impl Engine {
                 .await;
         }
     }
+
+    /// Stops one plugin process for this run. The runtime cancels a pending sign-in first and
+    /// waits for its bounded shutdown.
+    pub async fn plugin_stop(&self, id: &str) -> Result<(), String> {
+        let runtime = self
+            .provider_runtime()
+            .ok_or_else(|| "the plugin host is unavailable".to_owned())?;
+        if !runtime.has_provider(id) {
+            return Err(format!("unknown provider: {id}"));
+        }
+        runtime
+            .stop(id)
+            .await
+            .map_err(|status| status.message().to_owned())?;
+        self.publish_current();
+        Ok(())
+    }
+
+    /// Starts a stopped plugin with a fresh process session and restores its account.
+    pub async fn plugin_start(&self, id: &str) -> Result<(), String> {
+        let runtime = self
+            .provider_runtime()
+            .ok_or_else(|| "the plugin host is unavailable".to_owned())?;
+        if !runtime.has_provider(id) {
+            return Err(format!("unknown provider: {id}"));
+        }
+        runtime
+            .start(id)
+            .await
+            .map_err(|status| status.message().to_owned())?;
+        self.publish_current();
+        Ok(())
+    }
     fn provider_check_gate(&self, provider: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.shared
             .provider_checks
@@ -374,32 +407,47 @@ impl Engine {
                     let failed_provider = provider.clone();
                     let committed = completion
                         .commit(move |result, _| {
-                            let result =
-                                if result.disposition == OperationDisposition::Completed as i32 {
-                                    result
-                                        .discovery
-                                        .filter(|d| d.provider_id == provider)
-                                        .map(|d| {
-                                            gamenode_core::provider::record::finish_records(
-                                                &provider,
-                                                d.records
-                                                    .into_iter()
-                                                    .map(|r| gamenode_core::provider::RawRecord {
-                                                        id: Some(r.id),
-                                                        name: Some(r.name),
-                                                        install_dir: Some(r.install_dir),
-                                                        fields: r.fields.into_iter().collect(),
-                                                    })
-                                                    .collect(),
-                                                &found.manifest().exclude_ids,
-                                            )
-                                        })
-                                        .ok_or_else(|| {
-                                            "provider discovery returned no observations".into()
-                                        })
-                                } else {
-                                    Err("provider discovery failed".into())
-                                };
+                            let completed =
+                                result.disposition == OperationDisposition::Completed as i32;
+                            let discovery = if completed {
+                                result.discovery.filter(|d| d.provider_id == provider)
+                            } else {
+                                None
+                            };
+                            // The location travels with the scan answer, before the records, so
+                            // the library stores both under the same scan op. A successful scan
+                            // without a location clears the previous one; a failed scan keeps it.
+                            if let Some(located) = &discovery {
+                                engine.library_input(LibInput::ProviderLocated {
+                                    op,
+                                    provider: provider.clone(),
+                                    install_root: located.install_root.clone(),
+                                    library_folders: located.library_folders,
+                                });
+                            }
+                            let result = discovery
+                                .map(|d| {
+                                    gamenode_core::provider::record::finish_records(
+                                        &provider,
+                                        d.records
+                                            .into_iter()
+                                            .map(|r| gamenode_core::provider::RawRecord {
+                                                id: Some(r.id),
+                                                name: Some(r.name),
+                                                install_dir: Some(r.install_dir),
+                                                fields: r.fields.into_iter().collect(),
+                                            })
+                                            .collect(),
+                                        &found.manifest().exclude_ids,
+                                    )
+                                })
+                                .ok_or_else(|| {
+                                    if completed {
+                                        "provider discovery returned no observations".into()
+                                    } else {
+                                        "provider discovery failed".into()
+                                    }
+                                });
                             engine.library_input(LibInput::ProviderScanned {
                                 op,
                                 provider,

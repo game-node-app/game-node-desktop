@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gamenode_core::ports::{SettingsStore, StorageError};
-use gamenode_core::{Settings, WindowGeometry};
+use gamenode_core::{AppPreferences, Settings, WindowGeometry};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// One schema change. Versions start at 1 and increase by exactly one.
@@ -16,7 +16,7 @@ pub struct Migration {
 }
 
 /// The latest supported schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 14;
+pub const CURRENT_SCHEMA_VERSION: u32 = 16;
 
 /// Every migration this build knows. Append new ones; never edit or reorder released ones.
 pub const MIGRATIONS: &[Migration] = &[
@@ -89,6 +89,16 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "local_cover",
         sql: include_str!("../migrations/0014_local_cover.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "app_preferences",
+        sql: include_str!("../migrations/0015_app_preferences.sql"),
+    },
+    Migration {
+        version: 16,
+        name: "sync_summary",
+        sql: include_str!("../migrations/0016_sync_summary.sql"),
     },
 ];
 
@@ -195,8 +205,20 @@ const KEY_HEIGHT: &str = "window.height";
 const KEY_MAXIMIZED: &str = "window.maximized";
 pub(crate) const KEY_DISCOVERY_LAST_CHECKED: &str = "discovery.lastCheckedAt";
 
+const KEY_PREF_START_WITH_WINDOWS: &str = "app.startWithWindows";
+const KEY_PREF_START_MINIMIZED: &str = "app.startMinimized";
+const KEY_PREF_CLOSE_TO_TRAY: &str = "app.closeToTray";
+const KEY_PREF_LOCALE: &str = "app.locale";
+const KEY_PREF_SHOW_STATUS_BAR: &str = "app.showStatusBar";
+const KEY_PREF_START_SCOPE: &str = "app.startScope";
+const KEY_PREF_DISCOVERY_ON_START: &str = "app.discoveryOnStart";
+const KEY_PREF_DISCOVERY_REALTIME: &str = "app.discoveryRealtime";
+const KEY_PREF_TOOL_AUTO_CHECK: &str = "app.toolAutoCheck";
+const KEY_PREF_TOOL_DEFAULT_CHANNEL: &str = "app.toolDefaultChannel";
+const KEY_PREF_SHARED_EXCLUDED: &str = "app.sharedExcluded";
+
 /// Every key the foundation may store; nothing else belongs in `settings`.
-pub const SETTING_KEYS: [&str; 15] = [
+pub const SETTING_KEYS: [&str; 26] = [
     "backup_settings",
     crate::playtime_db::KEY_PLAYTIME_SOURCE,
     crate::playtime_db::KEY_SYNC_ENABLED,
@@ -212,6 +234,17 @@ pub const SETTING_KEYS: [&str; 15] = [
     crate::library_db::KEY_EXCLUDED,
     crate::library_db::KEY_ACCOUNT_ID,
     crate::library_db::KEY_ACCOUNT_NAME,
+    KEY_PREF_START_WITH_WINDOWS,
+    KEY_PREF_START_MINIMIZED,
+    KEY_PREF_CLOSE_TO_TRAY,
+    KEY_PREF_LOCALE,
+    KEY_PREF_SHOW_STATUS_BAR,
+    KEY_PREF_START_SCOPE,
+    KEY_PREF_DISCOVERY_ON_START,
+    KEY_PREF_DISCOVERY_REALTIME,
+    KEY_PREF_TOOL_AUTO_CHECK,
+    KEY_PREF_TOOL_DEFAULT_CHANNEL,
+    KEY_PREF_SHARED_EXCLUDED,
 ];
 
 /// [`SettingsStore`] backed by the application database.
@@ -279,6 +312,113 @@ fn read(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
+/// Reads one JSON-valued preference key. A missing or unreadable value falls back to that
+/// preference's own default, never to another field's value or a failed load.
+fn preference<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    key: &str,
+    fallback: T,
+) -> Result<T, StorageError> {
+    Ok(read(conn, key)
+        .map_err(failed)?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or(fallback))
+}
+
+/// The JSON value stored for one preference. These types always serialize; an unexpected failure
+/// stores nothing usable and the field loads as its default.
+fn preference_value<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+/// Every preference as its own `settings` row, in a stable order.
+fn preference_rows(preferences: &AppPreferences) -> [(&'static str, String); 11] {
+    [
+        (
+            KEY_PREF_START_WITH_WINDOWS,
+            preference_value(&preferences.start_with_windows),
+        ),
+        (
+            KEY_PREF_START_MINIMIZED,
+            preference_value(&preferences.start_minimized),
+        ),
+        (
+            KEY_PREF_CLOSE_TO_TRAY,
+            preference_value(&preferences.close_to_tray),
+        ),
+        (KEY_PREF_LOCALE, preference_value(&preferences.locale)),
+        (
+            KEY_PREF_SHOW_STATUS_BAR,
+            preference_value(&preferences.show_status_bar),
+        ),
+        (
+            KEY_PREF_START_SCOPE,
+            preference_value(&preferences.start_scope),
+        ),
+        (
+            KEY_PREF_DISCOVERY_ON_START,
+            preference_value(&preferences.discovery_on_start),
+        ),
+        (
+            KEY_PREF_DISCOVERY_REALTIME,
+            preference_value(&preferences.discovery_realtime),
+        ),
+        (
+            KEY_PREF_TOOL_AUTO_CHECK,
+            preference_value(&preferences.tool_auto_check),
+        ),
+        (
+            KEY_PREF_TOOL_DEFAULT_CHANNEL,
+            preference_value(&preferences.tool_default_channel),
+        ),
+        (
+            KEY_PREF_SHARED_EXCLUDED,
+            preference_value(&preferences.shared_excluded),
+        ),
+    ]
+}
+
+fn write_preferences(conn: &Connection, preferences: &AppPreferences) -> Result<(), StorageError> {
+    let mut put = conn
+        .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .map_err(failed)?;
+    for (key, value) in preference_rows(preferences) {
+        put.execute(params![key, value]).map_err(failed)?;
+    }
+    Ok(())
+}
+
+fn write_window(conn: &Connection, window: Option<WindowGeometry>) -> Result<(), StorageError> {
+    let mut put = conn
+        .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .map_err(failed)?;
+    let mut delete = conn
+        .prepare("DELETE FROM settings WHERE key = ?1")
+        .map_err(failed)?;
+    match window {
+        Some(w) => {
+            put.execute(params![KEY_WIDTH, w.width.to_string()])
+                .map_err(failed)?;
+            put.execute(params![KEY_HEIGHT, w.height.to_string()])
+                .map_err(failed)?;
+            put.execute(params![KEY_MAXIMIZED, if w.maximized { "1" } else { "0" }])
+                .map_err(failed)?;
+            for (key, value) in [(KEY_X, w.x), (KEY_Y, w.y)] {
+                match value {
+                    Some(v) => put.execute(params![key, v.to_string()]).map_err(failed)?,
+                    None => delete.execute([key]).map_err(failed)?,
+                };
+            }
+        }
+        None => {
+            for key in [KEY_X, KEY_Y, KEY_WIDTH, KEY_HEIGHT, KEY_MAXIMIZED] {
+                delete.execute([key]).map_err(failed)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl SettingsStore for SqliteSettingsStore {
     fn load(&self) -> Result<Settings, StorageError> {
         let conn = self.conn();
@@ -296,41 +436,84 @@ impl SettingsStore for SqliteSettingsStore {
             }),
             _ => None,
         };
-        Ok(Settings { window })
+        let preferences = AppPreferences {
+            start_with_windows: preference(
+                &conn,
+                KEY_PREF_START_WITH_WINDOWS,
+                AppPreferences::default().start_with_windows,
+            )?,
+            start_minimized: preference(
+                &conn,
+                KEY_PREF_START_MINIMIZED,
+                AppPreferences::default().start_minimized,
+            )?,
+            close_to_tray: preference(
+                &conn,
+                KEY_PREF_CLOSE_TO_TRAY,
+                AppPreferences::default().close_to_tray,
+            )?,
+            locale: preference(&conn, KEY_PREF_LOCALE, AppPreferences::default().locale)?,
+            show_status_bar: preference(
+                &conn,
+                KEY_PREF_SHOW_STATUS_BAR,
+                AppPreferences::default().show_status_bar,
+            )?,
+            start_scope: preference(
+                &conn,
+                KEY_PREF_START_SCOPE,
+                AppPreferences::default().start_scope,
+            )?,
+            discovery_on_start: preference(
+                &conn,
+                KEY_PREF_DISCOVERY_ON_START,
+                AppPreferences::default().discovery_on_start,
+            )?,
+            discovery_realtime: preference(
+                &conn,
+                KEY_PREF_DISCOVERY_REALTIME,
+                AppPreferences::default().discovery_realtime,
+            )?,
+            tool_auto_check: preference(
+                &conn,
+                KEY_PREF_TOOL_AUTO_CHECK,
+                AppPreferences::default().tool_auto_check,
+            )?,
+            tool_default_channel: preference(
+                &conn,
+                KEY_PREF_TOOL_DEFAULT_CHANNEL,
+                AppPreferences::default().tool_default_channel,
+            )?,
+            shared_excluded: preference(
+                &conn,
+                KEY_PREF_SHARED_EXCLUDED,
+                AppPreferences::default().shared_excluded,
+            )?,
+        };
+        Ok(Settings {
+            window,
+            preferences,
+        })
     }
 
     fn save(&self, settings: &Settings) -> Result<(), StorageError> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(failed)?;
-        {
-            let mut put = tx
-                .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-                .map_err(failed)?;
-            let mut delete = tx
-                .prepare("DELETE FROM settings WHERE key = ?1")
-                .map_err(failed)?;
-            match settings.window {
-                Some(w) => {
-                    put.execute(params![KEY_WIDTH, w.width.to_string()])
-                        .map_err(failed)?;
-                    put.execute(params![KEY_HEIGHT, w.height.to_string()])
-                        .map_err(failed)?;
-                    put.execute(params![KEY_MAXIMIZED, if w.maximized { "1" } else { "0" }])
-                        .map_err(failed)?;
-                    for (key, value) in [(KEY_X, w.x), (KEY_Y, w.y)] {
-                        match value {
-                            Some(v) => put.execute(params![key, v.to_string()]).map_err(failed)?,
-                            None => delete.execute([key]).map_err(failed)?,
-                        };
-                    }
-                }
-                None => {
-                    for key in [KEY_X, KEY_Y, KEY_WIDTH, KEY_HEIGHT, KEY_MAXIMIZED] {
-                        delete.execute([key]).map_err(failed)?;
-                    }
-                }
-            }
-        }
+        write_window(&tx, settings.window)?;
+        write_preferences(&tx, &settings.preferences)?;
+        tx.commit().map_err(failed)
+    }
+
+    fn save_window(&self, window: Option<WindowGeometry>) -> Result<(), StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        write_window(&tx, window)?;
+        tx.commit().map_err(failed)
+    }
+
+    fn save_preferences(&self, preferences: &AppPreferences) -> Result<(), StorageError> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(failed)?;
+        write_preferences(&tx, preferences)?;
         tx.commit().map_err(failed)
     }
 
@@ -356,6 +539,7 @@ impl SettingsStore for SqliteSettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gamenode_core::{Locale, StartScope, ToolChannel};
     use tempfile::TempDir;
 
     fn db_path(dir: &TempDir) -> std::path::PathBuf {
@@ -403,7 +587,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
     }
@@ -425,7 +611,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
         let payload: String = conn
             .query_row(
@@ -468,7 +654,7 @@ mod tests {
         let conn = store.conn();
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
         let kind: String = conn
             .query_row(
@@ -495,6 +681,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
             window: Some(geometry()),
+            ..Settings::default()
         };
         {
             let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -524,6 +711,7 @@ mod tests {
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
         let mut s = Settings {
             window: Some(geometry()),
+            ..Settings::default()
         };
         s.window.as_mut().unwrap().x = None;
         s.window.as_mut().unwrap().y = None;
@@ -555,6 +743,223 @@ mod tests {
     }
 
     #[test]
+    fn an_old_database_gains_every_preference_default() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        drop(open_with(&path, &MIGRATIONS[..14]).unwrap());
+
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        assert_eq!(
+            versions(&store.conn()).last(),
+            Some(&(16, "sync_summary".to_owned()))
+        );
+        assert_eq!(store.load().unwrap().preferences, AppPreferences::default());
+
+        // Every preference has its own explicit row after the migration.
+        let stored: Vec<String> = store
+            .conn()
+            .prepare("SELECT key FROM settings WHERE key LIKE 'app.%' ORDER BY key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                "app.closeToTray",
+                "app.discoveryOnStart",
+                "app.discoveryRealtime",
+                "app.locale",
+                "app.sharedExcluded",
+                "app.showStatusBar",
+                "app.startMinimized",
+                "app.startScope",
+                "app.startWithWindows",
+                "app.toolAutoCheck",
+                "app.toolDefaultChannel",
+            ]
+        );
+    }
+
+    #[test]
+    fn each_unreadable_preference_falls_back_alone() {
+        let dir = TempDir::new().unwrap();
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        {
+            let conn = store.conn();
+            conn.execute(
+                "UPDATE settings SET value = '\"klingon\"' WHERE key = 'app.locale'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE settings SET value = 'false' WHERE key = 'app.showStatusBar'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE settings SET value = 'not json' WHERE key = 'app.sharedExcluded'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE settings SET value = '{}' WHERE key = 'app.startWithWindows'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let preferences = store.load().unwrap().preferences;
+        assert_eq!(preferences.locale, Locale::System, "unreadable enum");
+        assert!(!preferences.show_status_bar, "readable value is kept");
+        assert!(
+            preferences.shared_excluded.is_empty(),
+            "unreadable set falls back alone"
+        );
+        assert!(
+            preferences.start_with_windows,
+            "unreadable bool falls back alone"
+        );
+        assert_eq!(preferences.start_scope, StartScope::Last);
+        assert_eq!(preferences.tool_default_channel, ToolChannel::Stable);
+    }
+
+    #[test]
+    fn every_preference_round_trips_and_saving_preferences_keeps_the_window() {
+        let dir = TempDir::new().unwrap();
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        let saved = Settings {
+            window: Some(geometry()),
+            ..Settings::default()
+        };
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap(), saved);
+
+        let changed = AppPreferences {
+            start_with_windows: false,
+            start_minimized: false,
+            close_to_tray: false,
+            locale: Locale::PtBr,
+            show_status_bar: false,
+            start_scope: StartScope::Installed,
+            discovery_on_start: false,
+            discovery_realtime: false,
+            tool_auto_check: false,
+            tool_default_channel: ToolChannel::Nightly,
+            shared_excluded: std::collections::BTreeSet::from([
+                "epic".to_owned(),
+                "steam".to_owned(),
+            ]),
+        };
+        store.save_preferences(&changed).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.preferences, changed);
+        assert_eq!(loaded.window, saved.window, "window geometry is untouched");
+
+        // Reopening the same file keeps every preference.
+        drop(store);
+        let reopened = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        assert_eq!(reopened.load().unwrap().preferences, changed);
+    }
+
+    #[test]
+    fn window_and_preference_saves_are_independent_in_either_order() {
+        let dir = TempDir::new().unwrap();
+        let path = db_path(&dir);
+        let store = SqliteSettingsStore::open(&path).unwrap();
+        let first = WindowGeometry {
+            x: Some(3),
+            y: Some(4),
+            width: 1024,
+            height: 768,
+            maximized: false,
+        };
+        store
+            .save(&Settings {
+                window: Some(first),
+                ..Settings::default()
+            })
+            .unwrap();
+
+        let preferences = AppPreferences {
+            locale: Locale::PtBr,
+            show_status_bar: false,
+            ..AppPreferences::default()
+        };
+        store.save_preferences(&preferences).unwrap();
+        let second = WindowGeometry {
+            x: Some(7),
+            y: None,
+            width: 1280,
+            height: 800,
+            maximized: true,
+        };
+        store.save_window(Some(second)).unwrap();
+
+        // Reopen the file so the assertion covers durable rows, not one writer's view.
+        drop(store);
+        let reopened = SqliteSettingsStore::open(&path).unwrap();
+        let loaded = reopened.load().unwrap();
+        assert_eq!(loaded.window, Some(second));
+        assert_eq!(loaded.preferences, preferences);
+
+        // The opposite order keeps both values too.
+        let third = WindowGeometry {
+            x: Some(9),
+            y: Some(10),
+            width: 1440,
+            height: 900,
+            maximized: false,
+        };
+        reopened.save_window(Some(third)).unwrap();
+        let later = AppPreferences {
+            locale: Locale::En,
+            ..preferences
+        };
+        reopened.save_preferences(&later).unwrap();
+        drop(reopened);
+
+        let reloaded = SqliteSettingsStore::open(&path).unwrap();
+        let loaded = reloaded.load().unwrap();
+        assert_eq!(loaded.window, Some(third));
+        assert_eq!(loaded.preferences, later);
+
+        // Clearing geometry also leaves preferences alone.
+        reloaded.save_window(None).unwrap();
+        drop(reloaded);
+        let cleared = SqliteSettingsStore::open(&path).unwrap();
+        let loaded = cleared.load().unwrap();
+        assert_eq!(loaded.window, None);
+        assert_eq!(loaded.preferences, later);
+    }
+
+    #[test]
+    fn preferences_are_independent_of_the_signed_in_account() {
+        use gamenode_core::library::{LastAccount, LibraryStore};
+
+        let dir = TempDir::new().unwrap();
+        let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
+        let preferences = AppPreferences {
+            locale: Locale::En,
+            ..AppPreferences::default()
+        };
+        store.save_preferences(&preferences).unwrap();
+
+        let library = store.library_store();
+        library
+            .save_last_account(&LastAccount {
+                id: "account-1".to_owned(),
+                name: "First".to_owned(),
+            })
+            .unwrap();
+        library.clear_last_account().unwrap();
+
+        assert_eq!(store.load().unwrap().preferences, preferences);
+    }
+
+    #[test]
     fn legacy_renderer_row_is_ignored_when_loading_settings() {
         let dir = TempDir::new().unwrap();
         let store = SqliteSettingsStore::open(&db_path(&dir)).unwrap();
@@ -562,6 +967,7 @@ mod tests {
         store
             .save(&Settings {
                 window: Some(geometry),
+                ..Settings::default()
             })
             .unwrap();
 
@@ -577,18 +983,19 @@ mod tests {
                 store.load().unwrap(),
                 Settings {
                     window: Some(geometry),
+                    ..Settings::default()
                 }
             );
         }
     }
 
-    const V15_OK: Migration = Migration {
-        version: 15,
+    const V17_OK: Migration = Migration {
+        version: 17,
         name: "add_notes",
         sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;",
     };
-    const V15_BAD: Migration = Migration {
-        version: 15,
+    const V17_BAD: Migration = Migration {
+        version: 17,
         name: "broken",
         sql: "CREATE TABLE half_done (id INTEGER PRIMARY KEY); INSERT INTO missing_table VALUES (1);",
     };
@@ -598,6 +1005,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
             window: Some(geometry()),
+            ..Settings::default()
         };
         SqliteSettingsStore::open(&db_path(&dir))
             .unwrap()
@@ -619,7 +1027,9 @@ mod tests {
             MIGRATIONS[11],
             MIGRATIONS[12],
             MIGRATIONS[13],
-            V15_OK,
+            MIGRATIONS[14],
+            MIGRATIONS[15],
+            V17_OK,
         ];
         let conn = open_with(&db_path(&dir), &all).unwrap();
         assert_eq!(
@@ -639,7 +1049,9 @@ mod tests {
                 (12, "achievement_rarity".into()),
                 (13, "backup_metadata".into()),
                 (14, "local_cover".into()),
-                (15, "add_notes".into())
+                (15, "app_preferences".into()),
+                (16, "sync_summary".into()),
+                (17, "add_notes".into())
             ]
         );
         conn.execute("INSERT INTO notes DEFAULT VALUES", [])
@@ -662,7 +1074,10 @@ mod tests {
     #[test]
     fn failed_migration_rolls_back_and_keeps_earlier_data() {
         let dir = TempDir::new().unwrap();
-        let saved = Settings { window: None };
+        let saved = Settings {
+            window: None,
+            ..Settings::default()
+        };
         SqliteSettingsStore::open(&db_path(&dir))
             .unwrap()
             .save(&saved)
@@ -685,11 +1100,13 @@ mod tests {
                 MIGRATIONS[11],
                 MIGRATIONS[12],
                 MIGRATIONS[13],
-                V15_BAD,
+                MIGRATIONS[14],
+                MIGRATIONS[15],
+                V17_BAD,
             ],
         )
         .unwrap_err();
-        assert_eq!(err, StorageError::MigrationFailed { version: 15 });
+        assert_eq!(err, StorageError::MigrationFailed { version: 17 });
 
         let conn = Connection::open(db_path(&dir)).unwrap();
         assert_eq!(
@@ -708,7 +1125,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
         let leaked: i64 = conn
@@ -744,19 +1163,21 @@ mod tests {
                     MIGRATIONS[11],
                     MIGRATIONS[12],
                     MIGRATIONS[13],
-                    V15_OK,
+                    MIGRATIONS[14],
+                    MIGRATIONS[15],
+                    V17_OK,
                 ],
             )
             .unwrap(),
         );
         let before = std::fs::read(&path).unwrap();
 
-        let err = open(&path).unwrap_err(); // this build only knows schema 14
+        let err = open(&path).unwrap_err(); // this build only knows schema 16
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 15,
-                supported: 14
+                found: 17,
+                supported: 16
             }
         );
         assert_eq!(
@@ -778,7 +1199,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 14,
+                found: 16,
                 supported: 7
             }
         );
@@ -799,6 +1220,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let saved = Settings {
             window: Some(geometry()),
+            ..Settings::default()
         };
         drop(Connection::open(db_path(&dir)).unwrap());
         SqliteSettingsStore::new(open_with(&db_path(&dir), step_one()).unwrap())
@@ -823,7 +1245,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
         for table in [
@@ -864,7 +1288,7 @@ mod tests {
         assert_eq!(
             err,
             StorageError::NewerSchema {
-                found: 14,
+                found: 16,
                 supported: 1
             }
         );
@@ -889,7 +1313,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let skipping = Migration {
             version: 4,
-            ..V15_OK
+            ..V17_OK
         };
         assert!(open_with(&db_path(&dir), &[MIGRATIONS[0], MIGRATIONS[1], skipping]).is_err());
     }
@@ -935,7 +1359,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
 
@@ -1070,7 +1496,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
 
@@ -1272,7 +1700,9 @@ mod tests {
                 (11, "game_platforms".to_string()),
                 (12, "achievement_rarity".to_string()),
                 (13, "backup_metadata".to_string()),
-                (14, "local_cover".to_string())
+                (14, "local_cover".to_string()),
+                (15, "app_preferences".to_string()),
+                (16, "sync_summary".to_string())
             ]
         );
 
@@ -1519,10 +1949,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
         let steam: (String, String, i64, i64, i64) = conn
             .query_row(
@@ -1622,10 +2052,10 @@ mod tests {
 
         let reopened = SqliteSettingsStore::open(&path).unwrap();
         let conn = reopened.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
         assert_eq!(
             conn.query_row(
@@ -1800,10 +2230,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
 
         // Every table that existed at schema 9 keeps its row.
@@ -1839,7 +2269,9 @@ mod tests {
             let rows: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
-            let expected = if table == "settings" { 2 } else { 1 };
+            // The schema-9 profile keeps its two window rows; the migration also seeds the
+            // eleven application-preference keys.
+            let expected = if table == "settings" { 13 } else { 1 };
             assert_eq!(rows, expected, "{table} keeps its row");
         }
 
@@ -2032,10 +2464,10 @@ mod tests {
 
         let store = SqliteSettingsStore::open(&path).unwrap();
         let conn = store.conn();
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
         assert_eq!(
             versions(&conn).last(),
-            Some(&(14, "local_cover".to_owned()))
+            Some(&(16, "sync_summary".to_owned()))
         );
         let (name, rarity): (String, Option<i64>) = conn
             .query_row(
@@ -2068,6 +2500,7 @@ mod tests {
         store
             .save(&Settings {
                 window: Some(geometry()),
+                ..Settings::default()
             })
             .unwrap();
         let conn = store.conn();
@@ -2116,6 +2549,7 @@ mod tests {
                 "settings",
                 "sqlite_sequence",
                 "store_accounts",
+                "sync_summaries",
                 "tool_files",
                 "tool_installations",
                 "tool_releases_cache",

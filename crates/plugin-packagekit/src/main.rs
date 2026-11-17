@@ -79,6 +79,8 @@ mod linux {
                                     fields: record.fields.into_iter().collect(),
                                 })
                                 .collect(),
+                            // Packages have no store install location or library folders.
+                            ..Default::default()
                         }),
                         ..Default::default()
                     })

@@ -148,6 +148,44 @@ async fn manager(
 }
 
 #[tokio::test]
+async fn a_stopped_provider_refuses_work_until_started_with_a_fresh_session() {
+    let (processes, _server, _directory) = manager(
+        std::env::current_exe().unwrap(),
+        "normal",
+        Duration::from_secs(10),
+    )
+    .await;
+    processes.ensure_started("fixture").await.unwrap();
+    let first_pid = processes.process_id("fixture").await.unwrap();
+
+    processes.stop_provider("fixture").await;
+    assert!(processes.is_stopped("fixture"));
+    assert_eq!(processes.process_id("fixture").await, None);
+    assert!(!std::path::Path::new(&format!("/proc/{first_pid}")).exists());
+
+    // While stopped, commands fail with the stable error instead of relaunching the process.
+    let error = processes
+        .execute("fixture", ProviderOperation::Initialize)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Unavailable);
+    assert_eq!(error.message(), "plugin stopped");
+    assert_eq!(processes.process_id("fixture").await, None);
+
+    // Starting creates a fresh session rather than reusing the stopped process.
+    processes.start_provider("fixture").await.unwrap();
+    assert!(!processes.is_stopped("fixture"));
+    let second_pid = processes.process_id("fixture").await.unwrap();
+    assert_ne!(first_pid, second_pid);
+    assert!(!std::path::Path::new(&format!("/proc/{first_pid}")).exists());
+    processes
+        .execute("fixture", ProviderOperation::Initialize)
+        .await
+        .unwrap();
+    processes.shutdown().await;
+}
+
+#[tokio::test]
 async fn concurrent_work_reuses_one_child_and_shutdown_reaps_it() {
     let (processes, _server, _directory) = manager(
         std::env::current_exe().unwrap(),

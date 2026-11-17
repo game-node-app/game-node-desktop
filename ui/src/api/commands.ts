@@ -5,7 +5,10 @@ import type {
   AchievementListView,
   AchievementSort,
   AppInfo,
+  AppPreferencePatch,
   AuthInput,
+  BackupUsage,
+  GameNodeLink,
   GameNodePage,
   LaunchKind,
   LibraryInput,
@@ -54,13 +57,25 @@ export const commands = {
   getAppInfo: () =>
     safeInvoke<AppInfo>('get_app_info', undefined, () => ({
       locale: 'en',
+      systemLocale: 'en',
       version: '0.1.0',
+      buildDate: '2026-01-01',
+      osVersion: 'unknown',
+      arch: 'unknown',
       backgroundSupported: false,
       logDirectory: null,
     })),
 
   getRecentLogs: () =>
     safeInvoke<string>('get_recent_logs', undefined, () => '(no log available in the web preview)'),
+
+  /** Build, OS/arch, locale, plugins and detected stores, already redacted by the host. */
+  systemInfoText: () =>
+    safeInvoke<string>(
+      'system_info_text',
+      undefined,
+      () => 'GameNode Desktop (web preview)',
+    ),
 
   openLogsFolder: () =>
     safeInvoke<void>('open_logs_folder', undefined, () => undefined),
@@ -82,8 +97,15 @@ export const commands = {
   setSyncEnabled: (enabled: boolean) =>
     safeInvoke<void>('set_sync_enabled', { enabled }, () => undefined),
 
+  /** Rescan the library and submit every held total; refused when sync is off or unverified. */
+  syncNow: () => safeInvoke<void>('sync_now', undefined, () => undefined),
+
   setPlaytimeSource: (source: PlaytimeSource) =>
     safeInvoke<void>('set_playtime_source', { source }, () => undefined),
+
+  /** Applies one Settings preference; the host validates, persists and publishes a snapshot. */
+  setAppPreference: (patch: AppPreferencePatch) =>
+    safeInvoke<void>('set_app_preference', { patch }, () => undefined),
 
   dismissSyncExplanation: () =>
     safeInvoke<void>('dismiss_sync_explanation', undefined, () => undefined),
@@ -99,6 +121,10 @@ export const commands = {
 
   openGameNodePage: (page: GameNodePage) =>
     safeInvoke<void>('open_gamenode_page', { page }, () => undefined),
+
+  /** Opens one fixed GameNode website link; the UI never passes a URL. */
+  openGameNodeLink: (kind: GameNodeLink) =>
+    safeInvoke<void>('open_gamenode_link', { kind }, () => undefined),
 
   activateEntry: () =>
     safeInvoke<void>('activate_entry', undefined, () => undefined),
@@ -117,6 +143,14 @@ export const commands = {
 
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
+
+  /** Stops one plugin process for this run; a pending sign-in is cancelled first. */
+  pluginStop: (providerId: string) =>
+    safeInvoke<void>('plugin_stop', { providerId }, () => undefined),
+
+  /** Starts a stopped plugin with a fresh session and restores its account. */
+  pluginStart: (providerId: string) =>
+    safeInvoke<void>('plugin_start', { providerId }, () => undefined),
 
   providerSignIn: (providerId: string) =>
     safeInvoke<void>('provider_sign_in', { providerId }, () => undefined),
@@ -175,8 +209,20 @@ export const commands = {
   backupLocalNow: (id: string) =>
     safeInvoke<void>('backup_local_now', { id }, () => undefined),
 
-  setLocalBackupSettings: (automatic: boolean, destination: string) =>
-    safeInvoke<void>('set_local_backup_settings', { automatic, destination }, () => undefined),
+  setLocalBackupSettings: (automatic: boolean, destination: string, retention: number) =>
+    safeInvoke<void>(
+      'set_local_backup_settings',
+      { automatic, destination, retention },
+      () => undefined,
+    ),
+
+  /** Space used by local backups per game, computed on a blocking worker. */
+  localBackupUsage: () =>
+    safeInvoke<BackupUsage>('local_backup_usage', undefined, () => ({
+      totalBytes: 0,
+      totalVersions: 0,
+      games: [],
+    })),
 
   setLocalBackupRetention: (entryKey: string, retention: number) =>
     safeInvoke<void>('set_local_backup_retention', { entryKey, retention }, () => undefined),
@@ -210,6 +256,10 @@ export const commands = {
 
   rescanLocalFolders: () =>
     safeInvoke<void>('rescan_local_folders', undefined, () => undefined),
+
+  /** Check one watched folder on the discovery worker. */
+  checkLocalWatch: (id: string) =>
+    safeInvoke<void>('check_local_watch', { id }, () => undefined),
 
   selectLocalCandidate: (fingerprint: string) =>
     safeInvoke<void>('select_local_candidate', { fingerprint }, () => undefined),

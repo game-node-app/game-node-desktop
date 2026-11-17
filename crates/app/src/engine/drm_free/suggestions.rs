@@ -139,7 +139,12 @@ impl Engine {
                 return;
             }
             state.local_suggestion_running = true;
-            (credential, suggestion_account, state.local_generation, cached)
+            (
+                credential,
+                suggestion_account,
+                state.local_generation,
+                cached,
+            )
         };
         if !initial_cached.is_empty() {
             persist_suggestions(self, initial_cached);

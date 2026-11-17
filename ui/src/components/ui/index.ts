@@ -20,6 +20,7 @@ export { SegmentedControl } from './SegmentedControl';
 export type {
   SegmentedControlOption,
   SegmentedControlProps,
+  SegmentedControlSegmentPadding,
 } from './SegmentedControl';
 export { ChoiceChip } from './ChoiceChip';
 export type { ChoiceChipProps } from './ChoiceChip';

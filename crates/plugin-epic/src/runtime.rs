@@ -172,18 +172,20 @@ impl ProviderPlugin for EpicPlugin {
                 return Err(Error::Denied);
             }
             if kind == ProviderOperation::Discover {
-                let installed =
-                    tokio::task::spawn_blocking(move || manifest.scan(&StdFiles, &SystemRoots))
-                        .await
-                        .map_err(|_| Error::Unavailable)?
-                        .map_err(|error| {
-                            tracing::warn!(error = %error, "Epic installed discovery failed");
-                            Error::Unavailable
-                        })?;
+                let scan = tokio::task::spawn_blocking(move || {
+                    manifest.scan_with_root(&StdFiles, &SystemRoots)
+                })
+                .await
+                .map_err(|_| Error::Unavailable)?
+                .map_err(|error| {
+                    tracing::warn!(error = %error, "Epic installed discovery failed");
+                    Error::Unavailable
+                })?;
                 return Ok(OperationResult {
                     discovery: Some(DiscoveryResult {
                         provider_id: PROVIDER_ID.into(),
-                        records: installed
+                        records: scan
+                            .records
                             .into_iter()
                             .map(|record| DiscoveryRecord {
                                 id: record.id,
@@ -192,6 +194,9 @@ impl ProviderPlugin for EpicPlugin {
                                 fields: record.fields.into_iter().collect(),
                             })
                             .collect(),
+                        install_root: scan.install_root,
+                        // Epic has one install location, not multiple library folders.
+                        library_folders: None,
                     }),
                     ..completed()
                 });

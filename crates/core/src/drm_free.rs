@@ -130,12 +130,44 @@ pub struct Candidate {
     #[serde(default, alias = "likely_non_game")]
     pub likely_non_game: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchRoot {
     pub id: String,
     pub path: String,
     pub enabled: bool,
+    /// Unix seconds of the last completed check of this root, if it has ever been checked.
+    #[serde(default)]
+    pub last_checked_at: Option<i64>,
+    /// Unix seconds when the root was first found unavailable, until it is reachable again.
+    #[serde(default)]
+    pub unavailable_since: Option<i64>,
+}
+
+/// One watched folder as Settings shows it: the stored root plus the live state of its last check.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchView {
+    pub id: String,
+    pub path: String,
+    pub enabled: bool,
+    /// Library entries whose installation root is inside this folder.
+    pub entry_count: u32,
+    /// Unix seconds of the last completed check of this folder.
+    pub last_checked_at: Option<i64>,
+    pub state: WatchState,
+    /// Unix seconds when the folder became unavailable, while it is.
+    pub unavailable_since: Option<i64>,
+}
+
+/// What a watched folder is doing right now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WatchState {
+    #[default]
+    Idle,
+    Checking,
+    Unavailable,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -231,6 +263,29 @@ pub const RETENTION_OPTIONS: [u8; 4] = [5, 10, 20, 50];
 /// Retention used by new installations and by legacy settings.
 pub const DEFAULT_RETENTION: u8 = 10;
 
+/// Space a game's local backups use, recovery snapshots included.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupUsage {
+    pub total_bytes: u64,
+    pub total_versions: u32,
+    /// One entry per game with archives on disk, largest first.
+    pub games: Vec<BackupUsageGame>,
+}
+
+/// One game's share of the backup space.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupUsageGame {
+    /// The library key, `manual:<installation id>`.
+    pub entry_key: String,
+    /// The last known title, including for a game that was removed.
+    pub title: String,
+    pub cover_file: Option<String>,
+    pub bytes: u64,
+    pub versions: u32,
+}
+
 /// The default retention value; also used as the serde fallback for legacy settings.
 pub fn default_retention() -> u8 {
     DEFAULT_RETENTION
@@ -253,6 +308,8 @@ impl Default for BackupSettings {
 pub enum LocalError {
     #[error("this operation is unavailable on this platform")]
     Unsupported,
+    #[error("another local operation is already running")]
+    Busy,
     #[error("invalid executable or game folder")]
     InvalidTarget,
     #[error("operation cancelled")]
@@ -680,7 +737,7 @@ pub struct LocalView {
     pub discovery_error: Option<String>,
     /// Unix seconds of the last completed watched-folder check, kept across restarts.
     pub discovery_last_checked_at: Option<i64>,
-    pub watches: Vec<WatchRoot>,
+    pub watches: Vec<WatchView>,
     pub review_selected: Vec<String>,
     pub versions: Vec<BackupVersion>,
     /// Sum of `versions` bytes, recovery snapshots included.

@@ -32,7 +32,11 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'get_app_info') {
       return {
         locale,
+        systemLocale: locale,
         version: '9.9.9',
+        buildDate: '2026-11-16',
+        osVersion: 'Test OS 1.0',
+        arch: 'x86_64',
         backgroundSupported: false,
         platform: 'windows',
       } satisfies AppInfo;
@@ -201,6 +205,38 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     expect(screen.getByTestId('status-bar')).toBeInTheDocument();
     expect(screen.getByTestId('window-controls')).toBeInTheDocument();
     expect(screen.queryByTestId('signed-out-surface')).not.toBeInTheDocument();
+  });
+
+  it('hides the status bar when the preference is off and gives the height to the library', async () => {
+    current = createDefaultSnapshot();
+    current.preferences = { ...current.preferences, showStatusBar: false };
+    await mountApp();
+    await publish(signedIn(current));
+
+    expect(await screen.findByTestId('library-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-shell')).toHaveClass(
+      'grid-rows-[48px_minmax(0,1fr)]',
+    );
+  });
+
+  it('brings the status bar back when the preference is turned on', async () => {
+    current = createDefaultSnapshot();
+    current.preferences = { ...current.preferences, showStatusBar: false };
+    await mountApp();
+    await publish(signedIn(current));
+
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, showStatusBar: true },
+    });
+
+    expect(await screen.findByTestId('status-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('app-shell')).toHaveClass(
+      'grid-rows-[48px_minmax(0,1fr)_26px]',
+    );
   });
 
   it('keeps a cached offline library in the shell after sign-in', async () => {
@@ -424,7 +460,7 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
   it('shows the one-time sync explanation after sign-in and dismisses it through IPC', async () => {
     await mountApp();
     const next = signedIn(current);
-    next.sync = { enabled: true, explained: false };
+    next.sync = { enabled: true, explained: false, summary: null, running: false };
     await publish(next);
 
     expect(await screen.findByTestId('sync-explanation-modal')).toBeInTheDocument();
@@ -516,6 +552,37 @@ describe('App (integration: real component tree over a fake Tauri host)', () => 
     await mountApp();
     expect(await screen.findByText('Continuar com Google')).toBeInTheDocument();
     expect(document.documentElement.lang).toBe('pt-BR');
+  });
+
+  it('switches the interface when the language preference changes', async () => {
+    await mountApp();
+    expect(await screen.findByText('Continue with Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('en');
+
+    fireEvent.keyDown(window, { key: ',', ctrlKey: true });
+    const modal = await screen.findByRole('dialog');
+    expect(
+      within(modal).getByRole('heading', { name: 'Settings' }),
+    ).toBeInTheDocument();
+
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, locale: 'ptBr' },
+    });
+    expect(await within(modal).findByText('Continuar com Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('pt-BR');
+    // The open modal re-renders through the i18n context, not a reload.
+    expect(
+      await within(modal).findByRole('heading', { name: 'Configurações' }),
+    ).toBeInTheDocument();
+
+    // System language follows the OS again without a reload.
+    await publish({
+      ...current,
+      preferences: { ...current.preferences, locale: 'system' },
+    });
+    expect(await within(modal).findByText('Continue with Google')).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe('en');
   });
 
   it('keeps a newer engine snapshot when the initial get_snapshot reply is stale', async () => {

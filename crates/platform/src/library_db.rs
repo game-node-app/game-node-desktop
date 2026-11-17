@@ -461,6 +461,10 @@ impl LibraryStore for SqliteLibraryStore {
                     provider,
                     last_success_at: row.get(1)?,
                     last_error: row.get(2)?,
+                    // The scan location is live data reported with the scan; it is not stored.
+                    install_root: None,
+                    library_folders: None,
+                    last_detected: None,
                 })
             })
             .map_err(failed)?

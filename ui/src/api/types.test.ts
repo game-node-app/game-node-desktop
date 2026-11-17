@@ -221,7 +221,15 @@ describe('default factories', () => {
     expect(first.ports.entries).not.toBe(second.ports.entries);
     expect(first.library).toBeNull();
 
-    first.localGames.watches.push({ id: 'w', path: '/games', enabled: true });
+    first.localGames.watches.push({
+      id: 'w',
+      path: '/games',
+      enabled: true,
+      entryCount: 0,
+      lastCheckedAt: null,
+      state: 'idle',
+      unavailableSince: null,
+    });
     first.tools.installedByEntry['steam:1'] = [];
     expect(second.localGames.watches).toEqual([]);
     expect(second.tools.installedByEntry).toEqual({});

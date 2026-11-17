@@ -576,3 +576,327 @@ async fn library_displays_imported_time_and_live_internal_time_when_source_chang
     .await;
     h.engine.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_submits_held_totals_and_records_the_summary() {
+    let mut h = ready().await;
+    h.engine.dismiss_sync_explanation();
+    h.until("the automatic pass ends", |s| !s.sync.running)
+        .await;
+    // The store reports a newer total that the next pass must submit.
+    set_counter(&h, 764);
+    let before = h.api.playtimes.lock().unwrap().len();
+    *h.api.playtime_delay.lock().unwrap() = Duration::from_millis(100);
+
+    h.engine.sync_now().unwrap();
+    assert!(
+        h.engine.snapshot().sync.running,
+        "the button shows progress until the pass ends"
+    );
+    let snapshot = h.until("sync now completed", |s| !s.sync.running).await;
+    let summary = snapshot
+        .sync
+        .summary
+        .expect("a completed pass has a summary");
+    assert_eq!(summary.accepted_games, 1);
+    assert_eq!(summary.stores, 1);
+    assert_eq!(summary.held, 0);
+    assert!(summary.completed_at > 0);
+    let submissions = h.api.playtimes.lock().unwrap().clone();
+    assert!(submissions.len() > before);
+    assert_eq!(submissions.last().unwrap().total_seconds, 764 * 60);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_waits_for_the_rescan_and_counter_import_and_coalesces_a_second_click() {
+    let mut h = ready().await;
+    h.engine.dismiss_sync_explanation();
+    h.until("the automatic pass ends", |s| !s.sync.running)
+        .await;
+
+    // The stored total is now stale and no longer accepted, so submitting before the scan would
+    // send the old 754 minutes.
+    {
+        let store = &h.engine.shared.ports.playtime;
+        let mut total = store
+            .totals("u1")
+            .unwrap()
+            .into_iter()
+            .find(|total| total.entry_key == "steam:620")
+            .unwrap();
+        total.accepted_game_id = None;
+        total.accepted_seconds = None;
+        total.rejected_seconds = None;
+        store.save_total(&total).unwrap();
+    }
+    set_counter(&h, 764);
+    let before = h.api.playtimes.lock().unwrap().len();
+
+    h.files.gate.close();
+    h.engine.sync_now().unwrap();
+    assert!(
+        h.engine.snapshot().sync.running,
+        "the button shows progress while the rescan runs"
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap().len(),
+        before,
+        "the pass must not send the pre-scan total"
+    );
+
+    h.engine.sync_now().unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap().len(),
+        before,
+        "a second click coalesces instead of starting another pass"
+    );
+
+    h.files.gate.open();
+    let snapshot = h.until("sync now completes", |s| !s.sync.running).await;
+    let summary = snapshot
+        .sync
+        .summary
+        .expect("a completed pass has a summary");
+    assert_eq!(summary.accepted_games, 1);
+    assert_eq!(summary.stores, 1);
+    assert_eq!(summary.held, 0);
+    let submissions = h.api.playtimes.lock().unwrap().clone();
+    assert_eq!(submissions.len(), before + 1, "exactly one requested pass");
+    assert_eq!(submissions.last().unwrap().total_seconds, 764 * 60);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_disabled_while_waiting_sends_nothing() {
+    let mut h = ready().await;
+    h.engine.dismiss_sync_explanation();
+    h.until("the automatic pass ends", |s| !s.sync.running)
+        .await;
+    {
+        let store = &h.engine.shared.ports.playtime;
+        let mut total = store
+            .totals("u1")
+            .unwrap()
+            .into_iter()
+            .find(|total| total.entry_key == "steam:620")
+            .unwrap();
+        total.accepted_game_id = None;
+        total.accepted_seconds = None;
+        store.save_total(&total).unwrap();
+    }
+    set_counter(&h, 764);
+    let before = h.api.playtimes.lock().unwrap().len();
+
+    h.files.gate.close();
+    h.engine.sync_now().unwrap();
+    assert!(h.engine.snapshot().sync.running);
+    h.engine.set_sync(false);
+    assert!(
+        !h.engine.snapshot().sync.running,
+        "turning sync off cancels the requested pass"
+    );
+
+    h.files.gate.open();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap().len(),
+        before,
+        "the scan completion cannot submit after sync was turned off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_account_change_while_waiting_sends_nothing_for_the_old_account() {
+    let mut h = ready().await;
+    h.engine.dismiss_sync_explanation();
+    h.until("the automatic pass ends", |s| !s.sync.running)
+        .await;
+    {
+        let store = &h.engine.shared.ports.playtime;
+        let mut total = store
+            .totals("u1")
+            .unwrap()
+            .into_iter()
+            .find(|total| total.entry_key == "steam:620")
+            .unwrap();
+        total.accepted_game_id = None;
+        total.accepted_seconds = None;
+        store.save_total(&total).unwrap();
+    }
+    set_counter(&h, 764);
+    let before = h.api.playtimes.lock().unwrap().len();
+
+    h.files.gate.close();
+    h.engine.sync_now().unwrap();
+    assert!(h.engine.snapshot().sync.running);
+    h.engine.dispatch(Input::SignOut);
+    assert!(!h.engine.snapshot().sync.running);
+
+    h.files.gate.open();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        h.api.playtimes.lock().unwrap().len(),
+        before,
+        "a scan finishing after sign-out cannot submit the old account's totals"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_total_is_retried_by_the_next_sync_now_and_then_accepted() {
+    let mut h = ready().await;
+    h.engine.set_sync(false);
+    h.api.lookup_result.lock().unwrap().replace(Ok(vec![
+        ExternalMatch {
+            uid: "620".into(),
+            game: GameSummary {
+                id: 7,
+                name: "Portal 2".into(),
+                release_year: None,
+                cover_url: None,
+                platforms: Vec::new(),
+            },
+        },
+        ExternalMatch {
+            uid: "621".into(),
+            game: GameSummary {
+                id: 8,
+                name: "Portal 2: Second App".into(),
+                release_year: None,
+                cover_url: None,
+                platforms: Vec::new(),
+            },
+        },
+    ]));
+    add_second_install(&h);
+    set_counters(&h, &[("620", 754, 100), ("621", 10, 101)]);
+    h.engine.rescan();
+    h.until("both installed games are matched", |s| {
+        s.library.as_ref().is_some_and(|library| {
+            !library.scanning
+                && library
+                    .rows
+                    .iter()
+                    .filter(|row| row.status.game_id().is_some())
+                    .count()
+                    == 2
+        })
+    })
+    .await;
+    eventually(|| {
+        let totals = h.engine.shared.ports.playtime.totals("u1").unwrap();
+        totals
+            .iter()
+            .any(|total| total.entry_key == "steam:620" && total.total_seconds == 45240)
+            && totals
+                .iter()
+                .any(|total| total.entry_key == "steam:621" && total.total_seconds == 600)
+    })
+    .await;
+
+    // Enable the pass without letting an automatic submission run first.
+    let preferences = gamenode_core::sync::SyncPreferences {
+        enabled: true,
+        explained: true,
+    };
+    h.engine
+        .shared
+        .ports
+        .playtime
+        .save_sync(preferences)
+        .unwrap();
+    h.engine.lock().playtime.preferences = preferences;
+    *h.api.playtime_reject_seconds.lock().unwrap() = Some(600);
+
+    h.engine.sync_now().unwrap();
+    let snapshot = h
+        .until("partial pass records one held total", |s| {
+            !s.sync.running && s.sync.summary.is_some_and(|summary| summary.held == 1)
+        })
+        .await;
+    let summary = snapshot.sync.summary.unwrap();
+    assert_eq!(summary.accepted_games, 1);
+    assert_eq!(summary.held, 1);
+    assert_eq!(summary.stores, 1);
+
+    // The next explicit opportunity retries the rejected total; the accepted one is not sent
+    // again.
+    *h.api.playtime_reject_seconds.lock().unwrap() = None;
+    h.engine.sync_now().unwrap();
+    let snapshot = h
+        .until("retry pass accepts both totals", |s| {
+            !s.sync.running && s.sync.summary.is_some_and(|summary| summary.held == 0)
+        })
+        .await;
+    let summary = snapshot.sync.summary.unwrap();
+    assert_eq!(summary.accepted_games, 2);
+    let submissions = h.api.playtimes.lock().unwrap().clone();
+    assert_eq!(
+        submissions
+            .iter()
+            .filter(|submission| submission.total_seconds == 600)
+            .count(),
+        2,
+        "the rejected total was sent once, rejected, then retried: {submissions:?}"
+    );
+    assert_eq!(
+        submissions
+            .iter()
+            .filter(|submission| submission.total_seconds == 45240)
+            .count(),
+        1,
+        "the accepted total keeps its dedup"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_is_unavailable_with_sync_off_or_without_a_session() {
+    let h = ready().await;
+    h.engine.set_sync(false);
+    let before = h.engine.snapshot().sync;
+    assert_eq!(
+        h.engine.sync_now(),
+        Err(gamenode_core::sync::SyncNowError::Disabled)
+    );
+    assert_eq!(h.engine.snapshot().sync, before, "nothing was sent");
+
+    let h = ready().await;
+    h.engine.dispatch(Input::SignOut);
+    assert_eq!(
+        h.engine.sync_now(),
+        Err(gamenode_core::sync::SyncNowError::Unverified)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_sync_summary_is_shown_after_start_and_before_any_new_pass() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.engine
+        .shared
+        .ports
+        .playtime
+        .save_sync_summary(
+            "u1",
+            gamenode_core::sync::SyncSummary {
+                completed_at: 1_700_000_000,
+                accepted_games: 3,
+                stores: 2,
+                held: 1,
+            },
+        )
+        .unwrap();
+    h.signed_out().await;
+    h.sign_in("token").await;
+    let snapshot = h
+        .until("the stored summary is loaded", |s| s.sync.summary.is_some())
+        .await;
+    assert_eq!(
+        snapshot.sync.summary,
+        Some(gamenode_core::sync::SyncSummary {
+            completed_at: 1_700_000_000,
+            accepted_games: 3,
+            stores: 2,
+            held: 1,
+        })
+    );
+}

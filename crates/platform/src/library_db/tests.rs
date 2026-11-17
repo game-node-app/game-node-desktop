@@ -74,6 +74,9 @@ fn a_scan_is_saved_and_loaded_with_its_fields() {
             catalog_error: None,
             last_shared_at: None,
             shared_error: None,
+            install_root: None,
+            library_folders: None,
+            last_detected: None,
         }]
     );
 }
@@ -438,7 +441,10 @@ fn sign_out_removes_the_account_keys_and_keeps_everything_else() {
     let dir = TempDir::new().unwrap();
     let settings = open(&dir);
     let store = settings.library_store();
-    let saved = Settings { window: None };
+    let saved = Settings {
+        window: None,
+        ..Settings::default()
+    };
     settings.save(&saved).unwrap();
     store
         .save_layout(&LibraryLayout {

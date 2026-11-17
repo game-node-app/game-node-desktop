@@ -99,10 +99,24 @@ fn read_game(files: &dyn Files, library: &str, file_name: &str) -> Option<RawRec
     Some(record)
 }
 
-pub fn scan(input: &ScanInput<'_>) -> Result<Vec<RawRecord>, String> {
+/// One scan pass: the records it produced and where the scan looked.
+#[derive(Default)]
+pub struct Scanned {
+    pub records: Vec<RawRecord>,
+    /// The first usable Steam root, already canonicalized.
+    pub install_root: Option<String>,
+    /// Distinct library folders whose `steamapps` folder could be listed, including each root's
+    /// own library. Folders listed in `libraryfolders.vdf` but not present on this PC do not count,
+    /// because the scan cannot use them.
+    pub library_folders: Option<u32>,
+}
+
+pub fn scan(input: &ScanInput<'_>) -> Result<Scanned, String> {
     let mut seen_roots = BTreeSet::new();
     let mut seen_libraries = BTreeSet::new();
     let mut records = Vec::new();
+    let mut install_root = None;
+    let mut library_folders = 0u32;
     for root in input.roots {
         let Ok(root) = input.files.canonicalize(root) else {
             continue;
@@ -110,6 +124,7 @@ pub fn scan(input: &ScanInput<'_>) -> Result<Vec<RawRecord>, String> {
         if !seen_roots.insert(path::normalize(&root).to_lowercase()) {
             continue;
         }
+        install_root.get_or_insert_with(|| root.clone());
         let mut libraries = vec![root.clone()];
         libraries.extend(listed_libraries(input.files, &root));
         for library in libraries {
@@ -123,6 +138,7 @@ pub fn scan(input: &ScanInput<'_>) -> Result<Vec<RawRecord>, String> {
             let Ok(mut names) = input.files.read_dir(&steamapps) else {
                 continue;
             };
+            library_folders = library_folders.saturating_add(1);
             names.sort();
             for name in names {
                 let lower = name.to_ascii_lowercase();
@@ -132,5 +148,9 @@ pub fn scan(input: &ScanInput<'_>) -> Result<Vec<RawRecord>, String> {
             }
         }
     }
-    Ok(records)
+    Ok(Scanned {
+        records,
+        library_folders: install_root.as_ref().map(|_| library_folders),
+        install_root,
+    })
 }

@@ -596,10 +596,23 @@ impl LibraryMachine {
         }
     }
 
-    /// After a cache load, restores the payload of a highlighted saved view of this account, or
-    /// falls back to All games when the id belongs to no view. Either way the persisted layout
-    /// never keeps a predicate or title for a view that cannot be applied.
+    /// After a cache load, restores the payload of a highlighted saved view of this account and
+    /// falls back to All games when the layout names a scope this account no longer has: an
+    /// unknown saved view or a deleted collection. The persisted layout never keeps a predicate
+    /// or title for a scope that cannot be applied.
     pub(super) fn reconcile_saved_view_scope(&mut self) -> Vec<Effect> {
+        // A collection the account library read no longer lists was deleted on the server. Without
+        // an account library read there is nothing to compare against, so the remembered scope
+        // stays until a read says otherwise.
+        if let LibraryScope::Collection(id) = self.layout.scope.clone()
+            && let Some(library) = &self.account_library
+            && !library
+                .collections
+                .iter()
+                .any(|collection| collection.id == id)
+        {
+            return self.update_layout(|layout| layout.scope = LibraryScope::All);
+        }
         let LibraryScope::SavedView(id) = self.layout.scope.clone() else {
             self.applied_view_payload = None;
             self.applied_view_id = None;

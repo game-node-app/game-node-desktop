@@ -5,7 +5,7 @@ use crate::callback::Provider;
 use crate::credential::StorageMethod;
 use crate::library::{CatalogError, LaunchStatus, LibraryView};
 use crate::notice::Notice;
-use crate::settings::Settings;
+use crate::settings::{AppPreferences, Settings};
 
 pub use crate::auth::Input;
 
@@ -41,12 +41,14 @@ pub struct Snapshot {
     pub local_games: crate::drm_free::LocalView,
     pub playtime_error: bool,
     pub tracking: TrackingView,
-    pub sync: crate::sync::SyncPreferences,
+    pub sync: crate::sync::SyncView,
     pub playtime_source: crate::playtime::PlaytimeSource,
     pub auth: AuthView,
     pub notice: Option<Notice>,
     pub storage: StorageMethod,
     pub settings: Settings,
+    /// PC-wide application preferences from Settings, kept per PC and independent of the account.
+    pub preferences: AppPreferences,
     /// The game library, present while an account's library is open.
     pub library: Option<LibraryView>,
     /// The latest Play or Install, while it is opening or after it failed.
@@ -99,6 +101,7 @@ impl Snapshot {
             auth,
             notice: machine.notice(),
             storage,
+            preferences: settings.preferences.clone(),
             settings,
             library,
             launch,

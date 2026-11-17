@@ -332,6 +332,14 @@ fn web_pages_are_built_under_the_configured_base() {
         library_page_url(&base, "user-1").as_str(),
         "https://staging.gamenode.test/prefix/library/user-1"
     );
+    assert_eq!(
+        profile_page_url(&base, "user-1").as_str(),
+        "https://staging.gamenode.test/prefix/profile/user-1"
+    );
+    assert_eq!(
+        site_page_url(&base, "terms").as_str(),
+        "https://staging.gamenode.test/prefix/terms"
+    );
 
     let production = Url::parse("https://gamenode.app").unwrap();
     assert_eq!(

@@ -621,9 +621,11 @@ mod tests {
             watch: "watch".into(),
             root: root.into(),
             title: "Candidate".into(),
-            targets: (!target.is_empty())
-                .then(|| vec![target.to_owned()])
-                .unwrap_or_default(),
+            targets: if target.is_empty() {
+                Vec::new()
+            } else {
+                vec![target.to_owned()]
+            },
             selected_target: (!target.is_empty()).then(|| target.to_owned()),
             evidence,
             ignored: false,

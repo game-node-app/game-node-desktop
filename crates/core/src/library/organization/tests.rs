@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::game_api::AccountEntry;
+use crate::game_api::{AccountEntry, Collection};
 use crate::library::layout::{
     GroupBy, LibraryFilters, LibraryScope, PlaytimeThreshold, Sort, SortDirection, SortKey,
     ViewMode,
@@ -786,6 +786,68 @@ fn a_restart_restores_the_highlighted_views_scope_and_drops_an_unknown_marker() 
         TitleSourceKind::Scope
     );
     assert_eq!(machine.visible_rows("").len(), 1);
+}
+
+#[test]
+fn a_remembered_collection_that_no_longer_exists_falls_back_to_all_games() {
+    // The account library read completed and no longer lists the remembered collection.
+    let cache = LibraryCache {
+        entries: vec![stored("steam", "1", "Alpha", true)],
+        account_library: Some(AccountLibrary {
+            collections: vec![Collection {
+                id: "kept".to_owned(),
+                name: "Kept".to_owned(),
+                default_status: None,
+            }],
+            read_at: 5,
+            ..AccountLibrary::default()
+        }),
+        ..LibraryCache::default()
+    };
+    let layout = LibraryLayout {
+        scope: LibraryScope::Collection("deleted".to_owned()),
+        ..LibraryLayout::default()
+    };
+    let (machine, effects) = machine_with_layout(layout, cache);
+    assert_eq!(machine.layout.scope, LibraryScope::All);
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::PersistLayout(saved) if saved.scope == LibraryScope::All
+        )),
+        "the broken collection scope is replaced on disk: {effects:?}"
+    );
+    assert_eq!(machine.visible_rows("").len(), 1);
+
+    // A remembered collection the read still lists is kept as it was.
+    let cache = LibraryCache {
+        entries: vec![stored("steam", "1", "Alpha", true)],
+        account_library: Some(AccountLibrary {
+            collections: vec![Collection {
+                id: "kept".to_owned(),
+                name: "Kept".to_owned(),
+                default_status: None,
+            }],
+            read_at: 5,
+            ..AccountLibrary::default()
+        }),
+        ..LibraryCache::default()
+    };
+    let layout = LibraryLayout {
+        scope: LibraryScope::Collection("kept".to_owned()),
+        ..LibraryLayout::default()
+    };
+    let (machine, effects) = machine_with_layout(layout, cache);
+    assert_eq!(
+        machine.layout.scope,
+        LibraryScope::Collection("kept".to_owned())
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::PersistLayout(_))),
+        "a known collection needs no layout rewrite: {effects:?}"
+    );
 }
 
 #[test]

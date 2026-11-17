@@ -15,6 +15,18 @@ describe('Switch', () => {
     );
   });
 
+  it('uses the 14px thumb and 3px track padding from the Figma component', () => {
+    renderUi(<Switch label="Sync" />);
+    const input = screen.getByRole('switch', { name: 'Sync' });
+    const root = input.parentElement?.parentElement;
+
+    expect(root).toHaveClass(
+      '[--switch-thumb-size:14px]',
+      '[--switch-track-label-padding:3px]',
+    );
+    expect(root).not.toHaveClass('[--switch-thumb-size:16px]');
+  });
+
   it('toggles with a click and with the keyboard', async () => {
     const onChange = vi.fn();
     renderUi(<Switch label="Sync" onChange={onChange} />);

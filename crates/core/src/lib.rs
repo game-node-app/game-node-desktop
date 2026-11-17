@@ -31,7 +31,10 @@ pub use auth::{
 pub use callback::{CallbackError, ParsedCallback, Provider};
 pub use credential::{SessionCredential, StorageMethod};
 pub use notice::{Notice, NoticeKind};
-pub use settings::{Settings, WindowGeometry};
+pub use settings::{
+    AppPreferenceError, AppPreferencePatch, AppPreferences, Locale, Settings, StartScope,
+    WindowGeometry,
+};
 pub use snapshot::{AuthView, Snapshot};
 pub use tools::{
     AntiCheatReport, AntiCheatSystem, AntiCheatWarningView, ArchiveFormat, InstallStrategy,

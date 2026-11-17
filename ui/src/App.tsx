@@ -1,5 +1,5 @@
-import React, { lazy, Suspense, useEffect, useRef } from 'react';
-import { useAppInfo, useAuth, useLibraryView } from './api';
+import React, { lazy, Suspense, useEffect } from 'react';
+import { useAppInfo, useAuth, useLibraryView, useSnapshot } from './api';
 import { detectPortPlatform } from './api/ports';
 import { useI18n } from './i18n';
 import { SignedOutView } from './features/auth';
@@ -129,15 +129,28 @@ export const App: React.FC = () => {
   useLibraryNotifications();
   useLocalGameErrorToast();
 
-  // Adopt the OS locale the host reports once, so a manual switch is not overwritten later.
-  const localeApplied = useRef(false);
+  // Follow the language preference: an explicit choice applies at once, while System keeps the
+  // OS locale the host reports. Preferences arrive in every snapshot, so a change re-renders the
+  // whole tree (including an open Settings modal) through the i18n context without a reload.
+  const preferenceLocale = useSnapshot(
+    (snapshot) => snapshot.preferences.locale,
+  ).data;
+  // The shell grid keeps the status-bar row only while the preference is on;
+  // the library takes the freed height.
+  const showStatusBar = useSnapshot(
+    (snapshot) => snapshot.preferences.showStatusBar,
+  ).data;
   const hostLocale = appInfo.data?.locale;
+  const systemLocale = appInfo.data?.systemLocale;
   useEffect(() => {
-    if (hostLocale && !localeApplied.current) {
-      localeApplied.current = true;
-      setLocale(hostLocale);
-    }
-  }, [hostLocale, setLocale]);
+    const target =
+      preferenceLocale === 'system'
+        ? (systemLocale ?? hostLocale)
+        : preferenceLocale === 'ptBr'
+          ? 'pt-BR'
+          : 'en';
+    if (target) setLocale(target);
+  }, [preferenceLocale, systemLocale, hostLocale, setLocale]);
 
   const signedIn = typeof auth === 'object' && 'signedIn' in auth;
   const showShell = signedIn || library != null;
@@ -169,7 +182,14 @@ export const App: React.FC = () => {
       className="flex h-full w-full flex-col overflow-hidden bg-body"
     >
       {showShell ? (
-        <div className="grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)_26px]">
+        <div
+          data-testid="app-shell"
+          className={
+            showStatusBar
+              ? 'grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)_26px]'
+              : 'grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)]'
+          }
+        >
           <TopBar />
           <div className="flex min-h-0 min-w-0">
             <Sidebar />
@@ -177,7 +197,7 @@ export const App: React.FC = () => {
               {main}
             </main>
           </div>
-          <StatusBar />
+          {showStatusBar ? <StatusBar /> : null}
         </div>
       ) : (
         <div

@@ -38,10 +38,10 @@ pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
 };
 pub use layout::{
-    AddedFilter, AvailabilityFilter, DAY_SECONDS, FIRST_RELEASE_DECADE, GameNodeStatusFilter,
-    GroupBy, LastPlayedFilter, LibraryFilters, LibraryLayout, LibraryScope, MatchFilterValue,
-    PlayedFilter, PlaytimeThreshold, ProviderFilter, RECENT_DAYS, ReleaseFilter, SidebarSelection,
-    Sort, SortDirection, SortField, SortKey, SortOrder, ViewMode, YEAR_SECONDS,
+    AddedFilter, AvailabilityFilter, CoverSize, DAY_SECONDS, FIRST_RELEASE_DECADE,
+    GameNodeStatusFilter, GroupBy, LastPlayedFilter, LibraryFilters, LibraryLayout, LibraryScope,
+    MatchFilterValue, PlayedFilter, PlaytimeThreshold, ProviderFilter, RECENT_DAYS, ReleaseFilter,
+    SidebarSelection, Sort, SortDirection, SortField, SortKey, SortOrder, ViewMode, YEAR_SECONDS,
 };
 pub use machine::{Access, Effect, Input, LibraryMachine, ScanOutcome};
 pub use match_dialog::{

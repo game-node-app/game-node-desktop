@@ -189,3 +189,55 @@ fn playtime_source_defaults_persists_and_recovers_from_invalid_data() {
         PlaytimeSource::Store
     );
 }
+#[test]
+fn sync_summaries_are_kept_per_account_across_restart() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("db");
+    {
+        let db = SqliteSettingsStore::open(&path).unwrap();
+        let store = db.playtime_store();
+        assert_eq!(store.load_sync_summary("a").unwrap(), None);
+        store
+            .save_sync_summary(
+                "a",
+                SyncSummary {
+                    completed_at: 200,
+                    accepted_games: 3,
+                    stores: 2,
+                    held: 1,
+                },
+            )
+            .unwrap();
+    }
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.playtime_store();
+    assert_eq!(
+        store.load_sync_summary("a").unwrap(),
+        Some(SyncSummary {
+            completed_at: 200,
+            accepted_games: 3,
+            stores: 2,
+            held: 1,
+        })
+    );
+    assert_eq!(
+        store.load_sync_summary("b").unwrap(),
+        None,
+        "another account has never synced"
+    );
+    store
+        .save_sync_summary(
+            "a",
+            SyncSummary {
+                completed_at: 400,
+                accepted_games: 0,
+                stores: 0,
+                held: 0,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.load_sync_summary("a").unwrap().unwrap().completed_at,
+        400
+    );
+}

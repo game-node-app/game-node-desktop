@@ -434,7 +434,7 @@ mod tests {
         let first = reencode_local_cover(dir.path(), "reg-1", &source).unwrap();
         let second = reencode_local_cover(dir.path(), "reg-1", &source).unwrap();
         assert_eq!(first, second);
-        assert_eq!(files(dir.path()), [first.clone()]);
+        assert_eq!(files(dir.path()), std::slice::from_ref(&first));
         assert!(is_local_cover_name("reg-1", &first));
         assert!(!is_local_cover_name("reg-2", &first));
         assert!(!is_local_cover_name("reg-1", "../reg-1.jpg"));

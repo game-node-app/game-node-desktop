@@ -4,6 +4,7 @@ import {
   closeFilters,
   closePalette,
   closeSaveView,
+  closeSettingsModal,
   closeShortcuts,
   createInitialUiStoreState,
   dismissBanner,
@@ -215,6 +216,26 @@ describe('uiStore notifications', () => {
 });
 
 describe('uiStore reset', () => {
+  it('clears the settings draft and its error when the modal closes', () => {
+    uiStore.setState((prev) => ({
+      ...prev,
+      settingsOpen: true,
+      settingsDraft: {
+        topic: 'backups',
+        values: { destination: '/unsaved' },
+      },
+      settingsDraftError: 'Invalid destination',
+      discardBackupConfirmOpen: true,
+    }));
+
+    closeSettingsModal();
+
+    expect(uiStore.state.settingsOpen).toBe(false);
+    expect(uiStore.state.settingsDraft).toBeNull();
+    expect(uiStore.state.settingsDraftError).toBeNull();
+    expect(uiStore.state.discardBackupConfirmOpen).toBe(false);
+  });
+
   it('builds new collections instead of reusing mutated initial state', () => {
     const initial = createInitialUiStoreState();
     expect(initial.dismissedBanners).toBeInstanceOf(Set);

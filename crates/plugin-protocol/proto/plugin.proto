@@ -32,6 +32,12 @@ message DiscoveryRecord {
 message DiscoveryResult {
   repeated DiscoveryRecord records = 1;
   string provider_id = 2;
+  // Where the provider is installed, as the plugin read it. Absent when the
+  // scan found no installation or the provider has no install location.
+  optional string install_root = 3;
+  // How many library folders the scan used. Absent when the provider does not
+  // report a count; a reported zero is a real value.
+  optional uint32 library_folders = 4;
 }
 
 message PluginFailure {

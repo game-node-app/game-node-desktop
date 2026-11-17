@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { FloatingModal } from '../../components/FloatingModal';
+import { Button } from '../../components/ui';
 import { commands } from '../../api';
 import { copyText } from '../../diagnostics/crashCopy';
 import { useI18n } from '../../i18n';
-import { settingsButtonPrimary, settingsButtonSecondary } from './settingsClasses';
 
 export interface RecentLogModalProps {
   onClose: () => void;
@@ -59,7 +59,7 @@ export const RecentLogModal: React.FC<RecentLogModalProps> = ({ onClose }) => {
         </FloatingModal.Header>
 
         <FloatingModal.Body className="flex min-h-0 flex-col gap-sm px-control-inline py-lg">
-          <span className="text-xs text-[var(--settings-text-secondary)]">
+          <span className="text-xs text-text-secondary">
             {t('Paste this log when reporting a problem. Cookies, tokens and passwords are never written to it.') ||
               'Paste this log when reporting a problem. Cookies, tokens and passwords are never written to it.'}
           </span>
@@ -75,10 +75,10 @@ export const RecentLogModal: React.FC<RecentLogModalProps> = ({ onClose }) => {
                     ? t('The log is empty.') || 'The log is empty.'
                     : text
             }
-            className="min-h-[280px] flex-1 resize-none rounded-sm border border-border-subtle bg-[var(--settings-bg-base)] p-compact font-mono text-xs leading-normal text-[var(--settings-text-secondary)] focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
+            className="min-h-[280px] flex-1 resize-none rounded-sm border border-border-subtle bg-canvas p-compact font-mono text-xs leading-normal text-text-secondary focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none"
             onFocus={(event) => event.currentTarget.select()}
           />
-          <span role="status" aria-live="polite" className="text-xs text-[var(--settings-text-muted)]">
+          <span role="status" aria-live="polite" className="text-xs text-text-muted">
             {copyStatus === 'copied'
               ? t('Copied to the clipboard.') || 'Copied to the clipboard.'
               : copyStatus === 'failed'
@@ -87,18 +87,18 @@ export const RecentLogModal: React.FC<RecentLogModalProps> = ({ onClose }) => {
           </span>
         </FloatingModal.Body>
 
-        <FloatingModal.Footer className="bg-[var(--settings-bg-base)]">
-          <button
-            type="button"
-            className={settingsButtonSecondary}
+        <FloatingModal.Footer className="bg-canvas">
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={handleCopy}
             disabled={status !== 'ready'}
           >
             {t('Copy log') || 'Copy log'}
-          </button>
-          <button type="button" className={settingsButtonPrimary} onClick={onClose}>
+          </Button>
+          <Button size="sm" variant="primary" onClick={onClose}>
             {t('Close') || 'Close'}
-          </button>
+          </Button>
         </FloatingModal.Footer>
 
         <FloatingModal.ResizeHandle />

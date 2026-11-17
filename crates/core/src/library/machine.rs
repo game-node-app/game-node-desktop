@@ -24,8 +24,8 @@ use super::cover::CoverUrl;
 use super::cover_queue::CoverQueue;
 use super::favorites::FavoriteState;
 use super::layout::{
-    DETAIL_WIDTH_RANGE, GroupBy, LibraryFilters, LibraryLayout, LibraryScope, SIDEBAR_WIDTH_RANGE,
-    SidebarSelection, Sort, ViewMode,
+    CoverSize, DETAIL_WIDTH_RANGE, GroupBy, LibraryFilters, LibraryLayout, LibraryScope,
+    SIDEBAR_WIDTH_RANGE, SidebarSelection, Sort, ViewMode,
 };
 use super::lookup::LookupRun;
 use super::match_dialog::MatchDialog;
@@ -273,6 +273,14 @@ pub enum Input {
         /// Unix seconds.
         now: i64,
     },
+    /// Where a scan looked, reported with its successful answer before [`Input::ProviderScanned`].
+    /// A scan that reports no location clears the previous one for that provider.
+    ProviderLocated {
+        op: u64,
+        provider: String,
+        install_root: Option<String>,
+        library_folders: Option<u32>,
+    },
     /// The engine started one provider's scan. It turns the provider's progress from waiting to
     /// scanning; an answer for a superseded scan is ignored by the same op check.
     ProviderScanStarted {
@@ -470,6 +478,8 @@ pub enum Input {
     SetColumns(usize),
     /// Grid or list.
     SetView(ViewMode),
+    /// How large the grid covers are; the list view is unaffected.
+    SetCoverSize(CoverSize),
     /// The pre-scope sidebar choice: All games, or one provider (which becomes the store
     /// shortcut: All scope plus that store).
     SetFilter(SidebarSelection),
@@ -632,6 +642,8 @@ pub struct LibraryMachine {
     pub(super) op: u64,
     pub(super) entries: BTreeMap<String, StoredEntry>,
     pub(super) excluded: BTreeSet<String>,
+    /// Providers whose shared-only entries the library leaves out. Empty includes every provider.
+    pub(super) shared_excluded: BTreeSet<String>,
     /// Library keys hidden for this account. Empty until the organization cache is read.
     pub(super) hidden: BTreeSet<String>,
     /// The account's saved views, in sidebar order. Empty until the organization cache is read.
@@ -763,6 +775,7 @@ impl LibraryMachine {
             op: 0,
             entries: BTreeMap::new(),
             excluded: BTreeSet::new(),
+            shared_excluded: BTreeSet::new(),
             hidden: BTreeSet::new(),
             saved_views: Vec::new(),
             applied_view_payload: None,
@@ -936,6 +949,26 @@ impl LibraryMachine {
             .filter(|entry| entry.is_visible() && !self.excluded.contains(&entry.key))
     }
 
+    /// Whether the shared-games preference leaves this entry out: only entries that are shared
+    /// without being owned or installed, of a provider the user excluded.
+    pub(super) fn shared_excluded_entry(&self, entry: &StoredEntry) -> bool {
+        entry.shared
+            && !entry.owned
+            && !entry.installed
+            && self.shared_excluded.contains(&entry.provider)
+    }
+
+    /// Replaces the providers whose shared-only entries the library leaves out. Returns whether
+    /// anything changed: the view pipeline runs again on the next snapshot.
+    pub fn set_shared_excluded(&mut self, providers: BTreeSet<String>) -> bool {
+        if self.shared_excluded == providers {
+            return false;
+        }
+        self.shared_excluded = providers;
+        self.view_dirty = true;
+        true
+    }
+
     pub fn all_entries(&self) -> impl Iterator<Item = &StoredEntry> {
         self.entries.values()
     }
@@ -1067,6 +1100,15 @@ impl LibraryMachine {
                 result,
                 now,
             } => self.on_provider_scanned(op, provider, result, now),
+            Input::ProviderLocated {
+                op,
+                provider,
+                install_root,
+                library_folders,
+            } => {
+                self.on_provider_located(op, &provider, install_root, library_folders);
+                vec![]
+            }
             Input::ProviderScanStarted { op, provider } => {
                 self.on_provider_scan_started(op, &provider);
                 vec![]
@@ -1208,6 +1250,7 @@ impl LibraryMachine {
                 self.update_layout(|layout| layout.detail_open = true)
             }
             Input::SetView(view) => self.update_layout(|layout| layout.view = view),
+            Input::SetCoverSize(size) => self.update_layout(|layout| layout.cover_size = size),
             // The pre-scope sidebar input: a provider is the All scope plus that store, which is
             // what the new store shortcut sends. The redesigned sidebar uses scopes directly.
             Input::SetFilter(sidebar) => self.update_layout(|layout| {
@@ -1935,6 +1978,27 @@ impl LibraryMachine {
         }
     }
 
+    /// Records where a provider's successful scan looked. The answer belongs to the same scan op
+    /// as the records that follow it, so a late or superseded location is dropped with them.
+    fn on_provider_located(
+        &mut self,
+        op: u64,
+        provider: &str,
+        install_root: Option<String>,
+        library_folders: Option<u32>,
+    ) {
+        let Some(run) = &self.scan else {
+            return;
+        };
+        if run.op != op || !run.waiting.contains(provider) {
+            return;
+        }
+        let state = self.scan_state_mut(provider);
+        state.install_root = install_root;
+        state.library_folders = library_folders;
+        self.view_dirty = true;
+    }
+
     fn on_provider_scanned(
         &mut self,
         op: u64,
@@ -2006,6 +2070,9 @@ impl LibraryMachine {
             ScanOutcome::Scanned(records) => {
                 state.last_success_at = Some(now);
                 state.last_error = None;
+                // A successful scan with a location or any record proves the store is installed
+                // locally. Catalog ownership is deliberately not consulted here.
+                state.last_detected = Some(state.install_root.is_some() || !records.is_empty());
                 for entry in self
                     .entries
                     .values_mut()

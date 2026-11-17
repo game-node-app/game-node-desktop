@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, within, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { MantineProvider } from '@mantine/core';
@@ -29,7 +29,13 @@ import { useGlobalShortcuts } from '../shell/useGlobalShortcuts';
 
 function ShortcutTestHarness() {
   useGlobalShortcuts();
-  return <SettingsModal />;
+  return (
+    <div>
+      <button type="button">Library settings trigger</button>
+      <input data-library-search aria-label="Library search" />
+      <SettingsModal />
+    </div>
+  );
 }
 
 function createTestQueryClient(
@@ -68,6 +74,9 @@ function createTestQueryClient(
   const fullAppInfo: AppInfo = {
     locale: 'en',
     version: '0.2.0',
+    buildDate: '2026-11-16',
+    osVersion: 'Test OS 1.0',
+    arch: 'x86_64',
     backgroundSupported: false,
     ...appInfo,
   };
@@ -108,35 +117,91 @@ describe('SettingsModal Feature Suite', () => {
   });
 
   describe('Topic Navigation and Content', () => {
-    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (en)', () => {
+    it('renders the eight topics in specification order with their groups (en)', () => {
       openSettingsModal();
       renderSettings('en');
 
-      const navButtons = screen.getAllByRole('button', {
-        name: /Account|Stores|Plugins|Backups|Tools|About/i,
-      });
-
-      const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Account', 'Stores', 'Plugins', 'Backups', 'Tools', 'About']);
+      const nav = screen.getByRole('navigation', { name: 'Settings' });
+      const topicButtons = within(nav).getAllByRole('button');
+      expect(topicButtons.map((btn) => btn.textContent?.trim())).toEqual([
+        'Account & sync',
+        'Stores',
+        'DRM-free games',
+        'Backups',
+        'General',
+        'Tools',
+        'Plugins',
+        'About',
+      ]);
+      expect(within(nav).getByText('Account')).toBeInTheDocument();
+      expect(within(nav).getByText('Library')).toBeInTheDocument();
+      expect(within(nav).getByText('App')).toBeInTheDocument();
 
       // Verify removed Advanced topic is NOT present anywhere
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();
     });
 
-    it('renders the 6 topics in exact order and confirms Advanced/Avançado is absent (pt-BR)', () => {
+    it('renders the eight topics in specification order with their groups (pt-BR)', () => {
       openSettingsModal();
       renderSettings('pt-BR');
 
-      const navButtons = screen.getAllByRole('button', {
-        name: /Conta|Lojas|Plugins|Backups|Ferramentas|Sobre/i,
-      });
-
-      const topicTexts = navButtons.map((btn) => btn.textContent?.trim());
-      expect(topicTexts).toEqual(['Conta', 'Lojas', 'Plugins', 'Backups', 'Ferramentas', 'Sobre']);
+      const nav = screen.getByRole('navigation', { name: 'Configurações' });
+      const topicButtons = within(nav).getAllByRole('button');
+      expect(topicButtons.map((btn) => btn.textContent?.trim())).toEqual([
+        'Conta e sincronização',
+        'Lojas',
+        'Jogos DRM-free',
+        'Backups',
+        'Geral',
+        'Ferramentas',
+        'Plugins',
+        'Sobre',
+      ]);
+      expect(within(nav).getByText('Conta')).toBeInTheDocument();
+      expect(within(nav).getByText('Biblioteca')).toBeInTheDocument();
+      expect(within(nav).getByText('Aplicativo')).toBeInTheDocument();
 
       expect(screen.queryByText(/Advanced/i)).toBeNull();
       expect(screen.queryByText(/Avançado/i)).toBeNull();
+    });
+
+    it('applies the shell size and token classes from the design reference', () => {
+      openSettingsModal();
+      renderSettings('en');
+
+      const dialog = screen.getByRole('dialog', { name: 'Settings' });
+      expect(dialog).toHaveClass(
+        'rounded-dialog',
+        'border-border-overlay',
+        '!bg-canvas',
+        '!shadow-alert',
+      );
+
+      const titleBar = document.querySelector('[data-floating-modal-handle]');
+      expect(titleBar).toHaveClass('!h-[48px]', 'bg-chrome');
+
+      const nav = screen.getByRole('navigation', { name: 'Settings' });
+      expect(nav).toHaveClass('w-settings-nav', 'gap-md', 'p-sm', 'bg-chrome');
+
+      const scroller = document.querySelector('.settings-scroll-content');
+      expect(scroller).toHaveClass(
+        'px-xl',
+        'pt-[28px]',
+        'pb-xl',
+        'gap-lg',
+        'overflow-y-auto',
+      );
+    });
+
+    it('shows the title bar, footer version and decorative Esc hint', () => {
+      openSettingsModal();
+      renderSettings('en');
+
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+      expect(screen.getByText('GameNode Desktop 0.2.0')).toBeInTheDocument();
+      expect(screen.getByText('Esc')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Esc' })).toBeNull();
     });
 
     it('switches topics and resets scroll top position', () => {
@@ -151,14 +216,16 @@ describe('SettingsModal Feature Suite', () => {
       }
 
       // Default topic is account
-      expect(screen.getByRole('heading', { level: 2, name: 'Account' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Account & sync' })).toBeInTheDocument();
 
       // Switch to Stores
       const storesBtn = screen.getByRole('button', { name: 'Stores' });
       fireEvent.click(storesBtn);
-
       expect(screen.getByRole('heading', { level: 2, name: 'Stores' })).toBeInTheDocument();
       expect(scrollContainer?.scrollTop).toBe(0);
+
+      fireEvent.click(screen.getByRole('button', { name: 'DRM-free games' }));
+      expect(screen.getByRole('heading', { level: 2, name: 'DRM-free games' })).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Plugins' }));
       expect(screen.getByRole('heading', { level: 2, name: 'Plugins' })).toBeInTheDocument();
@@ -167,6 +234,10 @@ describe('SettingsModal Feature Suite', () => {
       const backupsBtn = screen.getByRole('button', { name: 'Backups' });
       fireEvent.click(backupsBtn);
       expect(screen.getByRole('heading', { level: 2, name: 'Backups' })).toBeInTheDocument();
+
+      // Switch to General
+      fireEvent.click(screen.getByRole('button', { name: 'General' }));
+      expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument();
 
       // Switch to Tools
       const toolsBtn = screen.getByRole('button', { name: 'Tools' });
@@ -201,7 +272,198 @@ describe('SettingsModal Feature Suite', () => {
 
       // Still on tools topic!
       expect(screen.getByRole('heading', { level: 2, name: 'Tools' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Tools' })).toHaveClass('active');
+      expect(screen.getByRole('button', { name: 'Tools' })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+    });
+
+    it('closes from the title-bar button, Escape and the overlay', () => {
+      openSettingsModal();
+      renderSettings('en');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+      expect(screen.queryByRole('dialog', { name: /Settings/i })).toBeNull();
+
+      act(() => {
+        openSettingsModal();
+      });
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: /Settings/i })).toBeNull();
+
+      act(() => {
+        openSettingsModal();
+      });
+      const overlay = document.querySelector('[data-floating-modal-overlay]');
+      expect(overlay).not.toBeNull();
+      fireEvent.click(overlay as Element);
+      expect(screen.queryByRole('dialog', { name: /Settings/i })).toBeNull();
+    });
+
+    it('returns focus to the control that opened the modal', () => {
+      renderSettings('en');
+      const trigger = screen.getByRole('button', { name: 'Library settings trigger' });
+      trigger.focus();
+
+      act(() => {
+        openSettingsModal();
+      });
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+      expect(trigger).toHaveFocus();
+    });
+
+    it('moves the selection with the arrow keys, skipping group labels', () => {
+      openSettingsModal('account');
+      renderSettings('en');
+
+      const account = screen.getByRole('button', { name: 'Account & sync' });
+      account.focus();
+
+      fireEvent.keyDown(account, { key: 'ArrowDown' });
+      const stores = screen.getByRole('button', { name: 'Stores' });
+      expect(stores).toHaveFocus();
+
+      fireEvent.keyDown(stores, { key: 'ArrowDown' });
+      const drmFree = screen.getByRole('button', { name: 'DRM-free games' });
+      expect(uiStore.state.settingsTopic).toBe('drmFree');
+      expect(drmFree).toHaveFocus();
+      expect(
+        screen.getByRole('heading', { level: 2, name: 'DRM-free games' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Settings search', () => {
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
+    afterEach(() => {
+      if (originalScrollIntoView) {
+        HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    });
+
+    it('finds Geral by a tray row label, selects it and highlights matching rows', () => {
+      const scrollIntoView = vi.fn();
+      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+      openSettingsModal('account');
+      renderSettings('pt-BR', undefined, {
+        platform: 'windows',
+        backgroundSupported: true,
+      });
+
+      const input = screen.getByRole('searchbox', {
+        name: 'Buscar configurações',
+      });
+      fireEvent.change(input, { target: { value: 'bandeja' } });
+
+      const nav = screen.getByRole('navigation', { name: 'Configurações' });
+      expect(
+        within(nav).getAllByRole('button').map((button) => button.textContent?.trim()),
+      ).toEqual(['Geral']);
+      expect(uiStore.state.settingsTopic).toBe('general');
+      expect(screen.getByRole('heading', { level: 2, name: 'Geral' })).toBeInTheDocument();
+
+      const closeRow = screen.getByText(
+        'Fechar a janela minimiza para a bandeja',
+      );
+      expect(closeRow).toHaveClass('decoration-brand');
+      expect(closeRow.closest('[data-search-match="true"]')).not.toBeNull();
+
+      const startRow = screen.getByText('Iniciar minimizado na bandeja');
+      expect(startRow.closest('[data-search-match="true"]')).not.toBeNull();
+      expect(scrollIntoView).toHaveBeenCalled();
+    });
+
+    it('shows the empty state and keeps the current panel when nothing matches', () => {
+      openSettingsModal('general');
+      renderSettings('pt-BR');
+
+      fireEvent.change(
+        screen.getByRole('searchbox', { name: 'Buscar configurações' }),
+        { target: { value: 'zzzz-nao-existe' } },
+      );
+
+      expect(
+        screen.getByText('Nenhuma configuração encontrada'),
+      ).toBeInTheDocument();
+      expect(uiStore.state.settingsTopic).toBe('general');
+      expect(screen.getByRole('heading', { level: 2, name: 'Geral' })).toBeInTheDocument();
+    });
+
+    it('restores every topic when the search is cleared and keeps the selection', () => {
+      openSettingsModal('account');
+      renderSettings('en', undefined, { platform: 'windows' });
+
+      const input = screen.getByRole('searchbox', { name: 'Search settings' });
+      fireEvent.change(input, { target: { value: 'tray' } });
+      expect(uiStore.state.settingsTopic).toBe('general');
+
+      fireEvent.change(input, { target: { value: '' } });
+
+      const nav = screen.getByRole('navigation', { name: 'Settings' });
+      expect(within(nav).getAllByRole('button')).toHaveLength(8);
+      expect(uiStore.state.settingsTopic).toBe('general');
+      expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+    });
+
+    it('clears the search after an inner dialog and before closing the modal', () => {
+      openSettingsModal('about');
+      renderSettings(
+        'pt-BR',
+        undefined,
+        undefined,
+        'GameNode Desktop - avisos de licença completos',
+      );
+
+      const input = screen.getByRole('searchbox', {
+        name: 'Buscar configurações',
+      });
+      fireEvent.change(input, { target: { value: 'licença' } });
+      // About itself matches, so the current panel stays.
+      expect(uiStore.state.settingsTopic).toBe('about');
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Mostrar avisos de licença' }),
+      );
+      expect(
+        screen.getByRole('dialog', { name: 'Avisos de licença' }),
+      ).toBeInTheDocument();
+
+      // Escape closes the innermost dialog first.
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: 'Avisos de licença' })).toBeNull();
+      expect(screen.getByRole('dialog', { name: 'Configurações' })).toBeInTheDocument();
+      expect(input).toHaveValue('licença');
+
+      // Then the focused search clears.
+      input.focus();
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(input).toHaveValue('');
+      expect(screen.getByRole('dialog', { name: 'Configurações' })).toBeInTheDocument();
+
+      // Only the next Escape closes the modal.
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: 'Configurações' })).toBeNull();
+    });
+
+    it('focuses the settings search with Ctrl+F without triggering the library search', () => {
+      openSettingsModal('account');
+      renderSettings('en');
+
+      fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
+
+      expect(
+        screen.getByRole('searchbox', { name: 'Search settings' }),
+      ).toHaveFocus();
+      expect(screen.getByLabelText('Library search')).not.toHaveFocus();
     });
   });
 
@@ -225,10 +487,17 @@ describe('SettingsModal Feature Suite', () => {
       // Type dirty changes
       fireEvent.change(destInput, { target: { value: '/modified/backups' } });
       expect(destInput).toHaveValue('/modified/backups');
-      expect(uiStore.state.backupDestinationDraft).toBe('/modified/backups');
+      expect(uiStore.state.settingsDraft).toEqual({
+        topic: 'backups',
+        values: { destination: '/modified/backups' },
+      });
+      expect(screen.getByTestId('settings-unsaved-count')).toHaveTextContent(
+        '1 setting changed',
+      );
+      expect(screen.getByText('Before: /original/backups')).toBeInTheDocument();
 
       // Try switching topic to 'account'
-      fireEvent.click(screen.getByRole('button', { name: 'Account' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Account & sync' }));
 
       // Discard confirmation dialog must be shown
       const discardDialog = screen.getByRole('dialog', { name: 'Discard changes?' });
@@ -245,17 +514,17 @@ describe('SettingsModal Feature Suite', () => {
       expect(uiStore.state.settingsTopic).toBe('backups');
 
       // Try switching again to 'account' and discard
-      fireEvent.click(screen.getByRole('button', { name: 'Account' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Account & sync' }));
       const discardDialog2 = screen.getByRole('dialog', { name: 'Discard changes?' });
       fireEvent.click(within(discardDialog2).getByTestId('discard-confirm'));
 
       // Confirmation dialog closes, topic switches to Account, draft reverted
       expect(screen.queryByTestId('discard-changes-dialog')).toBeNull();
       expect(uiStore.state.settingsTopic).toBe('account');
-      expect(uiStore.state.backupDestinationDraft).toBeNull();
+      expect(uiStore.state.settingsDraft).toBeNull();
     });
 
-    it('prompts discard confirmation when pressing Escape with dirty backup destination', () => {
+    it('prompts discard confirmation when pressing Escape with dirty backup settings', () => {
       openSettingsModal('backups');
       renderSettings('en', {
         localGames: {
@@ -311,7 +580,7 @@ describe('SettingsModal Feature Suite', () => {
       const destInput = screen.getByLabelText(/Destino dos backups|Backup destination/i);
       fireEvent.change(destInput, { target: { value: '/novo/destino' } });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Conta' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Conta e sincronização' }));
 
       const discardDialog = screen.getByRole('dialog', { name: 'Descartar alterações?' });
       expect(discardDialog).toBeInTheDocument();
@@ -321,6 +590,32 @@ describe('SettingsModal Feature Suite', () => {
         'Continuar editando',
       );
       await waitFor(() => expect(screen.getByTestId('discard-keep-editing')).toHaveFocus());
+    });
+
+    it('discards pending settings before closing the modal', () => {
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/saved/backups',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/unsaved/backups' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+      expect(screen.getByTestId('discard-changes-dialog')).toBeInTheDocument();
+      expect(uiStore.state.settingsOpen).toBe(true);
+
+      fireEvent.click(screen.getByTestId('discard-confirm'));
+      expect(uiStore.state.settingsOpen).toBe(false);
+      expect(uiStore.state.settingsDraft).toBeNull();
     });
   });
 
@@ -380,11 +675,11 @@ describe('SettingsModal Feature Suite', () => {
   });
 
   describe('Panel Operations and Toasts', () => {
-    it('dispatches sync toggle and shows toast notification', () => {
+    it('dispatches sync toggle and shows toast notification', async () => {
       const setSyncSpy = vi.spyOn(commands, 'setSyncEnabled');
       openSettingsModal('account');
       renderSettings('en', {
-        sync: { enabled: true, explained: true },
+        sync: { enabled: true, explained: true, summary: null, running: false },
       });
 
       const syncToggle = screen.getByLabelText(/Sync with GameNode/i);
@@ -394,12 +689,14 @@ describe('SettingsModal Feature Suite', () => {
       expect(setSyncSpy).toHaveBeenCalledWith(false);
 
       // Toast appears in ToastContainer
-      const notifications = screen.getByRole('region', { name: 'Notifications' });
+      const notifications = await screen.findByRole('region', {
+        name: 'Notifications',
+      });
       expect(notifications).toBeInTheDocument();
       expect(within(notifications).getByText('Sync with GameNode')).toBeInTheDocument();
     });
 
-    it('dispatches playtime source change and shows toast notification', () => {
+    it('dispatches playtime source change and shows toast notification', async () => {
       const setPlaytimeSpy = vi.spyOn(commands, 'setPlaytimeSource');
       openSettingsModal('account');
       renderSettings('en', {
@@ -410,7 +707,9 @@ describe('SettingsModal Feature Suite', () => {
       fireEvent.click(internalBtn);
 
       expect(setPlaytimeSpy).toHaveBeenCalledWith('internal');
-      const notifications = screen.getByRole('region', { name: 'Notifications' });
+      const notifications = await screen.findByRole('region', {
+        name: 'Notifications',
+      });
       expect(within(notifications).getByText('Playtime source')).toBeInTheDocument();
     });
 
@@ -431,21 +730,32 @@ describe('SettingsModal Feature Suite', () => {
       });
 
       expect(screen.getAllByText('AlexRider').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText(/Secret Service/i)).toBeInTheDocument();
+      expect(screen.getByText(/system keyring/i)).toBeInTheDocument();
 
       const signOutBtn = screen.getByRole('button', { name: 'Sign out' });
       fireEvent.click(signOutBtn);
       expect(signOutSpy).toHaveBeenCalledWith('signOut');
     });
 
-    it('clears tool cache and shows toast notification', () => {
+    it('clears tool cache and shows toast notification', async () => {
       const clearSpy = vi.spyOn(commands, 'clearToolCache');
       openSettingsModal('tools');
       renderSettings('en', {
         tools: {
           installedByEntry: {},
           totalCacheBytes: 10485760,
-          totalCacheArchives: 3,
+          totalCacheArchives: 1,
+          achievementIconCacheBytes: 0,
+          cacheEntries: [
+            {
+              toolId: 'optiscaler',
+              version: '0.7.4',
+              channel: 'stable',
+              bytes: 10485760,
+              sha256Verified: true,
+              inUse: true,
+            },
+          ],
           catalog: [
             {
               id: 'optiscaler',
@@ -458,14 +768,15 @@ describe('SettingsModal Feature Suite', () => {
         },
       });
 
-      expect(screen.getByText(/3 archives cached/i)).toBeInTheDocument();
+      expect(screen.getByText('10 MB · 1 cached version')).toBeInTheDocument();
+      expect(screen.getByText('OptiScaler 0.7.4')).toBeInTheDocument();
       expect(screen.getByText('OptiScaler')).toBeInTheDocument();
 
       const clearBtn = screen.getByRole('button', { name: 'Clear cache' });
       fireEvent.click(clearBtn);
 
       expect(clearSpy).toHaveBeenCalled();
-      expect(screen.getByText('Tool cache cleared')).toBeInTheDocument();
+      expect(await screen.findByText('Tool cache cleared')).toBeInTheDocument();
     });
 
     it('keeps the PC ports cache off non-Windows builds', () => {
@@ -473,7 +784,7 @@ describe('SettingsModal Feature Suite', () => {
       openSettingsModal('tools');
       renderSettings('en', undefined, { platform: 'linux' });
 
-      expect(screen.queryByText('PC ports download cache')).toBeNull();
+      expect(screen.queryByText('Ports cache')).toBeNull();
       expect(screen.queryByTestId('ports-helper-tools')).toBeNull();
       expect(screen.queryByTestId('ports-clear-cache')).toBeNull();
       expect(infoSpy).not.toHaveBeenCalled();
@@ -499,8 +810,8 @@ describe('SettingsModal Feature Suite', () => {
       expect(await screen.findByText('Fixture PKG extractor')).toBeInTheDocument();
       expect(screen.getByText('Pinned version v2.4.1')).toBeInTheDocument();
       expect(screen.getByText('GPL-3.0')).toBeInTheDocument();
-      expect(screen.getByText('18.0 MB')).toBeInTheDocument();
-      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
+      expect(screen.getByText('18 MB')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700 MB');
       expect(infoSpy).toHaveBeenCalled();
     });
 
@@ -524,8 +835,8 @@ describe('SettingsModal Feature Suite', () => {
 
       expect(await screen.findByText('Versão fixada v2.4.1')).toBeInTheDocument();
       expect(screen.getByText('Ferramentas auxiliares')).toBeInTheDocument();
-      expect(screen.getByText('Cache de downloads de ports para PC')).toBeInTheDocument();
-      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
+      expect(screen.getByText('Cache de ports')).toBeInTheDocument();
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700 MB');
     });
 
     it('handles an overlay with no extraction tool configured', async () => {
@@ -555,7 +866,7 @@ describe('SettingsModal Feature Suite', () => {
       openSettingsModal('tools');
       renderSettings('en', undefined, { platform: 'windows' });
 
-      expect(await screen.findByText('700.0 MB')).toBeInTheDocument();
+      expect(await screen.findByText('700 MB')).toBeInTheDocument();
       const clearButton = screen.getByTestId('ports-clear-cache');
       expect(clearButton).toBeEnabled();
       fireEvent.click(clearButton);
@@ -586,11 +897,10 @@ describe('SettingsModal Feature Suite', () => {
           'A port install is running. Clear the cache when it finishes.',
         ),
       ).toBeInTheDocument();
-      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700.0 MB');
+      expect(screen.getByTestId('ports-downloads-size')).toHaveTextContent('700 MB');
     });
 
-    it('saves backup destination and shows toast notification', () => {
-      const backupSpy = vi.spyOn(commands, 'setLocalBackupSettings');
+    it('counts the pending settings and reverts them from the unsaved bar', () => {
       openSettingsModal('backups');
       renderSettings('en', {
         localGames: {
@@ -603,16 +913,297 @@ describe('SettingsModal Feature Suite', () => {
         },
       });
 
+      expect(screen.queryByTestId('settings-unsaved-bar')).toBeNull();
+
       const destInput = screen.getByLabelText(/Backup destination/i);
       fireEvent.change(destInput, { target: { value: '/new/destination' } });
+      fireEvent.click(screen.getByRole('switch', { name: 'Protect saves automatically' }));
+
+      expect(screen.getByTestId('settings-unsaved-count')).toHaveTextContent(
+        '2 settings changed',
+      );
+      expect(screen.getByText('Before: /default/destination')).toBeInTheDocument();
+      expect(document.querySelector('.settings-scroll-content')).toHaveClass(
+        'pb-[88px]',
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Revert' }));
+
+      expect(uiStore.state.settingsDraft).toBeNull();
+      expect(screen.queryByTestId('settings-unsaved-bar')).toBeNull();
+      expect(document.querySelector('.settings-scroll-content')).toHaveClass(
+        'pb-xl',
+      );
+      expect(screen.getByLabelText(/Backup destination/i)).toHaveValue(
+        '/default/destination',
+      );
+      expect(
+        screen.getByRole('switch', { name: 'Protect saves automatically' }),
+      ).toBeChecked();
+    });
+
+    it('saves every pending backup setting together from the unsaved bar', async () => {
+      const backupSpy = vi
+        .spyOn(commands, 'setLocalBackupSettings')
+        .mockResolvedValue(undefined);
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/new/destination' },
+      });
+      fireEvent.click(screen.getByRole('switch', { name: 'Protect saves automatically' }));
 
       const saveBtn = screen.getByRole('button', { name: 'Save changes' });
       expect(saveBtn).not.toBeDisabled();
-
       fireEvent.click(saveBtn);
-      expect(backupSpy).toHaveBeenCalledWith(true, '/new/destination');
-      expect(uiStore.state.backupDestinationDraft).toBeNull();
-      expect(screen.getByText('Backup destination saved')).toBeInTheDocument();
+
+      await waitFor(() =>
+        expect(backupSpy).toHaveBeenCalledWith(false, '/new/destination', 10),
+      );
+      await waitFor(() => expect(uiStore.state.settingsDraft).toBeNull());
+      expect(await screen.findByText('Settings saved')).toBeInTheDocument();
+    });
+
+    it('saves a changed default retention together with the other backup fields', async () => {
+      const backupSpy = vi
+        .spyOn(commands, 'setLocalBackupSettings')
+        .mockResolvedValue(undefined);
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+      act(() => {
+        uiStore.setState((previous) => ({
+          ...previous,
+          settingsDraft: { topic: 'backups', values: { retention: 20 } },
+        }));
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() =>
+        expect(backupSpy).toHaveBeenCalledWith(true, '/default/destination', 20),
+      );
+      await waitFor(() => expect(uiStore.state.settingsDraft).toBeNull());
+    });
+
+    it('saves the pending settings with Ctrl+S while the bar is visible', async () => {
+      const backupSpy = vi
+        .spyOn(commands, 'setLocalBackupSettings')
+        .mockResolvedValue(undefined);
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/new/destination' },
+      });
+      fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+
+      await waitFor(() =>
+        expect(backupSpy).toHaveBeenCalledWith(true, '/new/destination', 10),
+      );
+      await waitFor(() => expect(uiStore.state.settingsDraft).toBeNull());
+    });
+
+    it('keeps the draft and shows the destination error when saving fails', async () => {
+      vi.spyOn(commands, 'setLocalBackupSettings').mockRejectedValue(
+        'invalid destination',
+      );
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/new/destination' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() =>
+        expect(uiStore.state.settingsDraftError).toBe('invalid destination'),
+      );
+      expect(uiStore.state.settingsDraft).toEqual({
+        topic: 'backups',
+        values: { destination: '/new/destination' },
+      });
+      expect(screen.getByRole('alert')).toHaveTextContent('invalid destination');
+      expect(screen.getByTestId('settings-unsaved-bar')).toBeInTheDocument();
+    });
+
+    it('keeps the draft and blocks a duplicate save until the awaited save ends', async () => {
+      let resolveSave: () => void = () => undefined;
+      const pending = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+      const backupSpy = vi
+        .spyOn(commands, 'setLocalBackupSettings')
+        .mockReturnValue(pending);
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/new/destination' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(backupSpy).toHaveBeenCalledTimes(1));
+      expect(uiStore.state.settingsDraft).toEqual({
+        topic: 'backups',
+        values: { destination: '/new/destination' },
+      });
+      expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+      // Ctrl+S and a second click cannot start a parallel save.
+      fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(backupSpy).toHaveBeenCalledTimes(1);
+
+      resolveSave();
+      await waitFor(() => expect(uiStore.state.settingsDraft).toBeNull());
+    });
+
+    it('keeps edits made while a save is in flight instead of erasing them', async () => {
+      let resolveSave: () => void = () => undefined;
+      const pending = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+      vi.spyOn(commands, 'setLocalBackupSettings').mockReturnValue(pending);
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/submitted' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() =>
+        expect(commands.setLocalBackupSettings).toHaveBeenCalledWith(
+          true,
+          '/submitted',
+          10,
+        ),
+      );
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/newer' },
+      });
+      resolveSave();
+
+      await waitFor(() =>
+        expect(uiStore.state.settingsDraft).toEqual({
+          topic: 'backups',
+          values: { destination: '/newer' },
+        }),
+      );
+      expect(screen.getByTestId('settings-unsaved-count')).toHaveTextContent(
+        '1 setting changed',
+      );
+      expect(screen.getByLabelText(/Backup destination/i)).toHaveValue('/newer');
+    });
+
+    it('keeps all three pending fields and the error when the destination is rejected', async () => {
+      vi.spyOn(commands, 'setLocalBackupSettings').mockRejectedValue(
+        'invalid destination',
+      );
+      openSettingsModal('backups');
+      renderSettings('en', {
+        localGames: {
+          ...createDefaultSnapshot().localGames,
+          settings: {
+            automatic: true,
+            retention: 10,
+            destination: '/default/destination',
+          },
+        },
+      });
+
+      fireEvent.change(screen.getByLabelText(/Backup destination/i), {
+        target: { value: '/protected/folder' },
+      });
+      fireEvent.click(screen.getByRole('switch', { name: 'Protect saves automatically' }));
+      act(() => {
+        uiStore.setState((previous) => ({
+          ...previous,
+          settingsDraft: {
+            topic: 'backups',
+            values: {
+              ...previous.settingsDraft?.values,
+              automatic: false,
+              destination: '/protected/folder',
+              retention: 20,
+            },
+          },
+        }));
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() =>
+        expect(uiStore.state.settingsDraftError).toBe('invalid destination'),
+      );
+      expect(uiStore.state.settingsDraft).toEqual({
+        topic: 'backups',
+        values: {
+          automatic: false,
+          destination: '/protected/folder',
+          retention: 20,
+        },
+      });
+      expect(screen.getByTestId('settings-unsaved-count')).toHaveTextContent(
+        '3 settings changed',
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent('invalid destination');
+      expect(screen.getByTestId('settings-unsaved-bar')).toBeInTheDocument();
     });
 
     it('resets hidden games in stores panel and shows toast', () => {
@@ -675,15 +1266,15 @@ describe('SettingsModal Feature Suite', () => {
         }],
       });
 
-      expect(screen.getByRole('heading', { name: 'Steam account' })).toBeInTheDocument();
-      expect(screen.getByText('5 installed games')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Steam' })).toBeInTheDocument();
+      expect(screen.getByText('installed on this PC')).toBeInTheDocument();
 
-      const resetBtn = screen.getByRole('button', { name: /Reset hidden games/i });
+      const resetBtn = screen.getByRole('button', { name: /Show hidden games/i });
       fireEvent.click(resetBtn);
 
       expect(libraryInputSpy).toHaveBeenCalledWith('resetExcluded');
       const notifications = screen.getByRole('region', { name: 'Notifications' });
-      expect(within(notifications).getByRole('status')).toHaveTextContent(/Reset hidden games/i);
+      expect(within(notifications).getByRole('status')).toHaveTextContent(/Show hidden games/i);
     });
   });
 
@@ -691,69 +1282,94 @@ describe('SettingsModal Feature Suite', () => {
     const watchedSnapshot: Partial<Snapshot> = {
       localGames: {
         ...createDefaultSnapshot().localGames,
-        watches: [{ id: 'w-1', path: 'C:\\Games\\Indie', enabled: true }],
+        watches: [
+          {
+            id: 'w-1',
+            path: 'C:\\Games\\Indie',
+            enabled: true,
+            entryCount: 1,
+            lastCheckedAt: null,
+            state: 'idle',
+            unavailableSince: null,
+          },
+        ],
       },
     };
 
-    it('shows the watched-folder controls on the Stores page', () => {
-      openSettingsModal('stores');
+    it('shows the watched folders on the DRM-free topic', () => {
+      openSettingsModal('drmFree');
       renderSettings('en', watchedSnapshot);
 
-      expect(screen.getByPlaceholderText('Folder to watch')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Watch folder' })).toBeInTheDocument();
       expect(screen.getByText('C:\\Games\\Indie')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Rescan watched folders' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Check all now' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Add folder…' })).toBeInTheDocument();
     });
 
-    it('keeps the watched-folder controls off the Backups page', () => {
-      openSettingsModal('backups');
+    it('keeps the watched-folder controls off the Stores page', () => {
+      openSettingsModal('stores');
       renderSettings('en', watchedSnapshot);
 
-      expect(screen.queryByPlaceholderText('Folder to watch')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Watch folder' })).not.toBeInTheDocument();
+      expect(screen.queryByText('C:\\Games\\Indie')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Add folder…' })).not.toBeInTheDocument();
     });
 
-    it('adds a typed folder from the Stores page', () => {
-      const watchSpy = vi.spyOn(commands, 'watchLocalFolder');
-      openSettingsModal('stores');
+    it('adds a folder through the native picker', () => {
+      const pickSpy = vi
+        .spyOn(commands, 'pickLocalWatchFolder')
+        .mockResolvedValue(undefined);
+      openSettingsModal('drmFree');
       renderSettings('en');
 
-      fireEvent.change(screen.getByPlaceholderText('Folder to watch'), {
-        target: { value: '  D:\\Roms  ' },
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Watch folder' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add folder…' }));
 
-      expect(watchSpy).toHaveBeenCalledWith('D:\\Roms');
+      expect(pickSpy).toHaveBeenCalledTimes(1);
     });
 
     it('stops monitoring a folder without removing its registered games', () => {
-      const removeSpy = vi.spyOn(commands, 'removeLocalWatch');
-      openSettingsModal('stores');
+      const removeSpy = vi
+        .spyOn(commands, 'removeLocalWatch')
+        .mockResolvedValue(undefined);
+      openSettingsModal('drmFree');
       renderSettings('en', watchedSnapshot);
 
-      fireEvent.click(screen.getByRole('button', { name: 'Remove watch' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Stop watching' }));
 
       expect(removeSpy).toHaveBeenCalledWith('w-1');
     });
 
     it('does not list disabled watches', () => {
-      openSettingsModal('stores');
+      openSettingsModal('drmFree');
       renderSettings('en', {
         localGames: {
           ...createDefaultSnapshot().localGames,
-          watches: [{ id: 'w-1', path: 'C:\\Games\\Indie', enabled: false }],
+          watches: [
+            {
+              id: 'w-1',
+              path: 'C:\\Games\\Indie',
+              enabled: false,
+              entryCount: 1,
+              lastCheckedAt: null,
+              state: 'idle',
+              unavailableSince: null,
+            },
+          ],
         },
       });
 
       expect(screen.queryByText('C:\\Games\\Indie')).not.toBeInTheDocument();
-      expect(screen.getByText('No watched folders configured.')).toBeInTheDocument();
+      expect(screen.getByText('No watched folders')).toBeInTheDocument();
     });
 
-    it('uses the Portuguese label on the Stores page', () => {
-      openSettingsModal('stores');
-      renderSettings('pt-BR');
+    it('uses the Portuguese labels on the DRM-free topic', () => {
+      openSettingsModal('drmFree');
+      renderSettings('pt-BR', watchedSnapshot);
 
-      expect(screen.getByRole('button', { name: 'Monitorar pasta' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Adicionar pasta…' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Verificar tudo agora' }),
+      ).toBeInTheDocument();
     });
   });
 });

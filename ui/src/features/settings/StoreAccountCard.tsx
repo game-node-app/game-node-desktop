@@ -1,374 +1,495 @@
 import React from 'react';
 import {
-  IconAlertCircle,
   IconAlertTriangle,
-  IconBuildingStore,
+  IconBrandSteam,
   IconCircleCheck,
-  IconClockExclamation,
-  IconCloudOff,
-  IconKey,
+  IconCircleX,
+  IconDeviceGamepad2,
+  IconDots,
+  IconExternalLink,
   IconLoader2,
-  IconLock,
-  IconPlugOff,
-  IconShield,
-  IconUsers,
+  IconLogout,
+  IconRefresh,
+  IconTrash,
+  IconX,
+  type TablerIcon,
 } from '@tabler/icons-react';
-import { commands, type StorageMethod, type StoreAccountView } from '../../api';
+import { Menu } from '@mantine/core';
+import {
+  commands,
+  type StoreAccountView,
+} from '../../api';
+import {
+  Button,
+  IconButton,
+  MenuSurface,
+  Pill,
+  Switch,
+} from '../../components/ui';
+import { formatRelativeTime } from '../shell/StatusBar';
 import { useI18n } from '../../i18n';
 import {
-  settingsButtonGhost,
-  settingsButtonPrimary,
-  settingsButtonSecondary,
-  settingsCardRoomy,
-  settingsInfoBox,
-  settingsInfoBoxWarning,
-  settingsPill,
-  settingsPillBrand,
-  settingsPillSuccess,
-  settingsPillWarning,
-  settingsRowDescription,
-  settingsSectionTitle,
-  settingsStat,
-} from './settingsClasses';
+  IconBox,
+  SettingsRow,
+  StatTile,
+} from './components';
+
+/** Provider id → Tabler icon, provider-neutral panels use this map (D10). */
+export function providerIcon(providerId: string): TablerIcon {
+  return providerId === 'steam' ? IconBrandSteam : IconDeviceGamepad2;
+}
 
 export interface StoreAccountCardProps {
   account: StoreAccountView;
   /** The provider's display name, for the card's provider-neutral copy. */
   providerName: string;
-  scanFailed?: boolean;
+  /** Whether shared-only games of this provider appear in the library. */
+  includeShared?: boolean;
+  onIncludeSharedChange?: (checked: boolean) => void;
   onSignOut?: () => void;
 }
 
-function formatLastCheck(lastCheckedAt: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'short' }).format(
-    new Date(lastCheckedAt * 1000),
-  );
+interface CardAction {
+  key: string;
+  label: string;
+  icon: TablerIcon;
+  run: () => void;
 }
 
+type PillTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger';
+
+/**
+ * One store account card (S2, D10): provider-neutral identity, state pill,
+ * primary action plus a "Mais ações" menu, the three library counts, the
+ * shared-games switch and the remove-saved-sign-in row. Attention states keep
+ * their warning/danger border and a text explanation, never color alone.
+ */
 export const StoreAccountCard: React.FC<StoreAccountCardProps> = ({
   account,
   providerName,
-  scanFailed = false,
+  includeShared = true,
+  onIncludeSharedChange,
   onSignOut,
 }) => {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const params = { provider: providerName };
   const headingId = `store-account-heading-${account.provider}`;
   const descriptionId = `store-account-description-${account.provider}`;
+  const ProviderIcon = providerIcon(account.provider);
+  const now = Math.floor(Date.now() / 1000);
 
-  const status = (() => {
+  const statePill: {
+    tone: PillTone;
+    label: string;
+    icon?: TablerIcon;
+    spinning?: boolean;
+  } = (() => {
     switch (account.state) {
       case 'notConnected':
         return {
-          icon: IconPlugOff,
-          label: t('settings.storeStatusNotConnected'),
-          pill: settingsPill,
-          iconClass: '',
-          description: t('settings.storeDescriptionNotConnected', params),
+          tone: 'neutral',
+          label: t('settings.stores.state.notConnected'),
+          icon: IconCircleX,
         };
       case 'checking':
         return {
-          icon: IconLoader2,
-          label: t('settings.storeStatusChecking'),
-          pill: settingsPillBrand,
-          iconClass: 'animate-spin',
-          description: t('settings.storeDescriptionChecking', params),
+          tone: 'brand',
+          label: t('settings.stores.state.checking'),
+          spinning: true,
         };
       case 'signingIn':
         return {
-          icon: IconLoader2,
-          label: t('settings.storeStatusSigningIn'),
-          pill: settingsPillBrand,
-          iconClass: 'animate-spin',
-          description: t('settings.storeDescriptionSigningIn', params),
+          tone: 'brand',
+          label: t('settings.stores.state.signingIn'),
+          spinning: true,
         };
       case 'connected':
         return {
-          icon: IconCircleCheck,
-          label: t('settings.storeStatusConnected'),
-          pill: account.persistFailed ? settingsPillWarning : settingsPillSuccess,
-          iconClass: '',
-          description: t('settings.storeDescriptionConnected', params),
+          tone: account.persistFailed ? 'warning' : 'success',
+          label: t('settings.stores.state.connected'),
+          icon: account.persistFailed ? IconAlertTriangle : IconCircleCheck,
         };
       case 'expired':
         return {
-          icon: IconClockExclamation,
-          label: t('settings.storeStatusExpired'),
-          pill: settingsPillWarning,
-          iconClass: '',
-          description: t('settings.storeDescriptionExpired', params),
+          tone: 'warning',
+          label: t('settings.stores.state.expired'),
+          icon: IconAlertTriangle,
         };
       case 'unreachable':
         return {
-          icon: IconCloudOff,
+          tone: 'warning',
           label: t('settings.storeStatusUnreachable', params),
-          pill: settingsPillWarning,
-          iconClass: '',
-          description: t('settings.storeDescriptionUnreachable', params),
+          icon: IconAlertTriangle,
         };
       case 'credentialError':
         return {
-          icon: IconKey,
-          label: t('settings.storeStatusCredentialError'),
-          pill: settingsPillWarning,
-          iconClass: '',
-          description: t('settings.storeDescriptionCredentialError', params),
+          tone: 'danger',
+          label: t('settings.stores.state.credentialError'),
+          icon: IconAlertTriangle,
         };
       default:
-        return {
-          icon: IconAlertCircle,
-          label: String(account.state),
-          pill: settingsPillWarning,
-          iconClass: '',
-          description: '',
-        };
+        return { tone: 'warning', label: String(account.state) };
     }
   })();
-  const StatusIcon = status.icon;
 
   const identity = account.accountName ?? account.accountId;
-  const showCounts =
-    account.state !== 'signingIn' &&
-    (account.ownedCount > 0 || account.sharedCount > 0 || account.installedCount > 0);
-  // Providers that declare no shared access never report shared counts or a shared outcome.
-  const showShared = account.sharedLabel !== null;
-  const sharedParams = { label: account.sharedLabel ?? '' };
-  const checkLabel =
-    account.lastCheckedAt !== null
-      ? t('settings.storeLastCheck', { time: formatLastCheck(account.lastCheckedAt, locale) })
-      : account.state === 'notConnected' || account.state === 'signingIn'
-        ? null
-        : t('settings.storeNeverChecked');
-
-  const storageLabel = (storage: StorageMethod | null): string | null => {
-    switch (storage) {
-      case 'windowsCredentialManager':
-        return t('settings.storeStorageWindows');
-      case 'secretService':
-        return t('settings.storeStorageSecretService');
-      case 'privateFile':
-        return t('settings.storeStoragePrivateFile');
+  const lastSyncAt = account.lastSyncedAt ?? account.lastCheckedAt;
+  const statusLine = (() => {
+    switch (account.state) {
+      case 'connected':
+        if (identity && lastSyncAt !== null) {
+          return t('settings.stores.accountSynced', {
+            account: identity,
+            relative: formatRelativeTime(lastSyncAt, now, t),
+          });
+        }
+        if (identity) {
+          return t('settings.storeSignedInAs', { account: identity });
+        }
+        return t('settings.storeDescriptionConnected', params);
+      case 'expired':
+        return t('settings.stores.expiredLibrary', { n: account.ownedCount });
+      case 'notConnected':
+        return t('settings.storeDescriptionNotConnected', params);
+      case 'checking':
+        return t('settings.storeDescriptionChecking', params);
+      case 'signingIn':
+        return t('settings.storeDescriptionSigningIn', params);
+      case 'unreachable':
+        return t('settings.storeDescriptionUnreachable', params);
+      case 'credentialError':
+        return t('settings.storeDescriptionCredentialError', params);
       default:
-        return null;
+        return '';
     }
-  };
+  })();
 
-  const signIn = () => { void commands.providerSignIn(account.provider); };
-  const focusSignIn = () => { void commands.providerFocusSignIn(account.provider); };
-  const cancelSignIn = () => { void commands.providerCancelSignIn(account.provider); };
-  const check = () => { void commands.providerCheck(account.provider); };
+  const showShared = account.sharedLabel !== null;
+  const showStats = account.state !== 'signingIn';
+  const sharedCaption = showShared
+    ? t('settings.stores.stat.sharedWith', {
+        label: account.sharedLabel ?? '',
+      })
+    : '';
+  const showRemoveSavedSignIn =
+    account.state === 'expired' || account.state === 'credentialError';
+  const canRemoveSavedSignIn =
+    account.state === 'credentialError'
+      ? account.canRemoveCredential
+      : account.canSignOut;
+
+  const signIn = () => {
+    void commands.providerSignIn(account.provider);
+  };
+  const focusSignIn = () => {
+    void commands.providerFocusSignIn(account.provider);
+  };
+  const cancelSignIn = () => {
+    void commands.providerCancelSignIn(account.provider);
+  };
+  const check = () => {
+    void commands.providerCheck(account.provider);
+  };
   const signOut = () => {
     void commands.providerSignOut(account.provider);
     onSignOut?.();
   };
 
-  const actions: React.ReactNode[] = [];
+  const signInAction: CardAction = {
+    key: 'sign-in',
+    label: t('settings.stores.action.signIn'),
+    icon: IconExternalLink,
+    run: signIn,
+  };
+  const signInAgainAction: CardAction = {
+    key: 'sign-in-again',
+    label: t('settings.stores.action.signInAgain'),
+    icon: IconExternalLink,
+    run: signIn,
+  };
+  const syncNowAction: CardAction = {
+    key: 'sync-now',
+    label: t('settings.stores.action.syncNow'),
+    icon: IconRefresh,
+    run: check,
+  };
+  const tryAgainAction: CardAction = {
+    key: 'try-again',
+    label: t('settings.stores.action.tryAgain'),
+    icon: IconRefresh,
+    run: check,
+  };
+  const showWindowAction: CardAction = {
+    key: 'show-window',
+    label: t('settings.stores.action.showSignInWindow'),
+    icon: IconExternalLink,
+    run: focusSignIn,
+  };
+  const cancelAction: CardAction = {
+    key: 'cancel-sign-in',
+    label: t('settings.stores.action.cancelSignIn'),
+    icon: IconX,
+    run: cancelSignIn,
+  };
+  const signOutAction: CardAction = {
+    key: 'sign-out',
+    label: t('settings.stores.action.signOut'),
+    icon: IconLogout,
+    run: signOut,
+  };
+  const removeSavedSignInAction: CardAction = {
+    key: 'remove-saved-sign-in',
+    label: t('settings.stores.removeSavedSignIn'),
+    icon: IconTrash,
+    run: signOut,
+  };
+
+  const actions: CardAction[] = [];
   switch (account.state) {
     case 'notConnected':
-      if (account.canSignIn) {
-        actions.push(
-          <button key="sign-in" type="button" className={settingsButtonPrimary} onClick={signIn}>
-            {t('settings.storeSignIn', params)}
-          </button>,
-        );
-      }
+      if (account.canSignIn) actions.push(signInAction);
       break;
     case 'signingIn':
-      if (account.canFocusSignIn) {
-        actions.push(
-          <button key="focus" type="button" className={settingsButtonPrimary} onClick={focusSignIn}>
-            {t('settings.storeBringToFront')}
-          </button>,
-        );
-      }
-      if (account.canCancelSignIn) {
-        actions.push(
-          <button key="cancel" type="button" className={settingsButtonSecondary} onClick={cancelSignIn}>
-            {t('settings.storeCancel')}
-          </button>,
-        );
-      }
+      if (account.canFocusSignIn) actions.push(showWindowAction);
+      if (account.canCancelSignIn) actions.push(cancelAction);
       break;
     case 'connected':
-      if (account.canCheck) {
-        actions.push(
-          <button key="check" type="button" className={settingsButtonPrimary} onClick={check}>
-            {t('settings.storeSyncNow')}
-          </button>,
-        );
-      }
-      if (account.canSignOut) {
-        actions.push(
-          <button key="sign-out" type="button" className={settingsButtonSecondary} onClick={signOut}>
-            {t('settings.storeSignOut')}
-          </button>,
-        );
-      }
+      if (account.canCheck) actions.push(syncNowAction);
+      if (account.canSignOut) actions.push(signOutAction);
       break;
     case 'expired':
-      if (account.canSignIn) {
-        actions.push(
-          <button key="sign-in-again" type="button" className={settingsButtonPrimary} onClick={signIn}>
-            {t('settings.storeSignInAgain')}
-          </button>,
-        );
-      }
-      if (account.canSignOut) {
-        actions.push(
-          <button key="sign-out" type="button" className={settingsButtonSecondary} onClick={signOut}>
-            {t('settings.storeSignOut')}
-          </button>,
-        );
-      }
+      if (account.canSignIn) actions.push(signInAgainAction);
+      if (account.canSignOut) actions.push(removeSavedSignInAction);
       break;
     case 'unreachable':
-      if (account.canCheck) {
-        actions.push(
-          <button key="try-again" type="button" className={settingsButtonPrimary} onClick={check}>
-            {t('settings.storeTryAgain')}
-          </button>,
-        );
-      }
-      if (account.canSignOut) {
-        actions.push(
-          <button key="sign-out" type="button" className={settingsButtonSecondary} onClick={signOut}>
-            {t('settings.storeSignOut')}
-          </button>,
-        );
-      }
+      if (account.canCheck) actions.push(tryAgainAction);
+      if (account.canSignOut) actions.push(signOutAction);
       break;
     case 'credentialError':
-      if (account.canCheck) {
-        actions.push(
-          <button key="retry" type="button" className={settingsButtonPrimary} onClick={check}>
-            {t('settings.storeRetry')}
-          </button>,
-        );
-      }
-      if (account.canSignIn) {
-        actions.push(
-          <button key="sign-in-again" type="button" className={settingsButtonSecondary} onClick={signIn}>
-            {t('settings.storeSignInAgain')}
-          </button>,
-        );
-      }
-      if (account.canRemoveCredential) {
-        actions.push(
-          <button key="remove-credential" type="button" className={settingsButtonGhost} onClick={signOut}>
-            {t('settings.storeRemoveSavedSignIn')}
-          </button>,
-        );
-      }
+      if (account.canCheck) actions.push(tryAgainAction);
+      if (account.canSignIn) actions.push(signInAgainAction);
+      if (canRemoveSavedSignIn) actions.push(removeSavedSignInAction);
       break;
     default:
       break;
   }
+  const [primaryAction, ...menuActions] = actions;
+
+  const tone =
+    account.state === 'credentialError'
+      ? 'border-danger'
+      : account.state === 'expired' ||
+          account.state === 'unreachable' ||
+          account.persistFailed
+        ? 'border-warning'
+        : 'border-border-subtle';
 
   return (
     <section
-      className={settingsCardRoomy}
+      data-provider={account.provider}
       aria-labelledby={headingId}
       aria-describedby={descriptionId}
-      aria-busy={account.state === 'checking'}
+      aria-busy={
+        account.state === 'checking' || account.state === 'signingIn'
+          ? true
+          : undefined
+      }
+      className={`flex flex-col overflow-hidden rounded-card border bg-secondary ${tone}`}
     >
-      <div className="flex items-start justify-between gap-md">
-        <div className="flex min-w-0 items-start gap-compact">
-          <IconBuildingStore size={24} stroke={1.75} className="mt-[2px] shrink-0 text-white" aria-hidden="true" />
-          <div className="flex min-w-0 flex-col gap-[2px]">
-            <h3 id={headingId} className={settingsSectionTitle}>
-              {t('settings.storeAccount', params)}
-            </h3>
-            {identity && (
-              <span className={settingsRowDescription}>
-                {t('settings.storeSignedInAs', { account: identity })}
-              </span>
-            )}
-          </div>
+      <div className="flex flex-wrap items-center gap-row p-md">
+        <IconBox icon={ProviderIcon} />
+        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+          <h3
+            id={headingId}
+            className="truncate text-md font-semibold text-text-primary"
+          >
+            {providerName}
+          </h3>
+          <p
+            id={descriptionId}
+            className="text-xs leading-note text-text-dimmed"
+          >
+            {statusLine}
+          </p>
         </div>
-        <span role="status" className={status.pill}>
-          <StatusIcon
-            size={14}
-            stroke={1.75}
-            className={status.iconClass}
-            aria-hidden="true"
+        <span role="status" className="inline-flex items-center">
+          <Pill tone={statePill.tone} icon={statePill.spinning ? undefined : statePill.icon}>
+            {statePill.spinning ? (
+              <IconLoader2
+                size={12}
+                stroke={2}
+                aria-hidden="true"
+                className="animate-spin motion-reduce:animate-none"
+              />
+            ) : null}
+            {statePill.label}
+          </Pill>
+        </span>
+        {primaryAction ? (
+          <Button
+            size="sm"
+            variant={
+              account.state === 'notConnected' ||
+              account.state === 'expired' ||
+              account.state === 'credentialError'
+                ? 'primary'
+                : 'secondary'
+            }
+            leftIcon={primaryAction.icon}
+            onClick={primaryAction.run}
+            aria-label={primaryAction.label}
+          >
+            {primaryAction.label}
+          </Button>
+        ) : null}
+        {menuActions.length > 0 ? (
+          <MenuSurface position="bottom-end" width={220} withinPortal>
+            <Menu.Target>
+              <IconButton
+                icon={IconDots}
+                label={t('settings.stores.action.more')}
+                variant="outlined"
+                size="sm"
+                className="!h-[30px] !w-[30px]"
+              />
+            </Menu.Target>
+            <Menu.Dropdown>
+              {menuActions.map((action) => {
+                const ActionIcon = action.icon;
+                return (
+                  <Menu.Item
+                    key={action.key}
+                    leftSection={<ActionIcon size={16} stroke={2} aria-hidden="true" />}
+                    onClick={action.run}
+                  >
+                    {action.label}
+                  </Menu.Item>
+                );
+              })}
+            </Menu.Dropdown>
+          </MenuSurface>
+        ) : null}
+      </div>
+
+      {showStats ? (
+        <div
+          role="group"
+          aria-label={t('settings.storeCountsLabel', params)}
+          className="flex gap-compact px-md pb-row"
+        >
+          <StatTile
+            value={account.ownedCount}
+            caption={t('settings.stores.stat.inLibrary')}
           />
-          <span>{status.label}</span>
-        </span>
-      </div>
+          {showShared ? (
+            <StatTile value={account.sharedCount} caption={sharedCaption} />
+          ) : null}
+          <StatTile
+            value={account.installedCount}
+            caption={t('settings.stores.stat.installedHere')}
+          />
+        </div>
+      ) : null}
 
-      <p id={descriptionId} className={settingsRowDescription}>
-        {status.description}
-      </p>
-
-      {showCounts && (
-        <dl className="flex flex-wrap gap-compact" aria-label={t('settings.storeCountsLabel', params)}>
-          <div className={settingsStat}>
-            <dt className={settingsRowDescription}>{t('settings.storeOwned')}</dt>
-            <dd className="text-md font-semibold text-white">{account.ownedCount}</dd>
-          </div>
-          {showShared && (
-            <div className={settingsStat}>
-              <dt className={settingsRowDescription}>{account.sharedLabel}</dt>
-              <dd className="text-md font-semibold text-white">{account.sharedCount}</dd>
-            </div>
+      {showShared && onIncludeSharedChange ? (
+        <SettingsRow
+          compact
+          label={t('settings.stores.includeShared')}
+          help={t('settings.stores.includeSharedHelp', {
+            sharedLabel: account.sharedLabel ?? '',
+          })}
+          control={(ids) => (
+            <Switch
+              aria-labelledby={ids.labelId}
+              aria-describedby={ids.describedBy}
+              checked={includeShared}
+              onChange={(event) =>
+                onIncludeSharedChange(event.currentTarget.checked)
+              }
+            />
           )}
-          <div className={settingsStat}>
-            <dt className={settingsRowDescription}>{t('settings.storeInstalled')}</dt>
-            <dd className="text-md font-semibold text-white">{account.installedCount}</dd>
-          </div>
-        </dl>
-      )}
+        />
+      ) : null}
 
-      <div className="flex flex-wrap items-center gap-x-md gap-y-1">
-        <span className={settingsRowDescription}>
-          {scanFailed
-            ? t('settings.lastScanFailed')
-            : account.installedCount > 0
-              ? `${account.installedCount} ${t('settings.installedGames')}`
-              : t('settings.noInstalledGamesFound')}
-        </span>
-        {checkLabel && <span className={settingsRowDescription}>{checkLabel}</span>}
-        {account.storage && (
-          <span className={settingsRowDescription}>{storageLabel(account.storage)}</span>
-        )}
-      </div>
+      {showRemoveSavedSignIn ? (
+        <SettingsRow
+          compact
+          label={t('settings.stores.removeSavedSignIn')}
+          help={t('settings.stores.removeSavedSignInHelp')}
+          control={
+            <Button
+              size="sm"
+              variant="ghost"
+              leftIcon={IconTrash}
+              onClick={signOut}
+              disabled={!canRemoveSavedSignIn}
+            >
+              {t('settings.common.remove')}
+            </Button>
+          }
+        />
+      ) : null}
 
-      {showShared && account.sharedError && (
-        <div className={settingsInfoBoxWarning} role="status">
-          <IconUsers size={14} stroke={1.75} aria-hidden="true" />
-          <span>{t('settings.storeSharedWarning', sharedParams)}</span>
+      {account.state === 'expired' ? (
+        <div className="flex items-start gap-compact border-t border-border-subtle bg-warning-subtle px-md py-sm text-xs leading-note text-text-secondary">
+          <IconAlertTriangle
+            size={14}
+            stroke={2}
+            aria-hidden="true"
+            className="mt-[1px] shrink-0 text-warning"
+          />
+          <span>{t('settings.stores.expiredHelp')}</span>
         </div>
-      )}
+      ) : null}
 
-      {account.catalogError && account.state === 'connected' && (
-        <div className={settingsInfoBoxWarning} role="status">
-          <IconAlertCircle size={14} stroke={1.75} aria-hidden="true" />
-          <span>{t('settings.storeCatalogWarning', params)}</span>
-        </div>
-      )}
-
-      {account.persistFailed && (
-        <div className={settingsInfoBoxWarning} role="alert">
-          <IconAlertTriangle size={14} stroke={1.75} aria-hidden="true" />
+      {account.persistFailed ? (
+        <div
+          role="alert"
+          className="flex items-start gap-compact border-t border-border-subtle bg-warning-subtle px-md py-sm text-xs leading-note text-text-secondary"
+        >
+          <IconAlertTriangle
+            size={14}
+            stroke={2}
+            aria-hidden="true"
+            className="mt-[1px] shrink-0 text-warning"
+          />
           <span>{t('settings.storePersistFailedWarning', params)}</span>
         </div>
-      )}
+      ) : null}
 
-      {account.storage === 'privateFile' && (
-        <div className={settingsInfoBoxWarning} role="note">
-          <IconLock size={14} stroke={1.75} aria-hidden="true" />
-          <span>{t('settings.storePrivateFileWarning', params)}</span>
+      {showShared && account.sharedError ? (
+        <div
+          role="status"
+          className="flex items-start gap-compact border-t border-border-subtle bg-warning-subtle px-md py-sm text-xs leading-note text-text-secondary"
+        >
+          <IconAlertTriangle
+            size={14}
+            stroke={2}
+            aria-hidden="true"
+            className="mt-[1px] shrink-0 text-warning"
+          />
+          <span>
+            {t('settings.storeSharedWarning', {
+              label: account.sharedLabel ?? '',
+            })}
+          </span>
         </div>
-      )}
+      ) : null}
 
-      <div className={settingsInfoBox} role="note">
-        <IconShield size={14} stroke={1.75} aria-hidden="true" />
-        <span>{t('settings.storeNeverSeesPassword', params)}</span>
-      </div>
-
-      {actions.length > 0 && (
-        <div className="flex flex-wrap items-center gap-compact">{actions}</div>
-      )}
+      {account.catalogError && account.state === 'connected' ? (
+        <div
+          role="status"
+          className="flex items-start gap-compact border-t border-border-subtle bg-warning-subtle px-md py-sm text-xs leading-note text-text-secondary"
+        >
+          <IconAlertTriangle
+            size={14}
+            stroke={2}
+            aria-hidden="true"
+            className="mt-[1px] shrink-0 text-warning"
+          />
+          <span>{t('settings.storeCatalogWarning', params)}</span>
+        </div>
+      ) : null}
     </section>
   );
 };

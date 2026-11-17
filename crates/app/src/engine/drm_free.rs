@@ -317,57 +317,169 @@ impl Engine {
             Ok(())
         });
     }
-    fn local_work(&self, work: impl FnOnce(&Engine) -> Result<(), LocalError> + Send + 'static) {
+    /// Marks one local operation busy and clears its previous error. Returns `Busy` instead of
+    /// silently dropping a second request.
+    fn start_local_work(&self) -> Result<(), LocalError> {
+        let mut state = self.lock();
+        if state.local.busy {
+            return Err(LocalError::Busy);
+        }
+        state.local_generation += 1;
+        state.local.busy = true;
+        state.local.error = None;
+        self.publish(&mut state);
+        Ok(())
+    }
+    /// Rebuilds the local view after a worker finished and publishes the result. Returns the
+    /// operation's own result so an awaiting command can report it.
+    fn finish_local_work(&self, result: Result<(), LocalError>) -> Result<(), LocalError> {
+        let _views = self.lock_local_views();
+        let view = self.load_local_view();
         {
             let mut state = self.lock();
-            if state.local.busy {
-                return;
-            }
-            state.local_generation += 1;
-            state.local.busy = true;
-            state.local.error = None;
+            let mut view = view;
+            view.inferences = state.local.inferences.clone();
+            view.versions = state.local.versions.clone();
+            view.history_bytes = state.local.history_bytes;
+            view.history_count = state.local.history_count;
+            view.restore = state.local.restore.clone();
+            view.recently_added = state.local.recently_added.clone();
+            view.discovery_incomplete = state.local.discovery_incomplete.clone();
+            view.discovery_scanning = state.local.discovery_scanning;
+            view.discovery_completed = state.local.discovery_completed;
+            view.discovery_error = state.local.discovery_error.clone();
+            view.discovery_last_checked_at = state
+                .local
+                .discovery_last_checked_at
+                .or(view.discovery_last_checked_at);
+            self.apply_review_defaults(&mut state, &mut view);
+            state.library.replace_local_covers(local_covers(&view));
+            state.local = view;
+            state.local.error = result.as_ref().err().map(|e| e.to_string());
             self.publish(&mut state);
+        }
+        self.rescan();
+        self.enrich_local_games();
+        self.request_discovery_suggestions();
+        result
+    }
+    fn local_work(&self, work: impl FnOnce(&Engine) -> Result<(), LocalError> + Send + 'static) {
+        if self.start_local_work().is_err() {
+            return;
         }
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
-            let result = work(&engine);
-            let _views = engine.lock_local_views();
-            let view = engine.load_local_view();
-            {
-                let mut state = engine.lock();
-                let mut view = view;
-                view.inferences = state.local.inferences.clone();
-                view.versions = state.local.versions.clone();
-                view.history_bytes = state.local.history_bytes;
-                view.history_count = state.local.history_count;
-                view.restore = state.local.restore.clone();
-                view.recently_added = state.local.recently_added.clone();
-                view.discovery_incomplete = state.local.discovery_incomplete.clone();
-                view.discovery_scanning = state.local.discovery_scanning;
-                view.discovery_completed = state.local.discovery_completed;
-                view.discovery_error = state.local.discovery_error.clone();
-                view.discovery_last_checked_at = state
-                    .local
-                    .discovery_last_checked_at
-                    .or(view.discovery_last_checked_at);
-                engine.apply_review_defaults(&mut state, &mut view);
-                state.library.replace_local_covers(local_covers(&view));
-                state.local = view;
-                state.local.error = result.err().map(|e| e.to_string());
-                engine.publish(&mut state);
-            }
-            engine.rescan();
-            engine.enrich_local_games();
-            engine.request_discovery_suggestions();
+            let _ = engine.finish_local_work(work(&engine));
         });
+    }
+    /// Saves the three backup settings as one atomic operation and waits for the actual blocking
+    /// validation and write. A busy worker is reported instead of dropping the request.
+    pub async fn set_local_backup_settings(
+        &self,
+        automatic: bool,
+        destination: String,
+        retention: u8,
+    ) -> Result<(), LocalError> {
+        use gamenode_core::drm_free::valid_retention;
+        if !valid_retention(retention) {
+            return Err(LocalError::InvalidTarget);
+        }
+        self.start_local_work()?;
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let engine = self.clone();
+        self.shared.runtime.spawn_blocking(move || {
+            let result = (|| -> Result<(), LocalError> {
+                let store = engine
+                    .shared
+                    .ports
+                    .local_games
+                    .as_ref()
+                    .ok_or(LocalError::Unsupported)?;
+                let registrations = store.registrations().map_err(local_storage)?;
+                let profiles = store.profiles().map_err(local_storage)?;
+                let protected: Vec<_> = registrations
+                    .iter()
+                    .filter(|r| !r.removed)
+                    .map(|r| std::path::PathBuf::from(&r.root))
+                    .chain(
+                        profiles
+                            .iter()
+                            .flat_map(|p| p.files.iter().map(std::path::PathBuf::from)),
+                    )
+                    .chain(
+                        store
+                            .watches()
+                            .map_err(local_storage)?
+                            .iter()
+                            .map(|w| std::path::PathBuf::from(&w.path)),
+                    )
+                    .collect();
+                gamenode_platform::backups::validate_destination(
+                    std::path::Path::new(&destination),
+                    &protected,
+                )?;
+                let mut settings = store.backup_settings().map_err(local_storage)?;
+                settings.automatic = automatic;
+                settings.destination = destination;
+                settings.retention = retention;
+                store
+                    .save_backup_settings(&settings)
+                    .map_err(local_storage)?;
+                if !automatic {
+                    for mut job in store
+                        .jobs()
+                        .map_err(local_storage)?
+                        .into_iter()
+                        .filter(|j| {
+                            j.play_period.is_some()
+                                && j.state == gamenode_core::drm_free::JobState::Queued
+                        })
+                    {
+                        job.state = gamenode_core::drm_free::JobState::Cancelled;
+                        store.save_job(&job).map_err(local_storage)?;
+                    }
+                }
+                Ok(())
+            })();
+            let result = engine.finish_local_work(result);
+            let _ = done.send(result);
+        });
+        finished.await.map_err(|_| LocalError::Cancelled)?
     }
     fn load_local_view(&self) -> LocalView {
         let Some(store) = &self.shared.ports.local_games else {
             return LocalView::default();
         };
         let result = (|| {
-            let watches = store.watches()?;
+            let mut roots = store.watches()?;
             let registrations = store.registrations()?;
+            // Availability is a fact of this moment: the first time a folder is missing keeps
+            // the time it became unavailable, and reconnecting clears it.
+            let now = unix_now();
+            for root in &mut roots {
+                let available = !root.path.is_empty() && std::path::Path::new(&root.path).is_dir();
+                let changed = if available {
+                    root.unavailable_since.take().is_some()
+                } else if root.unavailable_since.is_none() {
+                    root.unavailable_since = Some(now);
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    store.save_watch(root)?;
+                }
+            }
+            let checking = self
+                .shared
+                .local_checking
+                .lock()
+                .map(|ids| ids.clone())
+                .unwrap_or_default();
+            let watches: Vec<gamenode_core::drm_free::WatchView> = roots
+                .into_iter()
+                .map(|root| watch_view(root, &registrations, &checking))
+                .collect();
             let candidates = store
                 .candidates()?
                 .into_iter()
@@ -404,15 +516,8 @@ impl Engine {
                 settings: {
                     let mut settings = store.backup_settings()?;
                     if settings.destination.is_empty() {
-                        settings.destination = self
-                            .shared
-                            .ports
-                            .covers_dir
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."))
-                            .join("backups")
-                            .to_string_lossy()
-                            .into_owned();
+                        settings.destination =
+                            default_backup_destination(&self.shared.ports.covers_dir);
                         store.save_backup_settings(&settings)?;
                     }
                     settings
@@ -525,6 +630,165 @@ fn apply_candidate_suggestion(
     }
     engine.publish(&mut state);
     Ok(())
+}
+
+/// One watched root as Settings shows it, with the entries whose installation is inside it.
+fn watch_view(
+    root: gamenode_core::drm_free::WatchRoot,
+    registrations: &[gamenode_core::drm_free::Registration],
+    checking: &std::collections::BTreeSet<String>,
+) -> gamenode_core::drm_free::WatchView {
+    use gamenode_core::drm_free::{WatchState, WatchView};
+    let entry_count = registrations
+        .iter()
+        .filter(|registration| !registration.removed)
+        .filter(|registration| path_inside(&root.path, &registration.root))
+        .count();
+    let state = if root.unavailable_since.is_some() {
+        WatchState::Unavailable
+    } else if checking.contains(&root.id) {
+        WatchState::Checking
+    } else {
+        WatchState::Idle
+    };
+    WatchView {
+        id: root.id,
+        path: root.path,
+        enabled: root.enabled,
+        entry_count: u32::try_from(entry_count).unwrap_or(u32::MAX),
+        last_checked_at: root.last_checked_at,
+        state,
+        unavailable_since: root.unavailable_since,
+    }
+}
+
+/// Whether `path` is `root` or one of its descendants, on either path style.
+fn path_inside(root: &str, path: &str) -> bool {
+    if root.is_empty() || path.is_empty() {
+        return false;
+    }
+    let root = gamenode_core::provider::path::normalize(root).to_lowercase();
+    let path = gamenode_core::provider::path::normalize(path).to_lowercase();
+    let separator = if gamenode_core::provider::path::is_windows_style(&root) {
+        '\\'
+    } else {
+        '/'
+    };
+    let trimmed = root.trim_end_matches(['/', '\\']);
+    path == trimmed || path.starts_with(&format!("{trimmed}{separator}"))
+}
+
+/// The destination the app uses when none was chosen.
+fn default_backup_destination(covers_dir: &std::path::Path) -> String {
+    covers_dir
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("backups")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Space and version count of every game under `<destination>/manual`, including recovery
+/// profiles and games that no longer exist in the library.
+fn backup_usage_at(
+    destination: &str,
+    registrations: &[gamenode_core::drm_free::Registration],
+    profiles: &[gamenode_core::drm_free::SaveProfile],
+) -> gamenode_core::drm_free::BackupUsage {
+    use gamenode_core::drm_free::{BackupUsage, BackupUsageGame};
+    let mut usage = BackupUsage::default();
+    let base = std::path::Path::new(destination).join("manual");
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return usage;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let (bytes, versions) = backup_directory_totals(&entry.path());
+        if bytes == 0 && versions == 0 {
+            continue;
+        }
+        let title = registrations
+            .iter()
+            .find(|registration| registration.id == id)
+            .map(|registration| registration.title.clone())
+            .or_else(|| {
+                profiles
+                    .iter()
+                    .find(|profile| profile.installation == id)
+                    .map(|profile| profile.title.clone())
+            })
+            .unwrap_or_else(|| id.clone());
+        usage.games.push(BackupUsageGame {
+            entry_key: format!("manual:{id}"),
+            title,
+            cover_file: None,
+            bytes,
+            versions,
+        });
+    }
+    usage.games.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    usage
+}
+
+/// Bytes under one installation and its version count. Each profile directory keeps one
+/// subdirectory per version, so recovery profiles count like ordinary ones.
+fn backup_directory_totals(installation: &std::path::Path) -> (u64, u32) {
+    let mut versions = 0u32;
+    let Ok(profiles) = std::fs::read_dir(installation) else {
+        return (0, 0);
+    };
+    for profile in profiles.flatten() {
+        if !profile
+            .file_type()
+            .map(|kind| kind.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Ok(backups) = std::fs::read_dir(profile.path()) {
+            for backup in backups.flatten() {
+                if backup
+                    .file_type()
+                    .map(|kind| kind.is_dir())
+                    .unwrap_or(false)
+                    && !backup.file_name().to_string_lossy().starts_with('.')
+                {
+                    versions = versions.saturating_add(1);
+                }
+            }
+        }
+    }
+    (files_size(installation), versions)
+}
+
+/// Sums regular files under `directory`, without following symbolic links.
+fn files_size(directory: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            total = total.saturating_add(files_size(&entry.path()));
+        } else if kind.is_file() {
+            total = total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
+        }
+    }
+    total
 }
 
 /// The custom covers the library view must apply, by entry key.
@@ -1417,60 +1681,32 @@ impl Engine {
 }
 
 impl Engine {
-    pub fn set_local_backup_settings(&self, automatic: bool, destination: String) {
-        self.local_work(move |engine| {
-            let store = engine
-                .shared
-                .ports
-                .local_games
-                .as_ref()
-                .ok_or(LocalError::Unsupported)?;
-            let registrations = store.registrations().map_err(local_storage)?;
-            let profiles = store.profiles().map_err(local_storage)?;
-            let protected: Vec<_> = registrations
-                .iter()
-                .filter(|r| !r.removed)
-                .map(|r| std::path::PathBuf::from(&r.root))
-                .chain(
-                    profiles
-                        .iter()
-                        .flat_map(|p| p.files.iter().map(std::path::PathBuf::from)),
-                )
-                .chain(
-                    store
-                        .watches()
-                        .map_err(local_storage)?
-                        .iter()
-                        .map(|w| std::path::PathBuf::from(&w.path)),
-                )
-                .collect();
-            gamenode_platform::backups::validate_destination(
-                std::path::Path::new(&destination),
-                &protected,
-            )?;
-            let mut settings = store.backup_settings().map_err(local_storage)?;
-            settings.automatic = automatic;
-            settings.destination = destination;
-            store
-                .save_backup_settings(&settings)
-                .map_err(local_storage)?;
-            if !automatic {
-                for mut job in store
-                    .jobs()
-                    .map_err(local_storage)?
-                    .into_iter()
-                    .filter(|j| {
-                        j.play_period.is_some()
-                            && j.state == gamenode_core::drm_free::JobState::Queued
-                    })
-                {
-                    job.state = gamenode_core::drm_free::JobState::Cancelled;
-                    store.save_job(&job).map_err(local_storage)?;
-                }
-            }
-            Ok(())
-        });
+    /// Space used by local backups, per game, read from the destination on this thread's caller.
+    /// Callers must run it on a blocking worker.
+    pub fn local_backup_usage(&self) -> Result<gamenode_core::drm_free::BackupUsage, LocalError> {
+        use gamenode_core::drm_free::BackupUsage;
+        let store = self
+            .shared
+            .ports
+            .local_games
+            .as_ref()
+            .ok_or(LocalError::Unsupported)?;
+        let mut settings = store.backup_settings().map_err(local_storage)?;
+        if settings.destination.is_empty() {
+            settings.destination = default_backup_destination(&self.shared.ports.covers_dir);
+        }
+        let registrations = store.registrations().map_err(local_storage)?;
+        let profiles = store.profiles().map_err(local_storage)?;
+        let mut usage = backup_usage_at(&settings.destination, &registrations, &profiles);
+        let state = self.lock();
+        for game in &mut usage.games {
+            game.cover_file = state.library.cover_for(&game.entry_key);
+        }
+        usage.total_bytes = usage.games.iter().map(|game| game.bytes).sum();
+        usage.total_versions = usage.games.iter().map(|game| game.versions).sum();
+        Ok::<BackupUsage, LocalError>(usage)
     }
+
     pub fn set_local_backup_retention(&self, entry_key: String, retention: u8) {
         self.local_work(move |engine| {
             use gamenode_core::drm_free::{SaveProfile, valid_retention};
@@ -1644,6 +1880,7 @@ impl Engine {
                         .unwrap_or_else(gamenode_platform::random::session_id),
                     path,
                     enabled: true,
+                    ..Default::default()
                 })
                 .map_err(local_storage)?;
             engine.rescan_local_folders();
@@ -1752,12 +1989,48 @@ impl Engine {
         }
         Ok(added_titles)
     }
+    /// Checks every enabled watched folder on the bounded discovery worker.
     pub fn rescan_local_folders(&self) {
+        self.start_local_rescan(None);
+    }
+
+    /// Checks one watched folder on the bounded discovery worker. An unavailable folder keeps
+    /// its entries and is not traversed.
+    pub fn check_local_watch(&self, id: String) {
+        use std::sync::atomic::Ordering;
+        if self.shared.local_discovering.load(Ordering::Acquire) {
+            return;
+        }
+        {
+            let mut state = self.lock();
+            let Some(watch) = state
+                .local
+                .watches
+                .iter_mut()
+                .find(|watch| watch.id == id && watch.enabled)
+            else {
+                return;
+            };
+            if watch.state == gamenode_core::drm_free::WatchState::Unavailable {
+                return;
+            }
+            watch.state = gamenode_core::drm_free::WatchState::Checking;
+            if let Ok(mut ids) = self.shared.local_checking.lock() {
+                ids.insert(id.clone());
+            }
+            self.publish(&mut state);
+        }
+        self.start_local_rescan(Some(id));
+    }
+
+    fn start_local_rescan(&self, only: Option<String>) {
         use std::sync::atomic::Ordering;
         if self.shared.local_discovering.swap(true, Ordering::AcqRel) {
-            self.shared
-                .local_discovery_again
-                .store(true, Ordering::Release);
+            if only.is_none() {
+                self.shared
+                    .local_discovery_again
+                    .store(true, Ordering::Release);
+            }
             return;
         }
         {
@@ -1769,6 +2042,17 @@ impl Engine {
         let engine = self.clone();
         self.shared.runtime.spawn_blocking(move || {
             use gamenode_core::drm_free::*;
+            let finish = |engine: &Engine| {
+                if let Ok(mut ids) = engine.shared.local_checking.lock() {
+                    if only.is_some() {
+                        if let Some(only) = &only {
+                            ids.remove(only);
+                        }
+                    } else {
+                        ids.clear();
+                    }
+                }
+            };
             let Some(store) = &engine.shared.ports.local_games else {
                 {
                     let mut state = engine.lock();
@@ -1777,6 +2061,7 @@ impl Engine {
                     state.local.discovery_error = Some(LocalError::Unsupported.to_string());
                     engine.publish(&mut state);
                 }
+                finish(&engine);
                 engine
                     .shared
                     .local_discovering
@@ -1789,7 +2074,14 @@ impl Engine {
                 let _release = gamenode_platform::manifest_cache::release_on_drop();
                 let mut watches = store.watches().map_err(local_storage)?;
                 watches.sort_by_key(|w| w.path.len());
-                let enabled_watches: Vec<_> = watches.into_iter().filter(|w| w.enabled).collect();
+                let mut enabled_watches: Vec<_> =
+                    watches.into_iter().filter(|w| w.enabled).collect();
+                if let Some(only) = &only {
+                    enabled_watches.retain(|w| &w.id == only);
+                }
+                if let Ok(mut ids) = engine.shared.local_checking.lock() {
+                    ids.extend(enabled_watches.iter().map(|w| w.id.clone()));
+                }
                 if engine.shared.ports.installations.is_some() {
                     let pending: Vec<_> = store
                         .candidates()
@@ -1803,7 +2095,11 @@ impl Engine {
                 }
                 let mut scanned_roots = Vec::<String>::new();
                 let mut incomplete = Vec::new();
+                let mut checked_ids = Vec::new();
                 for watch in enabled_watches {
+                    if !std::path::Path::new(&watch.path).is_dir() {
+                        continue;
+                    }
                     let normalized =
                         gamenode_core::provider::path::normalize(&watch.path).to_lowercase();
                     if scanned_roots.iter().any(|root| {
@@ -1821,6 +2117,7 @@ impl Engine {
                         continue;
                     }
                     scanned_roots.push(normalized);
+                    checked_ids.push(watch.id.clone());
                     let found = match gamenode_platform::discovery::WindowsDiscovery
                         .discover(&watch, &engine.shared.local_cancel)
                     {
@@ -1842,8 +2139,9 @@ impl Engine {
                     }
                 }
                 engine.lock().local.discovery_incomplete = incomplete;
-                Ok::<_, LocalError>(())
+                Ok::<_, LocalError>(checked_ids)
             })();
+            let checked_ids = result.clone().unwrap_or_default();
             {
                 let mut state = engine.lock();
                 for title in &added_titles {
@@ -1867,12 +2165,27 @@ impl Engine {
                 } else {
                     state.local.discovery_last_checked_at = Some(checked_at);
                 }
+                if !checked_ids.is_empty()
+                    && let Ok(mut roots) = store.watches()
+                {
+                    for root in roots.iter_mut() {
+                        if !checked_ids.iter().any(|id| id == &root.id) {
+                            continue;
+                        }
+                        root.last_checked_at = Some(checked_at);
+                        root.unavailable_since = None;
+                        if let Err(error) = store.save_watch(root) {
+                            tracing::warn!(%error, "could not save the watched-folder check time");
+                        }
+                    }
+                }
                 engine.publish(&mut state);
             }
             if !added_titles.is_empty() {
                 engine.rescan();
                 engine.enrich_local_games();
             }
+            finish(&engine);
             engine.refresh_local_games();
             gamenode_platform::manifest_cache::release_loaded();
             engine
@@ -2317,9 +2630,14 @@ impl Engine {
     pub(super) fn start_local_discovery(&self) {
         #[cfg(windows)]
         {
+            use std::sync::atomic::Ordering;
+            if !self.shared.local_realtime.load(Ordering::Acquire)
+                || self.shared.local_watcher.swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
             let weak = Arc::downgrade(&self.shared);
             self.shared.runtime.spawn_blocking(move || {
-                use std::sync::atomic::Ordering;
                 let mut watchers = std::collections::BTreeMap::<
                     String,
                     (
@@ -2328,7 +2646,9 @@ impl Engine {
                     ),
                 >::new();
                 let mut next_roots = Instant::now();
-                let mut reconcile = Instant::now();
+                // The startup reconcile already ran when the preference asked for it; the
+                // watcher only reacts to changes and to the periodic safety reconcile.
+                let mut reconcile = Instant::now() + Duration::from_secs(30 * 60);
                 let mut changed = None;
                 let mut was_scanning = false;
                 let mut last_scan_end: Option<Instant> = None;
@@ -2336,18 +2656,35 @@ impl Engine {
                     let Some(shared) = weak.upgrade() else {
                         break;
                     };
-                    if shared.local_cancel.load(Ordering::Relaxed) {
+                    if shared.local_cancel.load(Ordering::Relaxed)
+                        || !shared.local_realtime.load(Ordering::Acquire)
+                    {
+                        shared.local_watcher.store(false, Ordering::Release);
                         break;
                     }
                     let now = Instant::now();
                     if now >= next_roots {
                         if let Some(store) = &shared.ports.local_games
-                            && let Ok(roots) = store.watches()
+                            && let Ok(mut roots) = store.watches()
                         {
+                            // A reconnected drive becomes available again and is reconciled by
+                            // the next scheduled pass below.
+                            for root in roots.iter_mut() {
+                                if root.enabled
+                                    && root.unavailable_since.is_some()
+                                    && std::path::Path::new(&root.path).is_dir()
+                                {
+                                    root.unavailable_since = None;
+                                    if let Err(error) = store.save_watch(root) {
+                                        tracing::warn!(%error, "could not save watch availability");
+                                    }
+                                    changed = Some(now);
+                                }
+                            }
                             watchers.retain(|id, _| roots.iter().any(|r| r.enabled && r.id == *id));
-                            for root in roots.into_iter().filter(|r| r.enabled) {
+                            for root in roots.iter().filter(|r| r.enabled) {
                                 let entry = watchers
-                                    .entry(root.id)
+                                    .entry(root.id.clone())
                                     .or_insert_with(|| (root.path.clone(), None));
                                 if entry.0 != root.path {
                                     *entry = (root.path.clone(), None);

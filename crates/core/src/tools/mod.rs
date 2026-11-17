@@ -238,12 +238,17 @@ pub trait ToolStore: Send + Sync {
         tool_id: &ToolId,
         channel: ToolChannel,
     ) -> Result<Vec<ToolRelease>, ToolError>;
+    /// Replaces the upstream release list for a channel. Local cached-archive rows that the new
+    /// list no longer offers are preserved until the cache metadata is cleared.
     fn save_releases(
         &self,
         tool_id: &ToolId,
         channel: ToolChannel,
         releases: &[ToolRelease],
     ) -> Result<(), ToolError>;
+    /// Every release row whose archive is present in the download cache, across tools and
+    /// channels. The cache metadata carries the persisted path, size and digest.
+    fn list_cached_releases(&self) -> Result<Vec<ToolRelease>, ToolError>;
     fn clear_cached_archives_metadata(&self) -> Result<usize, ToolError>;
 }
 
@@ -306,9 +311,17 @@ pub trait ToolInstallerHost: Send + Sync {
 pub struct ToolsView {
     pub installed_by_entry: BTreeMap<String, Vec<GameToolView>>,
     pub modal: Option<ToolModalView>,
+    /// Bytes of the cached tool archives listed in `cache_entries`; it equals their sum.
     pub total_cache_bytes: u64,
     pub total_cache_archives: usize,
     pub catalog: Vec<ToolCatalogItemView>,
+    /// One entry per cached tool archive, ordered by tool, channel and version.
+    #[serde(default)]
+    pub cache_entries: Vec<ToolCacheEntryView>,
+    /// Bytes held by the achievement icon cache. Kept apart from `total_cache_bytes` so the tools
+    /// cache total always matches the listed tool archives.
+    #[serde(default)]
+    pub achievement_icon_cache_bytes: u64,
 }
 
 impl ToolsView {
@@ -330,6 +343,20 @@ impl ToolsView {
             String::new()
         }
     }
+}
+
+/// One cached tool archive as Settings › Ferramentas lists it. `in_use` is true when any game
+/// installation references that tool version; `sha256_verified` is false when the release did not
+/// publish a digest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCacheEntryView {
+    pub tool_id: ToolId,
+    pub version: String,
+    pub channel: ToolChannel,
+    pub bytes: u64,
+    pub sha256_verified: bool,
+    pub in_use: bool,
 }
 
 /// View of an installed tool on a game.
@@ -619,9 +646,55 @@ impl ToolStore for InMemoryToolStore {
         releases: &[ToolRelease],
     ) -> Result<(), ToolError> {
         let mut list = self.releases.lock().unwrap();
+        // Cached archives are local state, not part of the upstream release list. A refresh may
+        // drop a version from GitHub while its archive is still on disk, so keep that row until
+        // the user clears the cache.
+        let cached: Vec<ToolRelease> = list
+            .iter()
+            .filter(|release| {
+                &release.tool_id == tool_id
+                    && release.channel == channel
+                    && release.cached_path.is_some()
+            })
+            .cloned()
+            .collect();
         list.retain(|r| !(&r.tool_id == tool_id && r.channel == channel));
-        list.extend_from_slice(releases);
+
+        let incoming: std::collections::BTreeSet<&str> = releases
+            .iter()
+            .map(|release| release.version.as_str())
+            .collect();
+        for release in releases {
+            let mut release = release.clone();
+            if release.cached_path.is_none() {
+                release.cached_path = cached
+                    .iter()
+                    .find(|existing| existing.version == release.version)
+                    .and_then(|existing| existing.cached_path.clone());
+            }
+            list.push(release);
+        }
+        for existing in cached {
+            if !incoming.contains(existing.version.as_str()) {
+                list.push(existing);
+            }
+        }
         Ok(())
+    }
+
+    fn list_cached_releases(&self) -> Result<Vec<ToolRelease>, ToolError> {
+        Ok(self
+            .releases
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r.cached_path
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path).is_file())
+            })
+            .cloned()
+            .collect())
     }
 
     fn clear_cached_archives_metadata(&self) -> Result<usize, ToolError> {
@@ -642,6 +715,10 @@ impl ToolStore for InMemoryToolStore {
 pub struct MockToolCatalogApi {
     pub releases: Mutex<Vec<ToolRelease>>,
     pub cached_archives: Mutex<Vec<CachedToolArchive>>,
+    /// Every `(tool, channel)` pair whose releases the caller fetched.
+    pub fetch_calls: Mutex<Vec<(ToolId, ToolChannel)>>,
+    /// Every `(tool, version)` pair whose archive the caller asked to download.
+    pub download_calls: Mutex<Vec<(ToolId, String)>>,
 }
 
 impl ToolCatalogApi for MockToolCatalogApi {
@@ -650,6 +727,10 @@ impl ToolCatalogApi for MockToolCatalogApi {
         descriptor: &ToolDescriptor,
         channel: ToolChannel,
     ) -> Result<Vec<ToolRelease>, ToolError> {
+        self.fetch_calls
+            .lock()
+            .unwrap()
+            .push((descriptor.id.clone(), channel));
         Ok(self
             .releases
             .lock()
@@ -665,6 +746,10 @@ impl ToolCatalogApi for MockToolCatalogApi {
         descriptor: &ToolDescriptor,
         release: &ToolRelease,
     ) -> Result<CachedToolArchive, ToolError> {
+        self.download_calls
+            .lock()
+            .unwrap()
+            .push((descriptor.id.clone(), release.version.clone()));
         let archives = self.cached_archives.lock().unwrap();
         archives
             .iter()

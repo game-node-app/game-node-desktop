@@ -151,29 +151,37 @@
   --window-control-width: 46px;
   --size-window-control: var(--window-control-width);
 
-  /* Settings Modal and Overlay Design Tokens */
-  --settings-bg-base: #0B0B0B;
-  --settings-bg-sidebar: #111111;
-  --settings-bg-surface: #1A1A1A;
-  --settings-bg-raised: #222222;
-  --settings-border-subtle: #2A2A2A;
-  --settings-text-primary: #FFFFFF;
-  --settings-text-secondary: #ADADAD;
-  --settings-text-muted: #7A7A7A;
-  --settings-accent: #F15025;
-  --settings-accent-subtle: #F150251F;
-  --settings-accent-hover: #F3623B;
-  --settings-accent-pressed: #872C13;
-  --settings-overlay: #0000009E;
-  --settings-scrollbar-thumb: #FFFFFF38;
-  --settings-fade-start: #0B0B0B00;
-  --settings-fade-end: #0B0B0B;
-  --settings-toggle-track-on: #1A1A1A;
-  --settings-toggle-track-off: #2E2E2E;
-  --settings-toggle-border: #2E2E2E;
-  --settings-toggle-knob-on: #F15025;
-  --settings-toggle-knob-off: #7A7A7A;
-  --settings-focus-ring: #F15025;
+  /* -------------------------------------------------------------------------
+     Desktop settings redesign tokens.
+
+     Source: Figma section 5373:3196 (03 · Configurações), transcribed in
+     openspec/changes/redesign-desktop-settings/design-reference/tokens.md.
+     Only the values listed there as new live here; the colors, radii and type
+     scale above already cover the rest of the frames.
+     ------------------------------------------------------------------------- */
+
+  /* Card radius alias: every Settings card uses radius 10 (rounded-popover). */
+  --radius-card: var(--radius-popover);
+  /* Row rhythm: row padding-y, row gap and card header top padding. */
+  --spacing-row: 14px;
+  /* Settings navigation column width. */
+  --settings-nav-width: 232px;
+  /* Help-text measure inside settings rows. */
+  --settings-copy-max-width: 400px;
+  /* Bottom scroll fade over the panel canvas (56px tall). */
+  --gradient-settings-fade: linear-gradient(
+    180deg,
+    rgba(11, 11, 11, 0) 0%,
+    #0B0B0B 100%
+  );
+  /* Account avatar fallback: primary -> tertiary. */
+  --gradient-avatar: linear-gradient(135deg, #F15025 0%, #872C13 100%);
+
+  /* Retained control colors from the retired Settings legacy token set. Their
+     values are the Figma primary-hover and #2E2E2E switch-track literals; the
+     consumers are Button, GameTile and Switch. */
+  --color-primary-hover: #F3623B;
+  --color-switch-track-off: #2E2E2E;
 
   /* Shadows */
   --shadow-modal: 0 32px 80px rgba(0, 0, 0, 0.55);
@@ -232,7 +240,7 @@ button {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--settings-scrollbar-thumb);
+  background: rgba(255, 255, 255, 0.22);
   border-radius: var(--radius-xs);
 }
 

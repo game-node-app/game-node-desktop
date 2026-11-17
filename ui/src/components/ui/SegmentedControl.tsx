@@ -29,13 +29,26 @@ export interface SegmentedControlProps<Value extends string = string>
   defaultValue?: Value;
   onChange?: (value: Value) => void;
   classNames?: Partial<Record<SegmentedControlStylesNames, string>>;
+  /**
+   * Horizontal segment padding from `components.md`: 6px in the library,
+   * 12px in Settings rows and 10px in the Plugins origin filter.
+   */
+  segmentPadding?: SegmentedControlSegmentPadding;
 }
+
+export type SegmentedControlSegmentPadding = 'compact' | 'regular' | 'filter';
+
+const SEGMENT_PADDING_CLASSES: Record<SegmentedControlSegmentPadding, string> = {
+  compact: 'px-[6px]',
+  regular: 'px-[12px]',
+  filter: 'px-[10px]',
+};
 
 const segmentedClassNames: Partial<Record<SegmentedControlStylesNames, string>> = {
   root: 'gap-[2px] rounded-md border border-border-subtle bg-canvas p-[3px]',
   control: 'h-[26px] rounded-segment border-0 bg-transparent',
   label:
-    'group flex h-[26px] items-center justify-center gap-[6px] rounded-segment px-[6px] text-xs font-normal text-text-secondary transition-colors data-[active]:font-semibold data-[active]:text-text-primary',
+    'group flex h-[26px] items-center justify-center gap-[6px] rounded-segment text-xs font-normal text-text-secondary transition-colors data-[active]:font-semibold data-[active]:text-text-primary',
   innerLabel: 'inline-flex items-center justify-center',
   indicator: 'rounded-segment bg-raised',
 };
@@ -77,10 +90,18 @@ function optionLabel<Value extends string>(
 export function SegmentedControl<Value extends string = string>({
   data,
   classNames,
+  segmentPadding = 'compact',
   transitionDuration = 0,
   withItemsBorders = false,
   ...props
 }: SegmentedControlProps<Value>) {
+  const mergedClassNames = mergeClassNames(segmentedClassNames, {
+    ...classNames,
+    label: [SEGMENT_PADDING_CLASSES[segmentPadding], classNames?.label]
+      .filter(Boolean)
+      .join(' '),
+  });
+
   return (
     <MantineSegmentedControl
       {...props}
@@ -91,7 +112,7 @@ export function SegmentedControl<Value extends string = string>({
       }))}
       transitionDuration={transitionDuration}
       withItemsBorders={withItemsBorders}
-      classNames={mergeClassNames(segmentedClassNames, classNames)}
+      classNames={mergedClassNames}
     />
   );
 }

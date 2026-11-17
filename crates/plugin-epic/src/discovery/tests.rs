@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::{
-    Files, Hive, Manifest, RootResolver, ScanError, StdFiles, expand_env_with, split_registry_key,
+    Files, Hive, Manifest, RootResolver, Scan, ScanError, StdFiles, expand_env_with,
+    split_registry_key,
 };
 
 #[derive(Default)]
@@ -244,14 +245,38 @@ fn a_missing_launcher_is_a_successful_empty_result() {
     };
     let installed = manifest().scan(&MemoryFiles::default(), &roots).unwrap();
     assert!(installed.is_empty());
+    assert_eq!(
+        manifest()
+            .scan_with_root(&MemoryFiles::default(), &roots)
+            .unwrap(),
+        Scan::default(),
+        "a provider without a known location reports no root"
+    );
 
-    // A launcher data directory without a Manifests folder is also empty, not a failure.
+    // A launcher data directory without a Manifests folder is also empty, not a failure;
+    // the launcher itself is installed, so its location is still reported.
     let files = MemoryFiles::default().with_dir("/launcher/data");
     let roots = FixedRoots {
         registry: Some("/launcher/data".to_owned()),
         program_data: None,
     };
     assert!(manifest().scan(&files, &roots).unwrap().is_empty());
+    let scan = manifest().scan_with_root(&files, &roots).unwrap();
+    assert_eq!(scan.install_root.as_deref(), Some("/launcher/data"));
+    assert!(scan.records.is_empty());
+}
+
+#[test]
+fn the_scan_reports_the_launcher_data_directory() {
+    let files = installed_files();
+    let roots = FixedRoots {
+        registry: Some("/launcher/data".to_owned()),
+        program_data: None,
+    };
+
+    let scan = manifest().scan_with_root(&files, &roots).unwrap();
+    assert_eq!(scan.install_root.as_deref(), Some("/launcher/data"));
+    assert_eq!(scan.records.len(), 2);
 }
 
 #[test]

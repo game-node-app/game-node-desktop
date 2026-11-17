@@ -3,7 +3,7 @@
 
 use super::{
     login::LoginBroker,
-    process::{ProcessConfig, ProviderProcesses},
+    process::{PLUGIN_STOPPED, ProcessConfig, ProviderProcesses},
     provider::{Completion, ProviderApi, Registration},
     services::ProviderServices,
 };
@@ -50,6 +50,19 @@ pub trait ProviderRuntime: Send + Sync {
         _request: models::AchievementsRequest,
     ) -> Result<Completion, Status> {
         Err(Status::unimplemented("achievement reads are unavailable"))
+    }
+    /// Stops the provider for this run, refusing later calls with the stable
+    /// `plugin stopped` error. The default host has no supervised process to stop.
+    async fn stop(&self, provider: &str) -> Result<(), Status> {
+        Err(Status::unimplemented(format!(
+            "the {provider} plugin cannot be stopped"
+        )))
+    }
+    /// Starts a stopped provider with a fresh session, restoring its account.
+    async fn start(&self, provider: &str) -> Result<(), Status> {
+        Err(Status::unimplemented(format!(
+            "the {provider} plugin cannot be started"
+        )))
     }
     async fn shutdown(&self);
 }
@@ -158,6 +171,11 @@ impl HostedProviders {
         if !self.endpoint_available {
             return "unavailable";
         }
+        // A deliberate stop is a session state, not a fault: the plugin stays installed so Settings
+        // can offer Start. Crashes and initialization failures still surface as `failed`.
+        if self.processes.is_stopped(id) {
+            return "installed";
+        }
         if let Some(reason) = lock(&self.failures).get(id) {
             return if reason == "incompatible" {
                 "incompatible"
@@ -210,6 +228,9 @@ impl HostedProviders {
             Ok(_) => {
                 lock(&self.failures).remove(id);
             }
+            // Stopping is intentional. Calls refused with `plugin stopped` must not turn the
+            // plugin into a failed one, otherwise Settings loses the Start action.
+            Err(error) if self.processes.is_stopped(id) || error.message() == PLUGIN_STOPPED => {}
             Err(error)
                 if !matches!(
                     error.code(),
@@ -256,7 +277,7 @@ impl ProviderRuntime for HostedProviders {
             .and_then(|e| e.services.status().or_else(|| e.services.initial_status()))
     }
     fn available(&self, id: &str) -> bool {
-        matches!(self.availability(id), "installed" | "failed")
+        !self.processes.is_stopped(id) && matches!(self.availability(id), "installed" | "failed")
     }
     fn availability(&self, id: &str) -> &'static str {
         HostedProviders::availability(self, id)
@@ -297,6 +318,35 @@ impl ProviderRuntime for HostedProviders {
         self.record_result(id, &result);
         result
     }
+    async fn stop(&self, id: &str) -> Result<(), Status> {
+        if !self.entries.contains_key(id) {
+            return Err(Status::not_found("provider is not registered"));
+        }
+        // A pending sign-in owns a native window; ask the plugin to close it before the process
+        // ends. The call is bounded so a wedged plugin cannot delay the stop indefinitely.
+        if self.processes.process_id(id).await.is_some() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.processes.execute(id, ProviderOperation::CancelSignIn),
+            )
+            .await;
+        }
+        self.processes.stop_provider(id).await;
+        self.notify();
+        Ok(())
+    }
+    async fn start(&self, id: &str) -> Result<(), Status> {
+        if !self.entries.contains_key(id) {
+            return Err(Status::not_found("provider is not registered"));
+        }
+        self.processes.start_provider(id).await?;
+        // The fresh process runs its initialization path, which restores the stored account.
+        self.initialized(id).await?;
+        // A successful fresh session clears a previous crash/failure marker.
+        lock(&self.failures).remove(id);
+        self.notify();
+        Ok(())
+    }
     async fn shutdown(&self) {
         self.processes.shutdown().await;
         for id in self.entries.keys() {
@@ -304,3 +354,6 @@ impl ProviderRuntime for HostedProviders {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;

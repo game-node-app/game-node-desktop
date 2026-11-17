@@ -35,6 +35,7 @@ fn operation_contract_distinguishes_empty_failure_interruption_and_stale_results
         discovery: Some(DiscoveryResult {
             provider_id: "steam".into(),
             records: vec![],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -72,6 +73,40 @@ fn operation_contract_distinguishes_empty_failure_interruption_and_stale_results
         OperationDisposition::Superseded as i32
     );
     assert!(ProviderOperation::try_from(999).is_err());
+}
+
+#[test]
+fn discovery_location_round_trips_and_stays_absent_when_not_reported() {
+    let located = DiscoveryResult {
+        provider_id: "steam".into(),
+        records: vec![DiscoveryRecord {
+            id: "620".into(),
+            name: "Portal 2".into(),
+            install_dir: r"C:\Program Files (x86)\Steam\steamapps\common\Portal 2".into(),
+            fields: Default::default(),
+        }],
+        install_root: Some(r"C:\Program Files (x86)\Steam".into()),
+        library_folders: Some(4),
+    };
+    let decoded = DiscoveryResult::decode(located.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded, located);
+    assert_eq!(
+        decoded.install_root.as_deref(),
+        Some(r"C:\Program Files (x86)\Steam")
+    );
+    assert_eq!(decoded.library_folders, Some(4));
+
+    // A plugin built before the fields existed sends neither, which is exactly
+    // the encoding above without fields 3 and 4; the host must read that as
+    // "not reported" instead of inventing a location.
+    let legacy = DiscoveryResult {
+        provider_id: "steam".into(),
+        records: vec![],
+        ..Default::default()
+    };
+    let decoded = DiscoveryResult::decode(legacy.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.install_root, None);
+    assert_eq!(decoded.library_folders, None);
 }
 
 #[test]

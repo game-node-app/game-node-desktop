@@ -239,6 +239,7 @@ mod tests {
             id: "w1".into(),
             path: "/games".into(),
             enabled: true,
+            ..Default::default()
         };
         let cancelled = AtomicBool::new(false);
         assert_eq!(
@@ -254,6 +255,7 @@ mod tests {
             id: "w1".into(),
             path: "C:\\".into(),
             enabled: true,
+            ..Default::default()
         };
         let cancelled = AtomicBool::new(true);
         assert_eq!(

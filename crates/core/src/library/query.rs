@@ -113,6 +113,17 @@ pub struct ProviderCount {
     /// The provider's declared shared-access label, if it declares any. Only labelled providers
     /// offer the Shared filter, counts and warnings.
     pub shared_label: Option<String>,
+    /// Where the provider's last successful scan found the store, when it reported a location.
+    /// Informational only: it never changes which folders are scanned.
+    #[serde(default)]
+    pub install_root: Option<String>,
+    /// How many library folders that scan reported, when it reported them.
+    #[serde(default)]
+    pub library_folders: Option<u32>,
+    /// Whether the last local scan found the store. Derived only from the scan outcome and local
+    /// records, never from owned/shared catalog facts or UI filters.
+    #[serde(default)]
+    pub detected: bool,
 }
 
 /// One store option of the Store facet: how many rows it would leave under every other facet.
@@ -379,9 +390,11 @@ impl LibraryMachine {
         }
     }
 
-    /// Every visible entry as a row, unsorted.
+    /// Every visible entry as a row, unsorted. Shared-only entries of an excluded provider are
+    /// left out here, so scopes, facets, groups, counts and search never see them.
     pub fn all_rows(&self) -> Vec<Row> {
         self.visible_entries()
+            .filter(|entry| !self.shared_excluded_entry(entry))
             .map(|entry| self.row(entry))
             .collect()
     }
@@ -455,7 +468,9 @@ impl LibraryMachine {
         self.provider_counts_from(&query.filter_counts.stores)
     }
 
-    /// Builds the legacy provider cards from the store counts of one query.
+    /// Builds the legacy provider cards from the store counts of one query. The raw facts come
+    /// from every visible entry, so the shared count still includes entries the shared-games
+    /// preference leaves out of the rows and the store tile adds up.
     pub fn provider_counts_from(&self, stores: &[StoreCount]) -> Vec<ProviderCount> {
         let mut facts = BTreeMap::<&str, (usize, usize, usize)>::new();
         for entry in self.visible_entries() {
@@ -477,6 +492,7 @@ impl LibraryMachine {
             .map(|store| {
                 let (installed, owned, shared) =
                     facts.get(store.id.as_str()).copied().unwrap_or_default();
+                let scan = self.scans.get(&store.id);
                 ProviderCount {
                     id: store.id.clone(),
                     name: store.name.clone(),
@@ -488,6 +504,9 @@ impl LibraryMachine {
                         .provider(&store.id)
                         .and_then(|provider| provider.shared_label())
                         .map(str::to_owned),
+                    install_root: scan.and_then(|state| state.install_root.clone()),
+                    library_folders: scan.and_then(|state| state.library_folders),
+                    detected: scan.and_then(|state| state.last_detected).unwrap_or(false),
                 }
             })
             .collect()
@@ -1569,6 +1588,9 @@ pub fn counts<'a>(
             owned_count: 0,
             shared_count: 0,
             shared_label: None,
+            install_root: None,
+            library_folders: None,
+            detected: false,
         })
         .collect()
 }

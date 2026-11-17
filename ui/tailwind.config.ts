@@ -10,6 +10,10 @@ import type { Config } from 'tailwindcss';
  * letter spacing label/overline, overlay colors and shadows, status-bar and
  * window-control sizes) keep their Figma provenance in `src/styles/theme.css` and
  * `openspec/changes/redesign-desktop-library/design-reference/tokens.md`.
+ *
+ * The settings-redesign additions (radius card, row spacing, settings nav width,
+ * help-text max width, scroll fade and avatar gradients) keep their provenance in
+ * `openspec/changes/redesign-desktop-settings/design-reference/tokens.md`.
  */
 const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -38,6 +42,9 @@ const config: Config = {
         xl: 'var(--spacing-xl)',
         compact: 'var(--spacing-compact)',
         'control-inline': 'var(--spacing-control-inline)',
+        // Settings redesign row rhythm, from
+        // openspec/changes/redesign-desktop-settings/design-reference/tokens.md.
+        row: 'var(--spacing-row)',
       },
       inset: {
         topbar: 'var(--size-topbar-height)',
@@ -58,6 +65,9 @@ const config: Config = {
         // Dialog redesign alias, from
         // openspec/changes/redesign-desktop-dialogs/design-reference/tokens.md.
         dialog: 'var(--radius-dialog)',
+        // Settings redesign card radius, from
+        // openspec/changes/redesign-desktop-settings/design-reference/tokens.md.
+        card: 'var(--radius-card)',
       },
       fontSize: {
         xs: 'var(--font-size-xs)',
@@ -174,9 +184,15 @@ const config: Config = {
         // Sign-in art overlays, from design-reference/tokens.md.
         'signin-side': 'var(--gradient-signin-side)',
         'signin-bottom': 'var(--gradient-signin-bottom)',
+        // Settings redesign scroll fade and avatar fallback, from
+        // openspec/changes/redesign-desktop-settings/design-reference/tokens.md.
+        'settings-fade': 'var(--gradient-settings-fade)',
+        avatar: 'var(--gradient-avatar)',
       },
       maxWidth: {
         modal: 'var(--modal-max-width)',
+        // Settings help-text measure.
+        'settings-copy': 'var(--settings-copy-max-width)',
       },
       maxHeight: {
         modal: 'var(--modal-max-height)',
@@ -186,6 +202,9 @@ const config: Config = {
         'sidebar-compact': 'var(--sidebar-width-compact)',
         logo: 'var(--size-logo-width)',
         'window-control': 'var(--window-control-width)',
+        // Settings navigation column, from
+        // openspec/changes/redesign-desktop-settings/design-reference/tokens.md.
+        'settings-nav': 'var(--settings-nav-width)',
       },
       height: {
         topbar: 'var(--size-topbar-height)',

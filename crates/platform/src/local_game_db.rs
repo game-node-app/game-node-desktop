@@ -367,6 +367,7 @@ mod tests {
             id: "watch".into(),
             path: r"\\?\UNC\nas\games".into(),
             enabled: true,
+            ..Default::default()
         };
         let candidate = Candidate {
             fingerprint: "stable-fingerprint".into(),

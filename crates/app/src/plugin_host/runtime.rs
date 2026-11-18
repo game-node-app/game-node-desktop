@@ -56,6 +56,18 @@ impl ExternalAccountPersistence for UnavailableExternalAccounts {
 
 pub type Observer = Arc<dyn Fn() + Send + Sync>;
 
+#[tonic::async_trait]
+pub trait RuntimeSessionHandler: Send + Sync {
+    async fn report(
+        &self,
+        plugin_id: String,
+        owner_key: String,
+        report: gamenode_plugin_protocol::proto::RuntimeSessionReport,
+    ) -> gamenode_plugin_protocol::proto::RuntimeSessionResult;
+
+    async fn disconnected(&self, plugin_id: String);
+}
+
 #[async_trait::async_trait]
 pub trait ProviderRuntime: Send + Sync {
     fn managed_plugin_inventory(&self) -> Vec<super::PluginInfo> {
@@ -77,6 +89,7 @@ pub trait ProviderRuntime: Send + Sync {
     }
     fn set_observer(&self, observer: Observer);
     fn set_account_persistence(&self, _accounts: Arc<dyn super::services::AccountPersistence>) {}
+    fn set_runtime_session_handler(&self, _handler: Arc<dyn RuntimeSessionHandler>) {}
     async fn execute(
         &self,
         provider: &str,
@@ -942,6 +955,7 @@ impl HostedProviders {
                 origin: crate::plugin_host::provider::RegistrationOrigin::Official,
                 capabilities: descriptor.capabilities.clone(),
                 shared_catalog: descriptor.shared_catalog,
+                playtime: Default::default(),
                 services: services.clone(),
             })?;
             let executable = executable_dir.join(descriptor.executable_name());
@@ -1287,6 +1301,9 @@ impl ProviderRuntime for HostedProviders {
         for entry in self.entries.values() {
             entry.services.set_account_persistence(accounts.clone());
         }
+    }
+    fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {
+        self.api.set_runtime_session_handler(handler);
     }
     async fn execute(&self, id: &str, operation: ProviderOperation) -> Result<Completion, Status> {
         let result = async {

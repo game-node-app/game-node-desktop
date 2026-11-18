@@ -443,6 +443,159 @@ pub trait LibraryStore: Send + Sync {
         ))
     }
 
+    /// Lists recipes owned by one authenticated plugin for an installation.
+    fn custom_launch_recipes(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+    ) -> Result<Vec<super::custom_launch::CustomLaunchRecipe>, StorageError> {
+        let _ = (owner_key, game_id);
+        Ok(Vec::new())
+    }
+
+    /// The user's active custom launch choice. No row means the detected target is active.
+    fn launch_recipe_selection(
+        &self,
+        entry_key: &str,
+    ) -> Result<Option<super::custom_launch::LaunchRecipeSelection>, StorageError> {
+        let _ = entry_key;
+        Ok(None)
+    }
+
+    /// Persists a user-selected recipe only while its game target and recipe revisions match.
+    fn save_launch_recipe_selection(
+        &self,
+        selection: &super::custom_launch::LaunchRecipeSelection,
+        expected_target_revision: u64,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (selection, expected_target_revision);
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
+    /// Explicitly returns the entry to its detected default, using target revision CAS.
+    fn clear_launch_recipe_selection(
+        &self,
+        entry_key: &str,
+        expected_target_revision: u64,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (entry_key, expected_target_revision);
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
+    /// Records remembered user approval for the currently selected, exact plan.
+    fn approve_launch_recipe_plan(
+        &self,
+        entry_key: &str,
+        recipe_id: &str,
+        recipe_revision: u64,
+        expected_target_revision: u64,
+        fingerprint: &str,
+    ) -> Result<super::custom_launch::LaunchRecipeSelectionWrite, StorageError> {
+        let _ = (
+            entry_key,
+            recipe_id,
+            recipe_revision,
+            expected_target_revision,
+            fingerprint,
+        );
+        Ok(super::custom_launch::LaunchRecipeSelectionWrite::RecipeMissing)
+    }
+
+    /// Lists this plugin owner's approved runtime resources.
+    fn runtime_resources(
+        &self,
+        owner_key: &str,
+    ) -> Result<Vec<super::runtime::RuntimeResource>, StorageError> {
+        let _ = owner_key;
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Looks up one runtime without exposing another plugin owner's private record.
+    fn runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+    ) -> Result<Option<super::runtime::RuntimeResource>, StorageError> {
+        let _ = (owner_key, runtime_id);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Creates a new runtime at revision 1 or updates it only at current revision + 1.
+    fn save_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime: &super::runtime::RuntimeResource,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, runtime);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Removes only the runtime record. Historical content bindings deliberately remain so they
+    /// can be shown as unavailable and migrated; games, saves and play history are independent.
+    fn remove_runtime_resource(
+        &self,
+        owner_key: &str,
+        runtime_id: &str,
+        expected_revision: u64,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, runtime_id, expected_revision);
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Lists runtime bindings for a stable GameNode game and installation identity.
+    fn runtime_content_bindings(
+        &self,
+        owner_key: &str,
+        game_id: u64,
+        installation_id: &str,
+    ) -> Result<Vec<super::runtime::RuntimeContentBinding>, StorageError> {
+        let _ = (owner_key, game_id, installation_id);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
+    /// Durable watch cursor for this owner's runtime and content catalog.
+    fn runtime_catalog_revision(&self, owner_key: &str) -> Result<u64, StorageError> {
+        let _ = owner_key;
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Upserts one binding by owner/game/installation/content/runtime identity, revision-checked.
+    /// If the stable content locator changes, update all sibling runtime bindings for that content
+    /// atomically and advance their revisions too.
+    fn save_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &super::runtime::RuntimeContentBinding,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, binding);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
+    fn remove_runtime_content_binding(
+        &self,
+        owner_key: &str,
+        binding: &super::runtime::RuntimeContentBinding,
+    ) -> Result<super::runtime::RuntimeMutation, StorageError> {
+        let _ = (owner_key, binding);
+        Err(StorageError::Failed(
+            "runtime bindings are unavailable in this store".into(),
+        ))
+    }
+
     /// Applies an owned or shared catalog result for `provider`, replacing only the fact sets the
     /// update covers and leaving installed facts, matches and covers untouched.
     fn save_catalog(&self, provider: &str, update: &CatalogUpdate) -> Result<(), StorageError>;

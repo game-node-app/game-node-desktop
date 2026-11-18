@@ -7,12 +7,14 @@ import type {
   AuthInput,
   GameNodePage,
   LaunchKind,
+  LaunchRecipeChoices,
   LibraryInput,
   PluginInfo,
   PluginPermissionSnapshot,
   PluginPermissionDecision,
   PluginImportReview,
   PluginConfigurationState,
+  PluginPlaytimeInfo,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
   PluginUpdateReview,
@@ -118,6 +120,41 @@ export const commands = {
       () => undefined,
     ),
 
+  launchRecipeChoices: (entryKey: string) =>
+    safeInvoke<LaunchRecipeChoices>(
+      'launch_recipe_choices',
+      { entryKey },
+      () => ({
+        targetRevision: 0,
+        detectedDefaultAvailable: false,
+        selected: null,
+        recipes: [],
+      }),
+    ),
+
+  selectLaunchRecipe: (
+    entryKey: string,
+    recipe: {
+      pluginId: string;
+      publisherFingerprint: string;
+      recipeId: string;
+      recipeRevision: number;
+    },
+    expectedTargetRevision: number,
+  ) =>
+    safeInvoke<void>(
+      'select_launch_recipe',
+      { entryKey, ...recipe, expectedTargetRevision },
+      () => undefined,
+    ),
+
+  useDetectedDefault: (entryKey: string, expectedTargetRevision: number) =>
+    safeInvoke<void>(
+      'use_detected_default',
+      { entryKey, expectedTargetRevision },
+      () => undefined,
+    ),
+
   repairDetectedTarget: (entryKey: string, expectedRevision: number) =>
     safeInvoke<void>(
       'repair_detected_target',
@@ -211,6 +248,11 @@ export const commands = {
       throw new Error('Plugin settings are unavailable in the web preview');
     }),
 
+  pluginPlaytimeInventory: () =>
+    safeInvoke<PluginPlaytimeInfo[]>('plugin_playtime_inventory', undefined, () => []),
+  pluginPlaytimeSetAccounting: (pluginId: string, enabled: boolean) =>
+    safeInvoke<void>('plugin_playtime_set_accounting', { pluginId, enabled }, () => undefined),
+
   pluginUpdatePreferences: () =>
     safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),
   pluginUpdateAvailable: () =>
@@ -227,6 +269,9 @@ export const commands = {
       candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT',
       candidateLicense: 'MIT', installedLicenseFiles: [], candidateLicenseFiles: [],
       installedLicenseNotices: [], candidateLicenseNotices: [], publisherChanged: false,
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false,
       installedPublisherKeyId: 'publisher', candidatePublisherKeyId: 'publisher', requiresManualApproval: true,
     })),
   pluginUpdateApprove: (pluginId: string, version: string) =>

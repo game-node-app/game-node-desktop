@@ -276,6 +276,15 @@ impl PermissionGrantStore {
             .map_or(0, |entry| entry.revision)
     }
 
+    /// Plugin identities with persisted grant records in this account profile.
+    pub fn identities(&self) -> Vec<PluginIdentity> {
+        self.state
+            .plugins
+            .values()
+            .map(|record| record.identity.clone())
+            .collect()
+    }
+
     pub fn effective_grants(&self, identity: &PluginIdentity) -> Vec<EffectiveGrant> {
         self.state
             .plugins

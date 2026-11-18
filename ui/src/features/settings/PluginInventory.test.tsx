@@ -309,6 +309,9 @@ describe('PluginInventory', () => {
       licenseChanged: true, installedLicense: 'MIT', candidateLicense: 'GPL-3.0-only',
       installedLicenseFiles: ['LICENSE'], candidateLicenseFiles: ['LICENSE', 'NOTICE'],
       installedLicenseNotices: [], candidateLicenseNotices: ['Third-party notice'],
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: true, identifiesPauses: false, withoutPauseDetection: 'application_open' },
+      playtimeChanged: true,
       publisherChanged: false, installedPublisherKeyId: 'publisher-1', candidatePublisherKeyId: 'publisher-1',
       requiresManualApproval: true,
     });
@@ -322,6 +325,7 @@ describe('PluginInventory', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates now' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Review version 2.0.0' }));
     expect(await screen.findByRole('article', { name: 'Review plugin update' })).toHaveTextContent('selected-game → all-games');
+    expect(screen.getByText(/Signed playtime policy change/)).toBeInTheDocument();
     expect(screen.getByText(/New permissions and wider scopes stay denied/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Approve update' }));
     await waitFor(() => expect(approve).toHaveBeenCalledWith(plugin.pluginId, '2.0.0'));

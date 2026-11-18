@@ -310,6 +310,50 @@ pub async fn review_detected_target(
         .await
 }
 
+/// Lists the active profile's custom recipes for the selected matched game.
+#[tauri::command]
+pub async fn launch_recipe_choices(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+) -> Result<crate::engine::LaunchRecipeChoices, String> {
+    engine.launch_recipe_choices(entry_key).await
+}
+
+/// Makes one authenticated plugin recipe the explicit launch choice for this library entry.
+#[tauri::command]
+pub async fn select_launch_recipe(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    plugin_id: String,
+    publisher_fingerprint: String,
+    recipe_id: String,
+    recipe_revision: u64,
+    expected_target_revision: u64,
+) -> Result<(), String> {
+    engine
+        .select_launch_recipe(
+            entry_key,
+            plugin_id,
+            publisher_fingerprint,
+            recipe_id,
+            recipe_revision,
+            expected_target_revision,
+        )
+        .await
+}
+
+/// Explicitly returns this library entry to its detected default launch target.
+#[tauri::command]
+pub async fn use_detected_default(
+    engine: tauri::State<'_, Engine>,
+    entry_key: String,
+    expected_target_revision: u64,
+) -> Result<(), String> {
+    engine
+        .use_detected_default(entry_key, expected_target_revision)
+        .await
+}
+
 /// Opens a native picker to repair a missing detected executable. Selecting a file is explicit
 /// approval for the replacement target; validation and persistence run on a worker.
 #[tauri::command]
@@ -680,6 +724,33 @@ async fn complete_plugin_settings(
         .validate_for(&request)
         .map_err(|_| "plugin settings response did not match the request".to_owned())?;
     Ok(reply)
+}
+
+#[tauri::command]
+pub async fn plugin_playtime_inventory(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::PluginPlaytimeInfo>, String> {
+    let engine = engine.inner().clone();
+    let mut plugins = updates.playtime_inventory().await?;
+    for plugin in &mut plugins {
+        plugin.accounting_enabled = engine
+            .plugin_playtime_accounting_enabled(plugin.plugin_id.clone())
+            .await?;
+    }
+    Ok(plugins)
+}
+
+#[tauri::command]
+pub async fn plugin_playtime_set_accounting(
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    engine
+        .inner()
+        .set_plugin_playtime_accounting(plugin_id, enabled)
+        .await
 }
 
 #[tauri::command]

@@ -258,6 +258,31 @@ export interface DetectedTargetView {
 
 }
 
+export interface LaunchRecipeOption {
+  pluginId: string;
+  publisherFingerprint: string;
+  recipeId: string;
+  recipeRevision: number;
+}
+
+export interface LaunchRecipeSelection {
+  entryKey: string;
+  ownerKey: string;
+  pluginId: string;
+  publisherFingerprint: string;
+  recipeId: string;
+  recipeRevision: number;
+  baseTargetRevision: number;
+  approvedPlanFingerprint: string;
+}
+
+export interface LaunchRecipeChoices {
+  targetRevision: number;
+  detectedDefaultAvailable: boolean;
+  selected: LaunchRecipeSelection | null;
+  recipes: LaunchRecipeOption[];
+}
+
 export type EmptyState =
   | { noGames: { stores: string[] } }
   | { noInstalled: { provider: string | null } }
@@ -926,7 +951,12 @@ export interface LibraryView {
 
 export type LaunchKind = 'play' | 'install';
 
-export type LaunchError = 'noHandler' | 'unsupported' | 'incomplete' | 'failed';
+export type LaunchError =
+  | 'noHandler'
+  | 'unsupported'
+  | 'incomplete'
+  | 'recipeNeedsAttention'
+  | 'failed';
 
 export type LaunchState = 'opening' | { failed: LaunchError };
 
@@ -1254,6 +1284,22 @@ export interface PluginUpdatePreferences {
   periodicChecks: boolean;
 }
 
+export type PlaytimeAccountingMode = 'disabled' | 'application_open';
+
+export interface PlaytimeCapabilities {
+  identifiesGameplay: boolean;
+  identifiesPauses: boolean;
+  withoutPauseDetection: PlaytimeAccountingMode;
+}
+
+export interface PluginPlaytimeInfo {
+  pluginId: string;
+  name: string;
+  version: string;
+  playtime: PlaytimeCapabilities;
+  accountingEnabled: boolean;
+}
+
 export interface AvailablePluginUpdate {
   pluginId: string;
   name: string;
@@ -1287,6 +1333,9 @@ export interface PluginUpdateReview {
   candidateLicenseFiles: string[];
   installedLicenseNotices: string[];
   candidateLicenseNotices: string[];
+  installedPlaytime: PlaytimeCapabilities;
+  candidatePlaytime: PlaytimeCapabilities;
+  playtimeChanged: boolean;
   publisherChanged: boolean;
   installedPublisherKeyId: string;
   candidatePublisherKeyId: string;

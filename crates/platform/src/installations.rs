@@ -637,7 +637,7 @@ mod custom_launch_tests {
         assert!(interpreter.status.success());
         let interpreter = String::from_utf8(interpreter.stdout).unwrap();
         let interpreter = interpreter.trim();
-        let script = "import json,os,sys; print(json.dumps({'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
+        let script = "import json,os,sys; print(json.dumps({'executable':sys.executable, 'argv':sys.argv[1:], 'cwd':os.getcwd(), 'set':os.environ.get('GAMENODE_TEST_SET'), 'unset':'PATH' not in os.environ}))";
         let arguments = vec![
             "-c".into(),
             script.into(),
@@ -648,15 +648,18 @@ mod custom_launch_tests {
             set: LaunchEnvironment::from([("GAMENODE_TEST_SET".into(), "one value".into())]),
             unset: ["PATH".into()].into(),
         };
-        let output = custom_command(
+        let mut command = custom_command(
             interpreter,
             &arguments,
             &directory.path().to_string_lossy(),
             &environment,
         )
-        .unwrap()
-        .output()
-        .expect("fixture process should start without a shell");
+        .unwrap();
+        // Process creation and waiting happen on a worker, matching the production contract.
+        let output = std::thread::spawn(move || command.output())
+            .join()
+            .expect("launch worker should finish")
+            .expect("fixture process should start without a shell");
 
         assert!(
             output.status.success(),
@@ -664,6 +667,7 @@ mod custom_launch_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["executable"], interpreter);
         assert_eq!(
             result["argv"],
             serde_json::json!(["space and & literal", "$(not-a-shell)"])
@@ -687,6 +691,20 @@ mod custom_launch_tests {
             unset: Default::default(),
         };
         assert!(!credential_name.validate());
+    }
+
+    #[test]
+    fn inherited_custom_launch_environment_is_restricted_to_host_allowlisted_keys() {
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("PATH")));
+        #[cfg(not(windows))]
+        assert!(safe_game_environment_key(std::ffi::OsStr::new("HOME")));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "STEAM_SESSION"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new(
+            "TAURI_PLUGIN_TOKEN"
+        )));
+        assert!(!safe_game_environment_key(std::ffi::OsStr::new("RUST_LOG")));
     }
 }
 
@@ -778,7 +796,9 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn unsupported_on_linux() {
-        use gamenode_core::drm_free::{InstallationHost, Registration};
+        use gamenode_core::drm_free::{
+            CustomLaunchCommand, InstallationHost, LaunchEnvironmentDelta, Registration,
+        };
         let host = super::WindowsInstallations;
         let registration = Registration {
             id: "test".into(),
@@ -813,6 +833,16 @@ mod tests {
                 &registration,
                 &gamenode_core::drm_free::LaunchEnvironment::new()
             ),
+            Err(super::LocalError::Unsupported)
+        );
+        assert_eq!(
+            host.launch_custom(&CustomLaunchCommand {
+                executable: "game.exe".into(),
+                file_identity: "1:2:3".into(),
+                arguments: vec!["--profile".into()],
+                working_directory: "/game".into(),
+                environment: LaunchEnvironmentDelta::default(),
+            }),
             Err(super::LocalError::Unsupported)
         );
         assert_eq!(

@@ -1309,6 +1309,7 @@
       "permission": "game.runtime.create",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "RuntimeRecord stores typed platform, supported formats and ordered literal/content_path argv tokens; executable_handle must resolve to an approved file resource and registration never installs software",
         "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
         "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
       ],
@@ -1342,6 +1343,7 @@
       "permission": "game.runtime.update",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "field_mask selects typed runtime fields; executable_handle is revalidated and argv templates remain structured tokens, never shell text",
         "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
         "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
       ],
@@ -1408,6 +1410,7 @@
       "permission": "library.discovery",
       "semantics": [
         "host-issued operation_id; idempotency_key; expected_revision where applicable; recheck authorization at commit",
+        "content_id is host-issued and stable across content relocation; content_handle is a session-bound approved reference that is revalidated on update",
         "Typed request/response fields define operation inputs, outputs, and mutation outcomes; host validates ownership and authorization at commit.",
         "Typed request/response fields define operation inputs, outputs, pagination or mutation outcomes; host validates ownership and authorization at commit."
       ],

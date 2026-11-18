@@ -137,6 +137,7 @@ pub(super) struct FakeLibrary {
     pub(super) installations: Mutex<BTreeMap<String, String>>,
     pub(super) installations_fail: AtomicBool,
     pub(super) chosen: Mutex<Vec<(String, ChosenMatch)>>,
+    pub(super) launch_selection: Mutex<Option<gamenode_core::library::LaunchRecipeSelection>>,
 }
 
 impl FakeLibrary {
@@ -146,6 +147,18 @@ impl FakeLibrary {
 }
 
 impl LibraryStore for FakeLibrary {
+    fn launch_recipe_selection(
+        &self,
+        entry_key: &str,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, StorageError> {
+        Ok(self
+            .launch_selection
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|selection| selection.entry_key == entry_key))
+    }
+
     fn load_cache(&self, account_id: Option<&str>) -> Result<LibraryCache, StorageError> {
         self.pause();
         self.loaded_for
@@ -699,6 +712,41 @@ async fn play_and_install_open_the_providers_links_without_blocking() {
     assert_eq!(
         *h.uri.opened.lock().unwrap(),
         ["steam://rungameid/620", "steam://nav/games/details/620"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn selected_recipe_never_falls_back_to_the_detected_provider_link() {
+    let mut h = harness(FakeApi::new(), FakeCreds::with(None));
+    h.signed_out().await;
+    h.sign_in("token").await;
+    h.until("listed", |s| view(s).is_some_and(|v| v.rows.len() == 1))
+        .await;
+    *h.store.launch_selection.lock().unwrap() =
+        Some(gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "steam:620".into(),
+            owner_key: "plugin-owner".into(),
+            plugin_id: "org.example.launcher".into(),
+            publisher_fingerprint: "ab".repeat(32),
+            recipe_id: "selected-recipe".into(),
+            recipe_revision: 1,
+            base_target_revision: 1,
+            approved_plan_fingerprint: String::new(),
+        });
+
+    h.engine
+        .open_entry("steam:620".to_owned(), LaunchKind::Play);
+    let snapshot = h
+        .until("selection needs attention", |snapshot| {
+            snapshot.launch.as_ref().is_some_and(|launch| {
+                launch.state == LaunchState::Failed(LaunchError::RecipeNeedsAttention)
+            })
+        })
+        .await;
+    assert!(h.uri.opened.lock().unwrap().is_empty());
+    assert_eq!(
+        snapshot.launch.unwrap().state,
+        LaunchState::Failed(LaunchError::RecipeNeedsAttention)
     );
 }
 

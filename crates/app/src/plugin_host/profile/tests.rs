@@ -146,6 +146,34 @@ fn identity(profile: &ProfileContext) -> PluginIdentity {
 }
 
 #[test]
+fn active_profile_exposes_only_its_authenticated_identities_and_activation() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = PluginStateLayout::new(temp.path().join("plugins"));
+    let profiles = profiles_with(Some("account"), true);
+    profiles.set_state_layout(layout.clone());
+    let current = profiles.current().unwrap();
+    let identity = identity(&current);
+    layout
+        .open_grants(&current)
+        .unwrap()
+        .replace_grants(identity.clone(), &[grant_request()], &[])
+        .unwrap();
+
+    assert_eq!(profiles.identities().unwrap(), [identity.clone()]);
+    assert!(!profiles.is_enabled(&identity.plugin_id).unwrap());
+    layout
+        .open_activation(&current)
+        .unwrap()
+        .set_enabled(&identity.plugin_id, true)
+        .unwrap();
+    assert!(profiles.is_enabled(&identity.plugin_id).unwrap());
+
+    profiles.update(Some("another-account"), true);
+    assert!(profiles.identities().unwrap().is_empty());
+    assert!(!profiles.is_enabled(&identity.plugin_id).unwrap());
+}
+
+#[test]
 fn another_account_sees_packages_but_not_grants_or_activation() {
     let temp = tempfile::tempdir().unwrap();
     let layout = PluginStateLayout::new(temp.path().join("plugins"));
@@ -307,6 +335,42 @@ fn account_state_is_private_to_the_os_user() {
             .mode()
             & 0o777,
         0o600
+    );
+}
+
+#[test]
+fn playtime_accounting_preference_is_persistent_and_profile_scoped() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = PluginStateLayout::new(temp.path().join("plugins"));
+    let profiles = PluginProfiles::default();
+    profiles.set_state_layout(layout.clone());
+    profiles.update(Some("first-account"), true);
+
+    assert!(
+        profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    profiles
+        .set_playtime_accounting_enabled("org.example.reader", false)
+        .unwrap();
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+
+    profiles.update(Some("second-account"), true);
+    assert!(
+        profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    profiles.update(Some("first-account"), true);
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
     );
 }
 

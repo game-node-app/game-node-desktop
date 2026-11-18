@@ -10,6 +10,7 @@ use tokio::sync::Notify;
 use super::action_recipes;
 
 const GRANTS: &[&str] = &[
+    cap::GAME_LAUNCH,
     cap::FILES_READ,
     cap::GAME_SAVES_CREATE,
     cap::GAME_SAVES_READ,

@@ -14,6 +14,9 @@ fn binding() -> Binding {
         installation_id: "inst-1".into(),
         operation: Operation::Launch,
         target_revision: 7,
+        recipe_id: String::new(),
+        recipe_revision: 0,
+        plan_fingerprint: String::new(),
     }
 }
 
@@ -74,6 +77,18 @@ fn an_intent_cannot_be_shifted_to_another_plugin_profile_game_operation_or_revis
         },
         Binding {
             target_revision: 8,
+            ..binding()
+        },
+        Binding {
+            recipe_revision: 2,
+            ..binding()
+        },
+        Binding {
+            recipe_id: "another-recipe".into(),
+            ..binding()
+        },
+        Binding {
+            plan_fingerprint: "v1:changed".into(),
             ..binding()
         },
     ];
@@ -177,6 +192,7 @@ fn request() -> ConfirmationRequest {
         game_name: "Game".into(),
         operation: Operation::Launch,
         details: vec![],
+        launch_plan: None,
     }
 }
 

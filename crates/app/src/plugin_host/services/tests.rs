@@ -234,6 +234,11 @@ impl Harness {
             origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: cap::ALL.iter().map(|c| (*c).into()).collect(),
             shared_catalog: false,
+            playtime: crate::plugin_host::package::PlaytimeCapabilities {
+                identifies_gameplay: true,
+                identifies_pauses: true,
+                without_pause_detection: Default::default(),
+            },
             services: services.clone(),
         })
         .unwrap();

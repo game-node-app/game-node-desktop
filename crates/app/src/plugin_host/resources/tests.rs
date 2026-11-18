@@ -167,21 +167,32 @@ impl Fixture {
         let api = root.providers.clone();
         let feed = root.library.clone();
         api.profiles().update(Some("a"), true);
+        let extension_session = target.is_some();
         let mut capabilities = vec![cap::CONTEXT];
         capabilities.extend_from_slice(grants);
+        let registration_id = if extension_session {
+            crate::plugin_host::provider::extension_registration_id("fixture.plugin")
+        } else {
+            "fixture".into()
+        };
         api.register(Registration {
-            provider_id: "fixture".into(),
+            provider_id: registration_id.clone(),
             plugin_id: "fixture.plugin".into(),
-            kind: crate::plugin_host::provider::RegistrationKind::Provider,
+            kind: if extension_session {
+                crate::plugin_host::provider::RegistrationKind::Extension
+            } else {
+                crate::plugin_host::provider::RegistrationKind::Provider
+            },
             origin: RegistrationOrigin::ThirdParty {
                 publisher_fingerprint: "ab".repeat(32),
             },
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(NoServices),
         })
         .unwrap();
-        let launch = api.begin_launch("fixture").unwrap();
+        let launch = api.begin_launch(&registration_id).unwrap();
         let credential = launch
             .credential
             .as_bytes()
@@ -207,7 +218,7 @@ impl Fixture {
                 min_api_minor: cap::THIRD_PARTY_API_MINOR,
                 max_api_major: 1,
                 max_api_minor: gamenode_plugin_protocol::API_MINOR,
-                session_kind: if target.is_some() {
+                session_kind: if extension_session {
                     SessionKind::Extension
                 } else {
                     SessionKind::Unspecified
@@ -221,7 +232,7 @@ impl Fixture {
         let session = Session::open_with_options(
             client_launch,
             "fixture.plugin",
-            "fixture",
+            if extension_session { "" } else { "fixture" },
             "1.0",
             &capabilities,
             options,
@@ -713,6 +724,13 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("LibraryList", MAX_PAGE_SIZE as u32),
             ("LibraryGet", 0),
             ("LibraryWatch", 0),
+            ("RuntimesList", MAX_PAGE_SIZE as u32),
+            ("RuntimesGet", 0),
+            ("RuntimesWatch", 0),
+            ("RuntimesRegister", 0),
+            ("RuntimesUpdate", 0),
+            ("RuntimesRemove", 0),
+            ("GamesRegisterContent", 0),
             ("MetadataUpdate", 0),
             ("FavoritesList", MAX_PAGE_SIZE as u32),
             ("FavoritesSet", 0),
@@ -797,6 +815,10 @@ struct FakeHost {
     open_fails: Mutex<Option<tonic::Code>>,
     /// What a launch would start now; tests change it to change the target.
     launch_target: std::sync::atomic::AtomicU64,
+    custom_launch_recipes:
+        Mutex<HashMap<(String, String), gamenode_core::library::CustomLaunchRecipe>>,
+    launch_recipe_selections: Mutex<HashMap<String, gamenode_core::library::LaunchRecipeSelection>>,
+    custom_launch_dispatches: Mutex<Vec<crate::plugin_host::library::CustomLaunchDispatch>>,
 }
 
 impl FakeHost {
@@ -934,6 +956,127 @@ impl LibraryHost for FakeHost {
 
     async fn launch_fingerprint(&self, _entry_key: String) -> Result<u64, Status> {
         Ok(self.launch_target.load(Ordering::SeqCst))
+    }
+
+    async fn launch_target_revision(&self, _entry_key: String) -> Result<u64, Status> {
+        Ok(1)
+    }
+
+    async fn custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+    ) -> Result<Option<gamenode_core::library::CustomLaunchRecipe>, Status> {
+        Ok(self
+            .custom_launch_recipes
+            .lock()
+            .unwrap()
+            .get(&(owner_key, recipe_id))
+            .cloned())
+    }
+
+    async fn save_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut recipes = self.custom_launch_recipes.lock().unwrap();
+        let key = (owner_key, recipe.recipe_id.clone());
+        if let Some(current) = recipes.get(&key) {
+            return Ok(CustomLaunchMutation::Conflict {
+                current: current.revision,
+            });
+        }
+        let revision = recipe.revision;
+        recipes.insert(key, recipe);
+        Ok(CustomLaunchMutation::Applied { revision })
+    }
+
+    async fn remove_custom_launch_recipe(
+        &self,
+        owner_key: String,
+        recipe_id: String,
+        expected_revision: u64,
+    ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
+        use gamenode_core::library::CustomLaunchMutation;
+        let mut recipes = self.custom_launch_recipes.lock().unwrap();
+        let key = (owner_key, recipe_id);
+        let Some(current) = recipes.get(&key) else {
+            return Ok(CustomLaunchMutation::Missing);
+        };
+        if current.revision != expected_revision {
+            return Ok(CustomLaunchMutation::Conflict {
+                current: current.revision,
+            });
+        }
+        let revision = current.revision.saturating_add(1);
+        recipes.remove(&key);
+        Ok(CustomLaunchMutation::Applied { revision })
+    }
+
+    async fn launch_recipe_selection(
+        &self,
+        entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, Status> {
+        Ok(self
+            .launch_recipe_selections
+            .lock()
+            .unwrap()
+            .get(&entry_key)
+            .cloned())
+    }
+
+    async fn approve_launch_recipe_plan(
+        &self,
+        entry_key: String,
+        recipe_id: String,
+        recipe_revision: u64,
+        target_revision: u64,
+        fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, Status> {
+        use gamenode_core::library::LaunchRecipeSelectionWrite;
+        let mut selections = self.launch_recipe_selections.lock().unwrap();
+        let Some(selection) = selections.get_mut(&entry_key) else {
+            return Ok(LaunchRecipeSelectionWrite::RecipeMissing);
+        };
+        if selection.recipe_id != recipe_id
+            || selection.recipe_revision != recipe_revision
+            || selection.base_target_revision != target_revision
+        {
+            return Ok(LaunchRecipeSelectionWrite::Conflict);
+        }
+        selection.approved_plan_fingerprint = fingerprint;
+        Ok(LaunchRecipeSelectionWrite::Applied)
+    }
+
+    async fn prepare_custom_launch(
+        &self,
+        recipe: gamenode_core::library::CustomLaunchRecipe,
+        _executable_path: Option<String>,
+        working_directory_path: Option<String>,
+        _runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
+    ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, Status> {
+        use crate::plugin_host::library::CustomLaunchDispatch;
+        if !recipe.uri.is_empty() {
+            let environment = recipe.environment();
+            return Ok(CustomLaunchDispatch::Uri {
+                uri: url::Url::parse(&recipe.uri)
+                    .map_err(|_| Status::invalid_argument("invalid launch URI"))?,
+                arguments: recipe.arguments,
+                working_directory: working_directory_path.unwrap_or_default(),
+                environment,
+            });
+        }
+        Err(Status::unimplemented("fixture supports URI recipes only"))
+    }
+
+    async fn launch_custom(
+        &self,
+        dispatch: crate::plugin_host::library::CustomLaunchDispatch,
+    ) -> Result<(), Status> {
+        self.custom_launch_dispatches.lock().unwrap().push(dispatch);
+        Ok(())
     }
 
     fn favorites(&self, provider_id: &str) -> Vec<(u64, bool)> {

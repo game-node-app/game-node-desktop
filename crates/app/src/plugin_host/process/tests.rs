@@ -162,6 +162,7 @@ async fn manager_with_origin_and_lifecycle(
             origin,
             capabilities: vec![capability::CONTEXT.into()],
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(Services),
         })
         .unwrap();

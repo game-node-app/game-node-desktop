@@ -64,6 +64,12 @@ pub struct Binding {
     pub operation: Operation,
     /// The detected-target revision a launch was requested at; 0 for an install.
     pub target_revision: u64,
+    /// The custom recipe being approved; empty for other operations.
+    pub recipe_id: String,
+    /// The custom recipe revision for custom launch; 0 for other operations.
+    pub recipe_revision: u64,
+    /// Canonical versioned fingerprint of the complete resolved launch plan; empty for install.
+    pub plan_fingerprint: String,
 }
 
 struct Issued {
@@ -81,6 +87,8 @@ pub struct ConfirmationRequest {
     pub operation: Operation,
     /// Host-resolved restore paths and snapshot identity; never a plugin explanation.
     pub details: Vec<String>,
+    /// Exact resolved launch details when this confirmation covers a launch plan.
+    pub launch_plan: Option<super::launch_plan::LaunchPlanReview>,
 }
 
 /// The user's answer.

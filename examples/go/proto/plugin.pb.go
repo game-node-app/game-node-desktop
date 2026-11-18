@@ -2573,19 +2573,172 @@ func (x *DenialDetail) GetGrantRevision() uint64 {
 	return 0
 }
 
+// A launch target a provider detected for one of its own games (API 1.6). It is additive to
+// `DeclareActions`: the legacy URI-only declaration keeps its bytes and semantics, and a
+// detected target is only registered, never started, by submitting it. An executable target is
+// relative to the record's install folder and needs the user's approval before Play can run it.
+type DetectedExecutable struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Path relative to the record's install folder. Absolute paths, `..` and control characters
+	// are rejected by the host.
+	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// Literal arguments, in launch order. Never a shell string.
+	Arguments []string `protobuf:"bytes,2,rep,name=arguments,proto3" json:"arguments,omitempty"`
+	// Folder relative to the install folder; empty means the install folder itself.
+	WorkingDirectory string `protobuf:"bytes,3,opt,name=working_directory,json=workingDirectory,proto3" json:"working_directory,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DetectedExecutable) Reset() {
+	*x = DetectedExecutable{}
+	mi := &file_plugin_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DetectedExecutable) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DetectedExecutable) ProtoMessage() {}
+
+func (x *DetectedExecutable) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DetectedExecutable.ProtoReflect.Descriptor instead.
+func (*DetectedExecutable) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DetectedExecutable) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *DetectedExecutable) GetArguments() []string {
+	if x != nil {
+		return x.Arguments
+	}
+	return nil
+}
+
+func (x *DetectedExecutable) GetWorkingDirectory() string {
+	if x != nil {
+		return x.WorkingDirectory
+	}
+	return ""
+}
+
+type DetectedTarget struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Target:
+	//
+	//	*DetectedTarget_Uri
+	//	*DetectedTarget_Executable
+	Target        isDetectedTarget_Target `protobuf_oneof:"target"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DetectedTarget) Reset() {
+	*x = DetectedTarget{}
+	mi := &file_plugin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DetectedTarget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DetectedTarget) ProtoMessage() {}
+
+func (x *DetectedTarget) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DetectedTarget.ProtoReflect.Descriptor instead.
+func (*DetectedTarget) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *DetectedTarget) GetTarget() isDetectedTarget_Target {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *DetectedTarget) GetUri() string {
+	if x != nil {
+		if x, ok := x.Target.(*DetectedTarget_Uri); ok {
+			return x.Uri
+		}
+	}
+	return ""
+}
+
+func (x *DetectedTarget) GetExecutable() *DetectedExecutable {
+	if x != nil {
+		if x, ok := x.Target.(*DetectedTarget_Executable); ok {
+			return x.Executable
+		}
+	}
+	return nil
+}
+
+type isDetectedTarget_Target interface {
+	isDetectedTarget_Target()
+}
+
+type DetectedTarget_Uri struct {
+	// A URI the provider's own client handles.
+	Uri string `protobuf:"bytes,1,opt,name=uri,proto3,oneof"`
+}
+
+type DetectedTarget_Executable struct {
+	Executable *DetectedExecutable `protobuf:"bytes,2,opt,name=executable,proto3,oneof"`
+}
+
+func (*DetectedTarget_Uri) isDetectedTarget_Target() {}
+
+func (*DetectedTarget_Executable) isDetectedTarget_Target() {}
+
 type DiscoveryRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	InstallDir    string                 `protobuf:"bytes,3,opt,name=install_dir,json=installDir,proto3" json:"install_dir,omitempty"`
-	Fields        map[string]string      `protobuf:"bytes,4,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name       string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	InstallDir string                 `protobuf:"bytes,3,opt,name=install_dir,json=installDir,proto3" json:"install_dir,omitempty"`
+	Fields     map[string]string      `protobuf:"bytes,4,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional typed target. Registration alone never starts a process.
+	Target        *DetectedTarget `protobuf:"bytes,5,opt,name=target,proto3" json:"target,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DiscoveryRecord) Reset() {
 	*x = DiscoveryRecord{}
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2597,7 +2750,7 @@ func (x *DiscoveryRecord) String() string {
 func (*DiscoveryRecord) ProtoMessage() {}
 
 func (x *DiscoveryRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2610,7 +2763,7 @@ func (x *DiscoveryRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoveryRecord.ProtoReflect.Descriptor instead.
 func (*DiscoveryRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{16}
+	return file_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DiscoveryRecord) GetId() string {
@@ -2641,6 +2794,13 @@ func (x *DiscoveryRecord) GetFields() map[string]string {
 	return nil
 }
 
+func (x *DiscoveryRecord) GetTarget() *DetectedTarget {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
 type DiscoveryResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Records       []*DiscoveryRecord     `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
@@ -2651,7 +2811,7 @@ type DiscoveryResult struct {
 
 func (x *DiscoveryResult) Reset() {
 	*x = DiscoveryResult{}
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2663,7 +2823,7 @@ func (x *DiscoveryResult) String() string {
 func (*DiscoveryResult) ProtoMessage() {}
 
 func (x *DiscoveryResult) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2676,7 +2836,7 @@ func (x *DiscoveryResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoveryResult.ProtoReflect.Descriptor instead.
 func (*DiscoveryResult) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{17}
+	return file_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DiscoveryResult) GetRecords() []*DiscoveryRecord {
@@ -2703,7 +2863,7 @@ type PluginFailure struct {
 
 func (x *PluginFailure) Reset() {
 	*x = PluginFailure{}
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2715,7 +2875,7 @@ func (x *PluginFailure) String() string {
 func (*PluginFailure) ProtoMessage() {}
 
 func (x *PluginFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2728,7 +2888,7 @@ func (x *PluginFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginFailure.ProtoReflect.Descriptor instead.
 func (*PluginFailure) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{18}
+	return file_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PluginFailure) GetCode() string {
@@ -2761,7 +2921,7 @@ type SubmitDiscoveryRequest struct {
 
 func (x *SubmitDiscoveryRequest) Reset() {
 	*x = SubmitDiscoveryRequest{}
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2773,7 +2933,7 @@ func (x *SubmitDiscoveryRequest) String() string {
 func (*SubmitDiscoveryRequest) ProtoMessage() {}
 
 func (x *SubmitDiscoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2786,7 +2946,7 @@ func (x *SubmitDiscoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitDiscoveryRequest.ProtoReflect.Descriptor instead.
 func (*SubmitDiscoveryRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{19}
+	return file_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SubmitDiscoveryRequest) GetSessionId() string {
@@ -2860,7 +3020,7 @@ type SubmitDiscoveryReply struct {
 
 func (x *SubmitDiscoveryReply) Reset() {
 	*x = SubmitDiscoveryReply{}
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2872,7 +3032,7 @@ func (x *SubmitDiscoveryReply) String() string {
 func (*SubmitDiscoveryReply) ProtoMessage() {}
 
 func (x *SubmitDiscoveryReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2885,7 +3045,7 @@ func (x *SubmitDiscoveryReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitDiscoveryReply.ProtoReflect.Descriptor instead.
 func (*SubmitDiscoveryReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{20}
+	return file_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SubmitDiscoveryReply) GetAccepted() bool {
@@ -2908,7 +3068,7 @@ type CustomLaunchRemoveRequest struct {
 
 func (x *CustomLaunchRemoveRequest) Reset() {
 	*x = CustomLaunchRemoveRequest{}
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2920,7 +3080,7 @@ func (x *CustomLaunchRemoveRequest) String() string {
 func (*CustomLaunchRemoveRequest) ProtoMessage() {}
 
 func (x *CustomLaunchRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2933,7 +3093,7 @@ func (x *CustomLaunchRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomLaunchRemoveRequest.ProtoReflect.Descriptor instead.
 func (*CustomLaunchRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{21}
+	return file_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CustomLaunchRemoveRequest) GetMutation() *MutationContext {
@@ -2970,7 +3130,7 @@ type GameInstallRequest struct {
 
 func (x *GameInstallRequest) Reset() {
 	*x = GameInstallRequest{}
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2982,7 +3142,7 @@ func (x *GameInstallRequest) String() string {
 func (*GameInstallRequest) ProtoMessage() {}
 
 func (x *GameInstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2995,7 +3155,7 @@ func (x *GameInstallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameInstallRequest.ProtoReflect.Descriptor instead.
 func (*GameInstallRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{22}
+	return file_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GameInstallRequest) GetContext() *ServiceContext {
@@ -3043,7 +3203,7 @@ type StorageGetRequest struct {
 
 func (x *StorageGetRequest) Reset() {
 	*x = StorageGetRequest{}
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3055,7 +3215,7 @@ func (x *StorageGetRequest) String() string {
 func (*StorageGetRequest) ProtoMessage() {}
 
 func (x *StorageGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3068,7 +3228,7 @@ func (x *StorageGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageGetRequest.ProtoReflect.Descriptor instead.
 func (*StorageGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{23}
+	return file_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *StorageGetRequest) GetContext() *ServiceContext {
@@ -3098,7 +3258,7 @@ type StoragePutRequest struct {
 
 func (x *StoragePutRequest) Reset() {
 	*x = StoragePutRequest{}
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3110,7 +3270,7 @@ func (x *StoragePutRequest) String() string {
 func (*StoragePutRequest) ProtoMessage() {}
 
 func (x *StoragePutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3123,7 +3283,7 @@ func (x *StoragePutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StoragePutRequest.ProtoReflect.Descriptor instead.
 func (*StoragePutRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{24}
+	return file_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *StoragePutRequest) GetMutation() *MutationContext {
@@ -3171,7 +3331,7 @@ type StorageDeleteRequest struct {
 
 func (x *StorageDeleteRequest) Reset() {
 	*x = StorageDeleteRequest{}
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3183,7 +3343,7 @@ func (x *StorageDeleteRequest) String() string {
 func (*StorageDeleteRequest) ProtoMessage() {}
 
 func (x *StorageDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3196,7 +3356,7 @@ func (x *StorageDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageDeleteRequest.ProtoReflect.Descriptor instead.
 func (*StorageDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{25}
+	return file_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *StorageDeleteRequest) GetMutation() *MutationContext {
@@ -3232,7 +3392,7 @@ type StorageGetReply struct {
 
 func (x *StorageGetReply) Reset() {
 	*x = StorageGetReply{}
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3244,7 +3404,7 @@ func (x *StorageGetReply) String() string {
 func (*StorageGetReply) ProtoMessage() {}
 
 func (x *StorageGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3257,7 +3417,7 @@ func (x *StorageGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageGetReply.ProtoReflect.Descriptor instead.
 func (*StorageGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{26}
+	return file_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *StorageGetReply) GetValue() []byte {
@@ -3309,7 +3469,7 @@ type StorageMutationReply struct {
 
 func (x *StorageMutationReply) Reset() {
 	*x = StorageMutationReply{}
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3321,7 +3481,7 @@ func (x *StorageMutationReply) String() string {
 func (*StorageMutationReply) ProtoMessage() {}
 
 func (x *StorageMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[27]
+	mi := &file_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3334,7 +3494,7 @@ func (x *StorageMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageMutationReply.ProtoReflect.Descriptor instead.
 func (*StorageMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{27}
+	return file_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *StorageMutationReply) GetRevision() uint64 {
@@ -3403,7 +3563,7 @@ type DeclaredLocation struct {
 
 func (x *DeclaredLocation) Reset() {
 	*x = DeclaredLocation{}
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3415,7 +3575,7 @@ func (x *DeclaredLocation) String() string {
 func (*DeclaredLocation) ProtoMessage() {}
 
 func (x *DeclaredLocation) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[28]
+	mi := &file_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3428,7 +3588,7 @@ func (x *DeclaredLocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeclaredLocation.ProtoReflect.Descriptor instead.
 func (*DeclaredLocation) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{28}
+	return file_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *DeclaredLocation) GetKind() string {
@@ -3466,7 +3626,7 @@ type FilesRequestAccessRequest struct {
 
 func (x *FilesRequestAccessRequest) Reset() {
 	*x = FilesRequestAccessRequest{}
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3478,7 +3638,7 @@ func (x *FilesRequestAccessRequest) String() string {
 func (*FilesRequestAccessRequest) ProtoMessage() {}
 
 func (x *FilesRequestAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[29]
+	mi := &file_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3491,7 +3651,7 @@ func (x *FilesRequestAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesRequestAccessRequest.ProtoReflect.Descriptor instead.
 func (*FilesRequestAccessRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{29}
+	return file_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *FilesRequestAccessRequest) GetMutation() *MutationContext {
@@ -3548,7 +3708,7 @@ type FileHandle struct {
 
 func (x *FileHandle) Reset() {
 	*x = FileHandle{}
-	mi := &file_plugin_proto_msgTypes[30]
+	mi := &file_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3560,7 +3720,7 @@ func (x *FileHandle) String() string {
 func (*FileHandle) ProtoMessage() {}
 
 func (x *FileHandle) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[30]
+	mi := &file_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3573,7 +3733,7 @@ func (x *FileHandle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileHandle.ProtoReflect.Descriptor instead.
 func (*FileHandle) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{30}
+	return file_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *FileHandle) GetHandle() string {
@@ -3613,7 +3773,7 @@ type FileAccessReply struct {
 
 func (x *FileAccessReply) Reset() {
 	*x = FileAccessReply{}
-	mi := &file_plugin_proto_msgTypes[31]
+	mi := &file_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3625,7 +3785,7 @@ func (x *FileAccessReply) String() string {
 func (*FileAccessReply) ProtoMessage() {}
 
 func (x *FileAccessReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[31]
+	mi := &file_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3638,7 +3798,7 @@ func (x *FileAccessReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileAccessReply.ProtoReflect.Descriptor instead.
 func (*FileAccessReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{31}
+	return file_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *FileAccessReply) GetHandles() []*FileHandle {
@@ -3660,7 +3820,7 @@ type FilesListRequest struct {
 
 func (x *FilesListRequest) Reset() {
 	*x = FilesListRequest{}
-	mi := &file_plugin_proto_msgTypes[32]
+	mi := &file_plugin_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3672,7 +3832,7 @@ func (x *FilesListRequest) String() string {
 func (*FilesListRequest) ProtoMessage() {}
 
 func (x *FilesListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[32]
+	mi := &file_plugin_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3685,7 +3845,7 @@ func (x *FilesListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesListRequest.ProtoReflect.Descriptor instead.
 func (*FilesListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{32}
+	return file_plugin_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *FilesListRequest) GetContext() *ServiceContext {
@@ -3726,7 +3886,7 @@ type FilesListReply struct {
 
 func (x *FilesListReply) Reset() {
 	*x = FilesListReply{}
-	mi := &file_plugin_proto_msgTypes[33]
+	mi := &file_plugin_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3738,7 +3898,7 @@ func (x *FilesListReply) String() string {
 func (*FilesListReply) ProtoMessage() {}
 
 func (x *FilesListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[33]
+	mi := &file_plugin_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3751,7 +3911,7 @@ func (x *FilesListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesListReply.ProtoReflect.Descriptor instead.
 func (*FilesListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{33}
+	return file_plugin_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *FilesListReply) GetEntries() []*FileEntry {
@@ -3781,7 +3941,7 @@ type FileEntry struct {
 
 func (x *FileEntry) Reset() {
 	*x = FileEntry{}
-	mi := &file_plugin_proto_msgTypes[34]
+	mi := &file_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3793,7 +3953,7 @@ func (x *FileEntry) String() string {
 func (*FileEntry) ProtoMessage() {}
 
 func (x *FileEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[34]
+	mi := &file_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3806,7 +3966,7 @@ func (x *FileEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileEntry.ProtoReflect.Descriptor instead.
 func (*FileEntry) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{34}
+	return file_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *FileEntry) GetHandle() string {
@@ -3856,7 +4016,7 @@ type FilesReadRequest struct {
 
 func (x *FilesReadRequest) Reset() {
 	*x = FilesReadRequest{}
-	mi := &file_plugin_proto_msgTypes[35]
+	mi := &file_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3868,7 +4028,7 @@ func (x *FilesReadRequest) String() string {
 func (*FilesReadRequest) ProtoMessage() {}
 
 func (x *FilesReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[35]
+	mi := &file_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3881,7 +4041,7 @@ func (x *FilesReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesReadRequest.ProtoReflect.Descriptor instead.
 func (*FilesReadRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{35}
+	return file_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *FilesReadRequest) GetContext() *ServiceContext {
@@ -3923,7 +4083,7 @@ type FileReadReply struct {
 
 func (x *FileReadReply) Reset() {
 	*x = FileReadReply{}
-	mi := &file_plugin_proto_msgTypes[36]
+	mi := &file_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3935,7 +4095,7 @@ func (x *FileReadReply) String() string {
 func (*FileReadReply) ProtoMessage() {}
 
 func (x *FileReadReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[36]
+	mi := &file_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3948,7 +4108,7 @@ func (x *FileReadReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileReadReply.ProtoReflect.Descriptor instead.
 func (*FileReadReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{36}
+	return file_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *FileReadReply) GetContents() []byte {
@@ -3992,7 +4152,7 @@ type FilesWriteRequest struct {
 
 func (x *FilesWriteRequest) Reset() {
 	*x = FilesWriteRequest{}
-	mi := &file_plugin_proto_msgTypes[37]
+	mi := &file_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4004,7 +4164,7 @@ func (x *FilesWriteRequest) String() string {
 func (*FilesWriteRequest) ProtoMessage() {}
 
 func (x *FilesWriteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[37]
+	mi := &file_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4017,7 +4177,7 @@ func (x *FilesWriteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesWriteRequest.ProtoReflect.Descriptor instead.
 func (*FilesWriteRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{37}
+	return file_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *FilesWriteRequest) GetMutation() *MutationContext {
@@ -4072,7 +4232,7 @@ type FilesDeleteRequest struct {
 
 func (x *FilesDeleteRequest) Reset() {
 	*x = FilesDeleteRequest{}
-	mi := &file_plugin_proto_msgTypes[38]
+	mi := &file_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4084,7 +4244,7 @@ func (x *FilesDeleteRequest) String() string {
 func (*FilesDeleteRequest) ProtoMessage() {}
 
 func (x *FilesDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[38]
+	mi := &file_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4097,7 +4257,7 @@ func (x *FilesDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FilesDeleteRequest.ProtoReflect.Descriptor instead.
 func (*FilesDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{38}
+	return file_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *FilesDeleteRequest) GetMutation() *MutationContext {
@@ -4129,7 +4289,7 @@ type NetworkFetchRequest struct {
 
 func (x *NetworkFetchRequest) Reset() {
 	*x = NetworkFetchRequest{}
-	mi := &file_plugin_proto_msgTypes[39]
+	mi := &file_plugin_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4141,7 +4301,7 @@ func (x *NetworkFetchRequest) String() string {
 func (*NetworkFetchRequest) ProtoMessage() {}
 
 func (x *NetworkFetchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[39]
+	mi := &file_plugin_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4154,7 +4314,7 @@ func (x *NetworkFetchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkFetchRequest.ProtoReflect.Descriptor instead.
 func (*NetworkFetchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{39}
+	return file_plugin_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *NetworkFetchRequest) GetContext() *ServiceContext {
@@ -4218,7 +4378,7 @@ type NetworkFetchReply struct {
 
 func (x *NetworkFetchReply) Reset() {
 	*x = NetworkFetchReply{}
-	mi := &file_plugin_proto_msgTypes[40]
+	mi := &file_plugin_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4230,7 +4390,7 @@ func (x *NetworkFetchReply) String() string {
 func (*NetworkFetchReply) ProtoMessage() {}
 
 func (x *NetworkFetchReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[40]
+	mi := &file_plugin_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4243,7 +4403,7 @@ func (x *NetworkFetchReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkFetchReply.ProtoReflect.Descriptor instead.
 func (*NetworkFetchReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{40}
+	return file_plugin_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *NetworkFetchReply) GetStatusCode() uint32 {
@@ -4291,7 +4451,7 @@ type NotificationTranslation struct {
 
 func (x *NotificationTranslation) Reset() {
 	*x = NotificationTranslation{}
-	mi := &file_plugin_proto_msgTypes[41]
+	mi := &file_plugin_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4303,7 +4463,7 @@ func (x *NotificationTranslation) String() string {
 func (*NotificationTranslation) ProtoMessage() {}
 
 func (x *NotificationTranslation) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[41]
+	mi := &file_plugin_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4316,7 +4476,7 @@ func (x *NotificationTranslation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationTranslation.ProtoReflect.Descriptor instead.
 func (*NotificationTranslation) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{41}
+	return file_plugin_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *NotificationTranslation) GetLocale() string {
@@ -4354,7 +4514,7 @@ type NotificationPublishRequest struct {
 
 func (x *NotificationPublishRequest) Reset() {
 	*x = NotificationPublishRequest{}
-	mi := &file_plugin_proto_msgTypes[42]
+	mi := &file_plugin_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4366,7 +4526,7 @@ func (x *NotificationPublishRequest) String() string {
 func (*NotificationPublishRequest) ProtoMessage() {}
 
 func (x *NotificationPublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[42]
+	mi := &file_plugin_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4379,7 +4539,7 @@ func (x *NotificationPublishRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationPublishRequest.ProtoReflect.Descriptor instead.
 func (*NotificationPublishRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{42}
+	return file_plugin_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *NotificationPublishRequest) GetMutation() *MutationContext {
@@ -4435,7 +4595,7 @@ type BackupsListRequest struct {
 
 func (x *BackupsListRequest) Reset() {
 	*x = BackupsListRequest{}
-	mi := &file_plugin_proto_msgTypes[43]
+	mi := &file_plugin_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4447,7 +4607,7 @@ func (x *BackupsListRequest) String() string {
 func (*BackupsListRequest) ProtoMessage() {}
 
 func (x *BackupsListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[43]
+	mi := &file_plugin_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4460,7 +4620,7 @@ func (x *BackupsListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupsListRequest.ProtoReflect.Descriptor instead.
 func (*BackupsListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{43}
+	return file_plugin_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *BackupsListRequest) GetPage() *PageRequest {
@@ -4496,7 +4656,7 @@ type BackupCreateRequest struct {
 
 func (x *BackupCreateRequest) Reset() {
 	*x = BackupCreateRequest{}
-	mi := &file_plugin_proto_msgTypes[44]
+	mi := &file_plugin_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4508,7 +4668,7 @@ func (x *BackupCreateRequest) String() string {
 func (*BackupCreateRequest) ProtoMessage() {}
 
 func (x *BackupCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[44]
+	mi := &file_plugin_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4521,7 +4681,7 @@ func (x *BackupCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupCreateRequest.ProtoReflect.Descriptor instead.
 func (*BackupCreateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{44}
+	return file_plugin_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *BackupCreateRequest) GetMutation() *MutationContext {
@@ -4565,7 +4725,7 @@ type BackupRestoreRequest struct {
 
 func (x *BackupRestoreRequest) Reset() {
 	*x = BackupRestoreRequest{}
-	mi := &file_plugin_proto_msgTypes[45]
+	mi := &file_plugin_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4577,7 +4737,7 @@ func (x *BackupRestoreRequest) String() string {
 func (*BackupRestoreRequest) ProtoMessage() {}
 
 func (x *BackupRestoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[45]
+	mi := &file_plugin_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4590,7 +4750,7 @@ func (x *BackupRestoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRestoreRequest.ProtoReflect.Descriptor instead.
 func (*BackupRestoreRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{45}
+	return file_plugin_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *BackupRestoreRequest) GetMutation() *MutationContext {
@@ -4638,7 +4798,7 @@ type BackupsListReply struct {
 
 func (x *BackupsListReply) Reset() {
 	*x = BackupsListReply{}
-	mi := &file_plugin_proto_msgTypes[46]
+	mi := &file_plugin_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4650,7 +4810,7 @@ func (x *BackupsListReply) String() string {
 func (*BackupsListReply) ProtoMessage() {}
 
 func (x *BackupsListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[46]
+	mi := &file_plugin_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4663,7 +4823,7 @@ func (x *BackupsListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupsListReply.ProtoReflect.Descriptor instead.
 func (*BackupsListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{46}
+	return file_plugin_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *BackupsListReply) GetBackups() []*BackupRecord {
@@ -4693,7 +4853,7 @@ type BackupRecord struct {
 
 func (x *BackupRecord) Reset() {
 	*x = BackupRecord{}
-	mi := &file_plugin_proto_msgTypes[47]
+	mi := &file_plugin_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4705,7 +4865,7 @@ func (x *BackupRecord) String() string {
 func (*BackupRecord) ProtoMessage() {}
 
 func (x *BackupRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[47]
+	mi := &file_plugin_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4718,7 +4878,7 @@ func (x *BackupRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRecord.ProtoReflect.Descriptor instead.
 func (*BackupRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{47}
+	return file_plugin_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *BackupRecord) GetBackupId() string {
@@ -4769,7 +4929,7 @@ type JobReply struct {
 
 func (x *JobReply) Reset() {
 	*x = JobReply{}
-	mi := &file_plugin_proto_msgTypes[48]
+	mi := &file_plugin_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4781,7 +4941,7 @@ func (x *JobReply) String() string {
 func (*JobReply) ProtoMessage() {}
 
 func (x *JobReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[48]
+	mi := &file_plugin_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4794,7 +4954,7 @@ func (x *JobReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobReply.ProtoReflect.Descriptor instead.
 func (*JobReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{48}
+	return file_plugin_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *JobReply) GetJobId() string {
@@ -4843,7 +5003,7 @@ type DomainListRequest struct {
 
 func (x *DomainListRequest) Reset() {
 	*x = DomainListRequest{}
-	mi := &file_plugin_proto_msgTypes[49]
+	mi := &file_plugin_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4855,7 +5015,7 @@ func (x *DomainListRequest) String() string {
 func (*DomainListRequest) ProtoMessage() {}
 
 func (x *DomainListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[49]
+	mi := &file_plugin_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4868,7 +5028,7 @@ func (x *DomainListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DomainListRequest.ProtoReflect.Descriptor instead.
 func (*DomainListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{49}
+	return file_plugin_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *DomainListRequest) GetPage() *PageRequest {
@@ -4904,7 +5064,7 @@ type DomainGetRequest struct {
 
 func (x *DomainGetRequest) Reset() {
 	*x = DomainGetRequest{}
-	mi := &file_plugin_proto_msgTypes[50]
+	mi := &file_plugin_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4916,7 +5076,7 @@ func (x *DomainGetRequest) String() string {
 func (*DomainGetRequest) ProtoMessage() {}
 
 func (x *DomainGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[50]
+	mi := &file_plugin_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4929,7 +5089,7 @@ func (x *DomainGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DomainGetRequest.ProtoReflect.Descriptor instead.
 func (*DomainGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{50}
+	return file_plugin_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *DomainGetRequest) GetContext() *ServiceContext {
@@ -4972,7 +5132,7 @@ type DomainWatchRequest struct {
 
 func (x *DomainWatchRequest) Reset() {
 	*x = DomainWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[51]
+	mi := &file_plugin_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4984,7 +5144,7 @@ func (x *DomainWatchRequest) String() string {
 func (*DomainWatchRequest) ProtoMessage() {}
 
 func (x *DomainWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[51]
+	mi := &file_plugin_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4997,7 +5157,7 @@ func (x *DomainWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DomainWatchRequest.ProtoReflect.Descriptor instead.
 func (*DomainWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{51}
+	return file_plugin_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *DomainWatchRequest) GetContext() *ServiceContext {
@@ -5038,7 +5198,7 @@ type DomainRemoveRequest struct {
 
 func (x *DomainRemoveRequest) Reset() {
 	*x = DomainRemoveRequest{}
-	mi := &file_plugin_proto_msgTypes[52]
+	mi := &file_plugin_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5050,7 +5210,7 @@ func (x *DomainRemoveRequest) String() string {
 func (*DomainRemoveRequest) ProtoMessage() {}
 
 func (x *DomainRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[52]
+	mi := &file_plugin_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5063,7 +5223,7 @@ func (x *DomainRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DomainRemoveRequest.ProtoReflect.Descriptor instead.
 func (*DomainRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{52}
+	return file_plugin_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *DomainRemoveRequest) GetMutation() *MutationContext {
@@ -5091,7 +5251,7 @@ type LibraryCreateRequest struct {
 
 func (x *LibraryCreateRequest) Reset() {
 	*x = LibraryCreateRequest{}
-	mi := &file_plugin_proto_msgTypes[53]
+	mi := &file_plugin_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5103,7 +5263,7 @@ func (x *LibraryCreateRequest) String() string {
 func (*LibraryCreateRequest) ProtoMessage() {}
 
 func (x *LibraryCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[53]
+	mi := &file_plugin_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5116,7 +5276,7 @@ func (x *LibraryCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryCreateRequest.ProtoReflect.Descriptor instead.
 func (*LibraryCreateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{53}
+	return file_plugin_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *LibraryCreateRequest) GetMutation() *MutationContext {
@@ -5153,7 +5313,7 @@ type LibraryUpdateRequest struct {
 
 func (x *LibraryUpdateRequest) Reset() {
 	*x = LibraryUpdateRequest{}
-	mi := &file_plugin_proto_msgTypes[54]
+	mi := &file_plugin_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5165,7 +5325,7 @@ func (x *LibraryUpdateRequest) String() string {
 func (*LibraryUpdateRequest) ProtoMessage() {}
 
 func (x *LibraryUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[54]
+	mi := &file_plugin_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5178,7 +5338,7 @@ func (x *LibraryUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryUpdateRequest.ProtoReflect.Descriptor instead.
 func (*LibraryUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{54}
+	return file_plugin_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *LibraryUpdateRequest) GetMutation() *MutationContext {
@@ -5229,7 +5389,7 @@ type LibraryRootAddRequest struct {
 
 func (x *LibraryRootAddRequest) Reset() {
 	*x = LibraryRootAddRequest{}
-	mi := &file_plugin_proto_msgTypes[55]
+	mi := &file_plugin_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5241,7 +5401,7 @@ func (x *LibraryRootAddRequest) String() string {
 func (*LibraryRootAddRequest) ProtoMessage() {}
 
 func (x *LibraryRootAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[55]
+	mi := &file_plugin_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5254,7 +5414,7 @@ func (x *LibraryRootAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRootAddRequest.ProtoReflect.Descriptor instead.
 func (*LibraryRootAddRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{55}
+	return file_plugin_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *LibraryRootAddRequest) GetMutation() *MutationContext {
@@ -5308,7 +5468,7 @@ type LibraryRootUpdateRequest struct {
 
 func (x *LibraryRootUpdateRequest) Reset() {
 	*x = LibraryRootUpdateRequest{}
-	mi := &file_plugin_proto_msgTypes[56]
+	mi := &file_plugin_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5320,7 +5480,7 @@ func (x *LibraryRootUpdateRequest) String() string {
 func (*LibraryRootUpdateRequest) ProtoMessage() {}
 
 func (x *LibraryRootUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[56]
+	mi := &file_plugin_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5333,7 +5493,7 @@ func (x *LibraryRootUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRootUpdateRequest.ProtoReflect.Descriptor instead.
 func (*LibraryRootUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{56}
+	return file_plugin_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *LibraryRootUpdateRequest) GetMutation() *MutationContext {
@@ -5403,7 +5563,7 @@ type LibraryRootRemoveRequest struct {
 
 func (x *LibraryRootRemoveRequest) Reset() {
 	*x = LibraryRootRemoveRequest{}
-	mi := &file_plugin_proto_msgTypes[57]
+	mi := &file_plugin_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5415,7 +5575,7 @@ func (x *LibraryRootRemoveRequest) String() string {
 func (*LibraryRootRemoveRequest) ProtoMessage() {}
 
 func (x *LibraryRootRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[57]
+	mi := &file_plugin_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5428,7 +5588,7 @@ func (x *LibraryRootRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRootRemoveRequest.ProtoReflect.Descriptor instead.
 func (*LibraryRootRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{57}
+	return file_plugin_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *LibraryRootRemoveRequest) GetMutation() *MutationContext {
@@ -5467,7 +5627,7 @@ type LibraryRecord struct {
 
 func (x *LibraryRecord) Reset() {
 	*x = LibraryRecord{}
-	mi := &file_plugin_proto_msgTypes[58]
+	mi := &file_plugin_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5479,7 +5639,7 @@ func (x *LibraryRecord) String() string {
 func (*LibraryRecord) ProtoMessage() {}
 
 func (x *LibraryRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[58]
+	mi := &file_plugin_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5492,7 +5652,7 @@ func (x *LibraryRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRecord.ProtoReflect.Descriptor instead.
 func (*LibraryRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{58}
+	return file_plugin_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *LibraryRecord) GetId() string {
@@ -5558,7 +5718,7 @@ type LibraryRootRecord struct {
 
 func (x *LibraryRootRecord) Reset() {
 	*x = LibraryRootRecord{}
-	mi := &file_plugin_proto_msgTypes[59]
+	mi := &file_plugin_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5570,7 +5730,7 @@ func (x *LibraryRootRecord) String() string {
 func (*LibraryRootRecord) ProtoMessage() {}
 
 func (x *LibraryRootRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[59]
+	mi := &file_plugin_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5583,7 +5743,7 @@ func (x *LibraryRootRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRootRecord.ProtoReflect.Descriptor instead.
 func (*LibraryRootRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{59}
+	return file_plugin_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *LibraryRootRecord) GetId() string {
@@ -5639,7 +5799,7 @@ type LibrariesListReply struct {
 
 func (x *LibrariesListReply) Reset() {
 	*x = LibrariesListReply{}
-	mi := &file_plugin_proto_msgTypes[60]
+	mi := &file_plugin_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5651,7 +5811,7 @@ func (x *LibrariesListReply) String() string {
 func (*LibrariesListReply) ProtoMessage() {}
 
 func (x *LibrariesListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[60]
+	mi := &file_plugin_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5664,7 +5824,7 @@ func (x *LibrariesListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibrariesListReply.ProtoReflect.Descriptor instead.
 func (*LibrariesListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{60}
+	return file_plugin_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *LibrariesListReply) GetLibraries() []*LibraryRecord {
@@ -5698,7 +5858,7 @@ type LibraryRecordReply struct {
 
 func (x *LibraryRecordReply) Reset() {
 	*x = LibraryRecordReply{}
-	mi := &file_plugin_proto_msgTypes[61]
+	mi := &file_plugin_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5710,7 +5870,7 @@ func (x *LibraryRecordReply) String() string {
 func (*LibraryRecordReply) ProtoMessage() {}
 
 func (x *LibraryRecordReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[61]
+	mi := &file_plugin_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5723,7 +5883,7 @@ func (x *LibraryRecordReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRecordReply.ProtoReflect.Descriptor instead.
 func (*LibraryRecordReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{61}
+	return file_plugin_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *LibraryRecordReply) GetLibrary() *LibraryRecord {
@@ -5751,7 +5911,7 @@ type LibraryRecordEvent struct {
 
 func (x *LibraryRecordEvent) Reset() {
 	*x = LibraryRecordEvent{}
-	mi := &file_plugin_proto_msgTypes[62]
+	mi := &file_plugin_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5763,7 +5923,7 @@ func (x *LibraryRecordEvent) String() string {
 func (*LibraryRecordEvent) ProtoMessage() {}
 
 func (x *LibraryRecordEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[62]
+	mi := &file_plugin_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5776,7 +5936,7 @@ func (x *LibraryRecordEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryRecordEvent.ProtoReflect.Descriptor instead.
 func (*LibraryRecordEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{62}
+	return file_plugin_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *LibraryRecordEvent) GetRevision() uint64 {
@@ -5811,7 +5971,7 @@ type LibraryMutationReply struct {
 
 func (x *LibraryMutationReply) Reset() {
 	*x = LibraryMutationReply{}
-	mi := &file_plugin_proto_msgTypes[63]
+	mi := &file_plugin_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5823,7 +5983,7 @@ func (x *LibraryMutationReply) String() string {
 func (*LibraryMutationReply) ProtoMessage() {}
 
 func (x *LibraryMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[63]
+	mi := &file_plugin_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5836,7 +5996,7 @@ func (x *LibraryMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryMutationReply.ProtoReflect.Descriptor instead.
 func (*LibraryMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{63}
+	return file_plugin_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *LibraryMutationReply) GetResourceId() string {
@@ -5870,7 +6030,7 @@ type RuntimeRegisterRequest struct {
 
 func (x *RuntimeRegisterRequest) Reset() {
 	*x = RuntimeRegisterRequest{}
-	mi := &file_plugin_proto_msgTypes[64]
+	mi := &file_plugin_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5882,7 +6042,7 @@ func (x *RuntimeRegisterRequest) String() string {
 func (*RuntimeRegisterRequest) ProtoMessage() {}
 
 func (x *RuntimeRegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[64]
+	mi := &file_plugin_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5895,7 +6055,7 @@ func (x *RuntimeRegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeRegisterRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeRegisterRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{64}
+	return file_plugin_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *RuntimeRegisterRequest) GetMutation() *MutationContext {
@@ -5923,7 +6083,7 @@ type RuntimeUpdateRequest struct {
 
 func (x *RuntimeUpdateRequest) Reset() {
 	*x = RuntimeUpdateRequest{}
-	mi := &file_plugin_proto_msgTypes[65]
+	mi := &file_plugin_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5935,7 +6095,7 @@ func (x *RuntimeUpdateRequest) String() string {
 func (*RuntimeUpdateRequest) ProtoMessage() {}
 
 func (x *RuntimeUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[65]
+	mi := &file_plugin_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5948,7 +6108,7 @@ func (x *RuntimeUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeUpdateRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{65}
+	return file_plugin_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *RuntimeUpdateRequest) GetMutation() *MutationContext {
@@ -5982,7 +6142,7 @@ type RuntimeMutationReply struct {
 
 func (x *RuntimeMutationReply) Reset() {
 	*x = RuntimeMutationReply{}
-	mi := &file_plugin_proto_msgTypes[66]
+	mi := &file_plugin_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5994,7 +6154,7 @@ func (x *RuntimeMutationReply) String() string {
 func (*RuntimeMutationReply) ProtoMessage() {}
 
 func (x *RuntimeMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[66]
+	mi := &file_plugin_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6007,7 +6167,7 @@ func (x *RuntimeMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeMutationReply.ProtoReflect.Descriptor instead.
 func (*RuntimeMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{66}
+	return file_plugin_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *RuntimeMutationReply) GetRuntime() *RuntimeRecord {
@@ -6034,7 +6194,7 @@ type RuntimeRecordReply struct {
 
 func (x *RuntimeRecordReply) Reset() {
 	*x = RuntimeRecordReply{}
-	mi := &file_plugin_proto_msgTypes[67]
+	mi := &file_plugin_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6046,7 +6206,7 @@ func (x *RuntimeRecordReply) String() string {
 func (*RuntimeRecordReply) ProtoMessage() {}
 
 func (x *RuntimeRecordReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[67]
+	mi := &file_plugin_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6059,7 +6219,7 @@ func (x *RuntimeRecordReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeRecordReply.ProtoReflect.Descriptor instead.
 func (*RuntimeRecordReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{67}
+	return file_plugin_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *RuntimeRecordReply) GetRuntime() *RuntimeRecord {
@@ -6087,7 +6247,7 @@ type RuntimeRecordEvent struct {
 
 func (x *RuntimeRecordEvent) Reset() {
 	*x = RuntimeRecordEvent{}
-	mi := &file_plugin_proto_msgTypes[68]
+	mi := &file_plugin_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6099,7 +6259,7 @@ func (x *RuntimeRecordEvent) String() string {
 func (*RuntimeRecordEvent) ProtoMessage() {}
 
 func (x *RuntimeRecordEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[68]
+	mi := &file_plugin_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6112,7 +6272,7 @@ func (x *RuntimeRecordEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeRecordEvent.ProtoReflect.Descriptor instead.
 func (*RuntimeRecordEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{68}
+	return file_plugin_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *RuntimeRecordEvent) GetRevision() uint64 {
@@ -6147,7 +6307,7 @@ type RuntimesListReply struct {
 
 func (x *RuntimesListReply) Reset() {
 	*x = RuntimesListReply{}
-	mi := &file_plugin_proto_msgTypes[69]
+	mi := &file_plugin_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6159,7 +6319,7 @@ func (x *RuntimesListReply) String() string {
 func (*RuntimesListReply) ProtoMessage() {}
 
 func (x *RuntimesListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[69]
+	mi := &file_plugin_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6172,7 +6332,7 @@ func (x *RuntimesListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimesListReply.ProtoReflect.Descriptor instead.
 func (*RuntimesListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{69}
+	return file_plugin_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *RuntimesListReply) GetRuntimes() []*RuntimeRecord {
@@ -6205,13 +6365,14 @@ type ContentRegistrationRequest struct {
 	ContentKind        string                 `protobuf:"bytes,5,opt,name=content_kind,json=contentKind,proto3" json:"content_kind,omitempty"`
 	RuntimeId          string                 `protobuf:"bytes,6,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
 	SupportedPlatforms []string               `protobuf:"bytes,7,rep,name=supported_platforms,json=supportedPlatforms,proto3" json:"supported_platforms,omitempty"`
+	ContentId          string                 `protobuf:"bytes,8,opt,name=content_id,json=contentId,proto3" json:"content_id,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ContentRegistrationRequest) Reset() {
 	*x = ContentRegistrationRequest{}
-	mi := &file_plugin_proto_msgTypes[70]
+	mi := &file_plugin_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6223,7 +6384,7 @@ func (x *ContentRegistrationRequest) String() string {
 func (*ContentRegistrationRequest) ProtoMessage() {}
 
 func (x *ContentRegistrationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[70]
+	mi := &file_plugin_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6236,7 +6397,7 @@ func (x *ContentRegistrationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContentRegistrationRequest.ProtoReflect.Descriptor instead.
 func (*ContentRegistrationRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{70}
+	return file_plugin_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *ContentRegistrationRequest) GetMutation() *MutationContext {
@@ -6288,6 +6449,13 @@ func (x *ContentRegistrationRequest) GetSupportedPlatforms() []string {
 	return nil
 }
 
+func (x *ContentRegistrationRequest) GetContentId() string {
+	if x != nil {
+		return x.ContentId
+	}
+	return ""
+}
+
 type ReportMutationReply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReportId      string                 `protobuf:"bytes,1,opt,name=report_id,json=reportId,proto3" json:"report_id,omitempty"`
@@ -6299,7 +6467,7 @@ type ReportMutationReply struct {
 
 func (x *ReportMutationReply) Reset() {
 	*x = ReportMutationReply{}
-	mi := &file_plugin_proto_msgTypes[71]
+	mi := &file_plugin_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6311,7 +6479,7 @@ func (x *ReportMutationReply) String() string {
 func (*ReportMutationReply) ProtoMessage() {}
 
 func (x *ReportMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[71]
+	mi := &file_plugin_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6324,7 +6492,7 @@ func (x *ReportMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportMutationReply.ProtoReflect.Descriptor instead.
 func (*ReportMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{71}
+	return file_plugin_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ReportMutationReply) GetReportId() string {
@@ -6363,7 +6531,7 @@ type BenchmarkReportRequest struct {
 
 func (x *BenchmarkReportRequest) Reset() {
 	*x = BenchmarkReportRequest{}
-	mi := &file_plugin_proto_msgTypes[72]
+	mi := &file_plugin_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6375,7 +6543,7 @@ func (x *BenchmarkReportRequest) String() string {
 func (*BenchmarkReportRequest) ProtoMessage() {}
 
 func (x *BenchmarkReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[72]
+	mi := &file_plugin_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6388,7 +6556,7 @@ func (x *BenchmarkReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BenchmarkReportRequest.ProtoReflect.Descriptor instead.
 func (*BenchmarkReportRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{72}
+	return file_plugin_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *BenchmarkReportRequest) GetMutation() *MutationContext {
@@ -6454,7 +6622,7 @@ type SmartReportRequest struct {
 
 func (x *SmartReportRequest) Reset() {
 	*x = SmartReportRequest{}
-	mi := &file_plugin_proto_msgTypes[73]
+	mi := &file_plugin_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6466,7 +6634,7 @@ func (x *SmartReportRequest) String() string {
 func (*SmartReportRequest) ProtoMessage() {}
 
 func (x *SmartReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[73]
+	mi := &file_plugin_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6479,7 +6647,7 @@ func (x *SmartReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SmartReportRequest.ProtoReflect.Descriptor instead.
 func (*SmartReportRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{73}
+	return file_plugin_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *SmartReportRequest) GetMutation() *MutationContext {
@@ -6538,7 +6706,7 @@ type HardwareReportRequest struct {
 
 func (x *HardwareReportRequest) Reset() {
 	*x = HardwareReportRequest{}
-	mi := &file_plugin_proto_msgTypes[74]
+	mi := &file_plugin_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6550,7 +6718,7 @@ func (x *HardwareReportRequest) String() string {
 func (*HardwareReportRequest) ProtoMessage() {}
 
 func (x *HardwareReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[74]
+	mi := &file_plugin_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6563,7 +6731,7 @@ func (x *HardwareReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HardwareReportRequest.ProtoReflect.Descriptor instead.
 func (*HardwareReportRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{74}
+	return file_plugin_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *HardwareReportRequest) GetMutation() *MutationContext {
@@ -6621,7 +6789,7 @@ type PresencePublishRequest struct {
 
 func (x *PresencePublishRequest) Reset() {
 	*x = PresencePublishRequest{}
-	mi := &file_plugin_proto_msgTypes[75]
+	mi := &file_plugin_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6633,7 +6801,7 @@ func (x *PresencePublishRequest) String() string {
 func (*PresencePublishRequest) ProtoMessage() {}
 
 func (x *PresencePublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[75]
+	mi := &file_plugin_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6646,7 +6814,7 @@ func (x *PresencePublishRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresencePublishRequest.ProtoReflect.Descriptor instead.
 func (*PresencePublishRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{75}
+	return file_plugin_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *PresencePublishRequest) GetMutation() *MutationContext {
@@ -6695,7 +6863,7 @@ type PresenceClearRequest struct {
 
 func (x *PresenceClearRequest) Reset() {
 	*x = PresenceClearRequest{}
-	mi := &file_plugin_proto_msgTypes[76]
+	mi := &file_plugin_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6707,7 +6875,7 @@ func (x *PresenceClearRequest) String() string {
 func (*PresenceClearRequest) ProtoMessage() {}
 
 func (x *PresenceClearRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[76]
+	mi := &file_plugin_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6720,7 +6888,7 @@ func (x *PresenceClearRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceClearRequest.ProtoReflect.Descriptor instead.
 func (*PresenceClearRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{76}
+	return file_plugin_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *PresenceClearRequest) GetMutation() *MutationContext {
@@ -6757,7 +6925,7 @@ type PerformanceSample struct {
 
 func (x *PerformanceSample) Reset() {
 	*x = PerformanceSample{}
-	mi := &file_plugin_proto_msgTypes[77]
+	mi := &file_plugin_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6769,7 +6937,7 @@ func (x *PerformanceSample) String() string {
 func (*PerformanceSample) ProtoMessage() {}
 
 func (x *PerformanceSample) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[77]
+	mi := &file_plugin_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6782,7 +6950,7 @@ func (x *PerformanceSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceSample.ProtoReflect.Descriptor instead.
 func (*PerformanceSample) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{77}
+	return file_plugin_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *PerformanceSample) GetObservedAt() int64 {
@@ -6833,7 +7001,7 @@ type PerformanceSamplesRequest struct {
 
 func (x *PerformanceSamplesRequest) Reset() {
 	*x = PerformanceSamplesRequest{}
-	mi := &file_plugin_proto_msgTypes[78]
+	mi := &file_plugin_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6845,7 +7013,7 @@ func (x *PerformanceSamplesRequest) String() string {
 func (*PerformanceSamplesRequest) ProtoMessage() {}
 
 func (x *PerformanceSamplesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[78]
+	mi := &file_plugin_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6858,7 +7026,7 @@ func (x *PerformanceSamplesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceSamplesRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceSamplesRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{78}
+	return file_plugin_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *PerformanceSamplesRequest) GetMutation() *MutationContext {
@@ -6907,7 +7075,7 @@ type PerformanceEndSeriesRequest struct {
 
 func (x *PerformanceEndSeriesRequest) Reset() {
 	*x = PerformanceEndSeriesRequest{}
-	mi := &file_plugin_proto_msgTypes[79]
+	mi := &file_plugin_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6919,7 +7087,7 @@ func (x *PerformanceEndSeriesRequest) String() string {
 func (*PerformanceEndSeriesRequest) ProtoMessage() {}
 
 func (x *PerformanceEndSeriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[79]
+	mi := &file_plugin_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6932,7 +7100,7 @@ func (x *PerformanceEndSeriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceEndSeriesRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceEndSeriesRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{79}
+	return file_plugin_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *PerformanceEndSeriesRequest) GetMutation() *MutationContext {
@@ -6971,7 +7139,7 @@ type DataPublishRequest struct {
 
 func (x *DataPublishRequest) Reset() {
 	*x = DataPublishRequest{}
-	mi := &file_plugin_proto_msgTypes[80]
+	mi := &file_plugin_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6983,7 +7151,7 @@ func (x *DataPublishRequest) String() string {
 func (*DataPublishRequest) ProtoMessage() {}
 
 func (x *DataPublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[80]
+	mi := &file_plugin_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6996,7 +7164,7 @@ func (x *DataPublishRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataPublishRequest.ProtoReflect.Descriptor instead.
 func (*DataPublishRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{80}
+	return file_plugin_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *DataPublishRequest) GetMutation() *MutationContext {
@@ -7060,7 +7228,7 @@ type DataMutationReply struct {
 
 func (x *DataMutationReply) Reset() {
 	*x = DataMutationReply{}
-	mi := &file_plugin_proto_msgTypes[81]
+	mi := &file_plugin_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7072,7 +7240,7 @@ func (x *DataMutationReply) String() string {
 func (*DataMutationReply) ProtoMessage() {}
 
 func (x *DataMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[81]
+	mi := &file_plugin_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7085,7 +7253,7 @@ func (x *DataMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataMutationReply.ProtoReflect.Descriptor instead.
 func (*DataMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{81}
+	return file_plugin_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *DataMutationReply) GetRecordId() string {
@@ -7128,7 +7296,7 @@ type DataGetRequest struct {
 
 func (x *DataGetRequest) Reset() {
 	*x = DataGetRequest{}
-	mi := &file_plugin_proto_msgTypes[82]
+	mi := &file_plugin_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7140,7 +7308,7 @@ func (x *DataGetRequest) String() string {
 func (*DataGetRequest) ProtoMessage() {}
 
 func (x *DataGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[82]
+	mi := &file_plugin_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7153,7 +7321,7 @@ func (x *DataGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataGetRequest.ProtoReflect.Descriptor instead.
 func (*DataGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{82}
+	return file_plugin_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *DataGetRequest) GetContext() *ServiceContext {
@@ -7196,7 +7364,7 @@ type DataListRequest struct {
 
 func (x *DataListRequest) Reset() {
 	*x = DataListRequest{}
-	mi := &file_plugin_proto_msgTypes[83]
+	mi := &file_plugin_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7208,7 +7376,7 @@ func (x *DataListRequest) String() string {
 func (*DataListRequest) ProtoMessage() {}
 
 func (x *DataListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[83]
+	mi := &file_plugin_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7221,7 +7389,7 @@ func (x *DataListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataListRequest.ProtoReflect.Descriptor instead.
 func (*DataListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{83}
+	return file_plugin_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *DataListRequest) GetPage() *PageRequest {
@@ -7264,7 +7432,7 @@ type DataWatchRequest struct {
 
 func (x *DataWatchRequest) Reset() {
 	*x = DataWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[84]
+	mi := &file_plugin_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7276,7 +7444,7 @@ func (x *DataWatchRequest) String() string {
 func (*DataWatchRequest) ProtoMessage() {}
 
 func (x *DataWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[84]
+	mi := &file_plugin_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7289,7 +7457,7 @@ func (x *DataWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataWatchRequest.ProtoReflect.Descriptor instead.
 func (*DataWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{84}
+	return file_plugin_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *DataWatchRequest) GetContext() *ServiceContext {
@@ -7333,7 +7501,7 @@ type DataRecord struct {
 
 func (x *DataRecord) Reset() {
 	*x = DataRecord{}
-	mi := &file_plugin_proto_msgTypes[85]
+	mi := &file_plugin_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7345,7 +7513,7 @@ func (x *DataRecord) String() string {
 func (*DataRecord) ProtoMessage() {}
 
 func (x *DataRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[85]
+	mi := &file_plugin_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7358,7 +7526,7 @@ func (x *DataRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataRecord.ProtoReflect.Descriptor instead.
 func (*DataRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{85}
+	return file_plugin_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *DataRecord) GetRecordId() string {
@@ -7405,7 +7573,7 @@ type DataGetReply struct {
 
 func (x *DataGetReply) Reset() {
 	*x = DataGetReply{}
-	mi := &file_plugin_proto_msgTypes[86]
+	mi := &file_plugin_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7417,7 +7585,7 @@ func (x *DataGetReply) String() string {
 func (*DataGetReply) ProtoMessage() {}
 
 func (x *DataGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[86]
+	mi := &file_plugin_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7430,7 +7598,7 @@ func (x *DataGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataGetReply.ProtoReflect.Descriptor instead.
 func (*DataGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{86}
+	return file_plugin_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *DataGetReply) GetRecord() *DataRecord {
@@ -7450,7 +7618,7 @@ type DataListReply struct {
 
 func (x *DataListReply) Reset() {
 	*x = DataListReply{}
-	mi := &file_plugin_proto_msgTypes[87]
+	mi := &file_plugin_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7462,7 +7630,7 @@ func (x *DataListReply) String() string {
 func (*DataListReply) ProtoMessage() {}
 
 func (x *DataListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[87]
+	mi := &file_plugin_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7475,7 +7643,7 @@ func (x *DataListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataListReply.ProtoReflect.Descriptor instead.
 func (*DataListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{87}
+	return file_plugin_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *DataListReply) GetRecords() []*DataRecord {
@@ -7503,7 +7671,7 @@ type DataEvent struct {
 
 func (x *DataEvent) Reset() {
 	*x = DataEvent{}
-	mi := &file_plugin_proto_msgTypes[88]
+	mi := &file_plugin_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7515,7 +7683,7 @@ func (x *DataEvent) String() string {
 func (*DataEvent) ProtoMessage() {}
 
 func (x *DataEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[88]
+	mi := &file_plugin_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7528,7 +7696,7 @@ func (x *DataEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataEvent.ProtoReflect.Descriptor instead.
 func (*DataEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{88}
+	return file_plugin_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *DataEvent) GetRevision() uint64 {
@@ -7561,7 +7729,7 @@ type PersistenceUsageRequest struct {
 
 func (x *PersistenceUsageRequest) Reset() {
 	*x = PersistenceUsageRequest{}
-	mi := &file_plugin_proto_msgTypes[89]
+	mi := &file_plugin_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7573,7 +7741,7 @@ func (x *PersistenceUsageRequest) String() string {
 func (*PersistenceUsageRequest) ProtoMessage() {}
 
 func (x *PersistenceUsageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[89]
+	mi := &file_plugin_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7586,7 +7754,7 @@ func (x *PersistenceUsageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceUsageRequest.ProtoReflect.Descriptor instead.
 func (*PersistenceUsageRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{89}
+	return file_plugin_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *PersistenceUsageRequest) GetContext() *ServiceContext {
@@ -7607,7 +7775,7 @@ type PersistenceUsageReply struct {
 
 func (x *PersistenceUsageReply) Reset() {
 	*x = PersistenceUsageReply{}
-	mi := &file_plugin_proto_msgTypes[90]
+	mi := &file_plugin_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7619,7 +7787,7 @@ func (x *PersistenceUsageReply) String() string {
 func (*PersistenceUsageReply) ProtoMessage() {}
 
 func (x *PersistenceUsageReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[90]
+	mi := &file_plugin_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7632,7 +7800,7 @@ func (x *PersistenceUsageReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceUsageReply.ProtoReflect.Descriptor instead.
 func (*PersistenceUsageReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{90}
+	return file_plugin_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *PersistenceUsageReply) GetLogicalBytes() uint64 {
@@ -7666,7 +7834,7 @@ type PersistenceListRequest struct {
 
 func (x *PersistenceListRequest) Reset() {
 	*x = PersistenceListRequest{}
-	mi := &file_plugin_proto_msgTypes[91]
+	mi := &file_plugin_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7678,7 +7846,7 @@ func (x *PersistenceListRequest) String() string {
 func (*PersistenceListRequest) ProtoMessage() {}
 
 func (x *PersistenceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[91]
+	mi := &file_plugin_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7691,7 +7859,7 @@ func (x *PersistenceListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceListRequest.ProtoReflect.Descriptor instead.
 func (*PersistenceListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{91}
+	return file_plugin_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *PersistenceListRequest) GetPage() *PageRequest {
@@ -7718,7 +7886,7 @@ type PersistenceListReply struct {
 
 func (x *PersistenceListReply) Reset() {
 	*x = PersistenceListReply{}
-	mi := &file_plugin_proto_msgTypes[92]
+	mi := &file_plugin_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7730,7 +7898,7 @@ func (x *PersistenceListReply) String() string {
 func (*PersistenceListReply) ProtoMessage() {}
 
 func (x *PersistenceListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[92]
+	mi := &file_plugin_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7743,7 +7911,7 @@ func (x *PersistenceListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceListReply.ProtoReflect.Descriptor instead.
 func (*PersistenceListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{92}
+	return file_plugin_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *PersistenceListReply) GetEntries() []*PersistenceEntry {
@@ -7773,7 +7941,7 @@ type PersistenceEntry struct {
 
 func (x *PersistenceEntry) Reset() {
 	*x = PersistenceEntry{}
-	mi := &file_plugin_proto_msgTypes[93]
+	mi := &file_plugin_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7785,7 +7953,7 @@ func (x *PersistenceEntry) String() string {
 func (*PersistenceEntry) ProtoMessage() {}
 
 func (x *PersistenceEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[93]
+	mi := &file_plugin_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7798,7 +7966,7 @@ func (x *PersistenceEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceEntry.ProtoReflect.Descriptor instead.
 func (*PersistenceEntry) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{93}
+	return file_plugin_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *PersistenceEntry) GetEntryId() string {
@@ -7846,7 +8014,7 @@ type PersistenceDeleteRequest struct {
 
 func (x *PersistenceDeleteRequest) Reset() {
 	*x = PersistenceDeleteRequest{}
-	mi := &file_plugin_proto_msgTypes[94]
+	mi := &file_plugin_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7858,7 +8026,7 @@ func (x *PersistenceDeleteRequest) String() string {
 func (*PersistenceDeleteRequest) ProtoMessage() {}
 
 func (x *PersistenceDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[94]
+	mi := &file_plugin_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7871,7 +8039,7 @@ func (x *PersistenceDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceDeleteRequest.ProtoReflect.Descriptor instead.
 func (*PersistenceDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{94}
+	return file_plugin_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *PersistenceDeleteRequest) GetMutation() *MutationContext {
@@ -7898,7 +8066,7 @@ type PersistenceClearRequest struct {
 
 func (x *PersistenceClearRequest) Reset() {
 	*x = PersistenceClearRequest{}
-	mi := &file_plugin_proto_msgTypes[95]
+	mi := &file_plugin_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7910,7 +8078,7 @@ func (x *PersistenceClearRequest) String() string {
 func (*PersistenceClearRequest) ProtoMessage() {}
 
 func (x *PersistenceClearRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[95]
+	mi := &file_plugin_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7923,7 +8091,7 @@ func (x *PersistenceClearRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceClearRequest.ProtoReflect.Descriptor instead.
 func (*PersistenceClearRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{95}
+	return file_plugin_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *PersistenceClearRequest) GetMutation() *MutationContext {
@@ -7952,7 +8120,7 @@ type RetentionPolicyRequest struct {
 
 func (x *RetentionPolicyRequest) Reset() {
 	*x = RetentionPolicyRequest{}
-	mi := &file_plugin_proto_msgTypes[96]
+	mi := &file_plugin_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7964,7 +8132,7 @@ func (x *RetentionPolicyRequest) String() string {
 func (*RetentionPolicyRequest) ProtoMessage() {}
 
 func (x *RetentionPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[96]
+	mi := &file_plugin_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7977,7 +8145,7 @@ func (x *RetentionPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetentionPolicyRequest.ProtoReflect.Descriptor instead.
 func (*RetentionPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{96}
+	return file_plugin_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *RetentionPolicyRequest) GetMutation() *MutationContext {
@@ -8019,7 +8187,7 @@ type PersistenceMutationReply struct {
 
 func (x *PersistenceMutationReply) Reset() {
 	*x = PersistenceMutationReply{}
-	mi := &file_plugin_proto_msgTypes[97]
+	mi := &file_plugin_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8031,7 +8199,7 @@ func (x *PersistenceMutationReply) String() string {
 func (*PersistenceMutationReply) ProtoMessage() {}
 
 func (x *PersistenceMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[97]
+	mi := &file_plugin_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8044,7 +8212,7 @@ func (x *PersistenceMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistenceMutationReply.ProtoReflect.Descriptor instead.
 func (*PersistenceMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{97}
+	return file_plugin_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *PersistenceMutationReply) GetReclaimedBytes() uint64 {
@@ -8079,7 +8247,7 @@ type ToolsListRequest struct {
 
 func (x *ToolsListRequest) Reset() {
 	*x = ToolsListRequest{}
-	mi := &file_plugin_proto_msgTypes[98]
+	mi := &file_plugin_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8091,7 +8259,7 @@ func (x *ToolsListRequest) String() string {
 func (*ToolsListRequest) ProtoMessage() {}
 
 func (x *ToolsListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[98]
+	mi := &file_plugin_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8104,7 +8272,7 @@ func (x *ToolsListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsListRequest.ProtoReflect.Descriptor instead.
 func (*ToolsListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{98}
+	return file_plugin_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *ToolsListRequest) GetPage() *PageRequest {
@@ -8140,7 +8308,7 @@ type ToolApplyRequest struct {
 
 func (x *ToolApplyRequest) Reset() {
 	*x = ToolApplyRequest{}
-	mi := &file_plugin_proto_msgTypes[99]
+	mi := &file_plugin_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8152,7 +8320,7 @@ func (x *ToolApplyRequest) String() string {
 func (*ToolApplyRequest) ProtoMessage() {}
 
 func (x *ToolApplyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[99]
+	mi := &file_plugin_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8165,7 +8333,7 @@ func (x *ToolApplyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolApplyRequest.ProtoReflect.Descriptor instead.
 func (*ToolApplyRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{99}
+	return file_plugin_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *ToolApplyRequest) GetMutation() *MutationContext {
@@ -8208,7 +8376,7 @@ type ToolRemoveRequest struct {
 
 func (x *ToolRemoveRequest) Reset() {
 	*x = ToolRemoveRequest{}
-	mi := &file_plugin_proto_msgTypes[100]
+	mi := &file_plugin_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8220,7 +8388,7 @@ func (x *ToolRemoveRequest) String() string {
 func (*ToolRemoveRequest) ProtoMessage() {}
 
 func (x *ToolRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[100]
+	mi := &file_plugin_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8233,7 +8401,7 @@ func (x *ToolRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolRemoveRequest.ProtoReflect.Descriptor instead.
 func (*ToolRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{100}
+	return file_plugin_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *ToolRemoveRequest) GetMutation() *MutationContext {
@@ -8274,7 +8442,7 @@ type ToolsListReply struct {
 
 func (x *ToolsListReply) Reset() {
 	*x = ToolsListReply{}
-	mi := &file_plugin_proto_msgTypes[101]
+	mi := &file_plugin_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8286,7 +8454,7 @@ func (x *ToolsListReply) String() string {
 func (*ToolsListReply) ProtoMessage() {}
 
 func (x *ToolsListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[101]
+	mi := &file_plugin_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8299,7 +8467,7 @@ func (x *ToolsListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsListReply.ProtoReflect.Descriptor instead.
 func (*ToolsListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{101}
+	return file_plugin_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *ToolsListReply) GetTools() []*ToolRecord {
@@ -8328,7 +8496,7 @@ type ToolRecord struct {
 
 func (x *ToolRecord) Reset() {
 	*x = ToolRecord{}
-	mi := &file_plugin_proto_msgTypes[102]
+	mi := &file_plugin_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8340,7 +8508,7 @@ func (x *ToolRecord) String() string {
 func (*ToolRecord) ProtoMessage() {}
 
 func (x *ToolRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[102]
+	mi := &file_plugin_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8353,7 +8521,7 @@ func (x *ToolRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolRecord.ProtoReflect.Descriptor instead.
 func (*ToolRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{102}
+	return file_plugin_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *ToolRecord) GetToolId() string {
@@ -8395,7 +8563,7 @@ type PortsListRequest struct {
 
 func (x *PortsListRequest) Reset() {
 	*x = PortsListRequest{}
-	mi := &file_plugin_proto_msgTypes[103]
+	mi := &file_plugin_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8407,7 +8575,7 @@ func (x *PortsListRequest) String() string {
 func (*PortsListRequest) ProtoMessage() {}
 
 func (x *PortsListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[103]
+	mi := &file_plugin_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8420,7 +8588,7 @@ func (x *PortsListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortsListRequest.ProtoReflect.Descriptor instead.
 func (*PortsListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{103}
+	return file_plugin_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *PortsListRequest) GetPage() *PageRequest {
@@ -8454,7 +8622,7 @@ type PortDetailRequest struct {
 
 func (x *PortDetailRequest) Reset() {
 	*x = PortDetailRequest{}
-	mi := &file_plugin_proto_msgTypes[104]
+	mi := &file_plugin_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8466,7 +8634,7 @@ func (x *PortDetailRequest) String() string {
 func (*PortDetailRequest) ProtoMessage() {}
 
 func (x *PortDetailRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[104]
+	mi := &file_plugin_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8479,7 +8647,7 @@ func (x *PortDetailRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortDetailRequest.ProtoReflect.Descriptor instead.
 func (*PortDetailRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{104}
+	return file_plugin_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *PortDetailRequest) GetContext() *ServiceContext {
@@ -8509,7 +8677,7 @@ type PortInstallRequest struct {
 
 func (x *PortInstallRequest) Reset() {
 	*x = PortInstallRequest{}
-	mi := &file_plugin_proto_msgTypes[105]
+	mi := &file_plugin_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8521,7 +8689,7 @@ func (x *PortInstallRequest) String() string {
 func (*PortInstallRequest) ProtoMessage() {}
 
 func (x *PortInstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[105]
+	mi := &file_plugin_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8534,7 +8702,7 @@ func (x *PortInstallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortInstallRequest.ProtoReflect.Descriptor instead.
 func (*PortInstallRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{105}
+	return file_plugin_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *PortInstallRequest) GetMutation() *MutationContext {
@@ -8582,7 +8750,7 @@ type PortsListReply struct {
 
 func (x *PortsListReply) Reset() {
 	*x = PortsListReply{}
-	mi := &file_plugin_proto_msgTypes[106]
+	mi := &file_plugin_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8594,7 +8762,7 @@ func (x *PortsListReply) String() string {
 func (*PortsListReply) ProtoMessage() {}
 
 func (x *PortsListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[106]
+	mi := &file_plugin_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8607,7 +8775,7 @@ func (x *PortsListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortsListReply.ProtoReflect.Descriptor instead.
 func (*PortsListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{106}
+	return file_plugin_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *PortsListReply) GetPorts() []*PortRecord {
@@ -8633,7 +8801,7 @@ type PortDetailReply struct {
 
 func (x *PortDetailReply) Reset() {
 	*x = PortDetailReply{}
-	mi := &file_plugin_proto_msgTypes[107]
+	mi := &file_plugin_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8645,7 +8813,7 @@ func (x *PortDetailReply) String() string {
 func (*PortDetailReply) ProtoMessage() {}
 
 func (x *PortDetailReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[107]
+	mi := &file_plugin_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8658,7 +8826,7 @@ func (x *PortDetailReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortDetailReply.ProtoReflect.Descriptor instead.
 func (*PortDetailReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{107}
+	return file_plugin_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *PortDetailReply) GetPort() *PortRecord {
@@ -8680,7 +8848,7 @@ type PortRecord struct {
 
 func (x *PortRecord) Reset() {
 	*x = PortRecord{}
-	mi := &file_plugin_proto_msgTypes[108]
+	mi := &file_plugin_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8692,7 +8860,7 @@ func (x *PortRecord) String() string {
 func (*PortRecord) ProtoMessage() {}
 
 func (x *PortRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[108]
+	mi := &file_plugin_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8705,7 +8873,7 @@ func (x *PortRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortRecord.ProtoReflect.Descriptor instead.
 func (*PortRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{108}
+	return file_plugin_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *PortRecord) GetPortId() string {
@@ -8746,7 +8914,7 @@ type JobGetRequest struct {
 
 func (x *JobGetRequest) Reset() {
 	*x = JobGetRequest{}
-	mi := &file_plugin_proto_msgTypes[109]
+	mi := &file_plugin_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8758,7 +8926,7 @@ func (x *JobGetRequest) String() string {
 func (*JobGetRequest) ProtoMessage() {}
 
 func (x *JobGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[109]
+	mi := &file_plugin_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8771,7 +8939,7 @@ func (x *JobGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobGetRequest.ProtoReflect.Descriptor instead.
 func (*JobGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{109}
+	return file_plugin_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *JobGetRequest) GetContext() *ServiceContext {
@@ -8799,7 +8967,7 @@ type JobWatchRequest struct {
 
 func (x *JobWatchRequest) Reset() {
 	*x = JobWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[110]
+	mi := &file_plugin_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8811,7 +8979,7 @@ func (x *JobWatchRequest) String() string {
 func (*JobWatchRequest) ProtoMessage() {}
 
 func (x *JobWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[110]
+	mi := &file_plugin_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8824,7 +8992,7 @@ func (x *JobWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobWatchRequest.ProtoReflect.Descriptor instead.
 func (*JobWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{110}
+	return file_plugin_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *JobWatchRequest) GetContext() *ServiceContext {
@@ -8858,7 +9026,7 @@ type JobCancelRequest struct {
 
 func (x *JobCancelRequest) Reset() {
 	*x = JobCancelRequest{}
-	mi := &file_plugin_proto_msgTypes[111]
+	mi := &file_plugin_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8870,7 +9038,7 @@ func (x *JobCancelRequest) String() string {
 func (*JobCancelRequest) ProtoMessage() {}
 
 func (x *JobCancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[111]
+	mi := &file_plugin_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8883,7 +9051,7 @@ func (x *JobCancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobCancelRequest.ProtoReflect.Descriptor instead.
 func (*JobCancelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{111}
+	return file_plugin_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *JobCancelRequest) GetMutation() *MutationContext {
@@ -8914,7 +9082,7 @@ type JobEvent struct {
 
 func (x *JobEvent) Reset() {
 	*x = JobEvent{}
-	mi := &file_plugin_proto_msgTypes[112]
+	mi := &file_plugin_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8926,7 +9094,7 @@ func (x *JobEvent) String() string {
 func (*JobEvent) ProtoMessage() {}
 
 func (x *JobEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[112]
+	mi := &file_plugin_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8939,7 +9107,7 @@ func (x *JobEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobEvent.ProtoReflect.Descriptor instead.
 func (*JobEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{112}
+	return file_plugin_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *JobEvent) GetJobId() string {
@@ -8998,7 +9166,7 @@ type MutationContext struct {
 
 func (x *MutationContext) Reset() {
 	*x = MutationContext{}
-	mi := &file_plugin_proto_msgTypes[113]
+	mi := &file_plugin_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9010,7 +9178,7 @@ func (x *MutationContext) String() string {
 func (*MutationContext) ProtoMessage() {}
 
 func (x *MutationContext) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[113]
+	mi := &file_plugin_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9023,7 +9191,7 @@ func (x *MutationContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationContext.ProtoReflect.Descriptor instead.
 func (*MutationContext) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{113}
+	return file_plugin_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *MutationContext) GetContext() *ServiceContext {
@@ -9066,7 +9234,7 @@ type PageRequest struct {
 
 func (x *PageRequest) Reset() {
 	*x = PageRequest{}
-	mi := &file_plugin_proto_msgTypes[114]
+	mi := &file_plugin_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9078,7 +9246,7 @@ func (x *PageRequest) String() string {
 func (*PageRequest) ProtoMessage() {}
 
 func (x *PageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[114]
+	mi := &file_plugin_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9091,7 +9259,7 @@ func (x *PageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PageRequest.ProtoReflect.Descriptor instead.
 func (*PageRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{114}
+	return file_plugin_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *PageRequest) GetContext() *ServiceContext {
@@ -9133,7 +9301,7 @@ type LibraryListRequest struct {
 
 func (x *LibraryListRequest) Reset() {
 	*x = LibraryListRequest{}
-	mi := &file_plugin_proto_msgTypes[115]
+	mi := &file_plugin_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9145,7 +9313,7 @@ func (x *LibraryListRequest) String() string {
 func (*LibraryListRequest) ProtoMessage() {}
 
 func (x *LibraryListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[115]
+	mi := &file_plugin_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9158,7 +9326,7 @@ func (x *LibraryListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryListRequest.ProtoReflect.Descriptor instead.
 func (*LibraryListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{115}
+	return file_plugin_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *LibraryListRequest) GetPage() *PageRequest {
@@ -9194,7 +9362,7 @@ type LibraryGetRequest struct {
 
 func (x *LibraryGetRequest) Reset() {
 	*x = LibraryGetRequest{}
-	mi := &file_plugin_proto_msgTypes[116]
+	mi := &file_plugin_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9206,7 +9374,7 @@ func (x *LibraryGetRequest) String() string {
 func (*LibraryGetRequest) ProtoMessage() {}
 
 func (x *LibraryGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[116]
+	mi := &file_plugin_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9219,7 +9387,7 @@ func (x *LibraryGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryGetRequest.ProtoReflect.Descriptor instead.
 func (*LibraryGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{116}
+	return file_plugin_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *LibraryGetRequest) GetContext() *ServiceContext {
@@ -9262,7 +9430,7 @@ type LibraryWatchRequest struct {
 
 func (x *LibraryWatchRequest) Reset() {
 	*x = LibraryWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[117]
+	mi := &file_plugin_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9274,7 +9442,7 @@ func (x *LibraryWatchRequest) String() string {
 func (*LibraryWatchRequest) ProtoMessage() {}
 
 func (x *LibraryWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[117]
+	mi := &file_plugin_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9287,7 +9455,7 @@ func (x *LibraryWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryWatchRequest.ProtoReflect.Descriptor instead.
 func (*LibraryWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{117}
+	return file_plugin_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *LibraryWatchRequest) GetContext() *ServiceContext {
@@ -9330,7 +9498,7 @@ type MetadataUpdateRequest struct {
 
 func (x *MetadataUpdateRequest) Reset() {
 	*x = MetadataUpdateRequest{}
-	mi := &file_plugin_proto_msgTypes[118]
+	mi := &file_plugin_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9342,7 +9510,7 @@ func (x *MetadataUpdateRequest) String() string {
 func (*MetadataUpdateRequest) ProtoMessage() {}
 
 func (x *MetadataUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[118]
+	mi := &file_plugin_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9355,7 +9523,7 @@ func (x *MetadataUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataUpdateRequest.ProtoReflect.Descriptor instead.
 func (*MetadataUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{118}
+	return file_plugin_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *MetadataUpdateRequest) GetMutation() *MutationContext {
@@ -9396,7 +9564,7 @@ type FavoritesListRequest struct {
 
 func (x *FavoritesListRequest) Reset() {
 	*x = FavoritesListRequest{}
-	mi := &file_plugin_proto_msgTypes[119]
+	mi := &file_plugin_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9408,7 +9576,7 @@ func (x *FavoritesListRequest) String() string {
 func (*FavoritesListRequest) ProtoMessage() {}
 
 func (x *FavoritesListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[119]
+	mi := &file_plugin_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9421,7 +9589,7 @@ func (x *FavoritesListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FavoritesListRequest.ProtoReflect.Descriptor instead.
 func (*FavoritesListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{119}
+	return file_plugin_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *FavoritesListRequest) GetPage() *PageRequest {
@@ -9450,7 +9618,7 @@ type FavoritesSetRequest struct {
 
 func (x *FavoritesSetRequest) Reset() {
 	*x = FavoritesSetRequest{}
-	mi := &file_plugin_proto_msgTypes[120]
+	mi := &file_plugin_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9462,7 +9630,7 @@ func (x *FavoritesSetRequest) String() string {
 func (*FavoritesSetRequest) ProtoMessage() {}
 
 func (x *FavoritesSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[120]
+	mi := &file_plugin_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9475,7 +9643,7 @@ func (x *FavoritesSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FavoritesSetRequest.ProtoReflect.Descriptor instead.
 func (*FavoritesSetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{120}
+	return file_plugin_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *FavoritesSetRequest) GetMutation() *MutationContext {
@@ -9522,7 +9690,7 @@ type MatchingSearchRequest struct {
 
 func (x *MatchingSearchRequest) Reset() {
 	*x = MatchingSearchRequest{}
-	mi := &file_plugin_proto_msgTypes[121]
+	mi := &file_plugin_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9534,7 +9702,7 @@ func (x *MatchingSearchRequest) String() string {
 func (*MatchingSearchRequest) ProtoMessage() {}
 
 func (x *MatchingSearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[121]
+	mi := &file_plugin_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9547,7 +9715,7 @@ func (x *MatchingSearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchingSearchRequest.ProtoReflect.Descriptor instead.
 func (*MatchingSearchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{121}
+	return file_plugin_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *MatchingSearchRequest) GetContext() *ServiceContext {
@@ -9602,7 +9770,7 @@ type MatchingAssignRequest struct {
 
 func (x *MatchingAssignRequest) Reset() {
 	*x = MatchingAssignRequest{}
-	mi := &file_plugin_proto_msgTypes[122]
+	mi := &file_plugin_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9614,7 +9782,7 @@ func (x *MatchingAssignRequest) String() string {
 func (*MatchingAssignRequest) ProtoMessage() {}
 
 func (x *MatchingAssignRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[122]
+	mi := &file_plugin_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9627,7 +9795,7 @@ func (x *MatchingAssignRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchingAssignRequest.ProtoReflect.Descriptor instead.
 func (*MatchingAssignRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{122}
+	return file_plugin_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *MatchingAssignRequest) GetMutation() *MutationContext {
@@ -9683,7 +9851,7 @@ type ArtworkReadRequest struct {
 
 func (x *ArtworkReadRequest) Reset() {
 	*x = ArtworkReadRequest{}
-	mi := &file_plugin_proto_msgTypes[123]
+	mi := &file_plugin_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9695,7 +9863,7 @@ func (x *ArtworkReadRequest) String() string {
 func (*ArtworkReadRequest) ProtoMessage() {}
 
 func (x *ArtworkReadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[123]
+	mi := &file_plugin_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9708,7 +9876,7 @@ func (x *ArtworkReadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtworkReadRequest.ProtoReflect.Descriptor instead.
 func (*ArtworkReadRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{123}
+	return file_plugin_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *ArtworkReadRequest) GetContext() *ServiceContext {
@@ -9774,7 +9942,7 @@ type ArtworkSetRequest struct {
 
 func (x *ArtworkSetRequest) Reset() {
 	*x = ArtworkSetRequest{}
-	mi := &file_plugin_proto_msgTypes[124]
+	mi := &file_plugin_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9786,7 +9954,7 @@ func (x *ArtworkSetRequest) String() string {
 func (*ArtworkSetRequest) ProtoMessage() {}
 
 func (x *ArtworkSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[124]
+	mi := &file_plugin_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9799,7 +9967,7 @@ func (x *ArtworkSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtworkSetRequest.ProtoReflect.Descriptor instead.
 func (*ArtworkSetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{124}
+	return file_plugin_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *ArtworkSetRequest) GetMutation() *MutationContext {
@@ -9862,7 +10030,7 @@ type LibraryListReply struct {
 
 func (x *LibraryListReply) Reset() {
 	*x = LibraryListReply{}
-	mi := &file_plugin_proto_msgTypes[125]
+	mi := &file_plugin_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9874,7 +10042,7 @@ func (x *LibraryListReply) String() string {
 func (*LibraryListReply) ProtoMessage() {}
 
 func (x *LibraryListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[125]
+	mi := &file_plugin_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9887,7 +10055,7 @@ func (x *LibraryListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryListReply.ProtoReflect.Descriptor instead.
 func (*LibraryListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{125}
+	return file_plugin_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *LibraryListReply) GetEntries() []*LibraryEntry {
@@ -9921,7 +10089,7 @@ type LibraryGetReply struct {
 
 func (x *LibraryGetReply) Reset() {
 	*x = LibraryGetReply{}
-	mi := &file_plugin_proto_msgTypes[126]
+	mi := &file_plugin_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9933,7 +10101,7 @@ func (x *LibraryGetReply) String() string {
 func (*LibraryGetReply) ProtoMessage() {}
 
 func (x *LibraryGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[126]
+	mi := &file_plugin_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9946,7 +10114,7 @@ func (x *LibraryGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryGetReply.ProtoReflect.Descriptor instead.
 func (*LibraryGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{126}
+	return file_plugin_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *LibraryGetReply) GetEntry() *LibraryEntry {
@@ -9974,7 +10142,7 @@ type FavoritesListReply struct {
 
 func (x *FavoritesListReply) Reset() {
 	*x = FavoritesListReply{}
-	mi := &file_plugin_proto_msgTypes[127]
+	mi := &file_plugin_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9986,7 +10154,7 @@ func (x *FavoritesListReply) String() string {
 func (*FavoritesListReply) ProtoMessage() {}
 
 func (x *FavoritesListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[127]
+	mi := &file_plugin_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9999,7 +10167,7 @@ func (x *FavoritesListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FavoritesListReply.ProtoReflect.Descriptor instead.
 func (*FavoritesListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{127}
+	return file_plugin_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *FavoritesListReply) GetEntries() []*FavoriteEntry {
@@ -10033,7 +10201,7 @@ type MatchingSearchReply struct {
 
 func (x *MatchingSearchReply) Reset() {
 	*x = MatchingSearchReply{}
-	mi := &file_plugin_proto_msgTypes[128]
+	mi := &file_plugin_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10045,7 +10213,7 @@ func (x *MatchingSearchReply) String() string {
 func (*MatchingSearchReply) ProtoMessage() {}
 
 func (x *MatchingSearchReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[128]
+	mi := &file_plugin_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10058,7 +10226,7 @@ func (x *MatchingSearchReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchingSearchReply.ProtoReflect.Descriptor instead.
 func (*MatchingSearchReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{128}
+	return file_plugin_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *MatchingSearchReply) GetCandidates() []*MatchCandidate {
@@ -10088,7 +10256,7 @@ type ArtworkReadReply struct {
 
 func (x *ArtworkReadReply) Reset() {
 	*x = ArtworkReadReply{}
-	mi := &file_plugin_proto_msgTypes[129]
+	mi := &file_plugin_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10100,7 +10268,7 @@ func (x *ArtworkReadReply) String() string {
 func (*ArtworkReadReply) ProtoMessage() {}
 
 func (x *ArtworkReadReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[129]
+	mi := &file_plugin_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10113,7 +10281,7 @@ func (x *ArtworkReadReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtworkReadReply.ProtoReflect.Descriptor instead.
 func (*ArtworkReadReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{129}
+	return file_plugin_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *ArtworkReadReply) GetEncodedImage() []byte {
@@ -10155,7 +10323,7 @@ type MutationReply struct {
 
 func (x *MutationReply) Reset() {
 	*x = MutationReply{}
-	mi := &file_plugin_proto_msgTypes[130]
+	mi := &file_plugin_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10167,7 +10335,7 @@ func (x *MutationReply) String() string {
 func (*MutationReply) ProtoMessage() {}
 
 func (x *MutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[130]
+	mi := &file_plugin_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10180,7 +10348,7 @@ func (x *MutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationReply.ProtoReflect.Descriptor instead.
 func (*MutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{130}
+	return file_plugin_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *MutationReply) GetResourceId() string {
@@ -10228,7 +10396,7 @@ type LibraryEntry struct {
 
 func (x *LibraryEntry) Reset() {
 	*x = LibraryEntry{}
-	mi := &file_plugin_proto_msgTypes[131]
+	mi := &file_plugin_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10240,7 +10408,7 @@ func (x *LibraryEntry) String() string {
 func (*LibraryEntry) ProtoMessage() {}
 
 func (x *LibraryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[131]
+	mi := &file_plugin_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10253,7 +10421,7 @@ func (x *LibraryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryEntry.ProtoReflect.Descriptor instead.
 func (*LibraryEntry) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{131}
+	return file_plugin_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *LibraryEntry) GetGameId() string {
@@ -10337,7 +10505,7 @@ type FavoriteEntry struct {
 
 func (x *FavoriteEntry) Reset() {
 	*x = FavoriteEntry{}
-	mi := &file_plugin_proto_msgTypes[132]
+	mi := &file_plugin_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10349,7 +10517,7 @@ func (x *FavoriteEntry) String() string {
 func (*FavoriteEntry) ProtoMessage() {}
 
 func (x *FavoriteEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[132]
+	mi := &file_plugin_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10362,7 +10530,7 @@ func (x *FavoriteEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FavoriteEntry.ProtoReflect.Descriptor instead.
 func (*FavoriteEntry) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{132}
+	return file_plugin_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *FavoriteEntry) GetGameId() string {
@@ -10401,7 +10569,7 @@ type MatchCandidate struct {
 
 func (x *MatchCandidate) Reset() {
 	*x = MatchCandidate{}
-	mi := &file_plugin_proto_msgTypes[133]
+	mi := &file_plugin_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10413,7 +10581,7 @@ func (x *MatchCandidate) String() string {
 func (*MatchCandidate) ProtoMessage() {}
 
 func (x *MatchCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[133]
+	mi := &file_plugin_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10426,7 +10594,7 @@ func (x *MatchCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchCandidate.ProtoReflect.Descriptor instead.
 func (*MatchCandidate) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{133}
+	return file_plugin_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *MatchCandidate) GetGameId() string {
@@ -10475,7 +10643,7 @@ type LibraryEvent struct {
 
 func (x *LibraryEvent) Reset() {
 	*x = LibraryEvent{}
-	mi := &file_plugin_proto_msgTypes[134]
+	mi := &file_plugin_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10487,7 +10655,7 @@ func (x *LibraryEvent) String() string {
 func (*LibraryEvent) ProtoMessage() {}
 
 func (x *LibraryEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[134]
+	mi := &file_plugin_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10500,7 +10668,7 @@ func (x *LibraryEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LibraryEvent.ProtoReflect.Descriptor instead.
 func (*LibraryEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{134}
+	return file_plugin_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *LibraryEvent) GetRevision() uint64 {
@@ -10553,7 +10721,7 @@ type ResourceRequest struct {
 
 func (x *ResourceRequest) Reset() {
 	*x = ResourceRequest{}
-	mi := &file_plugin_proto_msgTypes[135]
+	mi := &file_plugin_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10565,7 +10733,7 @@ func (x *ResourceRequest) String() string {
 func (*ResourceRequest) ProtoMessage() {}
 
 func (x *ResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[135]
+	mi := &file_plugin_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10578,7 +10746,7 @@ func (x *ResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceRequest.ProtoReflect.Descriptor instead.
 func (*ResourceRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{135}
+	return file_plugin_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *ResourceRequest) GetContext() *ServiceContext {
@@ -10690,7 +10858,7 @@ type CommonDataSelector struct {
 
 func (x *CommonDataSelector) Reset() {
 	*x = CommonDataSelector{}
-	mi := &file_plugin_proto_msgTypes[136]
+	mi := &file_plugin_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10702,7 +10870,7 @@ func (x *CommonDataSelector) String() string {
 func (*CommonDataSelector) ProtoMessage() {}
 
 func (x *CommonDataSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[136]
+	mi := &file_plugin_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10715,7 +10883,7 @@ func (x *CommonDataSelector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommonDataSelector.ProtoReflect.Descriptor instead.
 func (*CommonDataSelector) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{136}
+	return file_plugin_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *CommonDataSelector) GetCategories() []CommonDataCategory {
@@ -10746,7 +10914,7 @@ type SaveProfileListRequest struct {
 
 func (x *SaveProfileListRequest) Reset() {
 	*x = SaveProfileListRequest{}
-	mi := &file_plugin_proto_msgTypes[137]
+	mi := &file_plugin_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10758,7 +10926,7 @@ func (x *SaveProfileListRequest) String() string {
 func (*SaveProfileListRequest) ProtoMessage() {}
 
 func (x *SaveProfileListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[137]
+	mi := &file_plugin_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10771,7 +10939,7 @@ func (x *SaveProfileListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileListRequest.ProtoReflect.Descriptor instead.
 func (*SaveProfileListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{137}
+	return file_plugin_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *SaveProfileListRequest) GetContext() *ServiceContext {
@@ -10828,7 +10996,7 @@ type SaveProfileGetRequest struct {
 
 func (x *SaveProfileGetRequest) Reset() {
 	*x = SaveProfileGetRequest{}
-	mi := &file_plugin_proto_msgTypes[138]
+	mi := &file_plugin_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10840,7 +11008,7 @@ func (x *SaveProfileGetRequest) String() string {
 func (*SaveProfileGetRequest) ProtoMessage() {}
 
 func (x *SaveProfileGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[138]
+	mi := &file_plugin_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10853,7 +11021,7 @@ func (x *SaveProfileGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileGetRequest.ProtoReflect.Descriptor instead.
 func (*SaveProfileGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{138}
+	return file_plugin_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *SaveProfileGetRequest) GetContext() *ServiceContext {
@@ -10894,7 +11062,7 @@ type SaveProfileCreateRequest struct {
 
 func (x *SaveProfileCreateRequest) Reset() {
 	*x = SaveProfileCreateRequest{}
-	mi := &file_plugin_proto_msgTypes[139]
+	mi := &file_plugin_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10906,7 +11074,7 @@ func (x *SaveProfileCreateRequest) String() string {
 func (*SaveProfileCreateRequest) ProtoMessage() {}
 
 func (x *SaveProfileCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[139]
+	mi := &file_plugin_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10919,7 +11087,7 @@ func (x *SaveProfileCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileCreateRequest.ProtoReflect.Descriptor instead.
 func (*SaveProfileCreateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{139}
+	return file_plugin_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *SaveProfileCreateRequest) GetMutation() *MutationContext {
@@ -10947,7 +11115,7 @@ type SaveProfileUpdateRequest struct {
 
 func (x *SaveProfileUpdateRequest) Reset() {
 	*x = SaveProfileUpdateRequest{}
-	mi := &file_plugin_proto_msgTypes[140]
+	mi := &file_plugin_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10959,7 +11127,7 @@ func (x *SaveProfileUpdateRequest) String() string {
 func (*SaveProfileUpdateRequest) ProtoMessage() {}
 
 func (x *SaveProfileUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[140]
+	mi := &file_plugin_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10972,7 +11140,7 @@ func (x *SaveProfileUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileUpdateRequest.ProtoReflect.Descriptor instead.
 func (*SaveProfileUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{140}
+	return file_plugin_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *SaveProfileUpdateRequest) GetMutation() *MutationContext {
@@ -11007,7 +11175,7 @@ type SaveProfileRemoveRequest struct {
 
 func (x *SaveProfileRemoveRequest) Reset() {
 	*x = SaveProfileRemoveRequest{}
-	mi := &file_plugin_proto_msgTypes[141]
+	mi := &file_plugin_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11019,7 +11187,7 @@ func (x *SaveProfileRemoveRequest) String() string {
 func (*SaveProfileRemoveRequest) ProtoMessage() {}
 
 func (x *SaveProfileRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[141]
+	mi := &file_plugin_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11032,7 +11200,7 @@ func (x *SaveProfileRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileRemoveRequest.ProtoReflect.Descriptor instead.
 func (*SaveProfileRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{141}
+	return file_plugin_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *SaveProfileRemoveRequest) GetMutation() *MutationContext {
@@ -11066,7 +11234,7 @@ type SaveProfilePatch struct {
 
 func (x *SaveProfilePatch) Reset() {
 	*x = SaveProfilePatch{}
-	mi := &file_plugin_proto_msgTypes[142]
+	mi := &file_plugin_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11078,7 +11246,7 @@ func (x *SaveProfilePatch) String() string {
 func (*SaveProfilePatch) ProtoMessage() {}
 
 func (x *SaveProfilePatch) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[142]
+	mi := &file_plugin_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11091,7 +11259,7 @@ func (x *SaveProfilePatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfilePatch.ProtoReflect.Descriptor instead.
 func (*SaveProfilePatch) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{142}
+	return file_plugin_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *SaveProfilePatch) GetFieldMask() []string {
@@ -11127,7 +11295,7 @@ type SaveProfile struct {
 
 func (x *SaveProfile) Reset() {
 	*x = SaveProfile{}
-	mi := &file_plugin_proto_msgTypes[143]
+	mi := &file_plugin_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11139,7 +11307,7 @@ func (x *SaveProfile) String() string {
 func (*SaveProfile) ProtoMessage() {}
 
 func (x *SaveProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[143]
+	mi := &file_plugin_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11152,7 +11320,7 @@ func (x *SaveProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfile.ProtoReflect.Descriptor instead.
 func (*SaveProfile) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{143}
+	return file_plugin_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *SaveProfile) GetProfileId() string {
@@ -11243,7 +11411,7 @@ type SaveDirectory struct {
 
 func (x *SaveDirectory) Reset() {
 	*x = SaveDirectory{}
-	mi := &file_plugin_proto_msgTypes[144]
+	mi := &file_plugin_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11255,7 +11423,7 @@ func (x *SaveDirectory) String() string {
 func (*SaveDirectory) ProtoMessage() {}
 
 func (x *SaveDirectory) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[144]
+	mi := &file_plugin_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11268,7 +11436,7 @@ func (x *SaveDirectory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveDirectory.ProtoReflect.Descriptor instead.
 func (*SaveDirectory) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{144}
+	return file_plugin_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *SaveDirectory) GetApprovedResourceHandle() string {
@@ -11303,7 +11471,7 @@ type SaveProfileListReply struct {
 
 func (x *SaveProfileListReply) Reset() {
 	*x = SaveProfileListReply{}
-	mi := &file_plugin_proto_msgTypes[145]
+	mi := &file_plugin_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11315,7 +11483,7 @@ func (x *SaveProfileListReply) String() string {
 func (*SaveProfileListReply) ProtoMessage() {}
 
 func (x *SaveProfileListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[145]
+	mi := &file_plugin_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11328,7 +11496,7 @@ func (x *SaveProfileListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileListReply.ProtoReflect.Descriptor instead.
 func (*SaveProfileListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{145}
+	return file_plugin_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *SaveProfileListReply) GetProfiles() []*SaveProfile {
@@ -11362,7 +11530,7 @@ type SaveProfileReply struct {
 
 func (x *SaveProfileReply) Reset() {
 	*x = SaveProfileReply{}
-	mi := &file_plugin_proto_msgTypes[146]
+	mi := &file_plugin_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11374,7 +11542,7 @@ func (x *SaveProfileReply) String() string {
 func (*SaveProfileReply) ProtoMessage() {}
 
 func (x *SaveProfileReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[146]
+	mi := &file_plugin_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11387,7 +11555,7 @@ func (x *SaveProfileReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileReply.ProtoReflect.Descriptor instead.
 func (*SaveProfileReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{146}
+	return file_plugin_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *SaveProfileReply) GetProfile() *SaveProfile {
@@ -11415,7 +11583,7 @@ type SaveProfileMutationReply struct {
 
 func (x *SaveProfileMutationReply) Reset() {
 	*x = SaveProfileMutationReply{}
-	mi := &file_plugin_proto_msgTypes[147]
+	mi := &file_plugin_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11427,7 +11595,7 @@ func (x *SaveProfileMutationReply) String() string {
 func (*SaveProfileMutationReply) ProtoMessage() {}
 
 func (x *SaveProfileMutationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[147]
+	mi := &file_plugin_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11440,7 +11608,7 @@ func (x *SaveProfileMutationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveProfileMutationReply.ProtoReflect.Descriptor instead.
 func (*SaveProfileMutationReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{147}
+	return file_plugin_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *SaveProfileMutationReply) GetProfileId() string {
@@ -11476,7 +11644,7 @@ type LocationInspectRequest struct {
 
 func (x *LocationInspectRequest) Reset() {
 	*x = LocationInspectRequest{}
-	mi := &file_plugin_proto_msgTypes[148]
+	mi := &file_plugin_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11488,7 +11656,7 @@ func (x *LocationInspectRequest) String() string {
 func (*LocationInspectRequest) ProtoMessage() {}
 
 func (x *LocationInspectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[148]
+	mi := &file_plugin_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11501,7 +11669,7 @@ func (x *LocationInspectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationInspectRequest.ProtoReflect.Descriptor instead.
 func (*LocationInspectRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{148}
+	return file_plugin_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *LocationInspectRequest) GetContext() *ServiceContext {
@@ -11543,7 +11711,7 @@ type LocationInspectReply struct {
 
 func (x *LocationInspectReply) Reset() {
 	*x = LocationInspectReply{}
-	mi := &file_plugin_proto_msgTypes[149]
+	mi := &file_plugin_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11555,7 +11723,7 @@ func (x *LocationInspectReply) String() string {
 func (*LocationInspectReply) ProtoMessage() {}
 
 func (x *LocationInspectReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[149]
+	mi := &file_plugin_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11568,7 +11736,7 @@ func (x *LocationInspectReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationInspectReply.ProtoReflect.Descriptor instead.
 func (*LocationInspectReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{149}
+	return file_plugin_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *LocationInspectReply) GetLocation() *LocationDescription {
@@ -11603,7 +11771,7 @@ type LocationSizeRequest struct {
 
 func (x *LocationSizeRequest) Reset() {
 	*x = LocationSizeRequest{}
-	mi := &file_plugin_proto_msgTypes[150]
+	mi := &file_plugin_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11615,7 +11783,7 @@ func (x *LocationSizeRequest) String() string {
 func (*LocationSizeRequest) ProtoMessage() {}
 
 func (x *LocationSizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[150]
+	mi := &file_plugin_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11628,7 +11796,7 @@ func (x *LocationSizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationSizeRequest.ProtoReflect.Descriptor instead.
 func (*LocationSizeRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{150}
+	return file_plugin_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *LocationSizeRequest) GetContext() *ServiceContext {
@@ -11665,7 +11833,7 @@ type LocationSizeReply struct {
 
 func (x *LocationSizeReply) Reset() {
 	*x = LocationSizeReply{}
-	mi := &file_plugin_proto_msgTypes[151]
+	mi := &file_plugin_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11677,7 +11845,7 @@ func (x *LocationSizeReply) String() string {
 func (*LocationSizeReply) ProtoMessage() {}
 
 func (x *LocationSizeReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[151]
+	mi := &file_plugin_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11690,7 +11858,7 @@ func (x *LocationSizeReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationSizeReply.ProtoReflect.Descriptor instead.
 func (*LocationSizeReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{151}
+	return file_plugin_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *LocationSizeReply) GetLogicalBytes() uint64 {
@@ -11739,7 +11907,7 @@ type LocationAccessRequest struct {
 
 func (x *LocationAccessRequest) Reset() {
 	*x = LocationAccessRequest{}
-	mi := &file_plugin_proto_msgTypes[152]
+	mi := &file_plugin_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11751,7 +11919,7 @@ func (x *LocationAccessRequest) String() string {
 func (*LocationAccessRequest) ProtoMessage() {}
 
 func (x *LocationAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[152]
+	mi := &file_plugin_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11764,7 +11932,7 @@ func (x *LocationAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationAccessRequest.ProtoReflect.Descriptor instead.
 func (*LocationAccessRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{152}
+	return file_plugin_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *LocationAccessRequest) GetContext() *ServiceContext {
@@ -11798,7 +11966,7 @@ type LocationAccessReply struct {
 
 func (x *LocationAccessReply) Reset() {
 	*x = LocationAccessReply{}
-	mi := &file_plugin_proto_msgTypes[153]
+	mi := &file_plugin_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11810,7 +11978,7 @@ func (x *LocationAccessReply) String() string {
 func (*LocationAccessReply) ProtoMessage() {}
 
 func (x *LocationAccessReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[153]
+	mi := &file_plugin_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11823,7 +11991,7 @@ func (x *LocationAccessReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationAccessReply.ProtoReflect.Descriptor instead.
 func (*LocationAccessReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{153}
+	return file_plugin_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *LocationAccessReply) GetEntries() []*LocationAccessEntry {
@@ -11851,7 +12019,7 @@ type LocationLastModifiedRequest struct {
 
 func (x *LocationLastModifiedRequest) Reset() {
 	*x = LocationLastModifiedRequest{}
-	mi := &file_plugin_proto_msgTypes[154]
+	mi := &file_plugin_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11863,7 +12031,7 @@ func (x *LocationLastModifiedRequest) String() string {
 func (*LocationLastModifiedRequest) ProtoMessage() {}
 
 func (x *LocationLastModifiedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[154]
+	mi := &file_plugin_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11876,7 +12044,7 @@ func (x *LocationLastModifiedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationLastModifiedRequest.ProtoReflect.Descriptor instead.
 func (*LocationLastModifiedRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{154}
+	return file_plugin_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *LocationLastModifiedRequest) GetContext() *ServiceContext {
@@ -11911,7 +12079,7 @@ type LocationLastModifiedReply struct {
 
 func (x *LocationLastModifiedReply) Reset() {
 	*x = LocationLastModifiedReply{}
-	mi := &file_plugin_proto_msgTypes[155]
+	mi := &file_plugin_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11923,7 +12091,7 @@ func (x *LocationLastModifiedReply) String() string {
 func (*LocationLastModifiedReply) ProtoMessage() {}
 
 func (x *LocationLastModifiedReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[155]
+	mi := &file_plugin_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11936,7 +12104,7 @@ func (x *LocationLastModifiedReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationLastModifiedReply.ProtoReflect.Descriptor instead.
 func (*LocationLastModifiedReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{155}
+	return file_plugin_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *LocationLastModifiedReply) GetEntries() []*LocationTimestamp {
@@ -11974,7 +12142,7 @@ type LocationFingerprintRequest struct {
 
 func (x *LocationFingerprintRequest) Reset() {
 	*x = LocationFingerprintRequest{}
-	mi := &file_plugin_proto_msgTypes[156]
+	mi := &file_plugin_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11986,7 +12154,7 @@ func (x *LocationFingerprintRequest) String() string {
 func (*LocationFingerprintRequest) ProtoMessage() {}
 
 func (x *LocationFingerprintRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[156]
+	mi := &file_plugin_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11999,7 +12167,7 @@ func (x *LocationFingerprintRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationFingerprintRequest.ProtoReflect.Descriptor instead.
 func (*LocationFingerprintRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{156}
+	return file_plugin_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *LocationFingerprintRequest) GetContext() *ServiceContext {
@@ -12064,7 +12232,7 @@ type LocationFingerprintReply struct {
 
 func (x *LocationFingerprintReply) Reset() {
 	*x = LocationFingerprintReply{}
-	mi := &file_plugin_proto_msgTypes[157]
+	mi := &file_plugin_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12076,7 +12244,7 @@ func (x *LocationFingerprintReply) String() string {
 func (*LocationFingerprintReply) ProtoMessage() {}
 
 func (x *LocationFingerprintReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[157]
+	mi := &file_plugin_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12089,7 +12257,7 @@ func (x *LocationFingerprintReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationFingerprintReply.ProtoReflect.Descriptor instead.
 func (*LocationFingerprintReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{157}
+	return file_plugin_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *LocationFingerprintReply) GetSnapshotId() string {
@@ -12176,7 +12344,7 @@ type LocationCompareRequest struct {
 
 func (x *LocationCompareRequest) Reset() {
 	*x = LocationCompareRequest{}
-	mi := &file_plugin_proto_msgTypes[158]
+	mi := &file_plugin_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12188,7 +12356,7 @@ func (x *LocationCompareRequest) String() string {
 func (*LocationCompareRequest) ProtoMessage() {}
 
 func (x *LocationCompareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[158]
+	mi := &file_plugin_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12201,7 +12369,7 @@ func (x *LocationCompareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationCompareRequest.ProtoReflect.Descriptor instead.
 func (*LocationCompareRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{158}
+	return file_plugin_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *LocationCompareRequest) GetContext() *ServiceContext {
@@ -12258,7 +12426,7 @@ type LocationCompareReply struct {
 
 func (x *LocationCompareReply) Reset() {
 	*x = LocationCompareReply{}
-	mi := &file_plugin_proto_msgTypes[159]
+	mi := &file_plugin_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12270,7 +12438,7 @@ func (x *LocationCompareReply) String() string {
 func (*LocationCompareReply) ProtoMessage() {}
 
 func (x *LocationCompareReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[159]
+	mi := &file_plugin_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12283,7 +12451,7 @@ func (x *LocationCompareReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationCompareReply.ProtoReflect.Descriptor instead.
 func (*LocationCompareReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{159}
+	return file_plugin_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *LocationCompareReply) GetChanges() []*LocationChange {
@@ -12325,7 +12493,7 @@ type LocationAvailabilityWatchRequest struct {
 
 func (x *LocationAvailabilityWatchRequest) Reset() {
 	*x = LocationAvailabilityWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[160]
+	mi := &file_plugin_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12337,7 +12505,7 @@ func (x *LocationAvailabilityWatchRequest) String() string {
 func (*LocationAvailabilityWatchRequest) ProtoMessage() {}
 
 func (x *LocationAvailabilityWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[160]
+	mi := &file_plugin_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12350,7 +12518,7 @@ func (x *LocationAvailabilityWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationAvailabilityWatchRequest.ProtoReflect.Descriptor instead.
 func (*LocationAvailabilityWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{160}
+	return file_plugin_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *LocationAvailabilityWatchRequest) GetContext() *ServiceContext {
@@ -12387,7 +12555,7 @@ type LocationAvailabilityEvent struct {
 
 func (x *LocationAvailabilityEvent) Reset() {
 	*x = LocationAvailabilityEvent{}
-	mi := &file_plugin_proto_msgTypes[161]
+	mi := &file_plugin_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12399,7 +12567,7 @@ func (x *LocationAvailabilityEvent) String() string {
 func (*LocationAvailabilityEvent) ProtoMessage() {}
 
 func (x *LocationAvailabilityEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[161]
+	mi := &file_plugin_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12412,7 +12580,7 @@ func (x *LocationAvailabilityEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationAvailabilityEvent.ProtoReflect.Descriptor instead.
 func (*LocationAvailabilityEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{161}
+	return file_plugin_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *LocationAvailabilityEvent) GetSequence() uint64 {
@@ -12470,7 +12638,7 @@ type LocationDescription struct {
 
 func (x *LocationDescription) Reset() {
 	*x = LocationDescription{}
-	mi := &file_plugin_proto_msgTypes[162]
+	mi := &file_plugin_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12482,7 +12650,7 @@ func (x *LocationDescription) String() string {
 func (*LocationDescription) ProtoMessage() {}
 
 func (x *LocationDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[162]
+	mi := &file_plugin_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12495,7 +12663,7 @@ func (x *LocationDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationDescription.ProtoReflect.Descriptor instead.
 func (*LocationDescription) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{162}
+	return file_plugin_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *LocationDescription) GetResourceId() string {
@@ -12594,7 +12762,7 @@ type LocationObservation struct {
 
 func (x *LocationObservation) Reset() {
 	*x = LocationObservation{}
-	mi := &file_plugin_proto_msgTypes[163]
+	mi := &file_plugin_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12606,7 +12774,7 @@ func (x *LocationObservation) String() string {
 func (*LocationObservation) ProtoMessage() {}
 
 func (x *LocationObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[163]
+	mi := &file_plugin_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12619,7 +12787,7 @@ func (x *LocationObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationObservation.ProtoReflect.Descriptor instead.
 func (*LocationObservation) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{163}
+	return file_plugin_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *LocationObservation) GetEntryHandle() string {
@@ -12662,7 +12830,7 @@ type LocationAccessEntry struct {
 
 func (x *LocationAccessEntry) Reset() {
 	*x = LocationAccessEntry{}
-	mi := &file_plugin_proto_msgTypes[164]
+	mi := &file_plugin_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12674,7 +12842,7 @@ func (x *LocationAccessEntry) String() string {
 func (*LocationAccessEntry) ProtoMessage() {}
 
 func (x *LocationAccessEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[164]
+	mi := &file_plugin_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12687,7 +12855,7 @@ func (x *LocationAccessEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationAccessEntry.ProtoReflect.Descriptor instead.
 func (*LocationAccessEntry) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{164}
+	return file_plugin_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *LocationAccessEntry) GetEntryHandle() string {
@@ -12729,7 +12897,7 @@ type LocationTimestamp struct {
 
 func (x *LocationTimestamp) Reset() {
 	*x = LocationTimestamp{}
-	mi := &file_plugin_proto_msgTypes[165]
+	mi := &file_plugin_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12741,7 +12909,7 @@ func (x *LocationTimestamp) String() string {
 func (*LocationTimestamp) ProtoMessage() {}
 
 func (x *LocationTimestamp) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[165]
+	mi := &file_plugin_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12754,7 +12922,7 @@ func (x *LocationTimestamp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationTimestamp.ProtoReflect.Descriptor instead.
 func (*LocationTimestamp) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{165}
+	return file_plugin_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *LocationTimestamp) GetEntryHandle() string {
@@ -12793,7 +12961,7 @@ type LocationChange struct {
 
 func (x *LocationChange) Reset() {
 	*x = LocationChange{}
-	mi := &file_plugin_proto_msgTypes[166]
+	mi := &file_plugin_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12805,7 +12973,7 @@ func (x *LocationChange) String() string {
 func (*LocationChange) ProtoMessage() {}
 
 func (x *LocationChange) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[166]
+	mi := &file_plugin_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12818,7 +12986,7 @@ func (x *LocationChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocationChange.ProtoReflect.Descriptor instead.
 func (*LocationChange) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{166}
+	return file_plugin_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *LocationChange) GetEntryHandle() string {
@@ -12868,7 +13036,7 @@ type DiagnosticListRequest struct {
 
 func (x *DiagnosticListRequest) Reset() {
 	*x = DiagnosticListRequest{}
-	mi := &file_plugin_proto_msgTypes[167]
+	mi := &file_plugin_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12880,7 +13048,7 @@ func (x *DiagnosticListRequest) String() string {
 func (*DiagnosticListRequest) ProtoMessage() {}
 
 func (x *DiagnosticListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[167]
+	mi := &file_plugin_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12893,7 +13061,7 @@ func (x *DiagnosticListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticListRequest.ProtoReflect.Descriptor instead.
 func (*DiagnosticListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{167}
+	return file_plugin_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *DiagnosticListRequest) GetPage() *PageRequest {
@@ -12935,7 +13103,7 @@ type DiagnosticGetRequest struct {
 
 func (x *DiagnosticGetRequest) Reset() {
 	*x = DiagnosticGetRequest{}
-	mi := &file_plugin_proto_msgTypes[168]
+	mi := &file_plugin_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12947,7 +13115,7 @@ func (x *DiagnosticGetRequest) String() string {
 func (*DiagnosticGetRequest) ProtoMessage() {}
 
 func (x *DiagnosticGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[168]
+	mi := &file_plugin_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12960,7 +13128,7 @@ func (x *DiagnosticGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticGetRequest.ProtoReflect.Descriptor instead.
 func (*DiagnosticGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{168}
+	return file_plugin_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *DiagnosticGetRequest) GetContext() *ServiceContext {
@@ -12997,7 +13165,7 @@ type DiagnosticWatchRequest struct {
 
 func (x *DiagnosticWatchRequest) Reset() {
 	*x = DiagnosticWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[169]
+	mi := &file_plugin_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13009,7 +13177,7 @@ func (x *DiagnosticWatchRequest) String() string {
 func (*DiagnosticWatchRequest) ProtoMessage() {}
 
 func (x *DiagnosticWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[169]
+	mi := &file_plugin_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13022,7 +13190,7 @@ func (x *DiagnosticWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticWatchRequest.ProtoReflect.Descriptor instead.
 func (*DiagnosticWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{169}
+	return file_plugin_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *DiagnosticWatchRequest) GetContext() *ServiceContext {
@@ -13078,7 +13246,7 @@ type DiagnosticReport struct {
 
 func (x *DiagnosticReport) Reset() {
 	*x = DiagnosticReport{}
-	mi := &file_plugin_proto_msgTypes[170]
+	mi := &file_plugin_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13090,7 +13258,7 @@ func (x *DiagnosticReport) String() string {
 func (*DiagnosticReport) ProtoMessage() {}
 
 func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[170]
+	mi := &file_plugin_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13103,7 +13271,7 @@ func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticReport.ProtoReflect.Descriptor instead.
 func (*DiagnosticReport) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{170}
+	return file_plugin_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *DiagnosticReport) GetReportId() string {
@@ -13187,7 +13355,7 @@ type DiagnosticListReply struct {
 
 func (x *DiagnosticListReply) Reset() {
 	*x = DiagnosticListReply{}
-	mi := &file_plugin_proto_msgTypes[171]
+	mi := &file_plugin_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13199,7 +13367,7 @@ func (x *DiagnosticListReply) String() string {
 func (*DiagnosticListReply) ProtoMessage() {}
 
 func (x *DiagnosticListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[171]
+	mi := &file_plugin_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13212,7 +13380,7 @@ func (x *DiagnosticListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticListReply.ProtoReflect.Descriptor instead.
 func (*DiagnosticListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{171}
+	return file_plugin_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *DiagnosticListReply) GetReports() []*DiagnosticReport {
@@ -13245,7 +13413,7 @@ type DiagnosticGetReply struct {
 
 func (x *DiagnosticGetReply) Reset() {
 	*x = DiagnosticGetReply{}
-	mi := &file_plugin_proto_msgTypes[172]
+	mi := &file_plugin_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13257,7 +13425,7 @@ func (x *DiagnosticGetReply) String() string {
 func (*DiagnosticGetReply) ProtoMessage() {}
 
 func (x *DiagnosticGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[172]
+	mi := &file_plugin_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13270,7 +13438,7 @@ func (x *DiagnosticGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticGetReply.ProtoReflect.Descriptor instead.
 func (*DiagnosticGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{172}
+	return file_plugin_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *DiagnosticGetReply) GetReport() *DiagnosticReport {
@@ -13291,7 +13459,7 @@ type DiagnosticEvent struct {
 
 func (x *DiagnosticEvent) Reset() {
 	*x = DiagnosticEvent{}
-	mi := &file_plugin_proto_msgTypes[173]
+	mi := &file_plugin_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13303,7 +13471,7 @@ func (x *DiagnosticEvent) String() string {
 func (*DiagnosticEvent) ProtoMessage() {}
 
 func (x *DiagnosticEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[173]
+	mi := &file_plugin_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13316,7 +13484,7 @@ func (x *DiagnosticEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticEvent.ProtoReflect.Descriptor instead.
 func (*DiagnosticEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{173}
+	return file_plugin_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *DiagnosticEvent) GetRevision() uint64 {
@@ -13351,7 +13519,7 @@ type ComputerListRequest struct {
 
 func (x *ComputerListRequest) Reset() {
 	*x = ComputerListRequest{}
-	mi := &file_plugin_proto_msgTypes[174]
+	mi := &file_plugin_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13363,7 +13531,7 @@ func (x *ComputerListRequest) String() string {
 func (*ComputerListRequest) ProtoMessage() {}
 
 func (x *ComputerListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[174]
+	mi := &file_plugin_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13376,7 +13544,7 @@ func (x *ComputerListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerListRequest.ProtoReflect.Descriptor instead.
 func (*ComputerListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{174}
+	return file_plugin_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *ComputerListRequest) GetPage() *PageRequest {
@@ -13411,7 +13579,7 @@ type ComputerGetRequest struct {
 
 func (x *ComputerGetRequest) Reset() {
 	*x = ComputerGetRequest{}
-	mi := &file_plugin_proto_msgTypes[175]
+	mi := &file_plugin_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13423,7 +13591,7 @@ func (x *ComputerGetRequest) String() string {
 func (*ComputerGetRequest) ProtoMessage() {}
 
 func (x *ComputerGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[175]
+	mi := &file_plugin_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13436,7 +13604,7 @@ func (x *ComputerGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerGetRequest.ProtoReflect.Descriptor instead.
 func (*ComputerGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{175}
+	return file_plugin_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *ComputerGetRequest) GetContext() *ServiceContext {
@@ -13472,7 +13640,7 @@ type ComputerWatchRequest struct {
 
 func (x *ComputerWatchRequest) Reset() {
 	*x = ComputerWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[176]
+	mi := &file_plugin_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13484,7 +13652,7 @@ func (x *ComputerWatchRequest) String() string {
 func (*ComputerWatchRequest) ProtoMessage() {}
 
 func (x *ComputerWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[176]
+	mi := &file_plugin_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13497,7 +13665,7 @@ func (x *ComputerWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerWatchRequest.ProtoReflect.Descriptor instead.
 func (*ComputerWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{176}
+	return file_plugin_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *ComputerWatchRequest) GetContext() *ServiceContext {
@@ -13545,7 +13713,7 @@ type ComputerReport struct {
 
 func (x *ComputerReport) Reset() {
 	*x = ComputerReport{}
-	mi := &file_plugin_proto_msgTypes[177]
+	mi := &file_plugin_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13557,7 +13725,7 @@ func (x *ComputerReport) String() string {
 func (*ComputerReport) ProtoMessage() {}
 
 func (x *ComputerReport) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[177]
+	mi := &file_plugin_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13570,7 +13738,7 @@ func (x *ComputerReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerReport.ProtoReflect.Descriptor instead.
 func (*ComputerReport) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{177}
+	return file_plugin_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *ComputerReport) GetRecordId() string {
@@ -13647,7 +13815,7 @@ type ComputerListReply struct {
 
 func (x *ComputerListReply) Reset() {
 	*x = ComputerListReply{}
-	mi := &file_plugin_proto_msgTypes[178]
+	mi := &file_plugin_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13659,7 +13827,7 @@ func (x *ComputerListReply) String() string {
 func (*ComputerListReply) ProtoMessage() {}
 
 func (x *ComputerListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[178]
+	mi := &file_plugin_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13672,7 +13840,7 @@ func (x *ComputerListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerListReply.ProtoReflect.Descriptor instead.
 func (*ComputerListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{178}
+	return file_plugin_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *ComputerListReply) GetReports() []*ComputerReport {
@@ -13705,7 +13873,7 @@ type ComputerGetReply struct {
 
 func (x *ComputerGetReply) Reset() {
 	*x = ComputerGetReply{}
-	mi := &file_plugin_proto_msgTypes[179]
+	mi := &file_plugin_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13717,7 +13885,7 @@ func (x *ComputerGetReply) String() string {
 func (*ComputerGetReply) ProtoMessage() {}
 
 func (x *ComputerGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[179]
+	mi := &file_plugin_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13730,7 +13898,7 @@ func (x *ComputerGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerGetReply.ProtoReflect.Descriptor instead.
 func (*ComputerGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{179}
+	return file_plugin_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *ComputerGetReply) GetReport() *ComputerReport {
@@ -13751,7 +13919,7 @@ type ComputerEvent struct {
 
 func (x *ComputerEvent) Reset() {
 	*x = ComputerEvent{}
-	mi := &file_plugin_proto_msgTypes[180]
+	mi := &file_plugin_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13763,7 +13931,7 @@ func (x *ComputerEvent) String() string {
 func (*ComputerEvent) ProtoMessage() {}
 
 func (x *ComputerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[180]
+	mi := &file_plugin_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13776,7 +13944,7 @@ func (x *ComputerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ComputerEvent.ProtoReflect.Descriptor instead.
 func (*ComputerEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{180}
+	return file_plugin_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *ComputerEvent) GetRevision() uint64 {
@@ -13812,7 +13980,7 @@ type PresenceListRequest struct {
 
 func (x *PresenceListRequest) Reset() {
 	*x = PresenceListRequest{}
-	mi := &file_plugin_proto_msgTypes[181]
+	mi := &file_plugin_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13824,7 +13992,7 @@ func (x *PresenceListRequest) String() string {
 func (*PresenceListRequest) ProtoMessage() {}
 
 func (x *PresenceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[181]
+	mi := &file_plugin_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13837,7 +14005,7 @@ func (x *PresenceListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceListRequest.ProtoReflect.Descriptor instead.
 func (*PresenceListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{181}
+	return file_plugin_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *PresenceListRequest) GetPage() *PageRequest {
@@ -13879,7 +14047,7 @@ type PresenceGetRequest struct {
 
 func (x *PresenceGetRequest) Reset() {
 	*x = PresenceGetRequest{}
-	mi := &file_plugin_proto_msgTypes[182]
+	mi := &file_plugin_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13891,7 +14059,7 @@ func (x *PresenceGetRequest) String() string {
 func (*PresenceGetRequest) ProtoMessage() {}
 
 func (x *PresenceGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[182]
+	mi := &file_plugin_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13904,7 +14072,7 @@ func (x *PresenceGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceGetRequest.ProtoReflect.Descriptor instead.
 func (*PresenceGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{182}
+	return file_plugin_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *PresenceGetRequest) GetContext() *ServiceContext {
@@ -13941,7 +14109,7 @@ type PresenceWatchRequest struct {
 
 func (x *PresenceWatchRequest) Reset() {
 	*x = PresenceWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[183]
+	mi := &file_plugin_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13953,7 +14121,7 @@ func (x *PresenceWatchRequest) String() string {
 func (*PresenceWatchRequest) ProtoMessage() {}
 
 func (x *PresenceWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[183]
+	mi := &file_plugin_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13966,7 +14134,7 @@ func (x *PresenceWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceWatchRequest.ProtoReflect.Descriptor instead.
 func (*PresenceWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{183}
+	return file_plugin_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *PresenceWatchRequest) GetContext() *ServiceContext {
@@ -14021,7 +14189,7 @@ type PresenceRecord struct {
 
 func (x *PresenceRecord) Reset() {
 	*x = PresenceRecord{}
-	mi := &file_plugin_proto_msgTypes[184]
+	mi := &file_plugin_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14033,7 +14201,7 @@ func (x *PresenceRecord) String() string {
 func (*PresenceRecord) ProtoMessage() {}
 
 func (x *PresenceRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[184]
+	mi := &file_plugin_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14046,7 +14214,7 @@ func (x *PresenceRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceRecord.ProtoReflect.Descriptor instead.
 func (*PresenceRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{184}
+	return file_plugin_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *PresenceRecord) GetPresenceId() string {
@@ -14123,7 +14291,7 @@ type PresenceListReply struct {
 
 func (x *PresenceListReply) Reset() {
 	*x = PresenceListReply{}
-	mi := &file_plugin_proto_msgTypes[185]
+	mi := &file_plugin_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14135,7 +14303,7 @@ func (x *PresenceListReply) String() string {
 func (*PresenceListReply) ProtoMessage() {}
 
 func (x *PresenceListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[185]
+	mi := &file_plugin_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14148,7 +14316,7 @@ func (x *PresenceListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceListReply.ProtoReflect.Descriptor instead.
 func (*PresenceListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{185}
+	return file_plugin_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *PresenceListReply) GetRecords() []*PresenceRecord {
@@ -14181,7 +14349,7 @@ type PresenceGetReply struct {
 
 func (x *PresenceGetReply) Reset() {
 	*x = PresenceGetReply{}
-	mi := &file_plugin_proto_msgTypes[186]
+	mi := &file_plugin_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14193,7 +14361,7 @@ func (x *PresenceGetReply) String() string {
 func (*PresenceGetReply) ProtoMessage() {}
 
 func (x *PresenceGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[186]
+	mi := &file_plugin_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14206,7 +14374,7 @@ func (x *PresenceGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceGetReply.ProtoReflect.Descriptor instead.
 func (*PresenceGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{186}
+	return file_plugin_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *PresenceGetReply) GetRecord() *PresenceRecord {
@@ -14227,7 +14395,7 @@ type PresenceEvent struct {
 
 func (x *PresenceEvent) Reset() {
 	*x = PresenceEvent{}
-	mi := &file_plugin_proto_msgTypes[187]
+	mi := &file_plugin_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14239,7 +14407,7 @@ func (x *PresenceEvent) String() string {
 func (*PresenceEvent) ProtoMessage() {}
 
 func (x *PresenceEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[187]
+	mi := &file_plugin_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14252,7 +14420,7 @@ func (x *PresenceEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceEvent.ProtoReflect.Descriptor instead.
 func (*PresenceEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{187}
+	return file_plugin_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *PresenceEvent) GetSequence() uint64 {
@@ -14288,7 +14456,7 @@ type PerformanceListRequest struct {
 
 func (x *PerformanceListRequest) Reset() {
 	*x = PerformanceListRequest{}
-	mi := &file_plugin_proto_msgTypes[188]
+	mi := &file_plugin_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14300,7 +14468,7 @@ func (x *PerformanceListRequest) String() string {
 func (*PerformanceListRequest) ProtoMessage() {}
 
 func (x *PerformanceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[188]
+	mi := &file_plugin_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14313,7 +14481,7 @@ func (x *PerformanceListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceListRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceListRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{188}
+	return file_plugin_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *PerformanceListRequest) GetPage() *PageRequest {
@@ -14356,7 +14524,7 @@ type PerformanceGetRequest struct {
 
 func (x *PerformanceGetRequest) Reset() {
 	*x = PerformanceGetRequest{}
-	mi := &file_plugin_proto_msgTypes[189]
+	mi := &file_plugin_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14368,7 +14536,7 @@ func (x *PerformanceGetRequest) String() string {
 func (*PerformanceGetRequest) ProtoMessage() {}
 
 func (x *PerformanceGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[189]
+	mi := &file_plugin_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14381,7 +14549,7 @@ func (x *PerformanceGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceGetRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceGetRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{189}
+	return file_plugin_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *PerformanceGetRequest) GetContext() *ServiceContext {
@@ -14426,7 +14594,7 @@ type PerformanceWatchRequest struct {
 
 func (x *PerformanceWatchRequest) Reset() {
 	*x = PerformanceWatchRequest{}
-	mi := &file_plugin_proto_msgTypes[190]
+	mi := &file_plugin_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14438,7 +14606,7 @@ func (x *PerformanceWatchRequest) String() string {
 func (*PerformanceWatchRequest) ProtoMessage() {}
 
 func (x *PerformanceWatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[190]
+	mi := &file_plugin_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14451,7 +14619,7 @@ func (x *PerformanceWatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceWatchRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceWatchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{190}
+	return file_plugin_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *PerformanceWatchRequest) GetContext() *ServiceContext {
@@ -14511,7 +14679,7 @@ type PerformanceQuerySeriesRequest struct {
 
 func (x *PerformanceQuerySeriesRequest) Reset() {
 	*x = PerformanceQuerySeriesRequest{}
-	mi := &file_plugin_proto_msgTypes[191]
+	mi := &file_plugin_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14523,7 +14691,7 @@ func (x *PerformanceQuerySeriesRequest) String() string {
 func (*PerformanceQuerySeriesRequest) ProtoMessage() {}
 
 func (x *PerformanceQuerySeriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[191]
+	mi := &file_plugin_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14536,7 +14704,7 @@ func (x *PerformanceQuerySeriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceQuerySeriesRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceQuerySeriesRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{191}
+	return file_plugin_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *PerformanceQuerySeriesRequest) GetContext() *ServiceContext {
@@ -14603,7 +14771,7 @@ type PerformanceAggregateRequest struct {
 
 func (x *PerformanceAggregateRequest) Reset() {
 	*x = PerformanceAggregateRequest{}
-	mi := &file_plugin_proto_msgTypes[192]
+	mi := &file_plugin_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14615,7 +14783,7 @@ func (x *PerformanceAggregateRequest) String() string {
 func (*PerformanceAggregateRequest) ProtoMessage() {}
 
 func (x *PerformanceAggregateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[192]
+	mi := &file_plugin_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14628,7 +14796,7 @@ func (x *PerformanceAggregateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceAggregateRequest.ProtoReflect.Descriptor instead.
 func (*PerformanceAggregateRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{192}
+	return file_plugin_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *PerformanceAggregateRequest) GetContext() *ServiceContext {
@@ -14696,7 +14864,7 @@ type PerformanceSeries struct {
 
 func (x *PerformanceSeries) Reset() {
 	*x = PerformanceSeries{}
-	mi := &file_plugin_proto_msgTypes[193]
+	mi := &file_plugin_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14708,7 +14876,7 @@ func (x *PerformanceSeries) String() string {
 func (*PerformanceSeries) ProtoMessage() {}
 
 func (x *PerformanceSeries) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[193]
+	mi := &file_plugin_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14721,7 +14889,7 @@ func (x *PerformanceSeries) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceSeries.ProtoReflect.Descriptor instead.
 func (*PerformanceSeries) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{193}
+	return file_plugin_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *PerformanceSeries) GetSeriesId() string {
@@ -14791,7 +14959,7 @@ type PerformanceListReply struct {
 
 func (x *PerformanceListReply) Reset() {
 	*x = PerformanceListReply{}
-	mi := &file_plugin_proto_msgTypes[194]
+	mi := &file_plugin_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14803,7 +14971,7 @@ func (x *PerformanceListReply) String() string {
 func (*PerformanceListReply) ProtoMessage() {}
 
 func (x *PerformanceListReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[194]
+	mi := &file_plugin_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14816,7 +14984,7 @@ func (x *PerformanceListReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceListReply.ProtoReflect.Descriptor instead.
 func (*PerformanceListReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{194}
+	return file_plugin_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *PerformanceListReply) GetSeries() []*PerformanceSeries {
@@ -14849,7 +15017,7 @@ type PerformanceGetReply struct {
 
 func (x *PerformanceGetReply) Reset() {
 	*x = PerformanceGetReply{}
-	mi := &file_plugin_proto_msgTypes[195]
+	mi := &file_plugin_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14861,7 +15029,7 @@ func (x *PerformanceGetReply) String() string {
 func (*PerformanceGetReply) ProtoMessage() {}
 
 func (x *PerformanceGetReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[195]
+	mi := &file_plugin_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14874,7 +15042,7 @@ func (x *PerformanceGetReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceGetReply.ProtoReflect.Descriptor instead.
 func (*PerformanceGetReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{195}
+	return file_plugin_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *PerformanceGetReply) GetSeries() *PerformanceSeries {
@@ -14895,7 +15063,7 @@ type PerformanceEvent struct {
 
 func (x *PerformanceEvent) Reset() {
 	*x = PerformanceEvent{}
-	mi := &file_plugin_proto_msgTypes[196]
+	mi := &file_plugin_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14907,7 +15075,7 @@ func (x *PerformanceEvent) String() string {
 func (*PerformanceEvent) ProtoMessage() {}
 
 func (x *PerformanceEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[196]
+	mi := &file_plugin_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14920,7 +15088,7 @@ func (x *PerformanceEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceEvent.ProtoReflect.Descriptor instead.
 func (*PerformanceEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{196}
+	return file_plugin_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *PerformanceEvent) GetSequence() uint64 {
@@ -14956,7 +15124,7 @@ type PerformanceQuerySeriesReply struct {
 
 func (x *PerformanceQuerySeriesReply) Reset() {
 	*x = PerformanceQuerySeriesReply{}
-	mi := &file_plugin_proto_msgTypes[197]
+	mi := &file_plugin_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14968,7 +15136,7 @@ func (x *PerformanceQuerySeriesReply) String() string {
 func (*PerformanceQuerySeriesReply) ProtoMessage() {}
 
 func (x *PerformanceQuerySeriesReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[197]
+	mi := &file_plugin_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14981,7 +15149,7 @@ func (x *PerformanceQuerySeriesReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceQuerySeriesReply.ProtoReflect.Descriptor instead.
 func (*PerformanceQuerySeriesReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{197}
+	return file_plugin_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *PerformanceQuerySeriesReply) GetSamples() []*PerformanceSample {
@@ -15027,7 +15195,7 @@ type PerformanceAggregateReply struct {
 
 func (x *PerformanceAggregateReply) Reset() {
 	*x = PerformanceAggregateReply{}
-	mi := &file_plugin_proto_msgTypes[198]
+	mi := &file_plugin_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15039,7 +15207,7 @@ func (x *PerformanceAggregateReply) String() string {
 func (*PerformanceAggregateReply) ProtoMessage() {}
 
 func (x *PerformanceAggregateReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[198]
+	mi := &file_plugin_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15052,7 +15220,7 @@ func (x *PerformanceAggregateReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerformanceAggregateReply.ProtoReflect.Descriptor instead.
 func (*PerformanceAggregateReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{198}
+	return file_plugin_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *PerformanceAggregateReply) GetMetric() string {
@@ -15120,7 +15288,7 @@ type ResourceReply struct {
 
 func (x *ResourceReply) Reset() {
 	*x = ResourceReply{}
-	mi := &file_plugin_proto_msgTypes[199]
+	mi := &file_plugin_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15132,7 +15300,7 @@ func (x *ResourceReply) String() string {
 func (*ResourceReply) ProtoMessage() {}
 
 func (x *ResourceReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[199]
+	mi := &file_plugin_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15145,7 +15313,7 @@ func (x *ResourceReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceReply.ProtoReflect.Descriptor instead.
 func (*ResourceReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{199}
+	return file_plugin_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *ResourceReply) GetResourceId() string {
@@ -15216,7 +15384,7 @@ type ResourceEvent struct {
 
 func (x *ResourceEvent) Reset() {
 	*x = ResourceEvent{}
-	mi := &file_plugin_proto_msgTypes[200]
+	mi := &file_plugin_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15228,7 +15396,7 @@ func (x *ResourceEvent) String() string {
 func (*ResourceEvent) ProtoMessage() {}
 
 func (x *ResourceEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[200]
+	mi := &file_plugin_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15241,7 +15409,7 @@ func (x *ResourceEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceEvent.ProtoReflect.Descriptor instead.
 func (*ResourceEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{200}
+	return file_plugin_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *ResourceEvent) GetRevision() uint64 {
@@ -15286,7 +15454,7 @@ type GameLaunchRequest struct {
 
 func (x *GameLaunchRequest) Reset() {
 	*x = GameLaunchRequest{}
-	mi := &file_plugin_proto_msgTypes[201]
+	mi := &file_plugin_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15298,7 +15466,7 @@ func (x *GameLaunchRequest) String() string {
 func (*GameLaunchRequest) ProtoMessage() {}
 
 func (x *GameLaunchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[201]
+	mi := &file_plugin_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15311,7 +15479,7 @@ func (x *GameLaunchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameLaunchRequest.ProtoReflect.Descriptor instead.
 func (*GameLaunchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{201}
+	return file_plugin_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *GameLaunchRequest) GetContext() *ServiceContext {
@@ -15368,7 +15536,7 @@ type GameLaunchReply struct {
 
 func (x *GameLaunchReply) Reset() {
 	*x = GameLaunchReply{}
-	mi := &file_plugin_proto_msgTypes[202]
+	mi := &file_plugin_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15380,7 +15548,7 @@ func (x *GameLaunchReply) String() string {
 func (*GameLaunchReply) ProtoMessage() {}
 
 func (x *GameLaunchReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[202]
+	mi := &file_plugin_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15393,7 +15561,7 @@ func (x *GameLaunchReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameLaunchReply.ProtoReflect.Descriptor instead.
 func (*GameLaunchReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{202}
+	return file_plugin_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *GameLaunchReply) GetJobId() string {
@@ -15438,13 +15606,17 @@ type CustomLaunchRequest struct {
 	EnvironmentSet         map[string]string      `protobuf:"bytes,10,rep,name=environment_set,json=environmentSet,proto3" json:"environment_set,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	EnvironmentUnset       []string               `protobuf:"bytes,11,rep,name=environment_unset,json=environmentUnset,proto3" json:"environment_unset,omitempty"`
 	RuntimeHandle          string                 `protobuf:"bytes,12,opt,name=runtime_handle,json=runtimeHandle,proto3" json:"runtime_handle,omitempty"`
+	RecipeId               string                 `protobuf:"bytes,13,opt,name=recipe_id,json=recipeId,proto3" json:"recipe_id,omitempty"`
+	RecipeRevision         uint64                 `protobuf:"varint,14,opt,name=recipe_revision,json=recipeRevision,proto3" json:"recipe_revision,omitempty"`
+	Uri                    string                 `protobuf:"bytes,15,opt,name=uri,proto3" json:"uri,omitempty"`
+	ContentId              string                 `protobuf:"bytes,16,opt,name=content_id,json=contentId,proto3" json:"content_id,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
 
 func (x *CustomLaunchRequest) Reset() {
 	*x = CustomLaunchRequest{}
-	mi := &file_plugin_proto_msgTypes[203]
+	mi := &file_plugin_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15456,7 +15628,7 @@ func (x *CustomLaunchRequest) String() string {
 func (*CustomLaunchRequest) ProtoMessage() {}
 
 func (x *CustomLaunchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[203]
+	mi := &file_plugin_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15469,7 +15641,7 @@ func (x *CustomLaunchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomLaunchRequest.ProtoReflect.Descriptor instead.
 func (*CustomLaunchRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{203}
+	return file_plugin_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *CustomLaunchRequest) GetContext() *ServiceContext {
@@ -15556,6 +15728,34 @@ func (x *CustomLaunchRequest) GetRuntimeHandle() string {
 	return ""
 }
 
+func (x *CustomLaunchRequest) GetRecipeId() string {
+	if x != nil {
+		return x.RecipeId
+	}
+	return ""
+}
+
+func (x *CustomLaunchRequest) GetRecipeRevision() uint64 {
+	if x != nil {
+		return x.RecipeRevision
+	}
+	return 0
+}
+
+func (x *CustomLaunchRequest) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *CustomLaunchRequest) GetContentId() string {
+	if x != nil {
+		return x.ContentId
+	}
+	return ""
+}
+
 type CustomLaunchReply struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	RecipeId       string                 `protobuf:"bytes,1,opt,name=recipe_id,json=recipeId,proto3" json:"recipe_id,omitempty"`
@@ -15570,7 +15770,7 @@ type CustomLaunchReply struct {
 
 func (x *CustomLaunchReply) Reset() {
 	*x = CustomLaunchReply{}
-	mi := &file_plugin_proto_msgTypes[204]
+	mi := &file_plugin_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15582,7 +15782,7 @@ func (x *CustomLaunchReply) String() string {
 func (*CustomLaunchReply) ProtoMessage() {}
 
 func (x *CustomLaunchReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[204]
+	mi := &file_plugin_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15595,7 +15795,7 @@ func (x *CustomLaunchReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomLaunchReply.ProtoReflect.Descriptor instead.
 func (*CustomLaunchReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{204}
+	return file_plugin_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *CustomLaunchReply) GetRecipeId() string {
@@ -15654,7 +15854,7 @@ type ExtensionPayload struct {
 
 func (x *ExtensionPayload) Reset() {
 	*x = ExtensionPayload{}
-	mi := &file_plugin_proto_msgTypes[205]
+	mi := &file_plugin_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15666,7 +15866,7 @@ func (x *ExtensionPayload) String() string {
 func (*ExtensionPayload) ProtoMessage() {}
 
 func (x *ExtensionPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[205]
+	mi := &file_plugin_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15679,7 +15879,7 @@ func (x *ExtensionPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionPayload.ProtoReflect.Descriptor instead.
 func (*ExtensionPayload) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{205}
+	return file_plugin_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *ExtensionPayload) GetSchemaId() string {
@@ -15720,7 +15920,7 @@ type ExtensionSchemaField struct {
 
 func (x *ExtensionSchemaField) Reset() {
 	*x = ExtensionSchemaField{}
-	mi := &file_plugin_proto_msgTypes[206]
+	mi := &file_plugin_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15732,7 +15932,7 @@ func (x *ExtensionSchemaField) String() string {
 func (*ExtensionSchemaField) ProtoMessage() {}
 
 func (x *ExtensionSchemaField) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[206]
+	mi := &file_plugin_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15745,7 +15945,7 @@ func (x *ExtensionSchemaField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionSchemaField.ProtoReflect.Descriptor instead.
 func (*ExtensionSchemaField) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{206}
+	return file_plugin_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *ExtensionSchemaField) GetPath() string {
@@ -15778,7 +15978,7 @@ type ExtensionSchemaDescriptor struct {
 
 func (x *ExtensionSchemaDescriptor) Reset() {
 	*x = ExtensionSchemaDescriptor{}
-	mi := &file_plugin_proto_msgTypes[207]
+	mi := &file_plugin_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15790,7 +15990,7 @@ func (x *ExtensionSchemaDescriptor) String() string {
 func (*ExtensionSchemaDescriptor) ProtoMessage() {}
 
 func (x *ExtensionSchemaDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[207]
+	mi := &file_plugin_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15803,7 +16003,7 @@ func (x *ExtensionSchemaDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionSchemaDescriptor.ProtoReflect.Descriptor instead.
 func (*ExtensionSchemaDescriptor) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{207}
+	return file_plugin_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *ExtensionSchemaDescriptor) GetNamespace() string {
@@ -15869,7 +16069,7 @@ type ExtensionNamespacePatch struct {
 
 func (x *ExtensionNamespacePatch) Reset() {
 	*x = ExtensionNamespacePatch{}
-	mi := &file_plugin_proto_msgTypes[208]
+	mi := &file_plugin_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15881,7 +16081,7 @@ func (x *ExtensionNamespacePatch) String() string {
 func (*ExtensionNamespacePatch) ProtoMessage() {}
 
 func (x *ExtensionNamespacePatch) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[208]
+	mi := &file_plugin_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15894,7 +16094,7 @@ func (x *ExtensionNamespacePatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionNamespacePatch.ProtoReflect.Descriptor instead.
 func (*ExtensionNamespacePatch) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{208}
+	return file_plugin_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *ExtensionNamespacePatch) GetNamespace() string {
@@ -15956,7 +16156,7 @@ type ExtensionPatch struct {
 
 func (x *ExtensionPatch) Reset() {
 	*x = ExtensionPatch{}
-	mi := &file_plugin_proto_msgTypes[209]
+	mi := &file_plugin_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15968,7 +16168,7 @@ func (x *ExtensionPatch) String() string {
 func (*ExtensionPatch) ProtoMessage() {}
 
 func (x *ExtensionPatch) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[209]
+	mi := &file_plugin_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15981,7 +16181,7 @@ func (x *ExtensionPatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionPatch.ProtoReflect.Descriptor instead.
 func (*ExtensionPatch) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{209}
+	return file_plugin_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *ExtensionPatch) GetExpectedRevision() uint64 {
@@ -16006,6 +16206,125 @@ func (x *ExtensionPatch) GetNamespaces() []*ExtensionNamespacePatch {
 }
 
 // Example hybrid resource: exact revisions/timestamps remain typed integers.
+type RuntimeArgumentTemplate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Value:
+	//
+	//	*RuntimeArgumentTemplate_Literal
+	//	*RuntimeArgumentTemplate_ContentPath
+	Value         isRuntimeArgumentTemplate_Value `protobuf_oneof:"value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeArgumentTemplate) Reset() {
+	*x = RuntimeArgumentTemplate{}
+	mi := &file_plugin_proto_msgTypes[212]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeArgumentTemplate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeArgumentTemplate) ProtoMessage() {}
+
+func (x *RuntimeArgumentTemplate) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[212]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeArgumentTemplate.ProtoReflect.Descriptor instead.
+func (*RuntimeArgumentTemplate) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{212}
+}
+
+func (x *RuntimeArgumentTemplate) GetValue() isRuntimeArgumentTemplate_Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *RuntimeArgumentTemplate) GetLiteral() string {
+	if x != nil {
+		if x, ok := x.Value.(*RuntimeArgumentTemplate_Literal); ok {
+			return x.Literal
+		}
+	}
+	return ""
+}
+
+func (x *RuntimeArgumentTemplate) GetContentPath() *ContentPathArgument {
+	if x != nil {
+		if x, ok := x.Value.(*RuntimeArgumentTemplate_ContentPath); ok {
+			return x.ContentPath
+		}
+	}
+	return nil
+}
+
+type isRuntimeArgumentTemplate_Value interface {
+	isRuntimeArgumentTemplate_Value()
+}
+
+type RuntimeArgumentTemplate_Literal struct {
+	Literal string `protobuf:"bytes,1,opt,name=literal,proto3,oneof"`
+}
+
+type RuntimeArgumentTemplate_ContentPath struct {
+	ContentPath *ContentPathArgument `protobuf:"bytes,2,opt,name=content_path,json=contentPath,proto3,oneof"`
+}
+
+func (*RuntimeArgumentTemplate_Literal) isRuntimeArgumentTemplate_Value() {}
+
+func (*RuntimeArgumentTemplate_ContentPath) isRuntimeArgumentTemplate_Value() {}
+
+// Inserts the path of the selected, approved content item as one argv element.
+type ContentPathArgument struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContentPathArgument) Reset() {
+	*x = ContentPathArgument{}
+	mi := &file_plugin_proto_msgTypes[213]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContentPathArgument) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContentPathArgument) ProtoMessage() {}
+
+func (x *ContentPathArgument) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[213]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContentPathArgument.ProtoReflect.Descriptor instead.
+func (*ContentPathArgument) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{213}
+}
+
 type RuntimeRecord struct {
 	state            protoimpl.MessageState       `protogen:"open.v1"`
 	Id               string                       `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -16016,13 +16335,15 @@ type RuntimeRecord struct {
 	Extensions       map[string]*ExtensionPayload `protobuf:"bytes,6,rep,name=extensions,proto3" json:"extensions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Revision         uint64                       `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
 	ObservedAt       int64                        `protobuf:"varint,8,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	Platform         string                       `protobuf:"bytes,9,opt,name=platform,proto3" json:"platform,omitempty"`
+	ArgumentTemplate []*RuntimeArgumentTemplate   `protobuf:"bytes,10,rep,name=argument_template,json=argumentTemplate,proto3" json:"argument_template,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RuntimeRecord) Reset() {
 	*x = RuntimeRecord{}
-	mi := &file_plugin_proto_msgTypes[210]
+	mi := &file_plugin_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16034,7 +16355,7 @@ func (x *RuntimeRecord) String() string {
 func (*RuntimeRecord) ProtoMessage() {}
 
 func (x *RuntimeRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[210]
+	mi := &file_plugin_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16047,7 +16368,7 @@ func (x *RuntimeRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeRecord.ProtoReflect.Descriptor instead.
 func (*RuntimeRecord) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{210}
+	return file_plugin_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *RuntimeRecord) GetId() string {
@@ -16106,6 +16427,20 @@ func (x *RuntimeRecord) GetObservedAt() int64 {
 	return 0
 }
 
+func (x *RuntimeRecord) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
+}
+
+func (x *RuntimeRecord) GetArgumentTemplate() []*RuntimeArgumentTemplate {
+	if x != nil {
+		return x.ArgumentTemplate
+	}
+	return nil
+}
+
 // Epochs and operation ids are issued by the host; clients cannot widen them.
 type ServiceContext struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
@@ -16123,7 +16458,7 @@ type ServiceContext struct {
 
 func (x *ServiceContext) Reset() {
 	*x = ServiceContext{}
-	mi := &file_plugin_proto_msgTypes[211]
+	mi := &file_plugin_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16135,7 +16470,7 @@ func (x *ServiceContext) String() string {
 func (*ServiceContext) ProtoMessage() {}
 
 func (x *ServiceContext) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[211]
+	mi := &file_plugin_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16148,7 +16483,7 @@ func (x *ServiceContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceContext.ProtoReflect.Descriptor instead.
 func (*ServiceContext) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{211}
+	return file_plugin_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *ServiceContext) GetSessionId() string {
@@ -16222,7 +16557,7 @@ type ProviderCommand struct {
 
 func (x *ProviderCommand) Reset() {
 	*x = ProviderCommand{}
-	mi := &file_plugin_proto_msgTypes[212]
+	mi := &file_plugin_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16234,7 +16569,7 @@ func (x *ProviderCommand) String() string {
 func (*ProviderCommand) ProtoMessage() {}
 
 func (x *ProviderCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[212]
+	mi := &file_plugin_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16247,7 +16582,7 @@ func (x *ProviderCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderCommand.ProtoReflect.Descriptor instead.
 func (*ProviderCommand) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{212}
+	return file_plugin_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *ProviderCommand) GetContext() *ServiceContext {
@@ -16308,7 +16643,7 @@ type ProviderContext struct {
 
 func (x *ProviderContext) Reset() {
 	*x = ProviderContext{}
-	mi := &file_plugin_proto_msgTypes[213]
+	mi := &file_plugin_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16320,7 +16655,7 @@ func (x *ProviderContext) String() string {
 func (*ProviderContext) ProtoMessage() {}
 
 func (x *ProviderContext) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[213]
+	mi := &file_plugin_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16333,7 +16668,7 @@ func (x *ProviderContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderContext.ProtoReflect.Descriptor instead.
 func (*ProviderContext) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{213}
+	return file_plugin_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *ProviderContext) GetProviderId() string {
@@ -16404,7 +16739,7 @@ type AccountIdentity struct {
 
 func (x *AccountIdentity) Reset() {
 	*x = AccountIdentity{}
-	mi := &file_plugin_proto_msgTypes[214]
+	mi := &file_plugin_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16416,7 +16751,7 @@ func (x *AccountIdentity) String() string {
 func (*AccountIdentity) ProtoMessage() {}
 
 func (x *AccountIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[214]
+	mi := &file_plugin_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16429,7 +16764,7 @@ func (x *AccountIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountIdentity.ProtoReflect.Descriptor instead.
 func (*AccountIdentity) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{214}
+	return file_plugin_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *AccountIdentity) GetProviderId() string {
@@ -16477,7 +16812,7 @@ type AccountStatus struct {
 
 func (x *AccountStatus) Reset() {
 	*x = AccountStatus{}
-	mi := &file_plugin_proto_msgTypes[215]
+	mi := &file_plugin_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16489,7 +16824,7 @@ func (x *AccountStatus) String() string {
 func (*AccountStatus) ProtoMessage() {}
 
 func (x *AccountStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[215]
+	mi := &file_plugin_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16502,7 +16837,7 @@ func (x *AccountStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountStatus.ProtoReflect.Descriptor instead.
 func (*AccountStatus) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{215}
+	return file_plugin_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *AccountStatus) GetState() AccountConnection {
@@ -16583,7 +16918,7 @@ type AccountRequest struct {
 
 func (x *AccountRequest) Reset() {
 	*x = AccountRequest{}
-	mi := &file_plugin_proto_msgTypes[216]
+	mi := &file_plugin_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16595,7 +16930,7 @@ func (x *AccountRequest) String() string {
 func (*AccountRequest) ProtoMessage() {}
 
 func (x *AccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[216]
+	mi := &file_plugin_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16608,7 +16943,7 @@ func (x *AccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountRequest.ProtoReflect.Descriptor instead.
 func (*AccountRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{216}
+	return file_plugin_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *AccountRequest) GetContext() *ServiceContext {
@@ -16684,7 +17019,7 @@ type AccountReply struct {
 
 func (x *AccountReply) Reset() {
 	*x = AccountReply{}
-	mi := &file_plugin_proto_msgTypes[217]
+	mi := &file_plugin_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16696,7 +17031,7 @@ func (x *AccountReply) String() string {
 func (*AccountReply) ProtoMessage() {}
 
 func (x *AccountReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[217]
+	mi := &file_plugin_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16709,7 +17044,7 @@ func (x *AccountReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountReply.ProtoReflect.Descriptor instead.
 func (*AccountReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{217}
+	return file_plugin_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *AccountReply) GetAccount() *AccountIdentity {
@@ -16739,7 +17074,7 @@ type SecretRequest struct {
 
 func (x *SecretRequest) Reset() {
 	*x = SecretRequest{}
-	mi := &file_plugin_proto_msgTypes[218]
+	mi := &file_plugin_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16751,7 +17086,7 @@ func (x *SecretRequest) String() string {
 func (*SecretRequest) ProtoMessage() {}
 
 func (x *SecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[218]
+	mi := &file_plugin_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16764,7 +17099,7 @@ func (x *SecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecretRequest.ProtoReflect.Descriptor instead.
 func (*SecretRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{218}
+	return file_plugin_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *SecretRequest) GetContext() *ServiceContext {
@@ -16811,7 +17146,7 @@ type SecretReply struct {
 
 func (x *SecretReply) Reset() {
 	*x = SecretReply{}
-	mi := &file_plugin_proto_msgTypes[219]
+	mi := &file_plugin_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16823,7 +17158,7 @@ func (x *SecretReply) String() string {
 func (*SecretReply) ProtoMessage() {}
 
 func (x *SecretReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[219]
+	mi := &file_plugin_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16836,7 +17171,7 @@ func (x *SecretReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecretReply.ProtoReflect.Descriptor instead.
 func (*SecretReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{219}
+	return file_plugin_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *SecretReply) GetStorage() SecretStorage {
@@ -16928,7 +17263,7 @@ type LoginRequest struct {
 
 func (x *LoginRequest) Reset() {
 	*x = LoginRequest{}
-	mi := &file_plugin_proto_msgTypes[220]
+	mi := &file_plugin_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16940,7 +17275,7 @@ func (x *LoginRequest) String() string {
 func (*LoginRequest) ProtoMessage() {}
 
 func (x *LoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[220]
+	mi := &file_plugin_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16953,7 +17288,7 @@ func (x *LoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginRequest.ProtoReflect.Descriptor instead.
 func (*LoginRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{220}
+	return file_plugin_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *LoginRequest) GetContext() *ServiceContext {
@@ -16987,7 +17322,7 @@ type LoginCookie struct {
 
 func (x *LoginCookie) Reset() {
 	*x = LoginCookie{}
-	mi := &file_plugin_proto_msgTypes[221]
+	mi := &file_plugin_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16999,7 +17334,7 @@ func (x *LoginCookie) String() string {
 func (*LoginCookie) ProtoMessage() {}
 
 func (x *LoginCookie) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[221]
+	mi := &file_plugin_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17012,7 +17347,7 @@ func (x *LoginCookie) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginCookie.ProtoReflect.Descriptor instead.
 func (*LoginCookie) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{221}
+	return file_plugin_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *LoginCookie) GetName() string {
@@ -17042,7 +17377,7 @@ type LoginReply struct {
 
 func (x *LoginReply) Reset() {
 	*x = LoginReply{}
-	mi := &file_plugin_proto_msgTypes[222]
+	mi := &file_plugin_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17054,7 +17389,7 @@ func (x *LoginReply) String() string {
 func (*LoginReply) ProtoMessage() {}
 
 func (x *LoginReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[222]
+	mi := &file_plugin_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17067,7 +17402,7 @@ func (x *LoginReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginReply.ProtoReflect.Descriptor instead.
 func (*LoginReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{222}
+	return file_plugin_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *LoginReply) GetHandle() string {
@@ -17108,7 +17443,7 @@ type ActionDeclaration struct {
 
 func (x *ActionDeclaration) Reset() {
 	*x = ActionDeclaration{}
-	mi := &file_plugin_proto_msgTypes[223]
+	mi := &file_plugin_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17120,7 +17455,7 @@ func (x *ActionDeclaration) String() string {
 func (*ActionDeclaration) ProtoMessage() {}
 
 func (x *ActionDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[223]
+	mi := &file_plugin_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17133,7 +17468,7 @@ func (x *ActionDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionDeclaration.ProtoReflect.Descriptor instead.
 func (*ActionDeclaration) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{223}
+	return file_plugin_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *ActionDeclaration) GetPlayUri() string {
@@ -17160,7 +17495,7 @@ type ActionRequest struct {
 
 func (x *ActionRequest) Reset() {
 	*x = ActionRequest{}
-	mi := &file_plugin_proto_msgTypes[224]
+	mi := &file_plugin_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17172,7 +17507,7 @@ func (x *ActionRequest) String() string {
 func (*ActionRequest) ProtoMessage() {}
 
 func (x *ActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[224]
+	mi := &file_plugin_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17185,7 +17520,7 @@ func (x *ActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionRequest.ProtoReflect.Descriptor instead.
 func (*ActionRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{224}
+	return file_plugin_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *ActionRequest) GetContext() *ServiceContext {
@@ -17211,7 +17546,7 @@ type ActionReply struct {
 
 func (x *ActionReply) Reset() {
 	*x = ActionReply{}
-	mi := &file_plugin_proto_msgTypes[225]
+	mi := &file_plugin_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17223,7 +17558,7 @@ func (x *ActionReply) String() string {
 func (*ActionReply) ProtoMessage() {}
 
 func (x *ActionReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[225]
+	mi := &file_plugin_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17236,7 +17571,7 @@ func (x *ActionReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionReply.ProtoReflect.Descriptor instead.
 func (*ActionReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{225}
+	return file_plugin_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *ActionReply) GetAccepted() bool {
@@ -17259,7 +17594,7 @@ type CatalogGame struct {
 
 func (x *CatalogGame) Reset() {
 	*x = CatalogGame{}
-	mi := &file_plugin_proto_msgTypes[226]
+	mi := &file_plugin_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17271,7 +17606,7 @@ func (x *CatalogGame) String() string {
 func (*CatalogGame) ProtoMessage() {}
 
 func (x *CatalogGame) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[226]
+	mi := &file_plugin_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17284,7 +17619,7 @@ func (x *CatalogGame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogGame.ProtoReflect.Descriptor instead.
 func (*CatalogGame) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{226}
+	return file_plugin_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *CatalogGame) GetId() string {
@@ -17319,7 +17654,7 @@ type CatalogChunk struct {
 
 func (x *CatalogChunk) Reset() {
 	*x = CatalogChunk{}
-	mi := &file_plugin_proto_msgTypes[227]
+	mi := &file_plugin_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17331,7 +17666,7 @@ func (x *CatalogChunk) String() string {
 func (*CatalogChunk) ProtoMessage() {}
 
 func (x *CatalogChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[227]
+	mi := &file_plugin_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17344,7 +17679,7 @@ func (x *CatalogChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogChunk.ProtoReflect.Descriptor instead.
 func (*CatalogChunk) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{227}
+	return file_plugin_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *CatalogChunk) GetCategory() CatalogCategory {
@@ -17383,7 +17718,7 @@ type CatalogCompletion struct {
 
 func (x *CatalogCompletion) Reset() {
 	*x = CatalogCompletion{}
-	mi := &file_plugin_proto_msgTypes[228]
+	mi := &file_plugin_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17395,7 +17730,7 @@ func (x *CatalogCompletion) String() string {
 func (*CatalogCompletion) ProtoMessage() {}
 
 func (x *CatalogCompletion) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[228]
+	mi := &file_plugin_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17408,7 +17743,7 @@ func (x *CatalogCompletion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogCompletion.ProtoReflect.Descriptor instead.
 func (*CatalogCompletion) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{228}
+	return file_plugin_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *CatalogCompletion) GetCategory() CatalogCategory {
@@ -17487,7 +17822,7 @@ type CounterObservation struct {
 
 func (x *CounterObservation) Reset() {
 	*x = CounterObservation{}
-	mi := &file_plugin_proto_msgTypes[229]
+	mi := &file_plugin_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17499,7 +17834,7 @@ func (x *CounterObservation) String() string {
 func (*CounterObservation) ProtoMessage() {}
 
 func (x *CounterObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[229]
+	mi := &file_plugin_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17512,7 +17847,7 @@ func (x *CounterObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CounterObservation.ProtoReflect.Descriptor instead.
 func (*CounterObservation) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{229}
+	return file_plugin_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *CounterObservation) GetId() string {
@@ -17559,7 +17894,7 @@ type OperationResult struct {
 
 func (x *OperationResult) Reset() {
 	*x = OperationResult{}
-	mi := &file_plugin_proto_msgTypes[230]
+	mi := &file_plugin_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17571,7 +17906,7 @@ func (x *OperationResult) String() string {
 func (*OperationResult) ProtoMessage() {}
 
 func (x *OperationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[230]
+	mi := &file_plugin_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17584,7 +17919,7 @@ func (x *OperationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationResult.ProtoReflect.Descriptor instead.
 func (*OperationResult) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{230}
+	return file_plugin_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *OperationResult) GetDisposition() OperationDisposition {
@@ -17696,7 +18031,7 @@ type AchievementsRequest struct {
 
 func (x *AchievementsRequest) Reset() {
 	*x = AchievementsRequest{}
-	mi := &file_plugin_proto_msgTypes[231]
+	mi := &file_plugin_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17708,7 +18043,7 @@ func (x *AchievementsRequest) String() string {
 func (*AchievementsRequest) ProtoMessage() {}
 
 func (x *AchievementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[231]
+	mi := &file_plugin_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17721,7 +18056,7 @@ func (x *AchievementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AchievementsRequest.ProtoReflect.Descriptor instead.
 func (*AchievementsRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{231}
+	return file_plugin_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *AchievementsRequest) GetGameIds() []string {
@@ -17754,7 +18089,7 @@ type Achievement struct {
 
 func (x *Achievement) Reset() {
 	*x = Achievement{}
-	mi := &file_plugin_proto_msgTypes[232]
+	mi := &file_plugin_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17766,7 +18101,7 @@ func (x *Achievement) String() string {
 func (*Achievement) ProtoMessage() {}
 
 func (x *Achievement) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[232]
+	mi := &file_plugin_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17779,7 +18114,7 @@ func (x *Achievement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Achievement.ProtoReflect.Descriptor instead.
 func (*Achievement) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{232}
+	return file_plugin_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *Achievement) GetId() string {
@@ -17847,7 +18182,7 @@ type AchievementGame struct {
 
 func (x *AchievementGame) Reset() {
 	*x = AchievementGame{}
-	mi := &file_plugin_proto_msgTypes[233]
+	mi := &file_plugin_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17859,7 +18194,7 @@ func (x *AchievementGame) String() string {
 func (*AchievementGame) ProtoMessage() {}
 
 func (x *AchievementGame) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[233]
+	mi := &file_plugin_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17872,7 +18207,7 @@ func (x *AchievementGame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AchievementGame.ProtoReflect.Descriptor instead.
 func (*AchievementGame) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{233}
+	return file_plugin_proto_rawDescGZIP(), []int{237}
 }
 
 func (x *AchievementGame) GetAchievements() []*Achievement {
@@ -17898,7 +18233,7 @@ type AchievementOutcome struct {
 
 func (x *AchievementOutcome) Reset() {
 	*x = AchievementOutcome{}
-	mi := &file_plugin_proto_msgTypes[234]
+	mi := &file_plugin_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17910,7 +18245,7 @@ func (x *AchievementOutcome) String() string {
 func (*AchievementOutcome) ProtoMessage() {}
 
 func (x *AchievementOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[234]
+	mi := &file_plugin_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17923,7 +18258,7 @@ func (x *AchievementOutcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AchievementOutcome.ProtoReflect.Descriptor instead.
 func (*AchievementOutcome) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{234}
+	return file_plugin_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *AchievementOutcome) GetGameId() string {
@@ -18002,7 +18337,7 @@ type ConfigurationResult struct {
 
 func (x *ConfigurationResult) Reset() {
 	*x = ConfigurationResult{}
-	mi := &file_plugin_proto_msgTypes[235]
+	mi := &file_plugin_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18014,7 +18349,7 @@ func (x *ConfigurationResult) String() string {
 func (*ConfigurationResult) ProtoMessage() {}
 
 func (x *ConfigurationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[235]
+	mi := &file_plugin_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18027,7 +18362,7 @@ func (x *ConfigurationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigurationResult.ProtoReflect.Descriptor instead.
 func (*ConfigurationResult) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{235}
+	return file_plugin_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *ConfigurationResult) GetSessionId() string {
@@ -18080,7 +18415,7 @@ type SettingsContext struct {
 
 func (x *SettingsContext) Reset() {
 	*x = SettingsContext{}
-	mi := &file_plugin_proto_msgTypes[236]
+	mi := &file_plugin_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18092,7 +18427,7 @@ func (x *SettingsContext) String() string {
 func (*SettingsContext) ProtoMessage() {}
 
 func (x *SettingsContext) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[236]
+	mi := &file_plugin_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18105,7 +18440,7 @@ func (x *SettingsContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsContext.ProtoReflect.Descriptor instead.
 func (*SettingsContext) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{236}
+	return file_plugin_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *SettingsContext) GetPluginId() string {
@@ -18153,7 +18488,7 @@ type SettingsText struct {
 
 func (x *SettingsText) Reset() {
 	*x = SettingsText{}
-	mi := &file_plugin_proto_msgTypes[237]
+	mi := &file_plugin_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18165,7 +18500,7 @@ func (x *SettingsText) String() string {
 func (*SettingsText) ProtoMessage() {}
 
 func (x *SettingsText) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[237]
+	mi := &file_plugin_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18178,7 +18513,7 @@ func (x *SettingsText) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsText.ProtoReflect.Descriptor instead.
 func (*SettingsText) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{237}
+	return file_plugin_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *SettingsText) GetFallback() string {
@@ -18210,7 +18545,7 @@ type SettingsValue struct {
 
 func (x *SettingsValue) Reset() {
 	*x = SettingsValue{}
-	mi := &file_plugin_proto_msgTypes[238]
+	mi := &file_plugin_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18222,7 +18557,7 @@ func (x *SettingsValue) String() string {
 func (*SettingsValue) ProtoMessage() {}
 
 func (x *SettingsValue) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[238]
+	mi := &file_plugin_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18235,7 +18570,7 @@ func (x *SettingsValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsValue.ProtoReflect.Descriptor instead.
 func (*SettingsValue) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{238}
+	return file_plugin_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *SettingsValue) GetValue() isSettingsValue_Value {
@@ -18319,7 +18654,7 @@ type SettingsTextField struct {
 
 func (x *SettingsTextField) Reset() {
 	*x = SettingsTextField{}
-	mi := &file_plugin_proto_msgTypes[239]
+	mi := &file_plugin_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18331,7 +18666,7 @@ func (x *SettingsTextField) String() string {
 func (*SettingsTextField) ProtoMessage() {}
 
 func (x *SettingsTextField) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[239]
+	mi := &file_plugin_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18344,7 +18679,7 @@ func (x *SettingsTextField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsTextField.ProtoReflect.Descriptor instead.
 func (*SettingsTextField) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{239}
+	return file_plugin_proto_rawDescGZIP(), []int{243}
 }
 
 func (x *SettingsTextField) GetMinLength() uint32 {
@@ -18372,7 +18707,7 @@ type SettingsNumberField struct {
 
 func (x *SettingsNumberField) Reset() {
 	*x = SettingsNumberField{}
-	mi := &file_plugin_proto_msgTypes[240]
+	mi := &file_plugin_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18384,7 +18719,7 @@ func (x *SettingsNumberField) String() string {
 func (*SettingsNumberField) ProtoMessage() {}
 
 func (x *SettingsNumberField) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[240]
+	mi := &file_plugin_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18397,7 +18732,7 @@ func (x *SettingsNumberField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsNumberField.ProtoReflect.Descriptor instead.
 func (*SettingsNumberField) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{240}
+	return file_plugin_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *SettingsNumberField) GetMin() float64 {
@@ -18431,7 +18766,7 @@ type SettingsChoiceOption struct {
 
 func (x *SettingsChoiceOption) Reset() {
 	*x = SettingsChoiceOption{}
-	mi := &file_plugin_proto_msgTypes[241]
+	mi := &file_plugin_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18443,7 +18778,7 @@ func (x *SettingsChoiceOption) String() string {
 func (*SettingsChoiceOption) ProtoMessage() {}
 
 func (x *SettingsChoiceOption) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[241]
+	mi := &file_plugin_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18456,7 +18791,7 @@ func (x *SettingsChoiceOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsChoiceOption.ProtoReflect.Descriptor instead.
 func (*SettingsChoiceOption) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{241}
+	return file_plugin_proto_rawDescGZIP(), []int{245}
 }
 
 func (x *SettingsChoiceOption) GetId() string {
@@ -18482,7 +18817,7 @@ type SettingsChoiceField struct {
 
 func (x *SettingsChoiceField) Reset() {
 	*x = SettingsChoiceField{}
-	mi := &file_plugin_proto_msgTypes[242]
+	mi := &file_plugin_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18494,7 +18829,7 @@ func (x *SettingsChoiceField) String() string {
 func (*SettingsChoiceField) ProtoMessage() {}
 
 func (x *SettingsChoiceField) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[242]
+	mi := &file_plugin_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18507,7 +18842,7 @@ func (x *SettingsChoiceField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsChoiceField.ProtoReflect.Descriptor instead.
 func (*SettingsChoiceField) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{242}
+	return file_plugin_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *SettingsChoiceField) GetOptions() []*SettingsChoiceOption {
@@ -18536,7 +18871,7 @@ type SettingsField struct {
 
 func (x *SettingsField) Reset() {
 	*x = SettingsField{}
-	mi := &file_plugin_proto_msgTypes[243]
+	mi := &file_plugin_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18548,7 +18883,7 @@ func (x *SettingsField) String() string {
 func (*SettingsField) ProtoMessage() {}
 
 func (x *SettingsField) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[243]
+	mi := &file_plugin_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18561,7 +18896,7 @@ func (x *SettingsField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsField.ProtoReflect.Descriptor instead.
 func (*SettingsField) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{243}
+	return file_plugin_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *SettingsField) GetId() string {
@@ -18677,7 +19012,7 @@ type SettingsForm struct {
 
 func (x *SettingsForm) Reset() {
 	*x = SettingsForm{}
-	mi := &file_plugin_proto_msgTypes[244]
+	mi := &file_plugin_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18689,7 +19024,7 @@ func (x *SettingsForm) String() string {
 func (*SettingsForm) ProtoMessage() {}
 
 func (x *SettingsForm) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[244]
+	mi := &file_plugin_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18702,7 +19037,7 @@ func (x *SettingsForm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsForm.ProtoReflect.Descriptor instead.
 func (*SettingsForm) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{244}
+	return file_plugin_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *SettingsForm) GetSchemaVersion() uint32 {
@@ -18758,7 +19093,7 @@ type SettingsSubmission struct {
 
 func (x *SettingsSubmission) Reset() {
 	*x = SettingsSubmission{}
-	mi := &file_plugin_proto_msgTypes[245]
+	mi := &file_plugin_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18770,7 +19105,7 @@ func (x *SettingsSubmission) String() string {
 func (*SettingsSubmission) ProtoMessage() {}
 
 func (x *SettingsSubmission) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[245]
+	mi := &file_plugin_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18783,7 +19118,7 @@ func (x *SettingsSubmission) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsSubmission.ProtoReflect.Descriptor instead.
 func (*SettingsSubmission) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{245}
+	return file_plugin_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *SettingsSubmission) GetSchemaRevision() string {
@@ -18822,7 +19157,7 @@ type SettingsRequest struct {
 
 func (x *SettingsRequest) Reset() {
 	*x = SettingsRequest{}
-	mi := &file_plugin_proto_msgTypes[246]
+	mi := &file_plugin_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18834,7 +19169,7 @@ func (x *SettingsRequest) String() string {
 func (*SettingsRequest) ProtoMessage() {}
 
 func (x *SettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[246]
+	mi := &file_plugin_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18847,7 +19182,7 @@ func (x *SettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsRequest.ProtoReflect.Descriptor instead.
 func (*SettingsRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{246}
+	return file_plugin_proto_rawDescGZIP(), []int{250}
 }
 
 func (x *SettingsRequest) GetContext() *SettingsContext {
@@ -18923,7 +19258,7 @@ type SettingsView struct {
 
 func (x *SettingsView) Reset() {
 	*x = SettingsView{}
-	mi := &file_plugin_proto_msgTypes[247]
+	mi := &file_plugin_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18935,7 +19270,7 @@ func (x *SettingsView) String() string {
 func (*SettingsView) ProtoMessage() {}
 
 func (x *SettingsView) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[247]
+	mi := &file_plugin_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18948,7 +19283,7 @@ func (x *SettingsView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsView.ProtoReflect.Descriptor instead.
 func (*SettingsView) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{247}
+	return file_plugin_proto_rawDescGZIP(), []int{251}
 }
 
 func (x *SettingsView) GetForm() *SettingsForm {
@@ -18975,7 +19310,7 @@ type SettingsApplied struct {
 
 func (x *SettingsApplied) Reset() {
 	*x = SettingsApplied{}
-	mi := &file_plugin_proto_msgTypes[248]
+	mi := &file_plugin_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18987,7 +19322,7 @@ func (x *SettingsApplied) String() string {
 func (*SettingsApplied) ProtoMessage() {}
 
 func (x *SettingsApplied) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[248]
+	mi := &file_plugin_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19000,7 +19335,7 @@ func (x *SettingsApplied) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsApplied.ProtoReflect.Descriptor instead.
 func (*SettingsApplied) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{248}
+	return file_plugin_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *SettingsApplied) GetConfigurationRevision() string {
@@ -19026,7 +19361,7 @@ type SettingsFieldErrors struct {
 
 func (x *SettingsFieldErrors) Reset() {
 	*x = SettingsFieldErrors{}
-	mi := &file_plugin_proto_msgTypes[249]
+	mi := &file_plugin_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19038,7 +19373,7 @@ func (x *SettingsFieldErrors) String() string {
 func (*SettingsFieldErrors) ProtoMessage() {}
 
 func (x *SettingsFieldErrors) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[249]
+	mi := &file_plugin_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19051,7 +19386,7 @@ func (x *SettingsFieldErrors) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsFieldErrors.ProtoReflect.Descriptor instead.
 func (*SettingsFieldErrors) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{249}
+	return file_plugin_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *SettingsFieldErrors) GetErrors() map[string]*SettingsText {
@@ -19078,7 +19413,7 @@ type SettingsReply struct {
 
 func (x *SettingsReply) Reset() {
 	*x = SettingsReply{}
-	mi := &file_plugin_proto_msgTypes[250]
+	mi := &file_plugin_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19090,7 +19425,7 @@ func (x *SettingsReply) String() string {
 func (*SettingsReply) ProtoMessage() {}
 
 func (x *SettingsReply) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[250]
+	mi := &file_plugin_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19103,7 +19438,7 @@ func (x *SettingsReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsReply.ProtoReflect.Descriptor instead.
 func (*SettingsReply) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{250}
+	return file_plugin_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *SettingsReply) GetContext() *SettingsContext {
@@ -19216,7 +19551,7 @@ type ProviderEvent struct {
 
 func (x *ProviderEvent) Reset() {
 	*x = ProviderEvent{}
-	mi := &file_plugin_proto_msgTypes[251]
+	mi := &file_plugin_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19228,7 +19563,7 @@ func (x *ProviderEvent) String() string {
 func (*ProviderEvent) ProtoMessage() {}
 
 func (x *ProviderEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[251]
+	mi := &file_plugin_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19241,7 +19576,7 @@ func (x *ProviderEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderEvent.ProtoReflect.Descriptor instead.
 func (*ProviderEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{251}
+	return file_plugin_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *ProviderEvent) GetContext() *ServiceContext {
@@ -19356,7 +19691,7 @@ type RuntimeSessionReport struct {
 
 func (x *RuntimeSessionReport) Reset() {
 	*x = RuntimeSessionReport{}
-	mi := &file_plugin_proto_msgTypes[252]
+	mi := &file_plugin_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19368,7 +19703,7 @@ func (x *RuntimeSessionReport) String() string {
 func (*RuntimeSessionReport) ProtoMessage() {}
 
 func (x *RuntimeSessionReport) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[252]
+	mi := &file_plugin_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19381,7 +19716,7 @@ func (x *RuntimeSessionReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeSessionReport.ProtoReflect.Descriptor instead.
 func (*RuntimeSessionReport) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{252}
+	return file_plugin_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *RuntimeSessionReport) GetCorrelationId() string {
@@ -19476,7 +19811,7 @@ type RuntimeSessionResult struct {
 
 func (x *RuntimeSessionResult) Reset() {
 	*x = RuntimeSessionResult{}
-	mi := &file_plugin_proto_msgTypes[253]
+	mi := &file_plugin_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19488,7 +19823,7 @@ func (x *RuntimeSessionResult) String() string {
 func (*RuntimeSessionResult) ProtoMessage() {}
 
 func (x *RuntimeSessionResult) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[253]
+	mi := &file_plugin_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19501,7 +19836,7 @@ func (x *RuntimeSessionResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeSessionResult.ProtoReflect.Descriptor instead.
 func (*RuntimeSessionResult) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{253}
+	return file_plugin_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *RuntimeSessionResult) GetCorrelationId() string {
@@ -19657,13 +19992,24 @@ const file_plugin_proto_rawDesc = "" +
 	"\fDenialDetail\x128\n" +
 	"\x06reason\x18\x01 \x01(\x0e2 .gamenode.plugin.v1.DenialReasonR\x06reason\x12#\n" +
 	"\rpermission_id\x18\x02 \x01(\tR\fpermissionId\x12%\n" +
-	"\x0egrant_revision\x18\x03 \x01(\x04R\rgrantRevision\"\xda\x01\n" +
+	"\x0egrant_revision\x18\x03 \x01(\x04R\rgrantRevision\"s\n" +
+	"\x12DetectedExecutable\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1c\n" +
+	"\targuments\x18\x02 \x03(\tR\targuments\x12+\n" +
+	"\x11working_directory\x18\x03 \x01(\tR\x10workingDirectory\"x\n" +
+	"\x0eDetectedTarget\x12\x12\n" +
+	"\x03uri\x18\x01 \x01(\tH\x00R\x03uri\x12H\n" +
+	"\n" +
+	"executable\x18\x02 \x01(\v2&.gamenode.plugin.v1.DetectedExecutableH\x00R\n" +
+	"executableB\b\n" +
+	"\x06target\"\x96\x02\n" +
 	"\x0fDiscoveryRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
 	"\vinstall_dir\x18\x03 \x01(\tR\n" +
 	"installDir\x12G\n" +
-	"\x06fields\x18\x04 \x03(\v2/.gamenode.plugin.v1.DiscoveryRecord.FieldsEntryR\x06fields\x1a9\n" +
+	"\x06fields\x18\x04 \x03(\v2/.gamenode.plugin.v1.DiscoveryRecord.FieldsEntryR\x06fields\x12:\n" +
+	"\x06target\x18\x05 \x01(\v2\".gamenode.plugin.v1.DetectedTargetR\x06target\x1a9\n" +
 	"\vFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"q\n" +
@@ -19969,7 +20315,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\bruntimes\x18\x01 \x03(\v2!.gamenode.plugin.v1.RuntimeRecordR\bruntimes\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
 	"nextCursor\x12\x1a\n" +
-	"\brevision\x18\x03 \x01(\x04R\brevision\"\xb9\x02\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\"\xd8\x02\n" +
 	"\x1aContentRegistrationRequest\x12?\n" +
 	"\bmutation\x18\x01 \x01(\v2#.gamenode.plugin.v1.MutationContextR\bmutation\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
@@ -19978,7 +20324,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\fcontent_kind\x18\x05 \x01(\tR\vcontentKind\x12\x1d\n" +
 	"\n" +
 	"runtime_id\x18\x06 \x01(\tR\truntimeId\x12/\n" +
-	"\x13supported_platforms\x18\a \x03(\tR\x12supportedPlatforms\"\x8d\x01\n" +
+	"\x13supported_platforms\x18\a \x03(\tR\x12supportedPlatforms\x12\x1d\n" +
+	"\n" +
+	"content_id\x18\b \x01(\tR\tcontentId\"\x8d\x01\n" +
 	"\x13ReportMutationReply\x12\x1b\n" +
 	"\treport_id\x18\x01 \x01(\tR\breportId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12=\n" +
@@ -20779,7 +21127,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x122\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1c.gamenode.plugin.v1.JobStateR\x05state\x12!\n" +
 	"\frefusal_code\x18\x03 \x01(\tR\vrefusalCode\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage\"\x89\x05\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"\x80\x06\n" +
 	"\x13CustomLaunchRequest\x12<\n" +
 	"\acontext\x18\x01 \x01(\v2\".gamenode.plugin.v1.ServiceContextR\acontext\x12\x17\n" +
 	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12'\n" +
@@ -20793,7 +21141,12 @@ const file_plugin_proto_rawDesc = "" +
 	"\x0fenvironment_set\x18\n" +
 	" \x03(\v2;.gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntryR\x0eenvironmentSet\x12+\n" +
 	"\x11environment_unset\x18\v \x03(\tR\x10environmentUnset\x12%\n" +
-	"\x0eruntime_handle\x18\f \x01(\tR\rruntimeHandle\x1aA\n" +
+	"\x0eruntime_handle\x18\f \x01(\tR\rruntimeHandle\x12\x1b\n" +
+	"\trecipe_id\x18\r \x01(\tR\brecipeId\x12'\n" +
+	"\x0frecipe_revision\x18\x0e \x01(\x04R\x0erecipeRevision\x12\x10\n" +
+	"\x03uri\x18\x0f \x01(\tR\x03uri\x12\x1d\n" +
+	"\n" +
+	"content_id\x18\x10 \x01(\tR\tcontentId\x1aA\n" +
 	"\x13EnvironmentSetEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe1\x01\n" +
@@ -20831,7 +21184,12 @@ const file_plugin_proto_rawDesc = "" +
 	"\x10typed_field_mask\x18\x02 \x03(\tR\x0etypedFieldMask\x12K\n" +
 	"\n" +
 	"namespaces\x18\x03 \x03(\v2+.gamenode.plugin.v1.ExtensionNamespacePatchR\n" +
-	"namespaces\"\x9c\x03\n" +
+	"namespaces\"\x8c\x01\n" +
+	"\x17RuntimeArgumentTemplate\x12\x1a\n" +
+	"\aliteral\x18\x01 \x01(\tH\x00R\aliteral\x12L\n" +
+	"\fcontent_path\x18\x02 \x01(\v2'.gamenode.plugin.v1.ContentPathArgumentH\x00R\vcontentPathB\a\n" +
+	"\x05value\"\x15\n" +
+	"\x13ContentPathArgument\"\x92\x04\n" +
 	"\rRuntimeRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -20843,7 +21201,10 @@ const file_plugin_proto_rawDesc = "" +
 	"extensions\x12\x1a\n" +
 	"\brevision\x18\a \x01(\x04R\brevision\x12\x1f\n" +
 	"\vobserved_at\x18\b \x01(\x03R\n" +
-	"observedAt\x1ac\n" +
+	"observedAt\x12\x1a\n" +
+	"\bplatform\x18\t \x01(\tR\bplatform\x12X\n" +
+	"\x11argument_template\x18\n" +
+	" \x03(\v2+.gamenode.plugin.v1.RuntimeArgumentTemplateR\x10argumentTemplate\x1ac\n" +
 	"\x0fExtensionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12:\n" +
 	"\x05value\x18\x02 \x01(\v2$.gamenode.plugin.v1.ExtensionPayloadR\x05value:\x028\x01\"\x8d\x03\n" +
@@ -21471,7 +21832,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 24)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 267)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 271)
 var file_plugin_proto_goTypes = []any{
 	(SessionKind)(0),                         // 0: gamenode.plugin.v1.SessionKind
 	(FeatureAvailability)(0),                 // 1: gamenode.plugin.v1.FeatureAvailability
@@ -21513,258 +21874,262 @@ var file_plugin_proto_goTypes = []any{
 	(*WatchPermissionChangesRequest)(nil),    // 37: gamenode.plugin.v1.WatchPermissionChangesRequest
 	(*PermissionChange)(nil),                 // 38: gamenode.plugin.v1.PermissionChange
 	(*DenialDetail)(nil),                     // 39: gamenode.plugin.v1.DenialDetail
-	(*DiscoveryRecord)(nil),                  // 40: gamenode.plugin.v1.DiscoveryRecord
-	(*DiscoveryResult)(nil),                  // 41: gamenode.plugin.v1.DiscoveryResult
-	(*PluginFailure)(nil),                    // 42: gamenode.plugin.v1.PluginFailure
-	(*SubmitDiscoveryRequest)(nil),           // 43: gamenode.plugin.v1.SubmitDiscoveryRequest
-	(*SubmitDiscoveryReply)(nil),             // 44: gamenode.plugin.v1.SubmitDiscoveryReply
-	(*CustomLaunchRemoveRequest)(nil),        // 45: gamenode.plugin.v1.CustomLaunchRemoveRequest
-	(*GameInstallRequest)(nil),               // 46: gamenode.plugin.v1.GameInstallRequest
-	(*StorageGetRequest)(nil),                // 47: gamenode.plugin.v1.StorageGetRequest
-	(*StoragePutRequest)(nil),                // 48: gamenode.plugin.v1.StoragePutRequest
-	(*StorageDeleteRequest)(nil),             // 49: gamenode.plugin.v1.StorageDeleteRequest
-	(*StorageGetReply)(nil),                  // 50: gamenode.plugin.v1.StorageGetReply
-	(*StorageMutationReply)(nil),             // 51: gamenode.plugin.v1.StorageMutationReply
-	(*DeclaredLocation)(nil),                 // 52: gamenode.plugin.v1.DeclaredLocation
-	(*FilesRequestAccessRequest)(nil),        // 53: gamenode.plugin.v1.FilesRequestAccessRequest
-	(*FileHandle)(nil),                       // 54: gamenode.plugin.v1.FileHandle
-	(*FileAccessReply)(nil),                  // 55: gamenode.plugin.v1.FileAccessReply
-	(*FilesListRequest)(nil),                 // 56: gamenode.plugin.v1.FilesListRequest
-	(*FilesListReply)(nil),                   // 57: gamenode.plugin.v1.FilesListReply
-	(*FileEntry)(nil),                        // 58: gamenode.plugin.v1.FileEntry
-	(*FilesReadRequest)(nil),                 // 59: gamenode.plugin.v1.FilesReadRequest
-	(*FileReadReply)(nil),                    // 60: gamenode.plugin.v1.FileReadReply
-	(*FilesWriteRequest)(nil),                // 61: gamenode.plugin.v1.FilesWriteRequest
-	(*FilesDeleteRequest)(nil),               // 62: gamenode.plugin.v1.FilesDeleteRequest
-	(*NetworkFetchRequest)(nil),              // 63: gamenode.plugin.v1.NetworkFetchRequest
-	(*NetworkFetchReply)(nil),                // 64: gamenode.plugin.v1.NetworkFetchReply
-	(*NotificationTranslation)(nil),          // 65: gamenode.plugin.v1.NotificationTranslation
-	(*NotificationPublishRequest)(nil),       // 66: gamenode.plugin.v1.NotificationPublishRequest
-	(*BackupsListRequest)(nil),               // 67: gamenode.plugin.v1.BackupsListRequest
-	(*BackupCreateRequest)(nil),              // 68: gamenode.plugin.v1.BackupCreateRequest
-	(*BackupRestoreRequest)(nil),             // 69: gamenode.plugin.v1.BackupRestoreRequest
-	(*BackupsListReply)(nil),                 // 70: gamenode.plugin.v1.BackupsListReply
-	(*BackupRecord)(nil),                     // 71: gamenode.plugin.v1.BackupRecord
-	(*JobReply)(nil),                         // 72: gamenode.plugin.v1.JobReply
-	(*DomainListRequest)(nil),                // 73: gamenode.plugin.v1.DomainListRequest
-	(*DomainGetRequest)(nil),                 // 74: gamenode.plugin.v1.DomainGetRequest
-	(*DomainWatchRequest)(nil),               // 75: gamenode.plugin.v1.DomainWatchRequest
-	(*DomainRemoveRequest)(nil),              // 76: gamenode.plugin.v1.DomainRemoveRequest
-	(*LibraryCreateRequest)(nil),             // 77: gamenode.plugin.v1.LibraryCreateRequest
-	(*LibraryUpdateRequest)(nil),             // 78: gamenode.plugin.v1.LibraryUpdateRequest
-	(*LibraryRootAddRequest)(nil),            // 79: gamenode.plugin.v1.LibraryRootAddRequest
-	(*LibraryRootUpdateRequest)(nil),         // 80: gamenode.plugin.v1.LibraryRootUpdateRequest
-	(*LibraryRootRemoveRequest)(nil),         // 81: gamenode.plugin.v1.LibraryRootRemoveRequest
-	(*LibraryRecord)(nil),                    // 82: gamenode.plugin.v1.LibraryRecord
-	(*LibraryRootRecord)(nil),                // 83: gamenode.plugin.v1.LibraryRootRecord
-	(*LibrariesListReply)(nil),               // 84: gamenode.plugin.v1.LibrariesListReply
-	(*LibraryRecordReply)(nil),               // 85: gamenode.plugin.v1.LibraryRecordReply
-	(*LibraryRecordEvent)(nil),               // 86: gamenode.plugin.v1.LibraryRecordEvent
-	(*LibraryMutationReply)(nil),             // 87: gamenode.plugin.v1.LibraryMutationReply
-	(*RuntimeRegisterRequest)(nil),           // 88: gamenode.plugin.v1.RuntimeRegisterRequest
-	(*RuntimeUpdateRequest)(nil),             // 89: gamenode.plugin.v1.RuntimeUpdateRequest
-	(*RuntimeMutationReply)(nil),             // 90: gamenode.plugin.v1.RuntimeMutationReply
-	(*RuntimeRecordReply)(nil),               // 91: gamenode.plugin.v1.RuntimeRecordReply
-	(*RuntimeRecordEvent)(nil),               // 92: gamenode.plugin.v1.RuntimeRecordEvent
-	(*RuntimesListReply)(nil),                // 93: gamenode.plugin.v1.RuntimesListReply
-	(*ContentRegistrationRequest)(nil),       // 94: gamenode.plugin.v1.ContentRegistrationRequest
-	(*ReportMutationReply)(nil),              // 95: gamenode.plugin.v1.ReportMutationReply
-	(*BenchmarkReportRequest)(nil),           // 96: gamenode.plugin.v1.BenchmarkReportRequest
-	(*SmartReportRequest)(nil),               // 97: gamenode.plugin.v1.SmartReportRequest
-	(*HardwareReportRequest)(nil),            // 98: gamenode.plugin.v1.HardwareReportRequest
-	(*PresencePublishRequest)(nil),           // 99: gamenode.plugin.v1.PresencePublishRequest
-	(*PresenceClearRequest)(nil),             // 100: gamenode.plugin.v1.PresenceClearRequest
-	(*PerformanceSample)(nil),                // 101: gamenode.plugin.v1.PerformanceSample
-	(*PerformanceSamplesRequest)(nil),        // 102: gamenode.plugin.v1.PerformanceSamplesRequest
-	(*PerformanceEndSeriesRequest)(nil),      // 103: gamenode.plugin.v1.PerformanceEndSeriesRequest
-	(*DataPublishRequest)(nil),               // 104: gamenode.plugin.v1.DataPublishRequest
-	(*DataMutationReply)(nil),                // 105: gamenode.plugin.v1.DataMutationReply
-	(*DataGetRequest)(nil),                   // 106: gamenode.plugin.v1.DataGetRequest
-	(*DataListRequest)(nil),                  // 107: gamenode.plugin.v1.DataListRequest
-	(*DataWatchRequest)(nil),                 // 108: gamenode.plugin.v1.DataWatchRequest
-	(*DataRecord)(nil),                       // 109: gamenode.plugin.v1.DataRecord
-	(*DataGetReply)(nil),                     // 110: gamenode.plugin.v1.DataGetReply
-	(*DataListReply)(nil),                    // 111: gamenode.plugin.v1.DataListReply
-	(*DataEvent)(nil),                        // 112: gamenode.plugin.v1.DataEvent
-	(*PersistenceUsageRequest)(nil),          // 113: gamenode.plugin.v1.PersistenceUsageRequest
-	(*PersistenceUsageReply)(nil),            // 114: gamenode.plugin.v1.PersistenceUsageReply
-	(*PersistenceListRequest)(nil),           // 115: gamenode.plugin.v1.PersistenceListRequest
-	(*PersistenceListReply)(nil),             // 116: gamenode.plugin.v1.PersistenceListReply
-	(*PersistenceEntry)(nil),                 // 117: gamenode.plugin.v1.PersistenceEntry
-	(*PersistenceDeleteRequest)(nil),         // 118: gamenode.plugin.v1.PersistenceDeleteRequest
-	(*PersistenceClearRequest)(nil),          // 119: gamenode.plugin.v1.PersistenceClearRequest
-	(*RetentionPolicyRequest)(nil),           // 120: gamenode.plugin.v1.RetentionPolicyRequest
-	(*PersistenceMutationReply)(nil),         // 121: gamenode.plugin.v1.PersistenceMutationReply
-	(*ToolsListRequest)(nil),                 // 122: gamenode.plugin.v1.ToolsListRequest
-	(*ToolApplyRequest)(nil),                 // 123: gamenode.plugin.v1.ToolApplyRequest
-	(*ToolRemoveRequest)(nil),                // 124: gamenode.plugin.v1.ToolRemoveRequest
-	(*ToolsListReply)(nil),                   // 125: gamenode.plugin.v1.ToolsListReply
-	(*ToolRecord)(nil),                       // 126: gamenode.plugin.v1.ToolRecord
-	(*PortsListRequest)(nil),                 // 127: gamenode.plugin.v1.PortsListRequest
-	(*PortDetailRequest)(nil),                // 128: gamenode.plugin.v1.PortDetailRequest
-	(*PortInstallRequest)(nil),               // 129: gamenode.plugin.v1.PortInstallRequest
-	(*PortsListReply)(nil),                   // 130: gamenode.plugin.v1.PortsListReply
-	(*PortDetailReply)(nil),                  // 131: gamenode.plugin.v1.PortDetailReply
-	(*PortRecord)(nil),                       // 132: gamenode.plugin.v1.PortRecord
-	(*JobGetRequest)(nil),                    // 133: gamenode.plugin.v1.JobGetRequest
-	(*JobWatchRequest)(nil),                  // 134: gamenode.plugin.v1.JobWatchRequest
-	(*JobCancelRequest)(nil),                 // 135: gamenode.plugin.v1.JobCancelRequest
-	(*JobEvent)(nil),                         // 136: gamenode.plugin.v1.JobEvent
-	(*MutationContext)(nil),                  // 137: gamenode.plugin.v1.MutationContext
-	(*PageRequest)(nil),                      // 138: gamenode.plugin.v1.PageRequest
-	(*LibraryListRequest)(nil),               // 139: gamenode.plugin.v1.LibraryListRequest
-	(*LibraryGetRequest)(nil),                // 140: gamenode.plugin.v1.LibraryGetRequest
-	(*LibraryWatchRequest)(nil),              // 141: gamenode.plugin.v1.LibraryWatchRequest
-	(*MetadataUpdateRequest)(nil),            // 142: gamenode.plugin.v1.MetadataUpdateRequest
-	(*FavoritesListRequest)(nil),             // 143: gamenode.plugin.v1.FavoritesListRequest
-	(*FavoritesSetRequest)(nil),              // 144: gamenode.plugin.v1.FavoritesSetRequest
-	(*MatchingSearchRequest)(nil),            // 145: gamenode.plugin.v1.MatchingSearchRequest
-	(*MatchingAssignRequest)(nil),            // 146: gamenode.plugin.v1.MatchingAssignRequest
-	(*ArtworkReadRequest)(nil),               // 147: gamenode.plugin.v1.ArtworkReadRequest
-	(*ArtworkSetRequest)(nil),                // 148: gamenode.plugin.v1.ArtworkSetRequest
-	(*LibraryListReply)(nil),                 // 149: gamenode.plugin.v1.LibraryListReply
-	(*LibraryGetReply)(nil),                  // 150: gamenode.plugin.v1.LibraryGetReply
-	(*FavoritesListReply)(nil),               // 151: gamenode.plugin.v1.FavoritesListReply
-	(*MatchingSearchReply)(nil),              // 152: gamenode.plugin.v1.MatchingSearchReply
-	(*ArtworkReadReply)(nil),                 // 153: gamenode.plugin.v1.ArtworkReadReply
-	(*MutationReply)(nil),                    // 154: gamenode.plugin.v1.MutationReply
-	(*LibraryEntry)(nil),                     // 155: gamenode.plugin.v1.LibraryEntry
-	(*FavoriteEntry)(nil),                    // 156: gamenode.plugin.v1.FavoriteEntry
-	(*MatchCandidate)(nil),                   // 157: gamenode.plugin.v1.MatchCandidate
-	(*LibraryEvent)(nil),                     // 158: gamenode.plugin.v1.LibraryEvent
-	(*ResourceRequest)(nil),                  // 159: gamenode.plugin.v1.ResourceRequest
-	(*CommonDataSelector)(nil),               // 160: gamenode.plugin.v1.CommonDataSelector
-	(*SaveProfileListRequest)(nil),           // 161: gamenode.plugin.v1.SaveProfileListRequest
-	(*SaveProfileGetRequest)(nil),            // 162: gamenode.plugin.v1.SaveProfileGetRequest
-	(*SaveProfileCreateRequest)(nil),         // 163: gamenode.plugin.v1.SaveProfileCreateRequest
-	(*SaveProfileUpdateRequest)(nil),         // 164: gamenode.plugin.v1.SaveProfileUpdateRequest
-	(*SaveProfileRemoveRequest)(nil),         // 165: gamenode.plugin.v1.SaveProfileRemoveRequest
-	(*SaveProfilePatch)(nil),                 // 166: gamenode.plugin.v1.SaveProfilePatch
-	(*SaveProfile)(nil),                      // 167: gamenode.plugin.v1.SaveProfile
-	(*SaveDirectory)(nil),                    // 168: gamenode.plugin.v1.SaveDirectory
-	(*SaveProfileListReply)(nil),             // 169: gamenode.plugin.v1.SaveProfileListReply
-	(*SaveProfileReply)(nil),                 // 170: gamenode.plugin.v1.SaveProfileReply
-	(*SaveProfileMutationReply)(nil),         // 171: gamenode.plugin.v1.SaveProfileMutationReply
-	(*LocationInspectRequest)(nil),           // 172: gamenode.plugin.v1.LocationInspectRequest
-	(*LocationInspectReply)(nil),             // 173: gamenode.plugin.v1.LocationInspectReply
-	(*LocationSizeRequest)(nil),              // 174: gamenode.plugin.v1.LocationSizeRequest
-	(*LocationSizeReply)(nil),                // 175: gamenode.plugin.v1.LocationSizeReply
-	(*LocationAccessRequest)(nil),            // 176: gamenode.plugin.v1.LocationAccessRequest
-	(*LocationAccessReply)(nil),              // 177: gamenode.plugin.v1.LocationAccessReply
-	(*LocationLastModifiedRequest)(nil),      // 178: gamenode.plugin.v1.LocationLastModifiedRequest
-	(*LocationLastModifiedReply)(nil),        // 179: gamenode.plugin.v1.LocationLastModifiedReply
-	(*LocationFingerprintRequest)(nil),       // 180: gamenode.plugin.v1.LocationFingerprintRequest
-	(*LocationFingerprintReply)(nil),         // 181: gamenode.plugin.v1.LocationFingerprintReply
-	(*LocationCompareRequest)(nil),           // 182: gamenode.plugin.v1.LocationCompareRequest
-	(*LocationCompareReply)(nil),             // 183: gamenode.plugin.v1.LocationCompareReply
-	(*LocationAvailabilityWatchRequest)(nil), // 184: gamenode.plugin.v1.LocationAvailabilityWatchRequest
-	(*LocationAvailabilityEvent)(nil),        // 185: gamenode.plugin.v1.LocationAvailabilityEvent
-	(*LocationDescription)(nil),              // 186: gamenode.plugin.v1.LocationDescription
-	(*LocationObservation)(nil),              // 187: gamenode.plugin.v1.LocationObservation
-	(*LocationAccessEntry)(nil),              // 188: gamenode.plugin.v1.LocationAccessEntry
-	(*LocationTimestamp)(nil),                // 189: gamenode.plugin.v1.LocationTimestamp
-	(*LocationChange)(nil),                   // 190: gamenode.plugin.v1.LocationChange
-	(*DiagnosticListRequest)(nil),            // 191: gamenode.plugin.v1.DiagnosticListRequest
-	(*DiagnosticGetRequest)(nil),             // 192: gamenode.plugin.v1.DiagnosticGetRequest
-	(*DiagnosticWatchRequest)(nil),           // 193: gamenode.plugin.v1.DiagnosticWatchRequest
-	(*DiagnosticReport)(nil),                 // 194: gamenode.plugin.v1.DiagnosticReport
-	(*DiagnosticListReply)(nil),              // 195: gamenode.plugin.v1.DiagnosticListReply
-	(*DiagnosticGetReply)(nil),               // 196: gamenode.plugin.v1.DiagnosticGetReply
-	(*DiagnosticEvent)(nil),                  // 197: gamenode.plugin.v1.DiagnosticEvent
-	(*ComputerListRequest)(nil),              // 198: gamenode.plugin.v1.ComputerListRequest
-	(*ComputerGetRequest)(nil),               // 199: gamenode.plugin.v1.ComputerGetRequest
-	(*ComputerWatchRequest)(nil),             // 200: gamenode.plugin.v1.ComputerWatchRequest
-	(*ComputerReport)(nil),                   // 201: gamenode.plugin.v1.ComputerReport
-	(*ComputerListReply)(nil),                // 202: gamenode.plugin.v1.ComputerListReply
-	(*ComputerGetReply)(nil),                 // 203: gamenode.plugin.v1.ComputerGetReply
-	(*ComputerEvent)(nil),                    // 204: gamenode.plugin.v1.ComputerEvent
-	(*PresenceListRequest)(nil),              // 205: gamenode.plugin.v1.PresenceListRequest
-	(*PresenceGetRequest)(nil),               // 206: gamenode.plugin.v1.PresenceGetRequest
-	(*PresenceWatchRequest)(nil),             // 207: gamenode.plugin.v1.PresenceWatchRequest
-	(*PresenceRecord)(nil),                   // 208: gamenode.plugin.v1.PresenceRecord
-	(*PresenceListReply)(nil),                // 209: gamenode.plugin.v1.PresenceListReply
-	(*PresenceGetReply)(nil),                 // 210: gamenode.plugin.v1.PresenceGetReply
-	(*PresenceEvent)(nil),                    // 211: gamenode.plugin.v1.PresenceEvent
-	(*PerformanceListRequest)(nil),           // 212: gamenode.plugin.v1.PerformanceListRequest
-	(*PerformanceGetRequest)(nil),            // 213: gamenode.plugin.v1.PerformanceGetRequest
-	(*PerformanceWatchRequest)(nil),          // 214: gamenode.plugin.v1.PerformanceWatchRequest
-	(*PerformanceQuerySeriesRequest)(nil),    // 215: gamenode.plugin.v1.PerformanceQuerySeriesRequest
-	(*PerformanceAggregateRequest)(nil),      // 216: gamenode.plugin.v1.PerformanceAggregateRequest
-	(*PerformanceSeries)(nil),                // 217: gamenode.plugin.v1.PerformanceSeries
-	(*PerformanceListReply)(nil),             // 218: gamenode.plugin.v1.PerformanceListReply
-	(*PerformanceGetReply)(nil),              // 219: gamenode.plugin.v1.PerformanceGetReply
-	(*PerformanceEvent)(nil),                 // 220: gamenode.plugin.v1.PerformanceEvent
-	(*PerformanceQuerySeriesReply)(nil),      // 221: gamenode.plugin.v1.PerformanceQuerySeriesReply
-	(*PerformanceAggregateReply)(nil),        // 222: gamenode.plugin.v1.PerformanceAggregateReply
-	(*ResourceReply)(nil),                    // 223: gamenode.plugin.v1.ResourceReply
-	(*ResourceEvent)(nil),                    // 224: gamenode.plugin.v1.ResourceEvent
-	(*GameLaunchRequest)(nil),                // 225: gamenode.plugin.v1.GameLaunchRequest
-	(*GameLaunchReply)(nil),                  // 226: gamenode.plugin.v1.GameLaunchReply
-	(*CustomLaunchRequest)(nil),              // 227: gamenode.plugin.v1.CustomLaunchRequest
-	(*CustomLaunchReply)(nil),                // 228: gamenode.plugin.v1.CustomLaunchReply
-	(*ExtensionPayload)(nil),                 // 229: gamenode.plugin.v1.ExtensionPayload
-	(*ExtensionSchemaField)(nil),             // 230: gamenode.plugin.v1.ExtensionSchemaField
-	(*ExtensionSchemaDescriptor)(nil),        // 231: gamenode.plugin.v1.ExtensionSchemaDescriptor
-	(*ExtensionNamespacePatch)(nil),          // 232: gamenode.plugin.v1.ExtensionNamespacePatch
-	(*ExtensionPatch)(nil),                   // 233: gamenode.plugin.v1.ExtensionPatch
-	(*RuntimeRecord)(nil),                    // 234: gamenode.plugin.v1.RuntimeRecord
-	(*ServiceContext)(nil),                   // 235: gamenode.plugin.v1.ServiceContext
-	(*ProviderCommand)(nil),                  // 236: gamenode.plugin.v1.ProviderCommand
-	(*ProviderContext)(nil),                  // 237: gamenode.plugin.v1.ProviderContext
-	(*AccountIdentity)(nil),                  // 238: gamenode.plugin.v1.AccountIdentity
-	(*AccountStatus)(nil),                    // 239: gamenode.plugin.v1.AccountStatus
-	(*AccountRequest)(nil),                   // 240: gamenode.plugin.v1.AccountRequest
-	(*AccountReply)(nil),                     // 241: gamenode.plugin.v1.AccountReply
-	(*SecretRequest)(nil),                    // 242: gamenode.plugin.v1.SecretRequest
-	(*SecretReply)(nil),                      // 243: gamenode.plugin.v1.SecretReply
-	(*LoginRequest)(nil),                     // 244: gamenode.plugin.v1.LoginRequest
-	(*LoginCookie)(nil),                      // 245: gamenode.plugin.v1.LoginCookie
-	(*LoginReply)(nil),                       // 246: gamenode.plugin.v1.LoginReply
-	(*ActionDeclaration)(nil),                // 247: gamenode.plugin.v1.ActionDeclaration
-	(*ActionRequest)(nil),                    // 248: gamenode.plugin.v1.ActionRequest
-	(*ActionReply)(nil),                      // 249: gamenode.plugin.v1.ActionReply
-	(*CatalogGame)(nil),                      // 250: gamenode.plugin.v1.CatalogGame
-	(*CatalogChunk)(nil),                     // 251: gamenode.plugin.v1.CatalogChunk
-	(*CatalogCompletion)(nil),                // 252: gamenode.plugin.v1.CatalogCompletion
-	(*CounterObservation)(nil),               // 253: gamenode.plugin.v1.CounterObservation
-	(*OperationResult)(nil),                  // 254: gamenode.plugin.v1.OperationResult
-	(*AchievementsRequest)(nil),              // 255: gamenode.plugin.v1.AchievementsRequest
-	(*Achievement)(nil),                      // 256: gamenode.plugin.v1.Achievement
-	(*AchievementGame)(nil),                  // 257: gamenode.plugin.v1.AchievementGame
-	(*AchievementOutcome)(nil),               // 258: gamenode.plugin.v1.AchievementOutcome
-	(*ConfigurationResult)(nil),              // 259: gamenode.plugin.v1.ConfigurationResult
-	(*SettingsContext)(nil),                  // 260: gamenode.plugin.v1.SettingsContext
-	(*SettingsText)(nil),                     // 261: gamenode.plugin.v1.SettingsText
-	(*SettingsValue)(nil),                    // 262: gamenode.plugin.v1.SettingsValue
-	(*SettingsTextField)(nil),                // 263: gamenode.plugin.v1.SettingsTextField
-	(*SettingsNumberField)(nil),              // 264: gamenode.plugin.v1.SettingsNumberField
-	(*SettingsChoiceOption)(nil),             // 265: gamenode.plugin.v1.SettingsChoiceOption
-	(*SettingsChoiceField)(nil),              // 266: gamenode.plugin.v1.SettingsChoiceField
-	(*SettingsField)(nil),                    // 267: gamenode.plugin.v1.SettingsField
-	(*SettingsForm)(nil),                     // 268: gamenode.plugin.v1.SettingsForm
-	(*SettingsSubmission)(nil),               // 269: gamenode.plugin.v1.SettingsSubmission
-	(*SettingsRequest)(nil),                  // 270: gamenode.plugin.v1.SettingsRequest
-	(*SettingsView)(nil),                     // 271: gamenode.plugin.v1.SettingsView
-	(*SettingsApplied)(nil),                  // 272: gamenode.plugin.v1.SettingsApplied
-	(*SettingsFieldErrors)(nil),              // 273: gamenode.plugin.v1.SettingsFieldErrors
-	(*SettingsReply)(nil),                    // 274: gamenode.plugin.v1.SettingsReply
-	(*ProviderEvent)(nil),                    // 275: gamenode.plugin.v1.ProviderEvent
-	(*RuntimeSessionReport)(nil),             // 276: gamenode.plugin.v1.RuntimeSessionReport
-	(*RuntimeSessionResult)(nil),             // 277: gamenode.plugin.v1.RuntimeSessionResult
-	nil,                                      // 278: gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
-	nil,                                      // 279: gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
-	nil,                                      // 280: gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
-	nil,                                      // 281: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
-	nil,                                      // 282: gamenode.plugin.v1.SmartReportRequest.AttributesEntry
-	nil,                                      // 283: gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
-	nil,                                      // 284: gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
-	nil,                                      // 285: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
-	nil,                                      // 286: gamenode.plugin.v1.CatalogGame.FieldsEntry
-	nil,                                      // 287: gamenode.plugin.v1.SettingsText.TranslationsEntry
-	nil,                                      // 288: gamenode.plugin.v1.SettingsSubmission.ValuesEntry
-	nil,                                      // 289: gamenode.plugin.v1.SettingsView.ValuesEntry
-	nil,                                      // 290: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
-	(*structpb.Struct)(nil),                  // 291: google.protobuf.Struct
+	(*DetectedExecutable)(nil),               // 40: gamenode.plugin.v1.DetectedExecutable
+	(*DetectedTarget)(nil),                   // 41: gamenode.plugin.v1.DetectedTarget
+	(*DiscoveryRecord)(nil),                  // 42: gamenode.plugin.v1.DiscoveryRecord
+	(*DiscoveryResult)(nil),                  // 43: gamenode.plugin.v1.DiscoveryResult
+	(*PluginFailure)(nil),                    // 44: gamenode.plugin.v1.PluginFailure
+	(*SubmitDiscoveryRequest)(nil),           // 45: gamenode.plugin.v1.SubmitDiscoveryRequest
+	(*SubmitDiscoveryReply)(nil),             // 46: gamenode.plugin.v1.SubmitDiscoveryReply
+	(*CustomLaunchRemoveRequest)(nil),        // 47: gamenode.plugin.v1.CustomLaunchRemoveRequest
+	(*GameInstallRequest)(nil),               // 48: gamenode.plugin.v1.GameInstallRequest
+	(*StorageGetRequest)(nil),                // 49: gamenode.plugin.v1.StorageGetRequest
+	(*StoragePutRequest)(nil),                // 50: gamenode.plugin.v1.StoragePutRequest
+	(*StorageDeleteRequest)(nil),             // 51: gamenode.plugin.v1.StorageDeleteRequest
+	(*StorageGetReply)(nil),                  // 52: gamenode.plugin.v1.StorageGetReply
+	(*StorageMutationReply)(nil),             // 53: gamenode.plugin.v1.StorageMutationReply
+	(*DeclaredLocation)(nil),                 // 54: gamenode.plugin.v1.DeclaredLocation
+	(*FilesRequestAccessRequest)(nil),        // 55: gamenode.plugin.v1.FilesRequestAccessRequest
+	(*FileHandle)(nil),                       // 56: gamenode.plugin.v1.FileHandle
+	(*FileAccessReply)(nil),                  // 57: gamenode.plugin.v1.FileAccessReply
+	(*FilesListRequest)(nil),                 // 58: gamenode.plugin.v1.FilesListRequest
+	(*FilesListReply)(nil),                   // 59: gamenode.plugin.v1.FilesListReply
+	(*FileEntry)(nil),                        // 60: gamenode.plugin.v1.FileEntry
+	(*FilesReadRequest)(nil),                 // 61: gamenode.plugin.v1.FilesReadRequest
+	(*FileReadReply)(nil),                    // 62: gamenode.plugin.v1.FileReadReply
+	(*FilesWriteRequest)(nil),                // 63: gamenode.plugin.v1.FilesWriteRequest
+	(*FilesDeleteRequest)(nil),               // 64: gamenode.plugin.v1.FilesDeleteRequest
+	(*NetworkFetchRequest)(nil),              // 65: gamenode.plugin.v1.NetworkFetchRequest
+	(*NetworkFetchReply)(nil),                // 66: gamenode.plugin.v1.NetworkFetchReply
+	(*NotificationTranslation)(nil),          // 67: gamenode.plugin.v1.NotificationTranslation
+	(*NotificationPublishRequest)(nil),       // 68: gamenode.plugin.v1.NotificationPublishRequest
+	(*BackupsListRequest)(nil),               // 69: gamenode.plugin.v1.BackupsListRequest
+	(*BackupCreateRequest)(nil),              // 70: gamenode.plugin.v1.BackupCreateRequest
+	(*BackupRestoreRequest)(nil),             // 71: gamenode.plugin.v1.BackupRestoreRequest
+	(*BackupsListReply)(nil),                 // 72: gamenode.plugin.v1.BackupsListReply
+	(*BackupRecord)(nil),                     // 73: gamenode.plugin.v1.BackupRecord
+	(*JobReply)(nil),                         // 74: gamenode.plugin.v1.JobReply
+	(*DomainListRequest)(nil),                // 75: gamenode.plugin.v1.DomainListRequest
+	(*DomainGetRequest)(nil),                 // 76: gamenode.plugin.v1.DomainGetRequest
+	(*DomainWatchRequest)(nil),               // 77: gamenode.plugin.v1.DomainWatchRequest
+	(*DomainRemoveRequest)(nil),              // 78: gamenode.plugin.v1.DomainRemoveRequest
+	(*LibraryCreateRequest)(nil),             // 79: gamenode.plugin.v1.LibraryCreateRequest
+	(*LibraryUpdateRequest)(nil),             // 80: gamenode.plugin.v1.LibraryUpdateRequest
+	(*LibraryRootAddRequest)(nil),            // 81: gamenode.plugin.v1.LibraryRootAddRequest
+	(*LibraryRootUpdateRequest)(nil),         // 82: gamenode.plugin.v1.LibraryRootUpdateRequest
+	(*LibraryRootRemoveRequest)(nil),         // 83: gamenode.plugin.v1.LibraryRootRemoveRequest
+	(*LibraryRecord)(nil),                    // 84: gamenode.plugin.v1.LibraryRecord
+	(*LibraryRootRecord)(nil),                // 85: gamenode.plugin.v1.LibraryRootRecord
+	(*LibrariesListReply)(nil),               // 86: gamenode.plugin.v1.LibrariesListReply
+	(*LibraryRecordReply)(nil),               // 87: gamenode.plugin.v1.LibraryRecordReply
+	(*LibraryRecordEvent)(nil),               // 88: gamenode.plugin.v1.LibraryRecordEvent
+	(*LibraryMutationReply)(nil),             // 89: gamenode.plugin.v1.LibraryMutationReply
+	(*RuntimeRegisterRequest)(nil),           // 90: gamenode.plugin.v1.RuntimeRegisterRequest
+	(*RuntimeUpdateRequest)(nil),             // 91: gamenode.plugin.v1.RuntimeUpdateRequest
+	(*RuntimeMutationReply)(nil),             // 92: gamenode.plugin.v1.RuntimeMutationReply
+	(*RuntimeRecordReply)(nil),               // 93: gamenode.plugin.v1.RuntimeRecordReply
+	(*RuntimeRecordEvent)(nil),               // 94: gamenode.plugin.v1.RuntimeRecordEvent
+	(*RuntimesListReply)(nil),                // 95: gamenode.plugin.v1.RuntimesListReply
+	(*ContentRegistrationRequest)(nil),       // 96: gamenode.plugin.v1.ContentRegistrationRequest
+	(*ReportMutationReply)(nil),              // 97: gamenode.plugin.v1.ReportMutationReply
+	(*BenchmarkReportRequest)(nil),           // 98: gamenode.plugin.v1.BenchmarkReportRequest
+	(*SmartReportRequest)(nil),               // 99: gamenode.plugin.v1.SmartReportRequest
+	(*HardwareReportRequest)(nil),            // 100: gamenode.plugin.v1.HardwareReportRequest
+	(*PresencePublishRequest)(nil),           // 101: gamenode.plugin.v1.PresencePublishRequest
+	(*PresenceClearRequest)(nil),             // 102: gamenode.plugin.v1.PresenceClearRequest
+	(*PerformanceSample)(nil),                // 103: gamenode.plugin.v1.PerformanceSample
+	(*PerformanceSamplesRequest)(nil),        // 104: gamenode.plugin.v1.PerformanceSamplesRequest
+	(*PerformanceEndSeriesRequest)(nil),      // 105: gamenode.plugin.v1.PerformanceEndSeriesRequest
+	(*DataPublishRequest)(nil),               // 106: gamenode.plugin.v1.DataPublishRequest
+	(*DataMutationReply)(nil),                // 107: gamenode.plugin.v1.DataMutationReply
+	(*DataGetRequest)(nil),                   // 108: gamenode.plugin.v1.DataGetRequest
+	(*DataListRequest)(nil),                  // 109: gamenode.plugin.v1.DataListRequest
+	(*DataWatchRequest)(nil),                 // 110: gamenode.plugin.v1.DataWatchRequest
+	(*DataRecord)(nil),                       // 111: gamenode.plugin.v1.DataRecord
+	(*DataGetReply)(nil),                     // 112: gamenode.plugin.v1.DataGetReply
+	(*DataListReply)(nil),                    // 113: gamenode.plugin.v1.DataListReply
+	(*DataEvent)(nil),                        // 114: gamenode.plugin.v1.DataEvent
+	(*PersistenceUsageRequest)(nil),          // 115: gamenode.plugin.v1.PersistenceUsageRequest
+	(*PersistenceUsageReply)(nil),            // 116: gamenode.plugin.v1.PersistenceUsageReply
+	(*PersistenceListRequest)(nil),           // 117: gamenode.plugin.v1.PersistenceListRequest
+	(*PersistenceListReply)(nil),             // 118: gamenode.plugin.v1.PersistenceListReply
+	(*PersistenceEntry)(nil),                 // 119: gamenode.plugin.v1.PersistenceEntry
+	(*PersistenceDeleteRequest)(nil),         // 120: gamenode.plugin.v1.PersistenceDeleteRequest
+	(*PersistenceClearRequest)(nil),          // 121: gamenode.plugin.v1.PersistenceClearRequest
+	(*RetentionPolicyRequest)(nil),           // 122: gamenode.plugin.v1.RetentionPolicyRequest
+	(*PersistenceMutationReply)(nil),         // 123: gamenode.plugin.v1.PersistenceMutationReply
+	(*ToolsListRequest)(nil),                 // 124: gamenode.plugin.v1.ToolsListRequest
+	(*ToolApplyRequest)(nil),                 // 125: gamenode.plugin.v1.ToolApplyRequest
+	(*ToolRemoveRequest)(nil),                // 126: gamenode.plugin.v1.ToolRemoveRequest
+	(*ToolsListReply)(nil),                   // 127: gamenode.plugin.v1.ToolsListReply
+	(*ToolRecord)(nil),                       // 128: gamenode.plugin.v1.ToolRecord
+	(*PortsListRequest)(nil),                 // 129: gamenode.plugin.v1.PortsListRequest
+	(*PortDetailRequest)(nil),                // 130: gamenode.plugin.v1.PortDetailRequest
+	(*PortInstallRequest)(nil),               // 131: gamenode.plugin.v1.PortInstallRequest
+	(*PortsListReply)(nil),                   // 132: gamenode.plugin.v1.PortsListReply
+	(*PortDetailReply)(nil),                  // 133: gamenode.plugin.v1.PortDetailReply
+	(*PortRecord)(nil),                       // 134: gamenode.plugin.v1.PortRecord
+	(*JobGetRequest)(nil),                    // 135: gamenode.plugin.v1.JobGetRequest
+	(*JobWatchRequest)(nil),                  // 136: gamenode.plugin.v1.JobWatchRequest
+	(*JobCancelRequest)(nil),                 // 137: gamenode.plugin.v1.JobCancelRequest
+	(*JobEvent)(nil),                         // 138: gamenode.plugin.v1.JobEvent
+	(*MutationContext)(nil),                  // 139: gamenode.plugin.v1.MutationContext
+	(*PageRequest)(nil),                      // 140: gamenode.plugin.v1.PageRequest
+	(*LibraryListRequest)(nil),               // 141: gamenode.plugin.v1.LibraryListRequest
+	(*LibraryGetRequest)(nil),                // 142: gamenode.plugin.v1.LibraryGetRequest
+	(*LibraryWatchRequest)(nil),              // 143: gamenode.plugin.v1.LibraryWatchRequest
+	(*MetadataUpdateRequest)(nil),            // 144: gamenode.plugin.v1.MetadataUpdateRequest
+	(*FavoritesListRequest)(nil),             // 145: gamenode.plugin.v1.FavoritesListRequest
+	(*FavoritesSetRequest)(nil),              // 146: gamenode.plugin.v1.FavoritesSetRequest
+	(*MatchingSearchRequest)(nil),            // 147: gamenode.plugin.v1.MatchingSearchRequest
+	(*MatchingAssignRequest)(nil),            // 148: gamenode.plugin.v1.MatchingAssignRequest
+	(*ArtworkReadRequest)(nil),               // 149: gamenode.plugin.v1.ArtworkReadRequest
+	(*ArtworkSetRequest)(nil),                // 150: gamenode.plugin.v1.ArtworkSetRequest
+	(*LibraryListReply)(nil),                 // 151: gamenode.plugin.v1.LibraryListReply
+	(*LibraryGetReply)(nil),                  // 152: gamenode.plugin.v1.LibraryGetReply
+	(*FavoritesListReply)(nil),               // 153: gamenode.plugin.v1.FavoritesListReply
+	(*MatchingSearchReply)(nil),              // 154: gamenode.plugin.v1.MatchingSearchReply
+	(*ArtworkReadReply)(nil),                 // 155: gamenode.plugin.v1.ArtworkReadReply
+	(*MutationReply)(nil),                    // 156: gamenode.plugin.v1.MutationReply
+	(*LibraryEntry)(nil),                     // 157: gamenode.plugin.v1.LibraryEntry
+	(*FavoriteEntry)(nil),                    // 158: gamenode.plugin.v1.FavoriteEntry
+	(*MatchCandidate)(nil),                   // 159: gamenode.plugin.v1.MatchCandidate
+	(*LibraryEvent)(nil),                     // 160: gamenode.plugin.v1.LibraryEvent
+	(*ResourceRequest)(nil),                  // 161: gamenode.plugin.v1.ResourceRequest
+	(*CommonDataSelector)(nil),               // 162: gamenode.plugin.v1.CommonDataSelector
+	(*SaveProfileListRequest)(nil),           // 163: gamenode.plugin.v1.SaveProfileListRequest
+	(*SaveProfileGetRequest)(nil),            // 164: gamenode.plugin.v1.SaveProfileGetRequest
+	(*SaveProfileCreateRequest)(nil),         // 165: gamenode.plugin.v1.SaveProfileCreateRequest
+	(*SaveProfileUpdateRequest)(nil),         // 166: gamenode.plugin.v1.SaveProfileUpdateRequest
+	(*SaveProfileRemoveRequest)(nil),         // 167: gamenode.plugin.v1.SaveProfileRemoveRequest
+	(*SaveProfilePatch)(nil),                 // 168: gamenode.plugin.v1.SaveProfilePatch
+	(*SaveProfile)(nil),                      // 169: gamenode.plugin.v1.SaveProfile
+	(*SaveDirectory)(nil),                    // 170: gamenode.plugin.v1.SaveDirectory
+	(*SaveProfileListReply)(nil),             // 171: gamenode.plugin.v1.SaveProfileListReply
+	(*SaveProfileReply)(nil),                 // 172: gamenode.plugin.v1.SaveProfileReply
+	(*SaveProfileMutationReply)(nil),         // 173: gamenode.plugin.v1.SaveProfileMutationReply
+	(*LocationInspectRequest)(nil),           // 174: gamenode.plugin.v1.LocationInspectRequest
+	(*LocationInspectReply)(nil),             // 175: gamenode.plugin.v1.LocationInspectReply
+	(*LocationSizeRequest)(nil),              // 176: gamenode.plugin.v1.LocationSizeRequest
+	(*LocationSizeReply)(nil),                // 177: gamenode.plugin.v1.LocationSizeReply
+	(*LocationAccessRequest)(nil),            // 178: gamenode.plugin.v1.LocationAccessRequest
+	(*LocationAccessReply)(nil),              // 179: gamenode.plugin.v1.LocationAccessReply
+	(*LocationLastModifiedRequest)(nil),      // 180: gamenode.plugin.v1.LocationLastModifiedRequest
+	(*LocationLastModifiedReply)(nil),        // 181: gamenode.plugin.v1.LocationLastModifiedReply
+	(*LocationFingerprintRequest)(nil),       // 182: gamenode.plugin.v1.LocationFingerprintRequest
+	(*LocationFingerprintReply)(nil),         // 183: gamenode.plugin.v1.LocationFingerprintReply
+	(*LocationCompareRequest)(nil),           // 184: gamenode.plugin.v1.LocationCompareRequest
+	(*LocationCompareReply)(nil),             // 185: gamenode.plugin.v1.LocationCompareReply
+	(*LocationAvailabilityWatchRequest)(nil), // 186: gamenode.plugin.v1.LocationAvailabilityWatchRequest
+	(*LocationAvailabilityEvent)(nil),        // 187: gamenode.plugin.v1.LocationAvailabilityEvent
+	(*LocationDescription)(nil),              // 188: gamenode.plugin.v1.LocationDescription
+	(*LocationObservation)(nil),              // 189: gamenode.plugin.v1.LocationObservation
+	(*LocationAccessEntry)(nil),              // 190: gamenode.plugin.v1.LocationAccessEntry
+	(*LocationTimestamp)(nil),                // 191: gamenode.plugin.v1.LocationTimestamp
+	(*LocationChange)(nil),                   // 192: gamenode.plugin.v1.LocationChange
+	(*DiagnosticListRequest)(nil),            // 193: gamenode.plugin.v1.DiagnosticListRequest
+	(*DiagnosticGetRequest)(nil),             // 194: gamenode.plugin.v1.DiagnosticGetRequest
+	(*DiagnosticWatchRequest)(nil),           // 195: gamenode.plugin.v1.DiagnosticWatchRequest
+	(*DiagnosticReport)(nil),                 // 196: gamenode.plugin.v1.DiagnosticReport
+	(*DiagnosticListReply)(nil),              // 197: gamenode.plugin.v1.DiagnosticListReply
+	(*DiagnosticGetReply)(nil),               // 198: gamenode.plugin.v1.DiagnosticGetReply
+	(*DiagnosticEvent)(nil),                  // 199: gamenode.plugin.v1.DiagnosticEvent
+	(*ComputerListRequest)(nil),              // 200: gamenode.plugin.v1.ComputerListRequest
+	(*ComputerGetRequest)(nil),               // 201: gamenode.plugin.v1.ComputerGetRequest
+	(*ComputerWatchRequest)(nil),             // 202: gamenode.plugin.v1.ComputerWatchRequest
+	(*ComputerReport)(nil),                   // 203: gamenode.plugin.v1.ComputerReport
+	(*ComputerListReply)(nil),                // 204: gamenode.plugin.v1.ComputerListReply
+	(*ComputerGetReply)(nil),                 // 205: gamenode.plugin.v1.ComputerGetReply
+	(*ComputerEvent)(nil),                    // 206: gamenode.plugin.v1.ComputerEvent
+	(*PresenceListRequest)(nil),              // 207: gamenode.plugin.v1.PresenceListRequest
+	(*PresenceGetRequest)(nil),               // 208: gamenode.plugin.v1.PresenceGetRequest
+	(*PresenceWatchRequest)(nil),             // 209: gamenode.plugin.v1.PresenceWatchRequest
+	(*PresenceRecord)(nil),                   // 210: gamenode.plugin.v1.PresenceRecord
+	(*PresenceListReply)(nil),                // 211: gamenode.plugin.v1.PresenceListReply
+	(*PresenceGetReply)(nil),                 // 212: gamenode.plugin.v1.PresenceGetReply
+	(*PresenceEvent)(nil),                    // 213: gamenode.plugin.v1.PresenceEvent
+	(*PerformanceListRequest)(nil),           // 214: gamenode.plugin.v1.PerformanceListRequest
+	(*PerformanceGetRequest)(nil),            // 215: gamenode.plugin.v1.PerformanceGetRequest
+	(*PerformanceWatchRequest)(nil),          // 216: gamenode.plugin.v1.PerformanceWatchRequest
+	(*PerformanceQuerySeriesRequest)(nil),    // 217: gamenode.plugin.v1.PerformanceQuerySeriesRequest
+	(*PerformanceAggregateRequest)(nil),      // 218: gamenode.plugin.v1.PerformanceAggregateRequest
+	(*PerformanceSeries)(nil),                // 219: gamenode.plugin.v1.PerformanceSeries
+	(*PerformanceListReply)(nil),             // 220: gamenode.plugin.v1.PerformanceListReply
+	(*PerformanceGetReply)(nil),              // 221: gamenode.plugin.v1.PerformanceGetReply
+	(*PerformanceEvent)(nil),                 // 222: gamenode.plugin.v1.PerformanceEvent
+	(*PerformanceQuerySeriesReply)(nil),      // 223: gamenode.plugin.v1.PerformanceQuerySeriesReply
+	(*PerformanceAggregateReply)(nil),        // 224: gamenode.plugin.v1.PerformanceAggregateReply
+	(*ResourceReply)(nil),                    // 225: gamenode.plugin.v1.ResourceReply
+	(*ResourceEvent)(nil),                    // 226: gamenode.plugin.v1.ResourceEvent
+	(*GameLaunchRequest)(nil),                // 227: gamenode.plugin.v1.GameLaunchRequest
+	(*GameLaunchReply)(nil),                  // 228: gamenode.plugin.v1.GameLaunchReply
+	(*CustomLaunchRequest)(nil),              // 229: gamenode.plugin.v1.CustomLaunchRequest
+	(*CustomLaunchReply)(nil),                // 230: gamenode.plugin.v1.CustomLaunchReply
+	(*ExtensionPayload)(nil),                 // 231: gamenode.plugin.v1.ExtensionPayload
+	(*ExtensionSchemaField)(nil),             // 232: gamenode.plugin.v1.ExtensionSchemaField
+	(*ExtensionSchemaDescriptor)(nil),        // 233: gamenode.plugin.v1.ExtensionSchemaDescriptor
+	(*ExtensionNamespacePatch)(nil),          // 234: gamenode.plugin.v1.ExtensionNamespacePatch
+	(*ExtensionPatch)(nil),                   // 235: gamenode.plugin.v1.ExtensionPatch
+	(*RuntimeArgumentTemplate)(nil),          // 236: gamenode.plugin.v1.RuntimeArgumentTemplate
+	(*ContentPathArgument)(nil),              // 237: gamenode.plugin.v1.ContentPathArgument
+	(*RuntimeRecord)(nil),                    // 238: gamenode.plugin.v1.RuntimeRecord
+	(*ServiceContext)(nil),                   // 239: gamenode.plugin.v1.ServiceContext
+	(*ProviderCommand)(nil),                  // 240: gamenode.plugin.v1.ProviderCommand
+	(*ProviderContext)(nil),                  // 241: gamenode.plugin.v1.ProviderContext
+	(*AccountIdentity)(nil),                  // 242: gamenode.plugin.v1.AccountIdentity
+	(*AccountStatus)(nil),                    // 243: gamenode.plugin.v1.AccountStatus
+	(*AccountRequest)(nil),                   // 244: gamenode.plugin.v1.AccountRequest
+	(*AccountReply)(nil),                     // 245: gamenode.plugin.v1.AccountReply
+	(*SecretRequest)(nil),                    // 246: gamenode.plugin.v1.SecretRequest
+	(*SecretReply)(nil),                      // 247: gamenode.plugin.v1.SecretReply
+	(*LoginRequest)(nil),                     // 248: gamenode.plugin.v1.LoginRequest
+	(*LoginCookie)(nil),                      // 249: gamenode.plugin.v1.LoginCookie
+	(*LoginReply)(nil),                       // 250: gamenode.plugin.v1.LoginReply
+	(*ActionDeclaration)(nil),                // 251: gamenode.plugin.v1.ActionDeclaration
+	(*ActionRequest)(nil),                    // 252: gamenode.plugin.v1.ActionRequest
+	(*ActionReply)(nil),                      // 253: gamenode.plugin.v1.ActionReply
+	(*CatalogGame)(nil),                      // 254: gamenode.plugin.v1.CatalogGame
+	(*CatalogChunk)(nil),                     // 255: gamenode.plugin.v1.CatalogChunk
+	(*CatalogCompletion)(nil),                // 256: gamenode.plugin.v1.CatalogCompletion
+	(*CounterObservation)(nil),               // 257: gamenode.plugin.v1.CounterObservation
+	(*OperationResult)(nil),                  // 258: gamenode.plugin.v1.OperationResult
+	(*AchievementsRequest)(nil),              // 259: gamenode.plugin.v1.AchievementsRequest
+	(*Achievement)(nil),                      // 260: gamenode.plugin.v1.Achievement
+	(*AchievementGame)(nil),                  // 261: gamenode.plugin.v1.AchievementGame
+	(*AchievementOutcome)(nil),               // 262: gamenode.plugin.v1.AchievementOutcome
+	(*ConfigurationResult)(nil),              // 263: gamenode.plugin.v1.ConfigurationResult
+	(*SettingsContext)(nil),                  // 264: gamenode.plugin.v1.SettingsContext
+	(*SettingsText)(nil),                     // 265: gamenode.plugin.v1.SettingsText
+	(*SettingsValue)(nil),                    // 266: gamenode.plugin.v1.SettingsValue
+	(*SettingsTextField)(nil),                // 267: gamenode.plugin.v1.SettingsTextField
+	(*SettingsNumberField)(nil),              // 268: gamenode.plugin.v1.SettingsNumberField
+	(*SettingsChoiceOption)(nil),             // 269: gamenode.plugin.v1.SettingsChoiceOption
+	(*SettingsChoiceField)(nil),              // 270: gamenode.plugin.v1.SettingsChoiceField
+	(*SettingsField)(nil),                    // 271: gamenode.plugin.v1.SettingsField
+	(*SettingsForm)(nil),                     // 272: gamenode.plugin.v1.SettingsForm
+	(*SettingsSubmission)(nil),               // 273: gamenode.plugin.v1.SettingsSubmission
+	(*SettingsRequest)(nil),                  // 274: gamenode.plugin.v1.SettingsRequest
+	(*SettingsView)(nil),                     // 275: gamenode.plugin.v1.SettingsView
+	(*SettingsApplied)(nil),                  // 276: gamenode.plugin.v1.SettingsApplied
+	(*SettingsFieldErrors)(nil),              // 277: gamenode.plugin.v1.SettingsFieldErrors
+	(*SettingsReply)(nil),                    // 278: gamenode.plugin.v1.SettingsReply
+	(*ProviderEvent)(nil),                    // 279: gamenode.plugin.v1.ProviderEvent
+	(*RuntimeSessionReport)(nil),             // 280: gamenode.plugin.v1.RuntimeSessionReport
+	(*RuntimeSessionResult)(nil),             // 281: gamenode.plugin.v1.RuntimeSessionResult
+	nil,                                      // 282: gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
+	nil,                                      // 283: gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
+	nil,                                      // 284: gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
+	nil,                                      // 285: gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
+	nil,                                      // 286: gamenode.plugin.v1.SmartReportRequest.AttributesEntry
+	nil,                                      // 287: gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
+	nil,                                      // 288: gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
+	nil,                                      // 289: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
+	nil,                                      // 290: gamenode.plugin.v1.CatalogGame.FieldsEntry
+	nil,                                      // 291: gamenode.plugin.v1.SettingsText.TranslationsEntry
+	nil,                                      // 292: gamenode.plugin.v1.SettingsSubmission.ValuesEntry
+	nil,                                      // 293: gamenode.plugin.v1.SettingsView.ValuesEntry
+	nil,                                      // 294: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
+	(*structpb.Struct)(nil),                  // 295: google.protobuf.Struct
 }
 var file_plugin_proto_depIdxs = []int32{
 	27,  // 0: gamenode.plugin.v1.OpenSessionRequest.features:type_name -> gamenode.plugin.v1.FeatureRequest
@@ -21772,7 +22137,7 @@ var file_plugin_proto_depIdxs = []int32{
 	26,  // 2: gamenode.plugin.v1.OpenSessionRequest.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
 	28,  // 3: gamenode.plugin.v1.OpenSessionReply.features:type_name -> gamenode.plugin.v1.FeatureStatus
 	29,  // 4: gamenode.plugin.v1.OpenSessionReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
-	235, // 5: gamenode.plugin.v1.OpenSessionReply.resource_context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 5: gamenode.plugin.v1.OpenSessionReply.resource_context:type_name -> gamenode.plugin.v1.ServiceContext
 	1,   // 6: gamenode.plugin.v1.FeatureStatus.availability:type_name -> gamenode.plugin.v1.FeatureAvailability
 	29,  // 7: gamenode.plugin.v1.DescribeApiReply.support_window:type_name -> gamenode.plugin.v1.SupportWindow
 	30,  // 8: gamenode.plugin.v1.DescribeApiReply.features:type_name -> gamenode.plugin.v1.ApiFeature
@@ -21780,518 +22145,522 @@ var file_plugin_proto_depIdxs = []int32{
 	35,  // 10: gamenode.plugin.v1.GetPermissionsReply.grants:type_name -> gamenode.plugin.v1.PermissionGrant
 	35,  // 11: gamenode.plugin.v1.PermissionChange.grants:type_name -> gamenode.plugin.v1.PermissionGrant
 	2,   // 12: gamenode.plugin.v1.DenialDetail.reason:type_name -> gamenode.plugin.v1.DenialReason
-	278, // 13: gamenode.plugin.v1.DiscoveryRecord.fields:type_name -> gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
-	40,  // 14: gamenode.plugin.v1.DiscoveryResult.records:type_name -> gamenode.plugin.v1.DiscoveryRecord
-	41,  // 15: gamenode.plugin.v1.SubmitDiscoveryRequest.completed:type_name -> gamenode.plugin.v1.DiscoveryResult
-	42,  // 16: gamenode.plugin.v1.SubmitDiscoveryRequest.failed:type_name -> gamenode.plugin.v1.PluginFailure
-	137, // 17: gamenode.plugin.v1.CustomLaunchRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	235, // 18: gamenode.plugin.v1.GameInstallRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 19: gamenode.plugin.v1.StorageGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 20: gamenode.plugin.v1.StoragePutRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	3,   // 21: gamenode.plugin.v1.StoragePutRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	137, // 22: gamenode.plugin.v1.StorageDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	3,   // 23: gamenode.plugin.v1.StorageGetReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	5,   // 24: gamenode.plugin.v1.StorageMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	3,   // 25: gamenode.plugin.v1.StorageMutationReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	137, // 26: gamenode.plugin.v1.FilesRequestAccessRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	52,  // 27: gamenode.plugin.v1.FilesRequestAccessRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	54,  // 28: gamenode.plugin.v1.FileAccessReply.handles:type_name -> gamenode.plugin.v1.FileHandle
-	235, // 29: gamenode.plugin.v1.FilesListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	58,  // 30: gamenode.plugin.v1.FilesListReply.entries:type_name -> gamenode.plugin.v1.FileEntry
-	235, // 31: gamenode.plugin.v1.FilesReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 32: gamenode.plugin.v1.FilesWriteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 33: gamenode.plugin.v1.FilesDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	235, // 34: gamenode.plugin.v1.NetworkFetchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	279, // 35: gamenode.plugin.v1.NetworkFetchRequest.headers:type_name -> gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
-	280, // 36: gamenode.plugin.v1.NetworkFetchReply.headers:type_name -> gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
-	137, // 37: gamenode.plugin.v1.NotificationPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	65,  // 38: gamenode.plugin.v1.NotificationPublishRequest.translations:type_name -> gamenode.plugin.v1.NotificationTranslation
-	138, // 39: gamenode.plugin.v1.BackupsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	137, // 40: gamenode.plugin.v1.BackupCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 41: gamenode.plugin.v1.BackupRestoreRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	71,  // 42: gamenode.plugin.v1.BackupsListReply.backups:type_name -> gamenode.plugin.v1.BackupRecord
-	4,   // 43: gamenode.plugin.v1.JobReply.state:type_name -> gamenode.plugin.v1.JobState
-	138, // 44: gamenode.plugin.v1.DomainListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 45: gamenode.plugin.v1.DomainGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 46: gamenode.plugin.v1.DomainGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 47: gamenode.plugin.v1.DomainWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 48: gamenode.plugin.v1.DomainWatchRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	137, // 49: gamenode.plugin.v1.DomainRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 50: gamenode.plugin.v1.LibraryCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 51: gamenode.plugin.v1.LibraryUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 52: gamenode.plugin.v1.LibraryRootAddRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	52,  // 53: gamenode.plugin.v1.LibraryRootAddRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	137, // 54: gamenode.plugin.v1.LibraryRootUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	52,  // 55: gamenode.plugin.v1.LibraryRootUpdateRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
-	137, // 56: gamenode.plugin.v1.LibraryRootRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	83,  // 57: gamenode.plugin.v1.LibraryRecord.roots:type_name -> gamenode.plugin.v1.LibraryRootRecord
-	7,   // 58: gamenode.plugin.v1.LibraryRootRecord.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	82,  // 59: gamenode.plugin.v1.LibrariesListReply.libraries:type_name -> gamenode.plugin.v1.LibraryRecord
-	82,  // 60: gamenode.plugin.v1.LibraryRecordReply.library:type_name -> gamenode.plugin.v1.LibraryRecord
-	82,  // 61: gamenode.plugin.v1.LibraryRecordEvent.library:type_name -> gamenode.plugin.v1.LibraryRecord
-	5,   // 62: gamenode.plugin.v1.LibraryMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	137, // 63: gamenode.plugin.v1.RuntimeRegisterRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	234, // 64: gamenode.plugin.v1.RuntimeRegisterRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	137, // 65: gamenode.plugin.v1.RuntimeUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	234, // 66: gamenode.plugin.v1.RuntimeUpdateRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	234, // 67: gamenode.plugin.v1.RuntimeMutationReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	5,   // 68: gamenode.plugin.v1.RuntimeMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	234, // 69: gamenode.plugin.v1.RuntimeRecordReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	234, // 70: gamenode.plugin.v1.RuntimeRecordEvent.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
-	234, // 71: gamenode.plugin.v1.RuntimesListReply.runtimes:type_name -> gamenode.plugin.v1.RuntimeRecord
-	137, // 72: gamenode.plugin.v1.ContentRegistrationRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	5,   // 73: gamenode.plugin.v1.ReportMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	137, // 74: gamenode.plugin.v1.BenchmarkReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	281, // 75: gamenode.plugin.v1.BenchmarkReportRequest.measurements:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
-	137, // 76: gamenode.plugin.v1.SmartReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	282, // 77: gamenode.plugin.v1.SmartReportRequest.attributes:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributesEntry
-	137, // 78: gamenode.plugin.v1.HardwareReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	291, // 79: gamenode.plugin.v1.HardwareReportRequest.observations:type_name -> google.protobuf.Struct
-	137, // 80: gamenode.plugin.v1.PresencePublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	291, // 81: gamenode.plugin.v1.PresencePublishRequest.details:type_name -> google.protobuf.Struct
-	137, // 82: gamenode.plugin.v1.PresenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 83: gamenode.plugin.v1.PerformanceSamplesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	101, // 84: gamenode.plugin.v1.PerformanceSamplesRequest.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	137, // 85: gamenode.plugin.v1.PerformanceEndSeriesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 86: gamenode.plugin.v1.DataPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	291, // 87: gamenode.plugin.v1.DataPublishRequest.value:type_name -> google.protobuf.Struct
-	3,   // 88: gamenode.plugin.v1.DataPublishRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
-	5,   // 89: gamenode.plugin.v1.DataMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	235, // 90: gamenode.plugin.v1.DataGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 91: gamenode.plugin.v1.DataGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	138, // 92: gamenode.plugin.v1.DataListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	160, // 93: gamenode.plugin.v1.DataListRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 94: gamenode.plugin.v1.DataWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 95: gamenode.plugin.v1.DataWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	291, // 96: gamenode.plugin.v1.DataRecord.value:type_name -> google.protobuf.Struct
-	109, // 97: gamenode.plugin.v1.DataGetReply.record:type_name -> gamenode.plugin.v1.DataRecord
-	109, // 98: gamenode.plugin.v1.DataListReply.records:type_name -> gamenode.plugin.v1.DataRecord
-	109, // 99: gamenode.plugin.v1.DataEvent.record:type_name -> gamenode.plugin.v1.DataRecord
-	235, // 100: gamenode.plugin.v1.PersistenceUsageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	138, // 101: gamenode.plugin.v1.PersistenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	117, // 102: gamenode.plugin.v1.PersistenceListReply.entries:type_name -> gamenode.plugin.v1.PersistenceEntry
-	137, // 103: gamenode.plugin.v1.PersistenceDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 104: gamenode.plugin.v1.PersistenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 105: gamenode.plugin.v1.RetentionPolicyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	5,   // 106: gamenode.plugin.v1.PersistenceMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	138, // 107: gamenode.plugin.v1.ToolsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	137, // 108: gamenode.plugin.v1.ToolApplyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	137, // 109: gamenode.plugin.v1.ToolRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	126, // 110: gamenode.plugin.v1.ToolsListReply.tools:type_name -> gamenode.plugin.v1.ToolRecord
-	138, // 111: gamenode.plugin.v1.PortsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 112: gamenode.plugin.v1.PortDetailRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 113: gamenode.plugin.v1.PortInstallRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	132, // 114: gamenode.plugin.v1.PortsListReply.ports:type_name -> gamenode.plugin.v1.PortRecord
-	132, // 115: gamenode.plugin.v1.PortDetailReply.port:type_name -> gamenode.plugin.v1.PortRecord
-	235, // 116: gamenode.plugin.v1.JobGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 117: gamenode.plugin.v1.JobWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 118: gamenode.plugin.v1.JobCancelRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	4,   // 119: gamenode.plugin.v1.JobEvent.state:type_name -> gamenode.plugin.v1.JobState
-	235, // 120: gamenode.plugin.v1.MutationContext.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 121: gamenode.plugin.v1.PageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 122: gamenode.plugin.v1.PageRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	138, // 123: gamenode.plugin.v1.LibraryListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 124: gamenode.plugin.v1.LibraryGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 125: gamenode.plugin.v1.LibraryGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 126: gamenode.plugin.v1.LibraryWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 127: gamenode.plugin.v1.LibraryWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	137, // 128: gamenode.plugin.v1.MetadataUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	283, // 129: gamenode.plugin.v1.MetadataUpdateRequest.display_fields:type_name -> gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
-	138, // 130: gamenode.plugin.v1.FavoritesListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	137, // 131: gamenode.plugin.v1.FavoritesSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	235, // 132: gamenode.plugin.v1.MatchingSearchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 133: gamenode.plugin.v1.MatchingAssignRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	235, // 134: gamenode.plugin.v1.ArtworkReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	137, // 135: gamenode.plugin.v1.ArtworkSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	155, // 136: gamenode.plugin.v1.LibraryListReply.entries:type_name -> gamenode.plugin.v1.LibraryEntry
-	155, // 137: gamenode.plugin.v1.LibraryGetReply.entry:type_name -> gamenode.plugin.v1.LibraryEntry
-	156, // 138: gamenode.plugin.v1.FavoritesListReply.entries:type_name -> gamenode.plugin.v1.FavoriteEntry
-	157, // 139: gamenode.plugin.v1.MatchingSearchReply.candidates:type_name -> gamenode.plugin.v1.MatchCandidate
-	5,   // 140: gamenode.plugin.v1.MutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	155, // 141: gamenode.plugin.v1.LibraryEvent.entry:type_name -> gamenode.plugin.v1.LibraryEntry
-	235, // 142: gamenode.plugin.v1.ResourceRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 143: gamenode.plugin.v1.ResourceRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	6,   // 144: gamenode.plugin.v1.CommonDataSelector.categories:type_name -> gamenode.plugin.v1.CommonDataCategory
-	235, // 145: gamenode.plugin.v1.SaveProfileListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 146: gamenode.plugin.v1.SaveProfileListRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 147: gamenode.plugin.v1.SaveProfileGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 148: gamenode.plugin.v1.SaveProfileGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
-	137, // 149: gamenode.plugin.v1.SaveProfileCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	167, // 150: gamenode.plugin.v1.SaveProfileCreateRequest.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	137, // 151: gamenode.plugin.v1.SaveProfileUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	166, // 152: gamenode.plugin.v1.SaveProfileUpdateRequest.patch:type_name -> gamenode.plugin.v1.SaveProfilePatch
-	137, // 153: gamenode.plugin.v1.SaveProfileRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
-	167, // 154: gamenode.plugin.v1.SaveProfilePatch.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	168, // 155: gamenode.plugin.v1.SaveProfile.directories:type_name -> gamenode.plugin.v1.SaveDirectory
-	291, // 156: gamenode.plugin.v1.SaveProfile.descriptive_metadata:type_name -> google.protobuf.Struct
-	167, // 157: gamenode.plugin.v1.SaveProfileListReply.profiles:type_name -> gamenode.plugin.v1.SaveProfile
-	167, // 158: gamenode.plugin.v1.SaveProfileReply.profile:type_name -> gamenode.plugin.v1.SaveProfile
-	5,   // 159: gamenode.plugin.v1.SaveProfileMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
-	235, // 160: gamenode.plugin.v1.LocationInspectRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	186, // 161: gamenode.plugin.v1.LocationInspectReply.location:type_name -> gamenode.plugin.v1.LocationDescription
-	187, // 162: gamenode.plugin.v1.LocationInspectReply.observations:type_name -> gamenode.plugin.v1.LocationObservation
-	186, // 163: gamenode.plugin.v1.LocationInspectReply.locations:type_name -> gamenode.plugin.v1.LocationDescription
-	235, // 164: gamenode.plugin.v1.LocationSizeRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 165: gamenode.plugin.v1.LocationSizeReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	235, // 166: gamenode.plugin.v1.LocationAccessRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	188, // 167: gamenode.plugin.v1.LocationAccessReply.entries:type_name -> gamenode.plugin.v1.LocationAccessEntry
-	7,   // 168: gamenode.plugin.v1.LocationAccessReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	235, // 169: gamenode.plugin.v1.LocationLastModifiedRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	189, // 170: gamenode.plugin.v1.LocationLastModifiedReply.entries:type_name -> gamenode.plugin.v1.LocationTimestamp
-	7,   // 171: gamenode.plugin.v1.LocationLastModifiedReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	235, // 172: gamenode.plugin.v1.LocationFingerprintRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 173: gamenode.plugin.v1.LocationFingerprintReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	235, // 174: gamenode.plugin.v1.LocationCompareRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	190, // 175: gamenode.plugin.v1.LocationCompareReply.changes:type_name -> gamenode.plugin.v1.LocationChange
-	235, // 176: gamenode.plugin.v1.LocationAvailabilityWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	7,   // 177: gamenode.plugin.v1.LocationAvailabilityEvent.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 178: gamenode.plugin.v1.LocationDescription.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 179: gamenode.plugin.v1.LocationObservation.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	7,   // 180: gamenode.plugin.v1.LocationAccessEntry.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
-	138, // 181: gamenode.plugin.v1.DiagnosticListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 182: gamenode.plugin.v1.DiagnosticGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 183: gamenode.plugin.v1.DiagnosticWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	291, // 184: gamenode.plugin.v1.DiagnosticReport.typed_measurements:type_name -> google.protobuf.Struct
-	291, // 185: gamenode.plugin.v1.DiagnosticReport.approved_extension:type_name -> google.protobuf.Struct
-	194, // 186: gamenode.plugin.v1.DiagnosticListReply.reports:type_name -> gamenode.plugin.v1.DiagnosticReport
-	194, // 187: gamenode.plugin.v1.DiagnosticGetReply.report:type_name -> gamenode.plugin.v1.DiagnosticReport
-	194, // 188: gamenode.plugin.v1.DiagnosticEvent.report:type_name -> gamenode.plugin.v1.DiagnosticReport
-	138, // 189: gamenode.plugin.v1.ComputerListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 190: gamenode.plugin.v1.ComputerGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 191: gamenode.plugin.v1.ComputerWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	291, // 192: gamenode.plugin.v1.ComputerReport.typed_observations:type_name -> google.protobuf.Struct
-	291, // 193: gamenode.plugin.v1.ComputerReport.approved_extension:type_name -> google.protobuf.Struct
-	201, // 194: gamenode.plugin.v1.ComputerListReply.reports:type_name -> gamenode.plugin.v1.ComputerReport
-	201, // 195: gamenode.plugin.v1.ComputerGetReply.report:type_name -> gamenode.plugin.v1.ComputerReport
-	201, // 196: gamenode.plugin.v1.ComputerEvent.report:type_name -> gamenode.plugin.v1.ComputerReport
-	138, // 197: gamenode.plugin.v1.PresenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 198: gamenode.plugin.v1.PresenceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	235, // 199: gamenode.plugin.v1.PresenceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	291, // 200: gamenode.plugin.v1.PresenceRecord.approved_details:type_name -> google.protobuf.Struct
-	208, // 201: gamenode.plugin.v1.PresenceListReply.records:type_name -> gamenode.plugin.v1.PresenceRecord
-	208, // 202: gamenode.plugin.v1.PresenceGetReply.record:type_name -> gamenode.plugin.v1.PresenceRecord
-	208, // 203: gamenode.plugin.v1.PresenceEvent.record:type_name -> gamenode.plugin.v1.PresenceRecord
-	138, // 204: gamenode.plugin.v1.PerformanceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	235, // 205: gamenode.plugin.v1.PerformanceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 206: gamenode.plugin.v1.PerformanceGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 207: gamenode.plugin.v1.PerformanceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 208: gamenode.plugin.v1.PerformanceWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 209: gamenode.plugin.v1.PerformanceQuerySeriesRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	138, // 210: gamenode.plugin.v1.PerformanceQuerySeriesRequest.page:type_name -> gamenode.plugin.v1.PageRequest
-	160, // 211: gamenode.plugin.v1.PerformanceQuerySeriesRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	235, // 212: gamenode.plugin.v1.PerformanceAggregateRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	160, // 213: gamenode.plugin.v1.PerformanceAggregateRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
-	101, // 214: gamenode.plugin.v1.PerformanceSeries.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	217, // 215: gamenode.plugin.v1.PerformanceListReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	217, // 216: gamenode.plugin.v1.PerformanceGetReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	217, // 217: gamenode.plugin.v1.PerformanceEvent.series:type_name -> gamenode.plugin.v1.PerformanceSeries
-	101, // 218: gamenode.plugin.v1.PerformanceQuerySeriesReply.samples:type_name -> gamenode.plugin.v1.PerformanceSample
-	235, // 219: gamenode.plugin.v1.GameLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	4,   // 220: gamenode.plugin.v1.GameLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
-	235, // 221: gamenode.plugin.v1.CustomLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	284, // 222: gamenode.plugin.v1.CustomLaunchRequest.environment_set:type_name -> gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
-	4,   // 223: gamenode.plugin.v1.CustomLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
-	291, // 224: gamenode.plugin.v1.ExtensionPayload.data:type_name -> google.protobuf.Struct
-	8,   // 225: gamenode.plugin.v1.ExtensionSchemaField.classification:type_name -> gamenode.plugin.v1.ExtensionFieldClassification
-	230, // 226: gamenode.plugin.v1.ExtensionSchemaDescriptor.fields:type_name -> gamenode.plugin.v1.ExtensionSchemaField
-	229, // 227: gamenode.plugin.v1.ExtensionNamespacePatch.set:type_name -> gamenode.plugin.v1.ExtensionPayload
-	232, // 228: gamenode.plugin.v1.ExtensionPatch.namespaces:type_name -> gamenode.plugin.v1.ExtensionNamespacePatch
-	285, // 229: gamenode.plugin.v1.RuntimeRecord.extensions:type_name -> gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
-	0,   // 230: gamenode.plugin.v1.ServiceContext.session_kind:type_name -> gamenode.plugin.v1.SessionKind
-	26,  // 231: gamenode.plugin.v1.ServiceContext.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
-	235, // 232: gamenode.plugin.v1.ProviderCommand.context:type_name -> gamenode.plugin.v1.ServiceContext
-	9,   // 233: gamenode.plugin.v1.ProviderCommand.operation:type_name -> gamenode.plugin.v1.ProviderOperation
-	270, // 234: gamenode.plugin.v1.ProviderCommand.settings:type_name -> gamenode.plugin.v1.SettingsRequest
-	255, // 235: gamenode.plugin.v1.ProviderCommand.achievements:type_name -> gamenode.plugin.v1.AchievementsRequest
-	277, // 236: gamenode.plugin.v1.ProviderCommand.runtime_session_result:type_name -> gamenode.plugin.v1.RuntimeSessionResult
-	11,  // 237: gamenode.plugin.v1.ProviderContext.secret_storage:type_name -> gamenode.plugin.v1.SecretStorage
-	10,  // 238: gamenode.plugin.v1.AccountStatus.state:type_name -> gamenode.plugin.v1.AccountConnection
-	11,  // 239: gamenode.plugin.v1.AccountStatus.storage:type_name -> gamenode.plugin.v1.SecretStorage
-	12,  // 240: gamenode.plugin.v1.AccountStatus.catalog_error:type_name -> gamenode.plugin.v1.CatalogFailure
-	12,  // 241: gamenode.plugin.v1.AccountStatus.shared_error:type_name -> gamenode.plugin.v1.CatalogFailure
-	235, // 242: gamenode.plugin.v1.AccountRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	238, // 243: gamenode.plugin.v1.AccountRequest.save:type_name -> gamenode.plugin.v1.AccountIdentity
-	238, // 244: gamenode.plugin.v1.AccountReply.account:type_name -> gamenode.plugin.v1.AccountIdentity
-	235, // 245: gamenode.plugin.v1.SecretRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	13,  // 246: gamenode.plugin.v1.SecretRequest.operation:type_name -> gamenode.plugin.v1.SecretOperation
-	11,  // 247: gamenode.plugin.v1.SecretReply.storage:type_name -> gamenode.plugin.v1.SecretStorage
-	14,  // 248: gamenode.plugin.v1.SecretReply.failed:type_name -> gamenode.plugin.v1.ServiceFailure
-	235, // 249: gamenode.plugin.v1.LoginRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	15,  // 250: gamenode.plugin.v1.LoginRequest.operation:type_name -> gamenode.plugin.v1.LoginOperation
-	16,  // 251: gamenode.plugin.v1.LoginReply.state:type_name -> gamenode.plugin.v1.LoginState
-	245, // 252: gamenode.plugin.v1.LoginReply.cookies:type_name -> gamenode.plugin.v1.LoginCookie
-	235, // 253: gamenode.plugin.v1.ActionRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
-	247, // 254: gamenode.plugin.v1.ActionRequest.actions:type_name -> gamenode.plugin.v1.ActionDeclaration
-	286, // 255: gamenode.plugin.v1.CatalogGame.fields:type_name -> gamenode.plugin.v1.CatalogGame.FieldsEntry
-	17,  // 256: gamenode.plugin.v1.CatalogChunk.category:type_name -> gamenode.plugin.v1.CatalogCategory
-	250, // 257: gamenode.plugin.v1.CatalogChunk.games:type_name -> gamenode.plugin.v1.CatalogGame
-	17,  // 258: gamenode.plugin.v1.CatalogCompletion.category:type_name -> gamenode.plugin.v1.CatalogCategory
-	12,  // 259: gamenode.plugin.v1.CatalogCompletion.failed:type_name -> gamenode.plugin.v1.CatalogFailure
-	18,  // 260: gamenode.plugin.v1.OperationResult.disposition:type_name -> gamenode.plugin.v1.OperationDisposition
-	239, // 261: gamenode.plugin.v1.OperationResult.status:type_name -> gamenode.plugin.v1.AccountStatus
-	41,  // 262: gamenode.plugin.v1.OperationResult.discovery:type_name -> gamenode.plugin.v1.DiscoveryResult
-	253, // 263: gamenode.plugin.v1.OperationResult.counters:type_name -> gamenode.plugin.v1.CounterObservation
-	252, // 264: gamenode.plugin.v1.OperationResult.catalogs:type_name -> gamenode.plugin.v1.CatalogCompletion
-	42,  // 265: gamenode.plugin.v1.OperationResult.failure:type_name -> gamenode.plugin.v1.PluginFailure
-	19,  // 266: gamenode.plugin.v1.OperationResult.login_outcome:type_name -> gamenode.plugin.v1.AccountLoginOutcome
-	274, // 267: gamenode.plugin.v1.OperationResult.settings:type_name -> gamenode.plugin.v1.SettingsReply
-	258, // 268: gamenode.plugin.v1.OperationResult.achievements:type_name -> gamenode.plugin.v1.AchievementOutcome
-	259, // 269: gamenode.plugin.v1.OperationResult.configuration:type_name -> gamenode.plugin.v1.ConfigurationResult
-	256, // 270: gamenode.plugin.v1.AchievementGame.achievements:type_name -> gamenode.plugin.v1.Achievement
-	257, // 271: gamenode.plugin.v1.AchievementOutcome.ready:type_name -> gamenode.plugin.v1.AchievementGame
-	12,  // 272: gamenode.plugin.v1.AchievementOutcome.failed:type_name -> gamenode.plugin.v1.CatalogFailure
-	287, // 273: gamenode.plugin.v1.SettingsText.translations:type_name -> gamenode.plugin.v1.SettingsText.TranslationsEntry
-	261, // 274: gamenode.plugin.v1.SettingsChoiceOption.label:type_name -> gamenode.plugin.v1.SettingsText
-	265, // 275: gamenode.plugin.v1.SettingsChoiceField.options:type_name -> gamenode.plugin.v1.SettingsChoiceOption
-	261, // 276: gamenode.plugin.v1.SettingsField.label:type_name -> gamenode.plugin.v1.SettingsText
-	261, // 277: gamenode.plugin.v1.SettingsField.help:type_name -> gamenode.plugin.v1.SettingsText
-	262, // 278: gamenode.plugin.v1.SettingsField.default_value:type_name -> gamenode.plugin.v1.SettingsValue
-	263, // 279: gamenode.plugin.v1.SettingsField.text:type_name -> gamenode.plugin.v1.SettingsTextField
-	264, // 280: gamenode.plugin.v1.SettingsField.number:type_name -> gamenode.plugin.v1.SettingsNumberField
-	266, // 281: gamenode.plugin.v1.SettingsField.choice:type_name -> gamenode.plugin.v1.SettingsChoiceField
-	261, // 282: gamenode.plugin.v1.SettingsForm.title:type_name -> gamenode.plugin.v1.SettingsText
-	267, // 283: gamenode.plugin.v1.SettingsForm.fields:type_name -> gamenode.plugin.v1.SettingsField
-	288, // 284: gamenode.plugin.v1.SettingsSubmission.values:type_name -> gamenode.plugin.v1.SettingsSubmission.ValuesEntry
-	260, // 285: gamenode.plugin.v1.SettingsRequest.context:type_name -> gamenode.plugin.v1.SettingsContext
-	269, // 286: gamenode.plugin.v1.SettingsRequest.submit:type_name -> gamenode.plugin.v1.SettingsSubmission
-	268, // 287: gamenode.plugin.v1.SettingsView.form:type_name -> gamenode.plugin.v1.SettingsForm
-	289, // 288: gamenode.plugin.v1.SettingsView.values:type_name -> gamenode.plugin.v1.SettingsView.ValuesEntry
-	20,  // 289: gamenode.plugin.v1.SettingsApplied.persistence:type_name -> gamenode.plugin.v1.SettingsPersistence
-	290, // 290: gamenode.plugin.v1.SettingsFieldErrors.errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
-	260, // 291: gamenode.plugin.v1.SettingsReply.context:type_name -> gamenode.plugin.v1.SettingsContext
-	271, // 292: gamenode.plugin.v1.SettingsReply.form:type_name -> gamenode.plugin.v1.SettingsView
-	272, // 293: gamenode.plugin.v1.SettingsReply.applied:type_name -> gamenode.plugin.v1.SettingsApplied
-	273, // 294: gamenode.plugin.v1.SettingsReply.field_errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors
-	21,  // 295: gamenode.plugin.v1.SettingsReply.failed:type_name -> gamenode.plugin.v1.SettingsFailure
-	235, // 296: gamenode.plugin.v1.ProviderEvent.context:type_name -> gamenode.plugin.v1.ServiceContext
-	239, // 297: gamenode.plugin.v1.ProviderEvent.account_status:type_name -> gamenode.plugin.v1.AccountStatus
-	251, // 298: gamenode.plugin.v1.ProviderEvent.catalog_chunk:type_name -> gamenode.plugin.v1.CatalogChunk
-	254, // 299: gamenode.plugin.v1.ProviderEvent.result:type_name -> gamenode.plugin.v1.OperationResult
-	276, // 300: gamenode.plugin.v1.ProviderEvent.runtime_session:type_name -> gamenode.plugin.v1.RuntimeSessionReport
-	22,  // 301: gamenode.plugin.v1.RuntimeSessionReport.transition:type_name -> gamenode.plugin.v1.RuntimeSessionTransition
-	23,  // 302: gamenode.plugin.v1.RuntimeSessionResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
-	39,  // 303: gamenode.plugin.v1.RuntimeSessionResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
-	229, // 304: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry.value:type_name -> gamenode.plugin.v1.ExtensionPayload
-	262, // 305: gamenode.plugin.v1.SettingsSubmission.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
-	262, // 306: gamenode.plugin.v1.SettingsView.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
-	261, // 307: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry.value:type_name -> gamenode.plugin.v1.SettingsText
-	24,  // 308: gamenode.plugin.v1.PluginHost.OpenSession:input_type -> gamenode.plugin.v1.OpenSessionRequest
-	43,  // 309: gamenode.plugin.v1.PluginHost.SubmitDiscovery:input_type -> gamenode.plugin.v1.SubmitDiscoveryRequest
-	32,  // 310: gamenode.plugin.v1.PluginHost.DescribeApi:input_type -> gamenode.plugin.v1.DescribeApiRequest
-	34,  // 311: gamenode.plugin.v1.PluginHost.GetPermissions:input_type -> gamenode.plugin.v1.GetPermissionsRequest
-	37,  // 312: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:input_type -> gamenode.plugin.v1.WatchPermissionChangesRequest
-	275, // 313: gamenode.plugin.v1.ProviderHost.Exchange:input_type -> gamenode.plugin.v1.ProviderEvent
-	235, // 314: gamenode.plugin.v1.ProviderHost.GetContext:input_type -> gamenode.plugin.v1.ServiceContext
-	240, // 315: gamenode.plugin.v1.ProviderHost.Account:input_type -> gamenode.plugin.v1.AccountRequest
-	242, // 316: gamenode.plugin.v1.ProviderHost.Secret:input_type -> gamenode.plugin.v1.SecretRequest
-	244, // 317: gamenode.plugin.v1.ProviderHost.Login:input_type -> gamenode.plugin.v1.LoginRequest
-	248, // 318: gamenode.plugin.v1.ProviderHost.DeclareActions:input_type -> gamenode.plugin.v1.ActionRequest
-	139, // 319: gamenode.plugin.v1.ResourceHost.LibraryList:input_type -> gamenode.plugin.v1.LibraryListRequest
-	140, // 320: gamenode.plugin.v1.ResourceHost.LibraryGet:input_type -> gamenode.plugin.v1.LibraryGetRequest
-	141, // 321: gamenode.plugin.v1.ResourceHost.LibraryWatch:input_type -> gamenode.plugin.v1.LibraryWatchRequest
-	142, // 322: gamenode.plugin.v1.ResourceHost.MetadataUpdate:input_type -> gamenode.plugin.v1.MetadataUpdateRequest
-	143, // 323: gamenode.plugin.v1.ResourceHost.FavoritesList:input_type -> gamenode.plugin.v1.FavoritesListRequest
-	144, // 324: gamenode.plugin.v1.ResourceHost.FavoritesSet:input_type -> gamenode.plugin.v1.FavoritesSetRequest
-	145, // 325: gamenode.plugin.v1.ResourceHost.MatchingSearch:input_type -> gamenode.plugin.v1.MatchingSearchRequest
-	146, // 326: gamenode.plugin.v1.ResourceHost.MatchingAssign:input_type -> gamenode.plugin.v1.MatchingAssignRequest
-	147, // 327: gamenode.plugin.v1.ResourceHost.ArtworkRead:input_type -> gamenode.plugin.v1.ArtworkReadRequest
-	148, // 328: gamenode.plugin.v1.ResourceHost.ArtworkSet:input_type -> gamenode.plugin.v1.ArtworkSetRequest
-	225, // 329: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:input_type -> gamenode.plugin.v1.GameLaunchRequest
-	227, // 330: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
-	227, // 331: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
-	45,  // 332: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRemoveRequest
-	46,  // 333: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:input_type -> gamenode.plugin.v1.GameInstallRequest
-	47,  // 334: gamenode.plugin.v1.ResourceHost.StorageGet:input_type -> gamenode.plugin.v1.StorageGetRequest
-	48,  // 335: gamenode.plugin.v1.ResourceHost.StoragePut:input_type -> gamenode.plugin.v1.StoragePutRequest
-	49,  // 336: gamenode.plugin.v1.ResourceHost.StorageDelete:input_type -> gamenode.plugin.v1.StorageDeleteRequest
-	53,  // 337: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:input_type -> gamenode.plugin.v1.FilesRequestAccessRequest
-	56,  // 338: gamenode.plugin.v1.ResourceHost.FilesList:input_type -> gamenode.plugin.v1.FilesListRequest
-	59,  // 339: gamenode.plugin.v1.ResourceHost.FilesRead:input_type -> gamenode.plugin.v1.FilesReadRequest
-	61,  // 340: gamenode.plugin.v1.ResourceHost.FilesWrite:input_type -> gamenode.plugin.v1.FilesWriteRequest
-	62,  // 341: gamenode.plugin.v1.ResourceHost.FilesDelete:input_type -> gamenode.plugin.v1.FilesDeleteRequest
-	63,  // 342: gamenode.plugin.v1.ResourceHost.NetworkFetch:input_type -> gamenode.plugin.v1.NetworkFetchRequest
-	66,  // 343: gamenode.plugin.v1.ResourceHost.NotificationsPublish:input_type -> gamenode.plugin.v1.NotificationPublishRequest
-	67,  // 344: gamenode.plugin.v1.ResourceHost.BackupsList:input_type -> gamenode.plugin.v1.BackupsListRequest
-	68,  // 345: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:input_type -> gamenode.plugin.v1.BackupCreateRequest
-	69,  // 346: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:input_type -> gamenode.plugin.v1.BackupRestoreRequest
-	73,  // 347: gamenode.plugin.v1.ResourceHost.LibrariesList:input_type -> gamenode.plugin.v1.DomainListRequest
-	74,  // 348: gamenode.plugin.v1.ResourceHost.LibrariesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
-	75,  // 349: gamenode.plugin.v1.ResourceHost.LibrariesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
-	77,  // 350: gamenode.plugin.v1.ResourceHost.LibrariesCreate:input_type -> gamenode.plugin.v1.LibraryCreateRequest
-	78,  // 351: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:input_type -> gamenode.plugin.v1.LibraryUpdateRequest
-	76,  // 352: gamenode.plugin.v1.ResourceHost.LibrariesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
-	79,  // 353: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:input_type -> gamenode.plugin.v1.LibraryRootAddRequest
-	80,  // 354: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:input_type -> gamenode.plugin.v1.LibraryRootUpdateRequest
-	81,  // 355: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:input_type -> gamenode.plugin.v1.LibraryRootRemoveRequest
-	73,  // 356: gamenode.plugin.v1.ResourceHost.RuntimesList:input_type -> gamenode.plugin.v1.DomainListRequest
-	74,  // 357: gamenode.plugin.v1.ResourceHost.RuntimesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
-	75,  // 358: gamenode.plugin.v1.ResourceHost.RuntimesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
-	88,  // 359: gamenode.plugin.v1.ResourceHost.RuntimesRegister:input_type -> gamenode.plugin.v1.RuntimeRegisterRequest
-	89,  // 360: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:input_type -> gamenode.plugin.v1.RuntimeUpdateRequest
-	76,  // 361: gamenode.plugin.v1.ResourceHost.RuntimesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
-	94,  // 362: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:input_type -> gamenode.plugin.v1.ContentRegistrationRequest
-	96,  // 363: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:input_type -> gamenode.plugin.v1.BenchmarkReportRequest
-	97,  // 364: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:input_type -> gamenode.plugin.v1.SmartReportRequest
-	98,  // 365: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:input_type -> gamenode.plugin.v1.HardwareReportRequest
-	99,  // 366: gamenode.plugin.v1.ResourceHost.GamePresencePublish:input_type -> gamenode.plugin.v1.PresencePublishRequest
-	100, // 367: gamenode.plugin.v1.ResourceHost.GamePresenceClear:input_type -> gamenode.plugin.v1.PresenceClearRequest
-	102, // 368: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:input_type -> gamenode.plugin.v1.PerformanceSamplesRequest
-	103, // 369: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:input_type -> gamenode.plugin.v1.PerformanceEndSeriesRequest
-	104, // 370: gamenode.plugin.v1.ResourceHost.DataPublish:input_type -> gamenode.plugin.v1.DataPublishRequest
-	106, // 371: gamenode.plugin.v1.ResourceHost.DataGet:input_type -> gamenode.plugin.v1.DataGetRequest
-	107, // 372: gamenode.plugin.v1.ResourceHost.DataList:input_type -> gamenode.plugin.v1.DataListRequest
-	108, // 373: gamenode.plugin.v1.ResourceHost.DataWatch:input_type -> gamenode.plugin.v1.DataWatchRequest
-	113, // 374: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:input_type -> gamenode.plugin.v1.PersistenceUsageRequest
-	115, // 375: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:input_type -> gamenode.plugin.v1.PersistenceListRequest
-	118, // 376: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:input_type -> gamenode.plugin.v1.PersistenceDeleteRequest
-	119, // 377: gamenode.plugin.v1.ResourceHost.PersistenceClear:input_type -> gamenode.plugin.v1.PersistenceClearRequest
-	120, // 378: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:input_type -> gamenode.plugin.v1.RetentionPolicyRequest
-	122, // 379: gamenode.plugin.v1.ResourceHost.ToolsList:input_type -> gamenode.plugin.v1.ToolsListRequest
-	123, // 380: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:input_type -> gamenode.plugin.v1.ToolApplyRequest
-	124, // 381: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:input_type -> gamenode.plugin.v1.ToolRemoveRequest
-	127, // 382: gamenode.plugin.v1.ResourceHost.PortsList:input_type -> gamenode.plugin.v1.PortsListRequest
-	128, // 383: gamenode.plugin.v1.ResourceHost.PortsDetail:input_type -> gamenode.plugin.v1.PortDetailRequest
-	129, // 384: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:input_type -> gamenode.plugin.v1.PortInstallRequest
-	133, // 385: gamenode.plugin.v1.ResourceHost.JobsGet:input_type -> gamenode.plugin.v1.JobGetRequest
-	134, // 386: gamenode.plugin.v1.ResourceHost.JobsWatch:input_type -> gamenode.plugin.v1.JobWatchRequest
-	135, // 387: gamenode.plugin.v1.ResourceHost.JobsCancel:input_type -> gamenode.plugin.v1.JobCancelRequest
-	161, // 388: gamenode.plugin.v1.Saves.ListProfiles:input_type -> gamenode.plugin.v1.SaveProfileListRequest
-	162, // 389: gamenode.plugin.v1.Saves.GetProfile:input_type -> gamenode.plugin.v1.SaveProfileGetRequest
-	163, // 390: gamenode.plugin.v1.Saves.CreateProfile:input_type -> gamenode.plugin.v1.SaveProfileCreateRequest
-	164, // 391: gamenode.plugin.v1.Saves.UpdateProfile:input_type -> gamenode.plugin.v1.SaveProfileUpdateRequest
-	165, // 392: gamenode.plugin.v1.Saves.RemoveProfile:input_type -> gamenode.plugin.v1.SaveProfileRemoveRequest
-	172, // 393: gamenode.plugin.v1.Locations.Inspect:input_type -> gamenode.plugin.v1.LocationInspectRequest
-	174, // 394: gamenode.plugin.v1.Locations.GetSize:input_type -> gamenode.plugin.v1.LocationSizeRequest
-	176, // 395: gamenode.plugin.v1.Locations.GetAccess:input_type -> gamenode.plugin.v1.LocationAccessRequest
-	178, // 396: gamenode.plugin.v1.Locations.GetLastModified:input_type -> gamenode.plugin.v1.LocationLastModifiedRequest
-	180, // 397: gamenode.plugin.v1.Locations.GetFingerprint:input_type -> gamenode.plugin.v1.LocationFingerprintRequest
-	182, // 398: gamenode.plugin.v1.Locations.Compare:input_type -> gamenode.plugin.v1.LocationCompareRequest
-	184, // 399: gamenode.plugin.v1.Locations.WatchAvailability:input_type -> gamenode.plugin.v1.LocationAvailabilityWatchRequest
-	191, // 400: gamenode.plugin.v1.StorageDiagnostics.List:input_type -> gamenode.plugin.v1.DiagnosticListRequest
-	192, // 401: gamenode.plugin.v1.StorageDiagnostics.Get:input_type -> gamenode.plugin.v1.DiagnosticGetRequest
-	193, // 402: gamenode.plugin.v1.StorageDiagnostics.Watch:input_type -> gamenode.plugin.v1.DiagnosticWatchRequest
-	198, // 403: gamenode.plugin.v1.Computer.List:input_type -> gamenode.plugin.v1.ComputerListRequest
-	199, // 404: gamenode.plugin.v1.Computer.Get:input_type -> gamenode.plugin.v1.ComputerGetRequest
-	200, // 405: gamenode.plugin.v1.Computer.Watch:input_type -> gamenode.plugin.v1.ComputerWatchRequest
-	205, // 406: gamenode.plugin.v1.GamePresence.List:input_type -> gamenode.plugin.v1.PresenceListRequest
-	206, // 407: gamenode.plugin.v1.GamePresence.Get:input_type -> gamenode.plugin.v1.PresenceGetRequest
-	207, // 408: gamenode.plugin.v1.GamePresence.Watch:input_type -> gamenode.plugin.v1.PresenceWatchRequest
-	212, // 409: gamenode.plugin.v1.GamePerformance.List:input_type -> gamenode.plugin.v1.PerformanceListRequest
-	213, // 410: gamenode.plugin.v1.GamePerformance.Get:input_type -> gamenode.plugin.v1.PerformanceGetRequest
-	214, // 411: gamenode.plugin.v1.GamePerformance.Watch:input_type -> gamenode.plugin.v1.PerformanceWatchRequest
-	215, // 412: gamenode.plugin.v1.GamePerformance.QuerySeries:input_type -> gamenode.plugin.v1.PerformanceQuerySeriesRequest
-	216, // 413: gamenode.plugin.v1.GamePerformance.Aggregate:input_type -> gamenode.plugin.v1.PerformanceAggregateRequest
-	25,  // 414: gamenode.plugin.v1.PluginHost.OpenSession:output_type -> gamenode.plugin.v1.OpenSessionReply
-	44,  // 415: gamenode.plugin.v1.PluginHost.SubmitDiscovery:output_type -> gamenode.plugin.v1.SubmitDiscoveryReply
-	33,  // 416: gamenode.plugin.v1.PluginHost.DescribeApi:output_type -> gamenode.plugin.v1.DescribeApiReply
-	36,  // 417: gamenode.plugin.v1.PluginHost.GetPermissions:output_type -> gamenode.plugin.v1.GetPermissionsReply
-	38,  // 418: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:output_type -> gamenode.plugin.v1.PermissionChange
-	236, // 419: gamenode.plugin.v1.ProviderHost.Exchange:output_type -> gamenode.plugin.v1.ProviderCommand
-	237, // 420: gamenode.plugin.v1.ProviderHost.GetContext:output_type -> gamenode.plugin.v1.ProviderContext
-	241, // 421: gamenode.plugin.v1.ProviderHost.Account:output_type -> gamenode.plugin.v1.AccountReply
-	243, // 422: gamenode.plugin.v1.ProviderHost.Secret:output_type -> gamenode.plugin.v1.SecretReply
-	246, // 423: gamenode.plugin.v1.ProviderHost.Login:output_type -> gamenode.plugin.v1.LoginReply
-	249, // 424: gamenode.plugin.v1.ProviderHost.DeclareActions:output_type -> gamenode.plugin.v1.ActionReply
-	149, // 425: gamenode.plugin.v1.ResourceHost.LibraryList:output_type -> gamenode.plugin.v1.LibraryListReply
-	150, // 426: gamenode.plugin.v1.ResourceHost.LibraryGet:output_type -> gamenode.plugin.v1.LibraryGetReply
-	158, // 427: gamenode.plugin.v1.ResourceHost.LibraryWatch:output_type -> gamenode.plugin.v1.LibraryEvent
-	154, // 428: gamenode.plugin.v1.ResourceHost.MetadataUpdate:output_type -> gamenode.plugin.v1.MutationReply
-	151, // 429: gamenode.plugin.v1.ResourceHost.FavoritesList:output_type -> gamenode.plugin.v1.FavoritesListReply
-	154, // 430: gamenode.plugin.v1.ResourceHost.FavoritesSet:output_type -> gamenode.plugin.v1.MutationReply
-	152, // 431: gamenode.plugin.v1.ResourceHost.MatchingSearch:output_type -> gamenode.plugin.v1.MatchingSearchReply
-	154, // 432: gamenode.plugin.v1.ResourceHost.MatchingAssign:output_type -> gamenode.plugin.v1.MutationReply
-	153, // 433: gamenode.plugin.v1.ResourceHost.ArtworkRead:output_type -> gamenode.plugin.v1.ArtworkReadReply
-	154, // 434: gamenode.plugin.v1.ResourceHost.ArtworkSet:output_type -> gamenode.plugin.v1.MutationReply
-	226, // 435: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:output_type -> gamenode.plugin.v1.GameLaunchReply
-	228, // 436: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
-	228, // 437: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
-	154, // 438: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:output_type -> gamenode.plugin.v1.MutationReply
-	72,  // 439: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:output_type -> gamenode.plugin.v1.JobReply
-	50,  // 440: gamenode.plugin.v1.ResourceHost.StorageGet:output_type -> gamenode.plugin.v1.StorageGetReply
-	51,  // 441: gamenode.plugin.v1.ResourceHost.StoragePut:output_type -> gamenode.plugin.v1.StorageMutationReply
-	154, // 442: gamenode.plugin.v1.ResourceHost.StorageDelete:output_type -> gamenode.plugin.v1.MutationReply
-	55,  // 443: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:output_type -> gamenode.plugin.v1.FileAccessReply
-	57,  // 444: gamenode.plugin.v1.ResourceHost.FilesList:output_type -> gamenode.plugin.v1.FilesListReply
-	60,  // 445: gamenode.plugin.v1.ResourceHost.FilesRead:output_type -> gamenode.plugin.v1.FileReadReply
-	154, // 446: gamenode.plugin.v1.ResourceHost.FilesWrite:output_type -> gamenode.plugin.v1.MutationReply
-	154, // 447: gamenode.plugin.v1.ResourceHost.FilesDelete:output_type -> gamenode.plugin.v1.MutationReply
-	64,  // 448: gamenode.plugin.v1.ResourceHost.NetworkFetch:output_type -> gamenode.plugin.v1.NetworkFetchReply
-	154, // 449: gamenode.plugin.v1.ResourceHost.NotificationsPublish:output_type -> gamenode.plugin.v1.MutationReply
-	70,  // 450: gamenode.plugin.v1.ResourceHost.BackupsList:output_type -> gamenode.plugin.v1.BackupsListReply
-	72,  // 451: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:output_type -> gamenode.plugin.v1.JobReply
-	72,  // 452: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:output_type -> gamenode.plugin.v1.JobReply
-	84,  // 453: gamenode.plugin.v1.ResourceHost.LibrariesList:output_type -> gamenode.plugin.v1.LibrariesListReply
-	85,  // 454: gamenode.plugin.v1.ResourceHost.LibrariesGet:output_type -> gamenode.plugin.v1.LibraryRecordReply
-	86,  // 455: gamenode.plugin.v1.ResourceHost.LibrariesWatch:output_type -> gamenode.plugin.v1.LibraryRecordEvent
-	87,  // 456: gamenode.plugin.v1.ResourceHost.LibrariesCreate:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	87,  // 457: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	154, // 458: gamenode.plugin.v1.ResourceHost.LibrariesRemove:output_type -> gamenode.plugin.v1.MutationReply
-	87,  // 459: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	87,  // 460: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
-	154, // 461: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:output_type -> gamenode.plugin.v1.MutationReply
-	93,  // 462: gamenode.plugin.v1.ResourceHost.RuntimesList:output_type -> gamenode.plugin.v1.RuntimesListReply
-	91,  // 463: gamenode.plugin.v1.ResourceHost.RuntimesGet:output_type -> gamenode.plugin.v1.RuntimeRecordReply
-	92,  // 464: gamenode.plugin.v1.ResourceHost.RuntimesWatch:output_type -> gamenode.plugin.v1.RuntimeRecordEvent
-	90,  // 465: gamenode.plugin.v1.ResourceHost.RuntimesRegister:output_type -> gamenode.plugin.v1.RuntimeMutationReply
-	90,  // 466: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:output_type -> gamenode.plugin.v1.RuntimeMutationReply
-	154, // 467: gamenode.plugin.v1.ResourceHost.RuntimesRemove:output_type -> gamenode.plugin.v1.MutationReply
-	154, // 468: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:output_type -> gamenode.plugin.v1.MutationReply
-	95,  // 469: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:output_type -> gamenode.plugin.v1.ReportMutationReply
-	95,  // 470: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:output_type -> gamenode.plugin.v1.ReportMutationReply
-	95,  // 471: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:output_type -> gamenode.plugin.v1.ReportMutationReply
-	95,  // 472: gamenode.plugin.v1.ResourceHost.GamePresencePublish:output_type -> gamenode.plugin.v1.ReportMutationReply
-	154, // 473: gamenode.plugin.v1.ResourceHost.GamePresenceClear:output_type -> gamenode.plugin.v1.MutationReply
-	95,  // 474: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:output_type -> gamenode.plugin.v1.ReportMutationReply
-	154, // 475: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:output_type -> gamenode.plugin.v1.MutationReply
-	105, // 476: gamenode.plugin.v1.ResourceHost.DataPublish:output_type -> gamenode.plugin.v1.DataMutationReply
-	110, // 477: gamenode.plugin.v1.ResourceHost.DataGet:output_type -> gamenode.plugin.v1.DataGetReply
-	111, // 478: gamenode.plugin.v1.ResourceHost.DataList:output_type -> gamenode.plugin.v1.DataListReply
-	112, // 479: gamenode.plugin.v1.ResourceHost.DataWatch:output_type -> gamenode.plugin.v1.DataEvent
-	114, // 480: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:output_type -> gamenode.plugin.v1.PersistenceUsageReply
-	116, // 481: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:output_type -> gamenode.plugin.v1.PersistenceListReply
-	154, // 482: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:output_type -> gamenode.plugin.v1.MutationReply
-	154, // 483: gamenode.plugin.v1.ResourceHost.PersistenceClear:output_type -> gamenode.plugin.v1.MutationReply
-	154, // 484: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:output_type -> gamenode.plugin.v1.MutationReply
-	125, // 485: gamenode.plugin.v1.ResourceHost.ToolsList:output_type -> gamenode.plugin.v1.ToolsListReply
-	72,  // 486: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:output_type -> gamenode.plugin.v1.JobReply
-	72,  // 487: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:output_type -> gamenode.plugin.v1.JobReply
-	130, // 488: gamenode.plugin.v1.ResourceHost.PortsList:output_type -> gamenode.plugin.v1.PortsListReply
-	131, // 489: gamenode.plugin.v1.ResourceHost.PortsDetail:output_type -> gamenode.plugin.v1.PortDetailReply
-	72,  // 490: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:output_type -> gamenode.plugin.v1.JobReply
-	72,  // 491: gamenode.plugin.v1.ResourceHost.JobsGet:output_type -> gamenode.plugin.v1.JobReply
-	136, // 492: gamenode.plugin.v1.ResourceHost.JobsWatch:output_type -> gamenode.plugin.v1.JobEvent
-	72,  // 493: gamenode.plugin.v1.ResourceHost.JobsCancel:output_type -> gamenode.plugin.v1.JobReply
-	169, // 494: gamenode.plugin.v1.Saves.ListProfiles:output_type -> gamenode.plugin.v1.SaveProfileListReply
-	170, // 495: gamenode.plugin.v1.Saves.GetProfile:output_type -> gamenode.plugin.v1.SaveProfileReply
-	171, // 496: gamenode.plugin.v1.Saves.CreateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	171, // 497: gamenode.plugin.v1.Saves.UpdateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	171, // 498: gamenode.plugin.v1.Saves.RemoveProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
-	173, // 499: gamenode.plugin.v1.Locations.Inspect:output_type -> gamenode.plugin.v1.LocationInspectReply
-	175, // 500: gamenode.plugin.v1.Locations.GetSize:output_type -> gamenode.plugin.v1.LocationSizeReply
-	177, // 501: gamenode.plugin.v1.Locations.GetAccess:output_type -> gamenode.plugin.v1.LocationAccessReply
-	179, // 502: gamenode.plugin.v1.Locations.GetLastModified:output_type -> gamenode.plugin.v1.LocationLastModifiedReply
-	181, // 503: gamenode.plugin.v1.Locations.GetFingerprint:output_type -> gamenode.plugin.v1.LocationFingerprintReply
-	183, // 504: gamenode.plugin.v1.Locations.Compare:output_type -> gamenode.plugin.v1.LocationCompareReply
-	185, // 505: gamenode.plugin.v1.Locations.WatchAvailability:output_type -> gamenode.plugin.v1.LocationAvailabilityEvent
-	195, // 506: gamenode.plugin.v1.StorageDiagnostics.List:output_type -> gamenode.plugin.v1.DiagnosticListReply
-	196, // 507: gamenode.plugin.v1.StorageDiagnostics.Get:output_type -> gamenode.plugin.v1.DiagnosticGetReply
-	197, // 508: gamenode.plugin.v1.StorageDiagnostics.Watch:output_type -> gamenode.plugin.v1.DiagnosticEvent
-	202, // 509: gamenode.plugin.v1.Computer.List:output_type -> gamenode.plugin.v1.ComputerListReply
-	203, // 510: gamenode.plugin.v1.Computer.Get:output_type -> gamenode.plugin.v1.ComputerGetReply
-	204, // 511: gamenode.plugin.v1.Computer.Watch:output_type -> gamenode.plugin.v1.ComputerEvent
-	209, // 512: gamenode.plugin.v1.GamePresence.List:output_type -> gamenode.plugin.v1.PresenceListReply
-	210, // 513: gamenode.plugin.v1.GamePresence.Get:output_type -> gamenode.plugin.v1.PresenceGetReply
-	211, // 514: gamenode.plugin.v1.GamePresence.Watch:output_type -> gamenode.plugin.v1.PresenceEvent
-	218, // 515: gamenode.plugin.v1.GamePerformance.List:output_type -> gamenode.plugin.v1.PerformanceListReply
-	219, // 516: gamenode.plugin.v1.GamePerformance.Get:output_type -> gamenode.plugin.v1.PerformanceGetReply
-	220, // 517: gamenode.plugin.v1.GamePerformance.Watch:output_type -> gamenode.plugin.v1.PerformanceEvent
-	221, // 518: gamenode.plugin.v1.GamePerformance.QuerySeries:output_type -> gamenode.plugin.v1.PerformanceQuerySeriesReply
-	222, // 519: gamenode.plugin.v1.GamePerformance.Aggregate:output_type -> gamenode.plugin.v1.PerformanceAggregateReply
-	414, // [414:520] is the sub-list for method output_type
-	308, // [308:414] is the sub-list for method input_type
-	308, // [308:308] is the sub-list for extension type_name
-	308, // [308:308] is the sub-list for extension extendee
-	0,   // [0:308] is the sub-list for field type_name
+	40,  // 13: gamenode.plugin.v1.DetectedTarget.executable:type_name -> gamenode.plugin.v1.DetectedExecutable
+	282, // 14: gamenode.plugin.v1.DiscoveryRecord.fields:type_name -> gamenode.plugin.v1.DiscoveryRecord.FieldsEntry
+	41,  // 15: gamenode.plugin.v1.DiscoveryRecord.target:type_name -> gamenode.plugin.v1.DetectedTarget
+	42,  // 16: gamenode.plugin.v1.DiscoveryResult.records:type_name -> gamenode.plugin.v1.DiscoveryRecord
+	43,  // 17: gamenode.plugin.v1.SubmitDiscoveryRequest.completed:type_name -> gamenode.plugin.v1.DiscoveryResult
+	44,  // 18: gamenode.plugin.v1.SubmitDiscoveryRequest.failed:type_name -> gamenode.plugin.v1.PluginFailure
+	139, // 19: gamenode.plugin.v1.CustomLaunchRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	239, // 20: gamenode.plugin.v1.GameInstallRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 21: gamenode.plugin.v1.StorageGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 22: gamenode.plugin.v1.StoragePutRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	3,   // 23: gamenode.plugin.v1.StoragePutRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
+	139, // 24: gamenode.plugin.v1.StorageDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	3,   // 25: gamenode.plugin.v1.StorageGetReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
+	5,   // 26: gamenode.plugin.v1.StorageMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	3,   // 27: gamenode.plugin.v1.StorageMutationReply.durability:type_name -> gamenode.plugin.v1.StorageDurability
+	139, // 28: gamenode.plugin.v1.FilesRequestAccessRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	54,  // 29: gamenode.plugin.v1.FilesRequestAccessRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	56,  // 30: gamenode.plugin.v1.FileAccessReply.handles:type_name -> gamenode.plugin.v1.FileHandle
+	239, // 31: gamenode.plugin.v1.FilesListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	60,  // 32: gamenode.plugin.v1.FilesListReply.entries:type_name -> gamenode.plugin.v1.FileEntry
+	239, // 33: gamenode.plugin.v1.FilesReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 34: gamenode.plugin.v1.FilesWriteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 35: gamenode.plugin.v1.FilesDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	239, // 36: gamenode.plugin.v1.NetworkFetchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	283, // 37: gamenode.plugin.v1.NetworkFetchRequest.headers:type_name -> gamenode.plugin.v1.NetworkFetchRequest.HeadersEntry
+	284, // 38: gamenode.plugin.v1.NetworkFetchReply.headers:type_name -> gamenode.plugin.v1.NetworkFetchReply.HeadersEntry
+	139, // 39: gamenode.plugin.v1.NotificationPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	67,  // 40: gamenode.plugin.v1.NotificationPublishRequest.translations:type_name -> gamenode.plugin.v1.NotificationTranslation
+	140, // 41: gamenode.plugin.v1.BackupsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	139, // 42: gamenode.plugin.v1.BackupCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 43: gamenode.plugin.v1.BackupRestoreRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	73,  // 44: gamenode.plugin.v1.BackupsListReply.backups:type_name -> gamenode.plugin.v1.BackupRecord
+	4,   // 45: gamenode.plugin.v1.JobReply.state:type_name -> gamenode.plugin.v1.JobState
+	140, // 46: gamenode.plugin.v1.DomainListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 47: gamenode.plugin.v1.DomainGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 48: gamenode.plugin.v1.DomainGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 49: gamenode.plugin.v1.DomainWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 50: gamenode.plugin.v1.DomainWatchRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	139, // 51: gamenode.plugin.v1.DomainRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 52: gamenode.plugin.v1.LibraryCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 53: gamenode.plugin.v1.LibraryUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 54: gamenode.plugin.v1.LibraryRootAddRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	54,  // 55: gamenode.plugin.v1.LibraryRootAddRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	139, // 56: gamenode.plugin.v1.LibraryRootUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	54,  // 57: gamenode.plugin.v1.LibraryRootUpdateRequest.declared_locations:type_name -> gamenode.plugin.v1.DeclaredLocation
+	139, // 58: gamenode.plugin.v1.LibraryRootRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	85,  // 59: gamenode.plugin.v1.LibraryRecord.roots:type_name -> gamenode.plugin.v1.LibraryRootRecord
+	7,   // 60: gamenode.plugin.v1.LibraryRootRecord.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	84,  // 61: gamenode.plugin.v1.LibrariesListReply.libraries:type_name -> gamenode.plugin.v1.LibraryRecord
+	84,  // 62: gamenode.plugin.v1.LibraryRecordReply.library:type_name -> gamenode.plugin.v1.LibraryRecord
+	84,  // 63: gamenode.plugin.v1.LibraryRecordEvent.library:type_name -> gamenode.plugin.v1.LibraryRecord
+	5,   // 64: gamenode.plugin.v1.LibraryMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	139, // 65: gamenode.plugin.v1.RuntimeRegisterRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	238, // 66: gamenode.plugin.v1.RuntimeRegisterRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	139, // 67: gamenode.plugin.v1.RuntimeUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	238, // 68: gamenode.plugin.v1.RuntimeUpdateRequest.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	238, // 69: gamenode.plugin.v1.RuntimeMutationReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	5,   // 70: gamenode.plugin.v1.RuntimeMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	238, // 71: gamenode.plugin.v1.RuntimeRecordReply.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	238, // 72: gamenode.plugin.v1.RuntimeRecordEvent.runtime:type_name -> gamenode.plugin.v1.RuntimeRecord
+	238, // 73: gamenode.plugin.v1.RuntimesListReply.runtimes:type_name -> gamenode.plugin.v1.RuntimeRecord
+	139, // 74: gamenode.plugin.v1.ContentRegistrationRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	5,   // 75: gamenode.plugin.v1.ReportMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	139, // 76: gamenode.plugin.v1.BenchmarkReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	285, // 77: gamenode.plugin.v1.BenchmarkReportRequest.measurements:type_name -> gamenode.plugin.v1.BenchmarkReportRequest.MeasurementsEntry
+	139, // 78: gamenode.plugin.v1.SmartReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	286, // 79: gamenode.plugin.v1.SmartReportRequest.attributes:type_name -> gamenode.plugin.v1.SmartReportRequest.AttributesEntry
+	139, // 80: gamenode.plugin.v1.HardwareReportRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	295, // 81: gamenode.plugin.v1.HardwareReportRequest.observations:type_name -> google.protobuf.Struct
+	139, // 82: gamenode.plugin.v1.PresencePublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	295, // 83: gamenode.plugin.v1.PresencePublishRequest.details:type_name -> google.protobuf.Struct
+	139, // 84: gamenode.plugin.v1.PresenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 85: gamenode.plugin.v1.PerformanceSamplesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	103, // 86: gamenode.plugin.v1.PerformanceSamplesRequest.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	139, // 87: gamenode.plugin.v1.PerformanceEndSeriesRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 88: gamenode.plugin.v1.DataPublishRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	295, // 89: gamenode.plugin.v1.DataPublishRequest.value:type_name -> google.protobuf.Struct
+	3,   // 90: gamenode.plugin.v1.DataPublishRequest.durability:type_name -> gamenode.plugin.v1.StorageDurability
+	5,   // 91: gamenode.plugin.v1.DataMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	239, // 92: gamenode.plugin.v1.DataGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 93: gamenode.plugin.v1.DataGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	140, // 94: gamenode.plugin.v1.DataListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	162, // 95: gamenode.plugin.v1.DataListRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 96: gamenode.plugin.v1.DataWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 97: gamenode.plugin.v1.DataWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	295, // 98: gamenode.plugin.v1.DataRecord.value:type_name -> google.protobuf.Struct
+	111, // 99: gamenode.plugin.v1.DataGetReply.record:type_name -> gamenode.plugin.v1.DataRecord
+	111, // 100: gamenode.plugin.v1.DataListReply.records:type_name -> gamenode.plugin.v1.DataRecord
+	111, // 101: gamenode.plugin.v1.DataEvent.record:type_name -> gamenode.plugin.v1.DataRecord
+	239, // 102: gamenode.plugin.v1.PersistenceUsageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	140, // 103: gamenode.plugin.v1.PersistenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	119, // 104: gamenode.plugin.v1.PersistenceListReply.entries:type_name -> gamenode.plugin.v1.PersistenceEntry
+	139, // 105: gamenode.plugin.v1.PersistenceDeleteRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 106: gamenode.plugin.v1.PersistenceClearRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 107: gamenode.plugin.v1.RetentionPolicyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	5,   // 108: gamenode.plugin.v1.PersistenceMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	140, // 109: gamenode.plugin.v1.ToolsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	139, // 110: gamenode.plugin.v1.ToolApplyRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	139, // 111: gamenode.plugin.v1.ToolRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	128, // 112: gamenode.plugin.v1.ToolsListReply.tools:type_name -> gamenode.plugin.v1.ToolRecord
+	140, // 113: gamenode.plugin.v1.PortsListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 114: gamenode.plugin.v1.PortDetailRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 115: gamenode.plugin.v1.PortInstallRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	134, // 116: gamenode.plugin.v1.PortsListReply.ports:type_name -> gamenode.plugin.v1.PortRecord
+	134, // 117: gamenode.plugin.v1.PortDetailReply.port:type_name -> gamenode.plugin.v1.PortRecord
+	239, // 118: gamenode.plugin.v1.JobGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 119: gamenode.plugin.v1.JobWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 120: gamenode.plugin.v1.JobCancelRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	4,   // 121: gamenode.plugin.v1.JobEvent.state:type_name -> gamenode.plugin.v1.JobState
+	239, // 122: gamenode.plugin.v1.MutationContext.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 123: gamenode.plugin.v1.PageRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 124: gamenode.plugin.v1.PageRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	140, // 125: gamenode.plugin.v1.LibraryListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 126: gamenode.plugin.v1.LibraryGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 127: gamenode.plugin.v1.LibraryGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 128: gamenode.plugin.v1.LibraryWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 129: gamenode.plugin.v1.LibraryWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	139, // 130: gamenode.plugin.v1.MetadataUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	287, // 131: gamenode.plugin.v1.MetadataUpdateRequest.display_fields:type_name -> gamenode.plugin.v1.MetadataUpdateRequest.DisplayFieldsEntry
+	140, // 132: gamenode.plugin.v1.FavoritesListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	139, // 133: gamenode.plugin.v1.FavoritesSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	239, // 134: gamenode.plugin.v1.MatchingSearchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 135: gamenode.plugin.v1.MatchingAssignRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	239, // 136: gamenode.plugin.v1.ArtworkReadRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	139, // 137: gamenode.plugin.v1.ArtworkSetRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	157, // 138: gamenode.plugin.v1.LibraryListReply.entries:type_name -> gamenode.plugin.v1.LibraryEntry
+	157, // 139: gamenode.plugin.v1.LibraryGetReply.entry:type_name -> gamenode.plugin.v1.LibraryEntry
+	158, // 140: gamenode.plugin.v1.FavoritesListReply.entries:type_name -> gamenode.plugin.v1.FavoriteEntry
+	159, // 141: gamenode.plugin.v1.MatchingSearchReply.candidates:type_name -> gamenode.plugin.v1.MatchCandidate
+	5,   // 142: gamenode.plugin.v1.MutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	157, // 143: gamenode.plugin.v1.LibraryEvent.entry:type_name -> gamenode.plugin.v1.LibraryEntry
+	239, // 144: gamenode.plugin.v1.ResourceRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 145: gamenode.plugin.v1.ResourceRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	6,   // 146: gamenode.plugin.v1.CommonDataSelector.categories:type_name -> gamenode.plugin.v1.CommonDataCategory
+	239, // 147: gamenode.plugin.v1.SaveProfileListRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 148: gamenode.plugin.v1.SaveProfileListRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 149: gamenode.plugin.v1.SaveProfileGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 150: gamenode.plugin.v1.SaveProfileGetRequest.shared_records:type_name -> gamenode.plugin.v1.CommonDataSelector
+	139, // 151: gamenode.plugin.v1.SaveProfileCreateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	169, // 152: gamenode.plugin.v1.SaveProfileCreateRequest.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	139, // 153: gamenode.plugin.v1.SaveProfileUpdateRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	168, // 154: gamenode.plugin.v1.SaveProfileUpdateRequest.patch:type_name -> gamenode.plugin.v1.SaveProfilePatch
+	139, // 155: gamenode.plugin.v1.SaveProfileRemoveRequest.mutation:type_name -> gamenode.plugin.v1.MutationContext
+	169, // 156: gamenode.plugin.v1.SaveProfilePatch.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	170, // 157: gamenode.plugin.v1.SaveProfile.directories:type_name -> gamenode.plugin.v1.SaveDirectory
+	295, // 158: gamenode.plugin.v1.SaveProfile.descriptive_metadata:type_name -> google.protobuf.Struct
+	169, // 159: gamenode.plugin.v1.SaveProfileListReply.profiles:type_name -> gamenode.plugin.v1.SaveProfile
+	169, // 160: gamenode.plugin.v1.SaveProfileReply.profile:type_name -> gamenode.plugin.v1.SaveProfile
+	5,   // 161: gamenode.plugin.v1.SaveProfileMutationReply.outcome:type_name -> gamenode.plugin.v1.MutationOutcome
+	239, // 162: gamenode.plugin.v1.LocationInspectRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	188, // 163: gamenode.plugin.v1.LocationInspectReply.location:type_name -> gamenode.plugin.v1.LocationDescription
+	189, // 164: gamenode.plugin.v1.LocationInspectReply.observations:type_name -> gamenode.plugin.v1.LocationObservation
+	188, // 165: gamenode.plugin.v1.LocationInspectReply.locations:type_name -> gamenode.plugin.v1.LocationDescription
+	239, // 166: gamenode.plugin.v1.LocationSizeRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	7,   // 167: gamenode.plugin.v1.LocationSizeReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	239, // 168: gamenode.plugin.v1.LocationAccessRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	190, // 169: gamenode.plugin.v1.LocationAccessReply.entries:type_name -> gamenode.plugin.v1.LocationAccessEntry
+	7,   // 170: gamenode.plugin.v1.LocationAccessReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	239, // 171: gamenode.plugin.v1.LocationLastModifiedRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	191, // 172: gamenode.plugin.v1.LocationLastModifiedReply.entries:type_name -> gamenode.plugin.v1.LocationTimestamp
+	7,   // 173: gamenode.plugin.v1.LocationLastModifiedReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	239, // 174: gamenode.plugin.v1.LocationFingerprintRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	7,   // 175: gamenode.plugin.v1.LocationFingerprintReply.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	239, // 176: gamenode.plugin.v1.LocationCompareRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	192, // 177: gamenode.plugin.v1.LocationCompareReply.changes:type_name -> gamenode.plugin.v1.LocationChange
+	239, // 178: gamenode.plugin.v1.LocationAvailabilityWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	7,   // 179: gamenode.plugin.v1.LocationAvailabilityEvent.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	7,   // 180: gamenode.plugin.v1.LocationDescription.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	7,   // 181: gamenode.plugin.v1.LocationObservation.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	7,   // 182: gamenode.plugin.v1.LocationAccessEntry.availability:type_name -> gamenode.plugin.v1.InspectionAvailability
+	140, // 183: gamenode.plugin.v1.DiagnosticListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 184: gamenode.plugin.v1.DiagnosticGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 185: gamenode.plugin.v1.DiagnosticWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	295, // 186: gamenode.plugin.v1.DiagnosticReport.typed_measurements:type_name -> google.protobuf.Struct
+	295, // 187: gamenode.plugin.v1.DiagnosticReport.approved_extension:type_name -> google.protobuf.Struct
+	196, // 188: gamenode.plugin.v1.DiagnosticListReply.reports:type_name -> gamenode.plugin.v1.DiagnosticReport
+	196, // 189: gamenode.plugin.v1.DiagnosticGetReply.report:type_name -> gamenode.plugin.v1.DiagnosticReport
+	196, // 190: gamenode.plugin.v1.DiagnosticEvent.report:type_name -> gamenode.plugin.v1.DiagnosticReport
+	140, // 191: gamenode.plugin.v1.ComputerListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 192: gamenode.plugin.v1.ComputerGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 193: gamenode.plugin.v1.ComputerWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	295, // 194: gamenode.plugin.v1.ComputerReport.typed_observations:type_name -> google.protobuf.Struct
+	295, // 195: gamenode.plugin.v1.ComputerReport.approved_extension:type_name -> google.protobuf.Struct
+	203, // 196: gamenode.plugin.v1.ComputerListReply.reports:type_name -> gamenode.plugin.v1.ComputerReport
+	203, // 197: gamenode.plugin.v1.ComputerGetReply.report:type_name -> gamenode.plugin.v1.ComputerReport
+	203, // 198: gamenode.plugin.v1.ComputerEvent.report:type_name -> gamenode.plugin.v1.ComputerReport
+	140, // 199: gamenode.plugin.v1.PresenceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 200: gamenode.plugin.v1.PresenceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	239, // 201: gamenode.plugin.v1.PresenceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	295, // 202: gamenode.plugin.v1.PresenceRecord.approved_details:type_name -> google.protobuf.Struct
+	210, // 203: gamenode.plugin.v1.PresenceListReply.records:type_name -> gamenode.plugin.v1.PresenceRecord
+	210, // 204: gamenode.plugin.v1.PresenceGetReply.record:type_name -> gamenode.plugin.v1.PresenceRecord
+	210, // 205: gamenode.plugin.v1.PresenceEvent.record:type_name -> gamenode.plugin.v1.PresenceRecord
+	140, // 206: gamenode.plugin.v1.PerformanceListRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	239, // 207: gamenode.plugin.v1.PerformanceGetRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 208: gamenode.plugin.v1.PerformanceGetRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 209: gamenode.plugin.v1.PerformanceWatchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 210: gamenode.plugin.v1.PerformanceWatchRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 211: gamenode.plugin.v1.PerformanceQuerySeriesRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	140, // 212: gamenode.plugin.v1.PerformanceQuerySeriesRequest.page:type_name -> gamenode.plugin.v1.PageRequest
+	162, // 213: gamenode.plugin.v1.PerformanceQuerySeriesRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	239, // 214: gamenode.plugin.v1.PerformanceAggregateRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	162, // 215: gamenode.plugin.v1.PerformanceAggregateRequest.common_data_categories:type_name -> gamenode.plugin.v1.CommonDataSelector
+	103, // 216: gamenode.plugin.v1.PerformanceSeries.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	219, // 217: gamenode.plugin.v1.PerformanceListReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	219, // 218: gamenode.plugin.v1.PerformanceGetReply.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	219, // 219: gamenode.plugin.v1.PerformanceEvent.series:type_name -> gamenode.plugin.v1.PerformanceSeries
+	103, // 220: gamenode.plugin.v1.PerformanceQuerySeriesReply.samples:type_name -> gamenode.plugin.v1.PerformanceSample
+	239, // 221: gamenode.plugin.v1.GameLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	4,   // 222: gamenode.plugin.v1.GameLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
+	239, // 223: gamenode.plugin.v1.CustomLaunchRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	288, // 224: gamenode.plugin.v1.CustomLaunchRequest.environment_set:type_name -> gamenode.plugin.v1.CustomLaunchRequest.EnvironmentSetEntry
+	4,   // 225: gamenode.plugin.v1.CustomLaunchReply.state:type_name -> gamenode.plugin.v1.JobState
+	295, // 226: gamenode.plugin.v1.ExtensionPayload.data:type_name -> google.protobuf.Struct
+	8,   // 227: gamenode.plugin.v1.ExtensionSchemaField.classification:type_name -> gamenode.plugin.v1.ExtensionFieldClassification
+	232, // 228: gamenode.plugin.v1.ExtensionSchemaDescriptor.fields:type_name -> gamenode.plugin.v1.ExtensionSchemaField
+	231, // 229: gamenode.plugin.v1.ExtensionNamespacePatch.set:type_name -> gamenode.plugin.v1.ExtensionPayload
+	234, // 230: gamenode.plugin.v1.ExtensionPatch.namespaces:type_name -> gamenode.plugin.v1.ExtensionNamespacePatch
+	237, // 231: gamenode.plugin.v1.RuntimeArgumentTemplate.content_path:type_name -> gamenode.plugin.v1.ContentPathArgument
+	289, // 232: gamenode.plugin.v1.RuntimeRecord.extensions:type_name -> gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry
+	236, // 233: gamenode.plugin.v1.RuntimeRecord.argument_template:type_name -> gamenode.plugin.v1.RuntimeArgumentTemplate
+	0,   // 234: gamenode.plugin.v1.ServiceContext.session_kind:type_name -> gamenode.plugin.v1.SessionKind
+	26,  // 235: gamenode.plugin.v1.ServiceContext.target_game:type_name -> gamenode.plugin.v1.TargetGameContext
+	239, // 236: gamenode.plugin.v1.ProviderCommand.context:type_name -> gamenode.plugin.v1.ServiceContext
+	9,   // 237: gamenode.plugin.v1.ProviderCommand.operation:type_name -> gamenode.plugin.v1.ProviderOperation
+	274, // 238: gamenode.plugin.v1.ProviderCommand.settings:type_name -> gamenode.plugin.v1.SettingsRequest
+	259, // 239: gamenode.plugin.v1.ProviderCommand.achievements:type_name -> gamenode.plugin.v1.AchievementsRequest
+	281, // 240: gamenode.plugin.v1.ProviderCommand.runtime_session_result:type_name -> gamenode.plugin.v1.RuntimeSessionResult
+	11,  // 241: gamenode.plugin.v1.ProviderContext.secret_storage:type_name -> gamenode.plugin.v1.SecretStorage
+	10,  // 242: gamenode.plugin.v1.AccountStatus.state:type_name -> gamenode.plugin.v1.AccountConnection
+	11,  // 243: gamenode.plugin.v1.AccountStatus.storage:type_name -> gamenode.plugin.v1.SecretStorage
+	12,  // 244: gamenode.plugin.v1.AccountStatus.catalog_error:type_name -> gamenode.plugin.v1.CatalogFailure
+	12,  // 245: gamenode.plugin.v1.AccountStatus.shared_error:type_name -> gamenode.plugin.v1.CatalogFailure
+	239, // 246: gamenode.plugin.v1.AccountRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	242, // 247: gamenode.plugin.v1.AccountRequest.save:type_name -> gamenode.plugin.v1.AccountIdentity
+	242, // 248: gamenode.plugin.v1.AccountReply.account:type_name -> gamenode.plugin.v1.AccountIdentity
+	239, // 249: gamenode.plugin.v1.SecretRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	13,  // 250: gamenode.plugin.v1.SecretRequest.operation:type_name -> gamenode.plugin.v1.SecretOperation
+	11,  // 251: gamenode.plugin.v1.SecretReply.storage:type_name -> gamenode.plugin.v1.SecretStorage
+	14,  // 252: gamenode.plugin.v1.SecretReply.failed:type_name -> gamenode.plugin.v1.ServiceFailure
+	239, // 253: gamenode.plugin.v1.LoginRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	15,  // 254: gamenode.plugin.v1.LoginRequest.operation:type_name -> gamenode.plugin.v1.LoginOperation
+	16,  // 255: gamenode.plugin.v1.LoginReply.state:type_name -> gamenode.plugin.v1.LoginState
+	249, // 256: gamenode.plugin.v1.LoginReply.cookies:type_name -> gamenode.plugin.v1.LoginCookie
+	239, // 257: gamenode.plugin.v1.ActionRequest.context:type_name -> gamenode.plugin.v1.ServiceContext
+	251, // 258: gamenode.plugin.v1.ActionRequest.actions:type_name -> gamenode.plugin.v1.ActionDeclaration
+	290, // 259: gamenode.plugin.v1.CatalogGame.fields:type_name -> gamenode.plugin.v1.CatalogGame.FieldsEntry
+	17,  // 260: gamenode.plugin.v1.CatalogChunk.category:type_name -> gamenode.plugin.v1.CatalogCategory
+	254, // 261: gamenode.plugin.v1.CatalogChunk.games:type_name -> gamenode.plugin.v1.CatalogGame
+	17,  // 262: gamenode.plugin.v1.CatalogCompletion.category:type_name -> gamenode.plugin.v1.CatalogCategory
+	12,  // 263: gamenode.plugin.v1.CatalogCompletion.failed:type_name -> gamenode.plugin.v1.CatalogFailure
+	18,  // 264: gamenode.plugin.v1.OperationResult.disposition:type_name -> gamenode.plugin.v1.OperationDisposition
+	243, // 265: gamenode.plugin.v1.OperationResult.status:type_name -> gamenode.plugin.v1.AccountStatus
+	43,  // 266: gamenode.plugin.v1.OperationResult.discovery:type_name -> gamenode.plugin.v1.DiscoveryResult
+	257, // 267: gamenode.plugin.v1.OperationResult.counters:type_name -> gamenode.plugin.v1.CounterObservation
+	256, // 268: gamenode.plugin.v1.OperationResult.catalogs:type_name -> gamenode.plugin.v1.CatalogCompletion
+	44,  // 269: gamenode.plugin.v1.OperationResult.failure:type_name -> gamenode.plugin.v1.PluginFailure
+	19,  // 270: gamenode.plugin.v1.OperationResult.login_outcome:type_name -> gamenode.plugin.v1.AccountLoginOutcome
+	278, // 271: gamenode.plugin.v1.OperationResult.settings:type_name -> gamenode.plugin.v1.SettingsReply
+	262, // 272: gamenode.plugin.v1.OperationResult.achievements:type_name -> gamenode.plugin.v1.AchievementOutcome
+	263, // 273: gamenode.plugin.v1.OperationResult.configuration:type_name -> gamenode.plugin.v1.ConfigurationResult
+	260, // 274: gamenode.plugin.v1.AchievementGame.achievements:type_name -> gamenode.plugin.v1.Achievement
+	261, // 275: gamenode.plugin.v1.AchievementOutcome.ready:type_name -> gamenode.plugin.v1.AchievementGame
+	12,  // 276: gamenode.plugin.v1.AchievementOutcome.failed:type_name -> gamenode.plugin.v1.CatalogFailure
+	291, // 277: gamenode.plugin.v1.SettingsText.translations:type_name -> gamenode.plugin.v1.SettingsText.TranslationsEntry
+	265, // 278: gamenode.plugin.v1.SettingsChoiceOption.label:type_name -> gamenode.plugin.v1.SettingsText
+	269, // 279: gamenode.plugin.v1.SettingsChoiceField.options:type_name -> gamenode.plugin.v1.SettingsChoiceOption
+	265, // 280: gamenode.plugin.v1.SettingsField.label:type_name -> gamenode.plugin.v1.SettingsText
+	265, // 281: gamenode.plugin.v1.SettingsField.help:type_name -> gamenode.plugin.v1.SettingsText
+	266, // 282: gamenode.plugin.v1.SettingsField.default_value:type_name -> gamenode.plugin.v1.SettingsValue
+	267, // 283: gamenode.plugin.v1.SettingsField.text:type_name -> gamenode.plugin.v1.SettingsTextField
+	268, // 284: gamenode.plugin.v1.SettingsField.number:type_name -> gamenode.plugin.v1.SettingsNumberField
+	270, // 285: gamenode.plugin.v1.SettingsField.choice:type_name -> gamenode.plugin.v1.SettingsChoiceField
+	265, // 286: gamenode.plugin.v1.SettingsForm.title:type_name -> gamenode.plugin.v1.SettingsText
+	271, // 287: gamenode.plugin.v1.SettingsForm.fields:type_name -> gamenode.plugin.v1.SettingsField
+	292, // 288: gamenode.plugin.v1.SettingsSubmission.values:type_name -> gamenode.plugin.v1.SettingsSubmission.ValuesEntry
+	264, // 289: gamenode.plugin.v1.SettingsRequest.context:type_name -> gamenode.plugin.v1.SettingsContext
+	273, // 290: gamenode.plugin.v1.SettingsRequest.submit:type_name -> gamenode.plugin.v1.SettingsSubmission
+	272, // 291: gamenode.plugin.v1.SettingsView.form:type_name -> gamenode.plugin.v1.SettingsForm
+	293, // 292: gamenode.plugin.v1.SettingsView.values:type_name -> gamenode.plugin.v1.SettingsView.ValuesEntry
+	20,  // 293: gamenode.plugin.v1.SettingsApplied.persistence:type_name -> gamenode.plugin.v1.SettingsPersistence
+	294, // 294: gamenode.plugin.v1.SettingsFieldErrors.errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry
+	264, // 295: gamenode.plugin.v1.SettingsReply.context:type_name -> gamenode.plugin.v1.SettingsContext
+	275, // 296: gamenode.plugin.v1.SettingsReply.form:type_name -> gamenode.plugin.v1.SettingsView
+	276, // 297: gamenode.plugin.v1.SettingsReply.applied:type_name -> gamenode.plugin.v1.SettingsApplied
+	277, // 298: gamenode.plugin.v1.SettingsReply.field_errors:type_name -> gamenode.plugin.v1.SettingsFieldErrors
+	21,  // 299: gamenode.plugin.v1.SettingsReply.failed:type_name -> gamenode.plugin.v1.SettingsFailure
+	239, // 300: gamenode.plugin.v1.ProviderEvent.context:type_name -> gamenode.plugin.v1.ServiceContext
+	243, // 301: gamenode.plugin.v1.ProviderEvent.account_status:type_name -> gamenode.plugin.v1.AccountStatus
+	255, // 302: gamenode.plugin.v1.ProviderEvent.catalog_chunk:type_name -> gamenode.plugin.v1.CatalogChunk
+	258, // 303: gamenode.plugin.v1.ProviderEvent.result:type_name -> gamenode.plugin.v1.OperationResult
+	280, // 304: gamenode.plugin.v1.ProviderEvent.runtime_session:type_name -> gamenode.plugin.v1.RuntimeSessionReport
+	22,  // 305: gamenode.plugin.v1.RuntimeSessionReport.transition:type_name -> gamenode.plugin.v1.RuntimeSessionTransition
+	23,  // 306: gamenode.plugin.v1.RuntimeSessionResult.outcome:type_name -> gamenode.plugin.v1.RuntimeSessionOutcome
+	39,  // 307: gamenode.plugin.v1.RuntimeSessionResult.denial:type_name -> gamenode.plugin.v1.DenialDetail
+	231, // 308: gamenode.plugin.v1.RuntimeRecord.ExtensionsEntry.value:type_name -> gamenode.plugin.v1.ExtensionPayload
+	266, // 309: gamenode.plugin.v1.SettingsSubmission.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
+	266, // 310: gamenode.plugin.v1.SettingsView.ValuesEntry.value:type_name -> gamenode.plugin.v1.SettingsValue
+	265, // 311: gamenode.plugin.v1.SettingsFieldErrors.ErrorsEntry.value:type_name -> gamenode.plugin.v1.SettingsText
+	24,  // 312: gamenode.plugin.v1.PluginHost.OpenSession:input_type -> gamenode.plugin.v1.OpenSessionRequest
+	45,  // 313: gamenode.plugin.v1.PluginHost.SubmitDiscovery:input_type -> gamenode.plugin.v1.SubmitDiscoveryRequest
+	32,  // 314: gamenode.plugin.v1.PluginHost.DescribeApi:input_type -> gamenode.plugin.v1.DescribeApiRequest
+	34,  // 315: gamenode.plugin.v1.PluginHost.GetPermissions:input_type -> gamenode.plugin.v1.GetPermissionsRequest
+	37,  // 316: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:input_type -> gamenode.plugin.v1.WatchPermissionChangesRequest
+	279, // 317: gamenode.plugin.v1.ProviderHost.Exchange:input_type -> gamenode.plugin.v1.ProviderEvent
+	239, // 318: gamenode.plugin.v1.ProviderHost.GetContext:input_type -> gamenode.plugin.v1.ServiceContext
+	244, // 319: gamenode.plugin.v1.ProviderHost.Account:input_type -> gamenode.plugin.v1.AccountRequest
+	246, // 320: gamenode.plugin.v1.ProviderHost.Secret:input_type -> gamenode.plugin.v1.SecretRequest
+	248, // 321: gamenode.plugin.v1.ProviderHost.Login:input_type -> gamenode.plugin.v1.LoginRequest
+	252, // 322: gamenode.plugin.v1.ProviderHost.DeclareActions:input_type -> gamenode.plugin.v1.ActionRequest
+	141, // 323: gamenode.plugin.v1.ResourceHost.LibraryList:input_type -> gamenode.plugin.v1.LibraryListRequest
+	142, // 324: gamenode.plugin.v1.ResourceHost.LibraryGet:input_type -> gamenode.plugin.v1.LibraryGetRequest
+	143, // 325: gamenode.plugin.v1.ResourceHost.LibraryWatch:input_type -> gamenode.plugin.v1.LibraryWatchRequest
+	144, // 326: gamenode.plugin.v1.ResourceHost.MetadataUpdate:input_type -> gamenode.plugin.v1.MetadataUpdateRequest
+	145, // 327: gamenode.plugin.v1.ResourceHost.FavoritesList:input_type -> gamenode.plugin.v1.FavoritesListRequest
+	146, // 328: gamenode.plugin.v1.ResourceHost.FavoritesSet:input_type -> gamenode.plugin.v1.FavoritesSetRequest
+	147, // 329: gamenode.plugin.v1.ResourceHost.MatchingSearch:input_type -> gamenode.plugin.v1.MatchingSearchRequest
+	148, // 330: gamenode.plugin.v1.ResourceHost.MatchingAssign:input_type -> gamenode.plugin.v1.MatchingAssignRequest
+	149, // 331: gamenode.plugin.v1.ResourceHost.ArtworkRead:input_type -> gamenode.plugin.v1.ArtworkReadRequest
+	150, // 332: gamenode.plugin.v1.ResourceHost.ArtworkSet:input_type -> gamenode.plugin.v1.ArtworkSetRequest
+	227, // 333: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:input_type -> gamenode.plugin.v1.GameLaunchRequest
+	229, // 334: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
+	229, // 335: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRequest
+	47,  // 336: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:input_type -> gamenode.plugin.v1.CustomLaunchRemoveRequest
+	48,  // 337: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:input_type -> gamenode.plugin.v1.GameInstallRequest
+	49,  // 338: gamenode.plugin.v1.ResourceHost.StorageGet:input_type -> gamenode.plugin.v1.StorageGetRequest
+	50,  // 339: gamenode.plugin.v1.ResourceHost.StoragePut:input_type -> gamenode.plugin.v1.StoragePutRequest
+	51,  // 340: gamenode.plugin.v1.ResourceHost.StorageDelete:input_type -> gamenode.plugin.v1.StorageDeleteRequest
+	55,  // 341: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:input_type -> gamenode.plugin.v1.FilesRequestAccessRequest
+	58,  // 342: gamenode.plugin.v1.ResourceHost.FilesList:input_type -> gamenode.plugin.v1.FilesListRequest
+	61,  // 343: gamenode.plugin.v1.ResourceHost.FilesRead:input_type -> gamenode.plugin.v1.FilesReadRequest
+	63,  // 344: gamenode.plugin.v1.ResourceHost.FilesWrite:input_type -> gamenode.plugin.v1.FilesWriteRequest
+	64,  // 345: gamenode.plugin.v1.ResourceHost.FilesDelete:input_type -> gamenode.plugin.v1.FilesDeleteRequest
+	65,  // 346: gamenode.plugin.v1.ResourceHost.NetworkFetch:input_type -> gamenode.plugin.v1.NetworkFetchRequest
+	68,  // 347: gamenode.plugin.v1.ResourceHost.NotificationsPublish:input_type -> gamenode.plugin.v1.NotificationPublishRequest
+	69,  // 348: gamenode.plugin.v1.ResourceHost.BackupsList:input_type -> gamenode.plugin.v1.BackupsListRequest
+	70,  // 349: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:input_type -> gamenode.plugin.v1.BackupCreateRequest
+	71,  // 350: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:input_type -> gamenode.plugin.v1.BackupRestoreRequest
+	75,  // 351: gamenode.plugin.v1.ResourceHost.LibrariesList:input_type -> gamenode.plugin.v1.DomainListRequest
+	76,  // 352: gamenode.plugin.v1.ResourceHost.LibrariesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
+	77,  // 353: gamenode.plugin.v1.ResourceHost.LibrariesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
+	79,  // 354: gamenode.plugin.v1.ResourceHost.LibrariesCreate:input_type -> gamenode.plugin.v1.LibraryCreateRequest
+	80,  // 355: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:input_type -> gamenode.plugin.v1.LibraryUpdateRequest
+	78,  // 356: gamenode.plugin.v1.ResourceHost.LibrariesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
+	81,  // 357: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:input_type -> gamenode.plugin.v1.LibraryRootAddRequest
+	82,  // 358: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:input_type -> gamenode.plugin.v1.LibraryRootUpdateRequest
+	83,  // 359: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:input_type -> gamenode.plugin.v1.LibraryRootRemoveRequest
+	75,  // 360: gamenode.plugin.v1.ResourceHost.RuntimesList:input_type -> gamenode.plugin.v1.DomainListRequest
+	76,  // 361: gamenode.plugin.v1.ResourceHost.RuntimesGet:input_type -> gamenode.plugin.v1.DomainGetRequest
+	77,  // 362: gamenode.plugin.v1.ResourceHost.RuntimesWatch:input_type -> gamenode.plugin.v1.DomainWatchRequest
+	90,  // 363: gamenode.plugin.v1.ResourceHost.RuntimesRegister:input_type -> gamenode.plugin.v1.RuntimeRegisterRequest
+	91,  // 364: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:input_type -> gamenode.plugin.v1.RuntimeUpdateRequest
+	78,  // 365: gamenode.plugin.v1.ResourceHost.RuntimesRemove:input_type -> gamenode.plugin.v1.DomainRemoveRequest
+	96,  // 366: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:input_type -> gamenode.plugin.v1.ContentRegistrationRequest
+	98,  // 367: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:input_type -> gamenode.plugin.v1.BenchmarkReportRequest
+	99,  // 368: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:input_type -> gamenode.plugin.v1.SmartReportRequest
+	100, // 369: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:input_type -> gamenode.plugin.v1.HardwareReportRequest
+	101, // 370: gamenode.plugin.v1.ResourceHost.GamePresencePublish:input_type -> gamenode.plugin.v1.PresencePublishRequest
+	102, // 371: gamenode.plugin.v1.ResourceHost.GamePresenceClear:input_type -> gamenode.plugin.v1.PresenceClearRequest
+	104, // 372: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:input_type -> gamenode.plugin.v1.PerformanceSamplesRequest
+	105, // 373: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:input_type -> gamenode.plugin.v1.PerformanceEndSeriesRequest
+	106, // 374: gamenode.plugin.v1.ResourceHost.DataPublish:input_type -> gamenode.plugin.v1.DataPublishRequest
+	108, // 375: gamenode.plugin.v1.ResourceHost.DataGet:input_type -> gamenode.plugin.v1.DataGetRequest
+	109, // 376: gamenode.plugin.v1.ResourceHost.DataList:input_type -> gamenode.plugin.v1.DataListRequest
+	110, // 377: gamenode.plugin.v1.ResourceHost.DataWatch:input_type -> gamenode.plugin.v1.DataWatchRequest
+	115, // 378: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:input_type -> gamenode.plugin.v1.PersistenceUsageRequest
+	117, // 379: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:input_type -> gamenode.plugin.v1.PersistenceListRequest
+	120, // 380: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:input_type -> gamenode.plugin.v1.PersistenceDeleteRequest
+	121, // 381: gamenode.plugin.v1.ResourceHost.PersistenceClear:input_type -> gamenode.plugin.v1.PersistenceClearRequest
+	122, // 382: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:input_type -> gamenode.plugin.v1.RetentionPolicyRequest
+	124, // 383: gamenode.plugin.v1.ResourceHost.ToolsList:input_type -> gamenode.plugin.v1.ToolsListRequest
+	125, // 384: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:input_type -> gamenode.plugin.v1.ToolApplyRequest
+	126, // 385: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:input_type -> gamenode.plugin.v1.ToolRemoveRequest
+	129, // 386: gamenode.plugin.v1.ResourceHost.PortsList:input_type -> gamenode.plugin.v1.PortsListRequest
+	130, // 387: gamenode.plugin.v1.ResourceHost.PortsDetail:input_type -> gamenode.plugin.v1.PortDetailRequest
+	131, // 388: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:input_type -> gamenode.plugin.v1.PortInstallRequest
+	135, // 389: gamenode.plugin.v1.ResourceHost.JobsGet:input_type -> gamenode.plugin.v1.JobGetRequest
+	136, // 390: gamenode.plugin.v1.ResourceHost.JobsWatch:input_type -> gamenode.plugin.v1.JobWatchRequest
+	137, // 391: gamenode.plugin.v1.ResourceHost.JobsCancel:input_type -> gamenode.plugin.v1.JobCancelRequest
+	163, // 392: gamenode.plugin.v1.Saves.ListProfiles:input_type -> gamenode.plugin.v1.SaveProfileListRequest
+	164, // 393: gamenode.plugin.v1.Saves.GetProfile:input_type -> gamenode.plugin.v1.SaveProfileGetRequest
+	165, // 394: gamenode.plugin.v1.Saves.CreateProfile:input_type -> gamenode.plugin.v1.SaveProfileCreateRequest
+	166, // 395: gamenode.plugin.v1.Saves.UpdateProfile:input_type -> gamenode.plugin.v1.SaveProfileUpdateRequest
+	167, // 396: gamenode.plugin.v1.Saves.RemoveProfile:input_type -> gamenode.plugin.v1.SaveProfileRemoveRequest
+	174, // 397: gamenode.plugin.v1.Locations.Inspect:input_type -> gamenode.plugin.v1.LocationInspectRequest
+	176, // 398: gamenode.plugin.v1.Locations.GetSize:input_type -> gamenode.plugin.v1.LocationSizeRequest
+	178, // 399: gamenode.plugin.v1.Locations.GetAccess:input_type -> gamenode.plugin.v1.LocationAccessRequest
+	180, // 400: gamenode.plugin.v1.Locations.GetLastModified:input_type -> gamenode.plugin.v1.LocationLastModifiedRequest
+	182, // 401: gamenode.plugin.v1.Locations.GetFingerprint:input_type -> gamenode.plugin.v1.LocationFingerprintRequest
+	184, // 402: gamenode.plugin.v1.Locations.Compare:input_type -> gamenode.plugin.v1.LocationCompareRequest
+	186, // 403: gamenode.plugin.v1.Locations.WatchAvailability:input_type -> gamenode.plugin.v1.LocationAvailabilityWatchRequest
+	193, // 404: gamenode.plugin.v1.StorageDiagnostics.List:input_type -> gamenode.plugin.v1.DiagnosticListRequest
+	194, // 405: gamenode.plugin.v1.StorageDiagnostics.Get:input_type -> gamenode.plugin.v1.DiagnosticGetRequest
+	195, // 406: gamenode.plugin.v1.StorageDiagnostics.Watch:input_type -> gamenode.plugin.v1.DiagnosticWatchRequest
+	200, // 407: gamenode.plugin.v1.Computer.List:input_type -> gamenode.plugin.v1.ComputerListRequest
+	201, // 408: gamenode.plugin.v1.Computer.Get:input_type -> gamenode.plugin.v1.ComputerGetRequest
+	202, // 409: gamenode.plugin.v1.Computer.Watch:input_type -> gamenode.plugin.v1.ComputerWatchRequest
+	207, // 410: gamenode.plugin.v1.GamePresence.List:input_type -> gamenode.plugin.v1.PresenceListRequest
+	208, // 411: gamenode.plugin.v1.GamePresence.Get:input_type -> gamenode.plugin.v1.PresenceGetRequest
+	209, // 412: gamenode.plugin.v1.GamePresence.Watch:input_type -> gamenode.plugin.v1.PresenceWatchRequest
+	214, // 413: gamenode.plugin.v1.GamePerformance.List:input_type -> gamenode.plugin.v1.PerformanceListRequest
+	215, // 414: gamenode.plugin.v1.GamePerformance.Get:input_type -> gamenode.plugin.v1.PerformanceGetRequest
+	216, // 415: gamenode.plugin.v1.GamePerformance.Watch:input_type -> gamenode.plugin.v1.PerformanceWatchRequest
+	217, // 416: gamenode.plugin.v1.GamePerformance.QuerySeries:input_type -> gamenode.plugin.v1.PerformanceQuerySeriesRequest
+	218, // 417: gamenode.plugin.v1.GamePerformance.Aggregate:input_type -> gamenode.plugin.v1.PerformanceAggregateRequest
+	25,  // 418: gamenode.plugin.v1.PluginHost.OpenSession:output_type -> gamenode.plugin.v1.OpenSessionReply
+	46,  // 419: gamenode.plugin.v1.PluginHost.SubmitDiscovery:output_type -> gamenode.plugin.v1.SubmitDiscoveryReply
+	33,  // 420: gamenode.plugin.v1.PluginHost.DescribeApi:output_type -> gamenode.plugin.v1.DescribeApiReply
+	36,  // 421: gamenode.plugin.v1.PluginHost.GetPermissions:output_type -> gamenode.plugin.v1.GetPermissionsReply
+	38,  // 422: gamenode.plugin.v1.PluginHost.WatchPermissionChanges:output_type -> gamenode.plugin.v1.PermissionChange
+	240, // 423: gamenode.plugin.v1.ProviderHost.Exchange:output_type -> gamenode.plugin.v1.ProviderCommand
+	241, // 424: gamenode.plugin.v1.ProviderHost.GetContext:output_type -> gamenode.plugin.v1.ProviderContext
+	245, // 425: gamenode.plugin.v1.ProviderHost.Account:output_type -> gamenode.plugin.v1.AccountReply
+	247, // 426: gamenode.plugin.v1.ProviderHost.Secret:output_type -> gamenode.plugin.v1.SecretReply
+	250, // 427: gamenode.plugin.v1.ProviderHost.Login:output_type -> gamenode.plugin.v1.LoginReply
+	253, // 428: gamenode.plugin.v1.ProviderHost.DeclareActions:output_type -> gamenode.plugin.v1.ActionReply
+	151, // 429: gamenode.plugin.v1.ResourceHost.LibraryList:output_type -> gamenode.plugin.v1.LibraryListReply
+	152, // 430: gamenode.plugin.v1.ResourceHost.LibraryGet:output_type -> gamenode.plugin.v1.LibraryGetReply
+	160, // 431: gamenode.plugin.v1.ResourceHost.LibraryWatch:output_type -> gamenode.plugin.v1.LibraryEvent
+	156, // 432: gamenode.plugin.v1.ResourceHost.MetadataUpdate:output_type -> gamenode.plugin.v1.MutationReply
+	153, // 433: gamenode.plugin.v1.ResourceHost.FavoritesList:output_type -> gamenode.plugin.v1.FavoritesListReply
+	156, // 434: gamenode.plugin.v1.ResourceHost.FavoritesSet:output_type -> gamenode.plugin.v1.MutationReply
+	154, // 435: gamenode.plugin.v1.ResourceHost.MatchingSearch:output_type -> gamenode.plugin.v1.MatchingSearchReply
+	156, // 436: gamenode.plugin.v1.ResourceHost.MatchingAssign:output_type -> gamenode.plugin.v1.MutationReply
+	155, // 437: gamenode.plugin.v1.ResourceHost.ArtworkRead:output_type -> gamenode.plugin.v1.ArtworkReadReply
+	156, // 438: gamenode.plugin.v1.ResourceHost.ArtworkSet:output_type -> gamenode.plugin.v1.MutationReply
+	228, // 439: gamenode.plugin.v1.ResourceHost.GamesRequestLaunch:output_type -> gamenode.plugin.v1.GameLaunchReply
+	230, // 440: gamenode.plugin.v1.ResourceHost.GamesProposeCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
+	230, // 441: gamenode.plugin.v1.ResourceHost.GamesRequestCustomLaunch:output_type -> gamenode.plugin.v1.CustomLaunchReply
+	156, // 442: gamenode.plugin.v1.ResourceHost.GamesRemoveCustomLaunch:output_type -> gamenode.plugin.v1.MutationReply
+	74,  // 443: gamenode.plugin.v1.ResourceHost.GamesRequestInstall:output_type -> gamenode.plugin.v1.JobReply
+	52,  // 444: gamenode.plugin.v1.ResourceHost.StorageGet:output_type -> gamenode.plugin.v1.StorageGetReply
+	53,  // 445: gamenode.plugin.v1.ResourceHost.StoragePut:output_type -> gamenode.plugin.v1.StorageMutationReply
+	156, // 446: gamenode.plugin.v1.ResourceHost.StorageDelete:output_type -> gamenode.plugin.v1.MutationReply
+	57,  // 447: gamenode.plugin.v1.ResourceHost.FilesRequestAccess:output_type -> gamenode.plugin.v1.FileAccessReply
+	59,  // 448: gamenode.plugin.v1.ResourceHost.FilesList:output_type -> gamenode.plugin.v1.FilesListReply
+	62,  // 449: gamenode.plugin.v1.ResourceHost.FilesRead:output_type -> gamenode.plugin.v1.FileReadReply
+	156, // 450: gamenode.plugin.v1.ResourceHost.FilesWrite:output_type -> gamenode.plugin.v1.MutationReply
+	156, // 451: gamenode.plugin.v1.ResourceHost.FilesDelete:output_type -> gamenode.plugin.v1.MutationReply
+	66,  // 452: gamenode.plugin.v1.ResourceHost.NetworkFetch:output_type -> gamenode.plugin.v1.NetworkFetchReply
+	156, // 453: gamenode.plugin.v1.ResourceHost.NotificationsPublish:output_type -> gamenode.plugin.v1.MutationReply
+	72,  // 454: gamenode.plugin.v1.ResourceHost.BackupsList:output_type -> gamenode.plugin.v1.BackupsListReply
+	74,  // 455: gamenode.plugin.v1.ResourceHost.BackupsRequestCreate:output_type -> gamenode.plugin.v1.JobReply
+	74,  // 456: gamenode.plugin.v1.ResourceHost.BackupsRequestRestore:output_type -> gamenode.plugin.v1.JobReply
+	86,  // 457: gamenode.plugin.v1.ResourceHost.LibrariesList:output_type -> gamenode.plugin.v1.LibrariesListReply
+	87,  // 458: gamenode.plugin.v1.ResourceHost.LibrariesGet:output_type -> gamenode.plugin.v1.LibraryRecordReply
+	88,  // 459: gamenode.plugin.v1.ResourceHost.LibrariesWatch:output_type -> gamenode.plugin.v1.LibraryRecordEvent
+	89,  // 460: gamenode.plugin.v1.ResourceHost.LibrariesCreate:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	89,  // 461: gamenode.plugin.v1.ResourceHost.LibrariesUpdate:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	156, // 462: gamenode.plugin.v1.ResourceHost.LibrariesRemove:output_type -> gamenode.plugin.v1.MutationReply
+	89,  // 463: gamenode.plugin.v1.ResourceHost.LibrariesAddRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	89,  // 464: gamenode.plugin.v1.ResourceHost.LibrariesUpdateRoot:output_type -> gamenode.plugin.v1.LibraryMutationReply
+	156, // 465: gamenode.plugin.v1.ResourceHost.LibrariesRemoveRoot:output_type -> gamenode.plugin.v1.MutationReply
+	95,  // 466: gamenode.plugin.v1.ResourceHost.RuntimesList:output_type -> gamenode.plugin.v1.RuntimesListReply
+	93,  // 467: gamenode.plugin.v1.ResourceHost.RuntimesGet:output_type -> gamenode.plugin.v1.RuntimeRecordReply
+	94,  // 468: gamenode.plugin.v1.ResourceHost.RuntimesWatch:output_type -> gamenode.plugin.v1.RuntimeRecordEvent
+	92,  // 469: gamenode.plugin.v1.ResourceHost.RuntimesRegister:output_type -> gamenode.plugin.v1.RuntimeMutationReply
+	92,  // 470: gamenode.plugin.v1.ResourceHost.RuntimesUpdate:output_type -> gamenode.plugin.v1.RuntimeMutationReply
+	156, // 471: gamenode.plugin.v1.ResourceHost.RuntimesRemove:output_type -> gamenode.plugin.v1.MutationReply
+	156, // 472: gamenode.plugin.v1.ResourceHost.GamesRegisterContent:output_type -> gamenode.plugin.v1.MutationReply
+	97,  // 473: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishBenchmark:output_type -> gamenode.plugin.v1.ReportMutationReply
+	97,  // 474: gamenode.plugin.v1.ResourceHost.StorageDiagnosticsPublishSmart:output_type -> gamenode.plugin.v1.ReportMutationReply
+	97,  // 475: gamenode.plugin.v1.ResourceHost.ComputerPublishHardware:output_type -> gamenode.plugin.v1.ReportMutationReply
+	97,  // 476: gamenode.plugin.v1.ResourceHost.GamePresencePublish:output_type -> gamenode.plugin.v1.ReportMutationReply
+	156, // 477: gamenode.plugin.v1.ResourceHost.GamePresenceClear:output_type -> gamenode.plugin.v1.MutationReply
+	97,  // 478: gamenode.plugin.v1.ResourceHost.GamePerformancePublishSamples:output_type -> gamenode.plugin.v1.ReportMutationReply
+	156, // 479: gamenode.plugin.v1.ResourceHost.GamePerformanceEndSeries:output_type -> gamenode.plugin.v1.MutationReply
+	107, // 480: gamenode.plugin.v1.ResourceHost.DataPublish:output_type -> gamenode.plugin.v1.DataMutationReply
+	112, // 481: gamenode.plugin.v1.ResourceHost.DataGet:output_type -> gamenode.plugin.v1.DataGetReply
+	113, // 482: gamenode.plugin.v1.ResourceHost.DataList:output_type -> gamenode.plugin.v1.DataListReply
+	114, // 483: gamenode.plugin.v1.ResourceHost.DataWatch:output_type -> gamenode.plugin.v1.DataEvent
+	116, // 484: gamenode.plugin.v1.ResourceHost.PersistenceGetUsage:output_type -> gamenode.plugin.v1.PersistenceUsageReply
+	118, // 485: gamenode.plugin.v1.ResourceHost.PersistenceListEntries:output_type -> gamenode.plugin.v1.PersistenceListReply
+	156, // 486: gamenode.plugin.v1.ResourceHost.PersistenceDeleteEntries:output_type -> gamenode.plugin.v1.MutationReply
+	156, // 487: gamenode.plugin.v1.ResourceHost.PersistenceClear:output_type -> gamenode.plugin.v1.MutationReply
+	156, // 488: gamenode.plugin.v1.ResourceHost.PersistenceSetRetentionPolicy:output_type -> gamenode.plugin.v1.MutationReply
+	127, // 489: gamenode.plugin.v1.ResourceHost.ToolsList:output_type -> gamenode.plugin.v1.ToolsListReply
+	74,  // 490: gamenode.plugin.v1.ResourceHost.ToolsRequestApply:output_type -> gamenode.plugin.v1.JobReply
+	74,  // 491: gamenode.plugin.v1.ResourceHost.ToolsRequestRemove:output_type -> gamenode.plugin.v1.JobReply
+	132, // 492: gamenode.plugin.v1.ResourceHost.PortsList:output_type -> gamenode.plugin.v1.PortsListReply
+	133, // 493: gamenode.plugin.v1.ResourceHost.PortsDetail:output_type -> gamenode.plugin.v1.PortDetailReply
+	74,  // 494: gamenode.plugin.v1.ResourceHost.PortsRequestInstall:output_type -> gamenode.plugin.v1.JobReply
+	74,  // 495: gamenode.plugin.v1.ResourceHost.JobsGet:output_type -> gamenode.plugin.v1.JobReply
+	138, // 496: gamenode.plugin.v1.ResourceHost.JobsWatch:output_type -> gamenode.plugin.v1.JobEvent
+	74,  // 497: gamenode.plugin.v1.ResourceHost.JobsCancel:output_type -> gamenode.plugin.v1.JobReply
+	171, // 498: gamenode.plugin.v1.Saves.ListProfiles:output_type -> gamenode.plugin.v1.SaveProfileListReply
+	172, // 499: gamenode.plugin.v1.Saves.GetProfile:output_type -> gamenode.plugin.v1.SaveProfileReply
+	173, // 500: gamenode.plugin.v1.Saves.CreateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	173, // 501: gamenode.plugin.v1.Saves.UpdateProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	173, // 502: gamenode.plugin.v1.Saves.RemoveProfile:output_type -> gamenode.plugin.v1.SaveProfileMutationReply
+	175, // 503: gamenode.plugin.v1.Locations.Inspect:output_type -> gamenode.plugin.v1.LocationInspectReply
+	177, // 504: gamenode.plugin.v1.Locations.GetSize:output_type -> gamenode.plugin.v1.LocationSizeReply
+	179, // 505: gamenode.plugin.v1.Locations.GetAccess:output_type -> gamenode.plugin.v1.LocationAccessReply
+	181, // 506: gamenode.plugin.v1.Locations.GetLastModified:output_type -> gamenode.plugin.v1.LocationLastModifiedReply
+	183, // 507: gamenode.plugin.v1.Locations.GetFingerprint:output_type -> gamenode.plugin.v1.LocationFingerprintReply
+	185, // 508: gamenode.plugin.v1.Locations.Compare:output_type -> gamenode.plugin.v1.LocationCompareReply
+	187, // 509: gamenode.plugin.v1.Locations.WatchAvailability:output_type -> gamenode.plugin.v1.LocationAvailabilityEvent
+	197, // 510: gamenode.plugin.v1.StorageDiagnostics.List:output_type -> gamenode.plugin.v1.DiagnosticListReply
+	198, // 511: gamenode.plugin.v1.StorageDiagnostics.Get:output_type -> gamenode.plugin.v1.DiagnosticGetReply
+	199, // 512: gamenode.plugin.v1.StorageDiagnostics.Watch:output_type -> gamenode.plugin.v1.DiagnosticEvent
+	204, // 513: gamenode.plugin.v1.Computer.List:output_type -> gamenode.plugin.v1.ComputerListReply
+	205, // 514: gamenode.plugin.v1.Computer.Get:output_type -> gamenode.plugin.v1.ComputerGetReply
+	206, // 515: gamenode.plugin.v1.Computer.Watch:output_type -> gamenode.plugin.v1.ComputerEvent
+	211, // 516: gamenode.plugin.v1.GamePresence.List:output_type -> gamenode.plugin.v1.PresenceListReply
+	212, // 517: gamenode.plugin.v1.GamePresence.Get:output_type -> gamenode.plugin.v1.PresenceGetReply
+	213, // 518: gamenode.plugin.v1.GamePresence.Watch:output_type -> gamenode.plugin.v1.PresenceEvent
+	220, // 519: gamenode.plugin.v1.GamePerformance.List:output_type -> gamenode.plugin.v1.PerformanceListReply
+	221, // 520: gamenode.plugin.v1.GamePerformance.Get:output_type -> gamenode.plugin.v1.PerformanceGetReply
+	222, // 521: gamenode.plugin.v1.GamePerformance.Watch:output_type -> gamenode.plugin.v1.PerformanceEvent
+	223, // 522: gamenode.plugin.v1.GamePerformance.QuerySeries:output_type -> gamenode.plugin.v1.PerformanceQuerySeriesReply
+	224, // 523: gamenode.plugin.v1.GamePerformance.Aggregate:output_type -> gamenode.plugin.v1.PerformanceAggregateReply
+	418, // [418:524] is the sub-list for method output_type
+	312, // [312:418] is the sub-list for method input_type
+	312, // [312:312] is the sub-list for extension type_name
+	312, // [312:312] is the sub-list for extension extendee
+	0,   // [0:312] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -22301,72 +22670,80 @@ func file_plugin_proto_init() {
 	}
 	file_plugin_proto_msgTypes[0].OneofWrappers = []any{}
 	file_plugin_proto_msgTypes[5].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[19].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[17].OneofWrappers = []any{
+		(*DetectedTarget_Uri)(nil),
+		(*DetectedTarget_Executable)(nil),
+	}
+	file_plugin_proto_msgTypes[21].OneofWrappers = []any{
 		(*SubmitDiscoveryRequest_Completed)(nil),
 		(*SubmitDiscoveryRequest_Failed)(nil),
 	}
-	file_plugin_proto_msgTypes[155].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[208].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[157].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[210].OneofWrappers = []any{
 		(*ExtensionNamespacePatch_Set)(nil),
 		(*ExtensionNamespacePatch_Remove)(nil),
 	}
-	file_plugin_proto_msgTypes[211].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[212].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[214].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[212].OneofWrappers = []any{
+		(*RuntimeArgumentTemplate_Literal)(nil),
+		(*RuntimeArgumentTemplate_ContentPath)(nil),
+	}
 	file_plugin_proto_msgTypes[215].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[216].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[216].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[218].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[219].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[220].OneofWrappers = []any{
 		(*AccountRequest_Read)(nil),
 		(*AccountRequest_Save)(nil),
 		(*AccountRequest_Clear)(nil),
 	}
-	file_plugin_proto_msgTypes[217].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[218].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[219].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[221].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[222].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[223].OneofWrappers = []any{
 		(*SecretReply_Value)(nil),
 		(*SecretReply_Absent)(nil),
 		(*SecretReply_Accepted)(nil),
 		(*SecretReply_Failed)(nil),
 	}
-	file_plugin_proto_msgTypes[222].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[223].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[228].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[226].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[227].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[232].OneofWrappers = []any{
 		(*CatalogCompletion_CompletedRecords)(nil),
 		(*CatalogCompletion_Failed)(nil),
 		(*CatalogCompletion_Unchanged)(nil),
 	}
-	file_plugin_proto_msgTypes[229].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[230].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[232].OneofWrappers = []any{}
-	file_plugin_proto_msgTypes[234].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[233].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[234].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[236].OneofWrappers = []any{}
+	file_plugin_proto_msgTypes[238].OneofWrappers = []any{
 		(*AchievementOutcome_Ready)(nil),
 		(*AchievementOutcome_None)(nil),
 		(*AchievementOutcome_Failed)(nil),
 	}
-	file_plugin_proto_msgTypes[238].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[242].OneofWrappers = []any{
 		(*SettingsValue_Boolean)(nil),
 		(*SettingsValue_Text)(nil),
 		(*SettingsValue_Number)(nil),
 		(*SettingsValue_Choice)(nil),
 	}
-	file_plugin_proto_msgTypes[243].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[247].OneofWrappers = []any{
 		(*SettingsField_Boolean)(nil),
 		(*SettingsField_Text)(nil),
 		(*SettingsField_Number)(nil),
 		(*SettingsField_Choice)(nil),
 	}
-	file_plugin_proto_msgTypes[246].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[250].OneofWrappers = []any{
 		(*SettingsRequest_DescribeRead)(nil),
 		(*SettingsRequest_Submit)(nil),
 		(*SettingsRequest_Cancel)(nil),
 	}
-	file_plugin_proto_msgTypes[250].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[254].OneofWrappers = []any{
 		(*SettingsReply_Form)(nil),
 		(*SettingsReply_Applied)(nil),
 		(*SettingsReply_FieldErrors)(nil),
 		(*SettingsReply_RevisionConflict)(nil),
 		(*SettingsReply_Failed)(nil),
 	}
-	file_plugin_proto_msgTypes[251].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[255].OneofWrappers = []any{
 		(*ProviderEvent_Ready)(nil),
 		(*ProviderEvent_AccountStatus)(nil),
 		(*ProviderEvent_CatalogChunk)(nil),
@@ -22379,7 +22756,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      24,
-			NumMessages:   267,
+			NumMessages:   271,
 			NumExtensions: 0,
 			NumServices:   9,
 		},

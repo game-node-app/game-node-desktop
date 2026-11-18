@@ -23,7 +23,13 @@ complete or callable.
 
 The runtime-session Exchange family now has typed `RuntimeSessionReport` and
 `RuntimeSessionResult` messages with `game.sessions.report` authorization and correlated outcomes.
-Its session arbitration and accounting behavior remain tracked under task 14.3.
+One plugin may implement adapters for several runtimes; Core consumes only the common lifecycle
+reports and does not contain emulator-specific detection. A report is accepted only for the
+authenticated extension's selected game and installation and a host-approved content/runtime
+binding. `GamePresence` is descriptive metadata: it cannot start, extend or confirm a measured
+playtime session. Runtime-session observations are sensitive and may be projected through Data
+only under the relevant sharing consent; process handles, credentials and launch tokens are never
+part of that projection.
 
 Rust SDK patch preservation is covered by `crates/plugin-sdk/tests/reference_host.rs`; direct Go
 protobuf preservation and exact 64-bit field handling are covered by the runnable interoperability

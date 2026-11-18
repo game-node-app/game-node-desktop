@@ -24,6 +24,7 @@ pub mod fingerprints;
 pub mod grants;
 pub mod intents;
 pub mod jobs;
+pub mod launch_plan;
 pub mod library;
 pub mod login;
 pub mod managed_packages;
@@ -39,6 +40,7 @@ pub mod resources;
 pub mod runtime;
 pub mod saves;
 pub mod services;
+pub mod shared_data;
 pub mod storage;
 mod transport;
 pub mod updates;
@@ -690,6 +692,7 @@ impl plugin_host_server::PluginHost for PluginApi {
 
 pub struct PluginApiServer {
     path: PathBuf,
+    resource_api: Arc<resources::ResourceApi>,
     shutdown: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -752,23 +755,25 @@ impl PluginApiServer {
             .buffer_unordered(MAX_CONNECTIONS)
             .filter_map(|item| async move { item });
 
+        let resource_api = Arc::new(resources::ResourceApi::new(
+            api.providers.clone(),
+            api.library.clone(),
+            api.storage.clone(),
+            api.files.clone(),
+            api.network.clone(),
+            api.notifications.clone(),
+            api.jobs.clone(),
+            api.intents.clone(),
+            api.saves.clone(),
+            api.fingerprints.clone(),
+        ));
+        let service_resource_api = resource_api.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = runtime.spawn(async move {
             let provider = provider_host_server::ProviderHostServer::new(api.providers.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
-            let resource_api = resources::ResourceApi::new(
-                api.providers.clone(),
-                api.library.clone(),
-                api.storage.clone(),
-                api.files.clone(),
-                api.network.clone(),
-                api.notifications.clone(),
-                api.jobs.clone(),
-                api.intents.clone(),
-                api.saves.clone(),
-                api.fingerprints.clone(),
-            );
+            let resource_api = (*service_resource_api).clone();
             let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
@@ -800,6 +805,7 @@ impl PluginApiServer {
         });
         Ok(Self {
             path,
+            resource_api,
             shutdown: Some(shutdown_tx),
             task,
         })
@@ -848,23 +854,25 @@ impl PluginApiServer {
                 }
             },
         );
+        let resource_api = Arc::new(resources::ResourceApi::new(
+            api.providers.clone(),
+            api.library.clone(),
+            api.storage.clone(),
+            api.files.clone(),
+            api.network.clone(),
+            api.notifications.clone(),
+            api.jobs.clone(),
+            api.intents.clone(),
+            api.saves.clone(),
+            api.fingerprints.clone(),
+        ));
+        let service_resource_api = resource_api.clone();
         let (shutdown, stopped) = oneshot::channel();
         let task = runtime.spawn(async move {
             let provider = provider_host_server::ProviderHostServer::new(api.providers.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
-            let resource_api = resources::ResourceApi::new(
-                api.providers.clone(),
-                api.library.clone(),
-                api.storage.clone(),
-                api.files.clone(),
-                api.network.clone(),
-                api.notifications.clone(),
-                api.jobs.clone(),
-                api.intents.clone(),
-                api.saves.clone(),
-                api.fingerprints.clone(),
-            );
+            let resource_api = (*service_resource_api).clone();
             let _root_monitoring = resource_api.monitor_library_roots();
             let saves = saves_server::SavesServer::new(resource_api.clone())
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
@@ -896,6 +904,7 @@ impl PluginApiServer {
         });
         Ok(Self {
             path,
+            resource_api,
             shutdown: Some(shutdown),
             task,
         })
@@ -905,6 +914,10 @@ impl PluginApiServer {
 impl PluginApiServer {
     pub fn endpoint(&self) -> &std::path::Path {
         &self.path
+    }
+
+    pub fn resource_api(&self) -> Arc<resources::ResourceApi> {
+        self.resource_api.clone()
     }
 
     pub async fn shutdown(mut self) {

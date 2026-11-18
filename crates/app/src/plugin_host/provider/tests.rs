@@ -33,6 +33,37 @@ async fn configuration_modes_separate_declarations_from_active_authorization() {
     assert!(revoked.external_authorized);
 }
 
+#[derive(Default)]
+struct RuntimeSessionFixture {
+    reports: AtomicUsize,
+    disconnects: AtomicUsize,
+}
+
+#[tonic::async_trait]
+impl super::super::runtime::RuntimeSessionHandler for RuntimeSessionFixture {
+    async fn report(
+        &self,
+        _plugin_id: String,
+        _owner_key: String,
+        report: RuntimeSessionReport,
+    ) -> RuntimeSessionResult {
+        self.reports.fetch_add(1, Ordering::Relaxed);
+        RuntimeSessionResult {
+            correlation_id: report.correlation_id,
+            outcome: RuntimeSessionOutcome::Accepted as i32,
+            host_session_id: "host-session-fixture".into(),
+            accepted_sequence: report.sequence,
+            accepted_at: report.observed_at,
+            ..Default::default()
+        }
+    }
+
+    async fn disconnected(&self, _plugin_id: String) {
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
+    }
+}
+}
+
 #[tonic::async_trait]
 impl HostServices for Services {
     async fn context(&self, lease: Lease) -> Result<ProviderContext, Status> {
@@ -148,6 +179,7 @@ impl Harness {
             origin,
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog,
+            playtime: Default::default(),
             services: services.clone(),
         })
         .unwrap();
@@ -1135,11 +1167,21 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         origin: RegistrationOrigin::ThirdParty {
             publisher_fingerprint: "ef".repeat(32),
         },
-        capabilities: vec![cap::CONTEXT.into(), cap::GAME_CUSTOM_LAUNCH.into()],
+        capabilities: vec![
+            cap::GAME_CUSTOM_LAUNCH.into(),
+            cap::GAME_SESSIONS_REPORT.into(),
+        ],
         shared_catalog: false,
+        playtime: super::super::package::PlaytimeCapabilities {
+            identifies_gameplay: true,
+            identifies_pauses: true,
+            without_pause_detection: Default::default(),
+        },
         services: Arc::new(Services::default()),
     })
     .unwrap();
+    let runtime_sessions = Arc::new(RuntimeSessionFixture::default());
+    api.set_runtime_session_handler(runtime_sessions.clone());
 
     let target = TargetGameContext {
         game_id: "42".into(),
@@ -1185,7 +1227,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         plugin_id,
         "1.0.0",
         target,
-        &[cap::GAME_CUSTOM_LAUNCH],
+        &[cap::GAME_CUSTOM_LAUNCH, cap::GAME_SESSIONS_REPORT],
     )
     .await
     .unwrap();
@@ -1194,6 +1236,72 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     let resource_context = session.host.resource_context().unwrap();
     assert!(resource_context.provider_id.is_empty());
     assert_eq!(resource_context.target_game.as_ref().unwrap().game_id, "42");
+
+    let report = RuntimeSessionReport {
+        correlation_id: "runtime-report-1".into(),
+        game_id: "42".into(),
+        installation_id: "steam:123".into(),
+        content_id: "rom:zelda".into(),
+        runtime_id: "runtime:snes".into(),
+        runtime_instance_id: "instance:one".into(),
+        reporter_session_id: resource_context.session_id.clone(),
+        sequence: 1,
+        observed_at: 100,
+        transition: RuntimeSessionTransition::Started as i32,
+        source_observation_id: "observation:one".into(),
+    };
+    session
+        .host
+        .report_runtime_session(report.clone())
+        .await
+        .unwrap();
+    let accepted = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        accepted.operation,
+        ProviderOperation::RuntimeSessionResult as i32
+    );
+    assert_eq!(accepted.target_operation_id, "runtime-report-1");
+    let result = accepted.runtime_session_result.unwrap();
+    assert_eq!(result.correlation_id, "runtime-report-1");
+    assert_eq!(result.outcome, RuntimeSessionOutcome::Accepted as i32);
+    assert_eq!(result.accepted_sequence, 1);
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
+
+    api.replace_session_grants(&resource_context.session_id, BTreeSet::new())
+        .await
+        .unwrap();
+    let revoked_report = RuntimeSessionReport {
+        correlation_id: "runtime-report-2".into(),
+        sequence: 2,
+        source_observation_id: "observation:two".into(),
+        ..report
+    };
+    session
+        .host
+        .report_runtime_session(revoked_report)
+        .await
+        .unwrap();
+    let denied = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        denied.operation,
+        ProviderOperation::RuntimeSessionResult as i32
+    );
+    assert_eq!(denied.target_operation_id, "runtime-report-2");
+    let result = denied.runtime_session_result.unwrap();
+    assert_eq!(result.correlation_id, "runtime-report-2");
+    assert_eq!(
+        result.outcome,
+        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    );
+    assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
 
     drop(session);
     api.disconnect(&internal_id).await;

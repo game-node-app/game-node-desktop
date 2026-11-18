@@ -6,10 +6,13 @@ use gamenode_core::playtime::{
 };
 use gamenode_core::ports::ProcessError;
 use gamenode_core::sync::SyncPreferences;
-use gamenode_core::tracker::{Effect as TrackEffect, Entry, Input as TrackInput, Tracker};
+use gamenode_core::tracker::{
+    Effect as TrackEffect, Entry, Input as TrackInput, Tracker, runtime_sessions::RuntimeSessions,
+};
 
 pub(super) struct Playtime {
     pub tracker: Tracker,
+    pub runtime_sessions: RuntimeSessions,
     pub preferences: SyncPreferences,
     pub source: PlaytimeSource,
     pub available: bool,
@@ -37,6 +40,7 @@ impl Playtime {
     pub fn new(platform: Platform) -> Self {
         Self {
             tracker: Tracker::new(platform == Platform::Windows),
+            runtime_sessions: RuntimeSessions::default(),
             preferences: SyncPreferences::default(),
             source: PlaytimeSource::Store,
             available: true,
@@ -117,6 +121,9 @@ impl Engine {
             .collect();
         let changed = account != state.playtime.owner;
         if changed {
+            let runtime_effects = state.playtime.runtime_sessions.reset();
+            let runtime_effects = runtime_track_effects(runtime_effects);
+            self.track_effects(state, runtime_effects);
             self.cancel_submissions(state);
             state.playtime.display_totals.clear();
             state.playtime.display_sessions.clear();
@@ -151,7 +158,7 @@ impl Engine {
             },
             gamenode_platform::random::session_id,
         );
-        let tracker_changed = self.track_effects(state, effects);
+        let tracker_changed = self.track_process_effects(state, effects);
         state.playtime.owner = account;
         if changed {
             self.refresh_playtime_display(state);
@@ -165,7 +172,7 @@ impl Engine {
     }
     /// Runs the tracker effects and returns whether there were any: any effect is a real change
     /// worth publishing, even when it only writes history in the background.
-    fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
+    pub(super) fn track_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
         let changed = !effects.is_empty();
         let changed_history = effects.iter().any(|e| {
             matches!(
@@ -249,6 +256,21 @@ impl Engine {
         }
         changed
     }
+    fn track_process_effects(&self, state: &mut State, effects: Vec<TrackEffect>) -> bool {
+        let keys: std::collections::BTreeSet<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                TrackEffect::OpenSession(session) => Some(session.entry_key.clone()),
+                _ => None,
+            })
+            .collect();
+        let runtime_effects = keys
+            .into_iter()
+            .flat_map(|key| state.playtime.runtime_sessions.fence_entry(&key))
+            .collect();
+        let runtime_changed = self.track_effects(state, runtime_track_effects(runtime_effects));
+        self.track_effects(state, effects) || runtime_changed
+    }
     fn tracker_input(&self, input: TrackInput) {
         let mut state = self.lock();
         if state.playtime.stopped {
@@ -258,7 +280,7 @@ impl Engine {
             .playtime
             .tracker
             .update(input, gamenode_platform::random::session_id);
-        self.track_effects(&mut state, effects);
+        self.track_process_effects(&mut state, effects);
         let running = state.playtime.tracker.running_started_at();
         state.library.set_running(running);
         self.read_counters(&mut state);
@@ -278,13 +300,17 @@ impl Engine {
         // rebuilding the whole library just to refresh the tray tooltip is wasteful, and the UI
         // already holds the previous snapshot.
         let mut changed = self.sync_tracker(&mut state);
+        let expired_runtime = state.playtime.runtime_sessions.expire(now);
+        if !expired_runtime.is_empty() {
+            changed |= self.track_effects(&mut state, runtime_track_effects(expired_runtime));
+        }
         if now >= state.playtime.next_checkpoint {
             state.playtime.next_checkpoint = now + 60;
             let effects = state.playtime.tracker.update(
                 TrackInput::Tick { now },
                 gamenode_platform::random::session_id,
             );
-            changed |= self.track_effects(&mut state, effects);
+            changed |= self.track_process_effects(&mut state, effects);
         }
         if now >= state.playtime.next_scan {
             state.playtime.next_scan = now + 1800;
@@ -410,6 +436,8 @@ impl Engine {
             gamenode_platform::random::session_id,
         );
         self.track_effects(&mut state, effects);
+        let runtime_effects = state.playtime.runtime_sessions.reset();
+        self.track_effects(&mut state, runtime_track_effects(runtime_effects));
         state.playtime.tracker.set_floor(now);
         state.playtime.source = source;
         self.cancel_submissions(&mut state);
@@ -438,6 +466,8 @@ impl Engine {
             gamenode_platform::random::session_id,
         );
         self.track_effects(state, effects);
+        let runtime_effects = state.playtime.runtime_sessions.reset();
+        self.track_effects(state, runtime_track_effects(runtime_effects));
         self.cancel_submissions(state);
         state.library.set_running(Default::default());
     }
@@ -757,4 +787,29 @@ impl Engine {
             }
         });
     }
+}
+
+fn runtime_track_effects(
+    effects: Vec<gamenode_core::tracker::runtime_sessions::Effect>,
+) -> Vec<TrackEffect> {
+    effects
+        .into_iter()
+        .map(|effect| match effect {
+            gamenode_core::tracker::runtime_sessions::Effect::Open(session) => {
+                TrackEffect::OpenSession(session)
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Checkpoint { id, at } => {
+                TrackEffect::Checkpoint { id, at }
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Close {
+                id,
+                ended_at,
+                game_id,
+            } => TrackEffect::CloseSession {
+                id,
+                ended_at,
+                game_id,
+            },
+        })
+        .collect()
 }

@@ -20,6 +20,7 @@ use tonic::{Request, Response, Status};
 mod artwork;
 mod backups;
 mod custom_launch;
+mod data;
 mod files;
 mod games;
 mod jobs;
@@ -30,6 +31,7 @@ mod mutations;
 mod network;
 mod notifications;
 mod ports;
+mod runtimes;
 mod saves;
 mod storage;
 mod tools;
@@ -159,6 +161,43 @@ pub const SERVED: &[Served] = &[
     Served::new("LibraryGet", cap::LIBRARY_READ, false, READ_SCOPE),
     Served::new("LibraryWatch", cap::LIBRARY_READ, false, READ_SCOPE),
     Served::new(
+        "RuntimesList",
+        cap::GAME_RUNTIME_READ,
+        true,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesGet",
+        cap::GAME_RUNTIME_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesWatch",
+        cap::GAME_RUNTIME_READ,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesRegister",
+        cap::GAME_RUNTIME_CREATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesUpdate",
+        cap::GAME_RUNTIME_UPDATE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new(
+        "RuntimesRemove",
+        cap::GAME_RUNTIME_DELETE,
+        false,
+        PRIVATE_NAMESPACE,
+    ),
+    Served::new("GamesRegisterContent", cap::DISCOVERY, false, OWN_OR_TARGET),
+    Served::new(
         "MetadataUpdate",
         cap::LIBRARY_METADATA_WRITE,
         false,
@@ -178,6 +217,9 @@ pub const SERVED: &[Served] = &[
         false,
         PRIVATE_NAMESPACE,
     ),
+    Served::new("DataPublish", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
+    Served::new("DataGet", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
+    Served::new("DataList", cap::DATA_PUBLISH, true, PRIVATE_NAMESPACE),
     Served::new(
         "FilesRequestAccess",
         cap::FILES_READ,
@@ -300,6 +342,8 @@ pub struct ResourceApi {
     /// The content fingerprints of approved places.
     snapshots: Arc<fingerprints::Snapshots>,
     libraries: Arc<libraries::Libraries>,
+    /// Session-scoped plugin-published data, separate from private Storage.
+    shared_data: Arc<super::shared_data::SharedDataStore>,
 }
 
 impl ResourceApi {
@@ -319,6 +363,7 @@ impl ResourceApi {
         Self {
             providers,
             libraries: Arc::default(),
+            shared_data: Arc::default(),
             jobs,
             intents,
             saves,
@@ -1013,14 +1058,49 @@ impl resource_host_server::ResourceHost for ResourceApi {
     ) -> Result<Response<JobReply>, Status> {
         self.install_port(request).await
     }
+    async fn runtimes_list(
+        &self,
+        request: Request<DomainListRequest>,
+    ) -> Result<Response<RuntimesListReply>, Status> {
+        self.list_runtimes(request).await
+    }
+    async fn runtimes_get(
+        &self,
+        request: Request<DomainGetRequest>,
+    ) -> Result<Response<RuntimeRecordReply>, Status> {
+        self.get_runtime(request).await
+    }
+    async fn runtimes_watch(
+        &self,
+        request: Request<DomainWatchRequest>,
+    ) -> Result<Response<Self::RuntimesWatchStream>, Status> {
+        self.watch_runtimes(request).await
+    }
+    async fn runtimes_register(
+        &self,
+        request: Request<RuntimeRegisterRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        self.register_runtime(request).await
+    }
+    async fn runtimes_update(
+        &self,
+        request: Request<RuntimeUpdateRequest>,
+    ) -> Result<Response<RuntimeMutationReply>, Status> {
+        self.update_runtime(request).await
+    }
+    async fn runtimes_remove(
+        &self,
+        request: Request<DomainRemoveRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.remove_runtime(request).await
+    }
+    async fn games_register_content(
+        &self,
+        request: Request<ContentRegistrationRequest>,
+    ) -> Result<Response<MutationReply>, Status> {
+        self.register_content(request).await
+    }
     not_served! {
-        runtimes_list(DomainListRequest) -> RuntimesListReply;
-        runtimes_get(DomainGetRequest) -> RuntimeRecordReply;
-        runtimes_watch(DomainWatchRequest) -> Self::RuntimesWatchStream;
-        runtimes_register(RuntimeRegisterRequest) -> RuntimeMutationReply;
-        runtimes_update(RuntimeUpdateRequest) -> RuntimeMutationReply;
-        runtimes_remove(DomainRemoveRequest) -> MutationReply;
-        games_register_content(ContentRegistrationRequest) -> MutationReply;
         storage_diagnostics_publish_benchmark(BenchmarkReportRequest) -> ReportMutationReply;
         storage_diagnostics_publish_smart(SmartReportRequest) -> ReportMutationReply;
         computer_publish_hardware(HardwareReportRequest) -> ReportMutationReply;
@@ -1028,15 +1108,33 @@ impl resource_host_server::ResourceHost for ResourceApi {
         game_presence_clear(PresenceClearRequest) -> MutationReply;
         game_performance_publish_samples(PerformanceSamplesRequest) -> ReportMutationReply;
         game_performance_end_series(PerformanceEndSeriesRequest) -> MutationReply;
-        data_publish(DataPublishRequest) -> DataMutationReply;
-        data_get(DataGetRequest) -> DataGetReply;
-        data_list(DataListRequest) -> DataListReply;
         data_watch(DataWatchRequest) -> Self::DataWatchStream;
         persistence_get_usage(PersistenceUsageRequest) -> PersistenceUsageReply;
         persistence_list_entries(PersistenceListRequest) -> PersistenceListReply;
         persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
         persistence_clear(PersistenceClearRequest) -> MutationReply;
         persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
+    }
+
+    async fn data_publish(
+        &self,
+        request: Request<DataPublishRequest>,
+    ) -> Result<Response<DataMutationReply>, Status> {
+        self.publish_data(request).await
+    }
+
+    async fn data_get(
+        &self,
+        request: Request<DataGetRequest>,
+    ) -> Result<Response<DataGetReply>, Status> {
+        self.get_data(request).await
+    }
+
+    async fn data_list(
+        &self,
+        request: Request<DataListRequest>,
+    ) -> Result<Response<DataListReply>, Status> {
+        self.list_data(request).await
     }
 }
 

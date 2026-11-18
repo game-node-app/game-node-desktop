@@ -610,15 +610,101 @@ pub struct BackupHostContext {
 #[derive(Clone, Debug)]
 pub enum CustomLaunchDispatch {
     Executable(gamenode_core::drm_free::CustomLaunchCommand),
+    Runtime {
+        command: gamenode_core::drm_free::CustomLaunchCommand,
+        runtime_id: String,
+        runtime_version: String,
+        runtime_revision: u64,
+        content_id: String,
+        binding_revision: Option<u64>,
+    },
     Uri {
         uri: url::Url,
         arguments: Vec<String>,
+        working_directory: String,
         environment: gamenode_core::drm_free::LaunchEnvironmentDelta,
     },
 }
 
+/// Runtime resources and content files already resolved from current, approved file references.
+/// The engine may compose argument vectors from this data, but receives no plugin file token or
+/// filesystem authority beyond these validated launch inputs.
+#[derive(Clone, Debug)]
+pub struct ResolvedRuntimeLaunch {
+    pub runtime_id: String,
+    pub version: String,
+    pub platform: String,
+    pub executable: String,
+    pub content_id: String,
+    pub content_path: Option<String>,
+    pub runtime_revision: u64,
+    pub binding_revision: Option<u64>,
+    pub arguments: Vec<gamenode_core::library::RuntimeArgumentTemplate>,
+    pub resources: Vec<gamenode_core::library::LaunchPlanResource>,
+}
+
 #[async_trait::async_trait]
 pub trait LibraryHost: Send + Sync {
+    async fn runtime_resources(
+        &self,
+        _owner_key: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeResource>, Status> {
+        Err(Status::unavailable("runtime resources are unavailable"))
+    }
+    async fn runtime_resource(
+        &self,
+        _owner_key: String,
+        _runtime_id: String,
+    ) -> Result<Option<gamenode_core::library::RuntimeResource>, Status> {
+        Err(Status::unavailable("runtime resources are unavailable"))
+    }
+    async fn save_runtime_resource(
+        &self,
+        _owner_key: String,
+        _runtime: gamenode_core::library::RuntimeResource,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        Err(Status::unavailable("runtime resources are unavailable"))
+    }
+    async fn remove_runtime_resource(
+        &self,
+        _owner_key: String,
+        _runtime_id: String,
+        _expected_revision: u64,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        Err(Status::unavailable("runtime resources are unavailable"))
+    }
+    async fn runtime_content_bindings(
+        &self,
+        _owner_key: String,
+        _game_id: u64,
+        _installation_id: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeContentBinding>, Status> {
+        Err(Status::unavailable(
+            "runtime content bindings are unavailable",
+        ))
+    }
+    async fn save_runtime_content_binding(
+        &self,
+        _owner_key: String,
+        _binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        Err(Status::unavailable(
+            "runtime content bindings are unavailable",
+        ))
+    }
+    async fn remove_runtime_content_binding(
+        &self,
+        _owner_key: String,
+        _binding: gamenode_core::library::RuntimeContentBinding,
+    ) -> Result<gamenode_core::library::RuntimeMutation, Status> {
+        Err(Status::unavailable(
+            "runtime content bindings are unavailable",
+        ))
+    }
+    async fn runtime_catalog_revision(&self, _owner_key: String) -> Result<u64, Status> {
+        Err(Status::unavailable("runtime catalog is unavailable"))
+    }
+
     /// Durable recipes stay under the authenticated plugin/profile namespace.
     async fn custom_launch_recipe(
         &self,
@@ -642,11 +728,32 @@ pub trait LibraryHost: Send + Sync {
     ) -> Result<gamenode_core::library::CustomLaunchMutation, Status> {
         Err(Status::unavailable("custom launch recipes are unavailable"))
     }
+    async fn launch_recipe_selection(
+        &self,
+        _entry_key: String,
+    ) -> Result<Option<gamenode_core::library::LaunchRecipeSelection>, Status> {
+        Err(Status::unavailable(
+            "launch recipe selections are unavailable",
+        ))
+    }
+    async fn approve_launch_recipe_plan(
+        &self,
+        _entry_key: String,
+        _recipe_id: String,
+        _recipe_revision: u64,
+        _target_revision: u64,
+        _fingerprint: String,
+    ) -> Result<gamenode_core::library::LaunchRecipeSelectionWrite, Status> {
+        Err(Status::unavailable(
+            "launch recipe selections are unavailable",
+        ))
+    }
     async fn prepare_custom_launch(
         &self,
         _recipe: gamenode_core::library::CustomLaunchRecipe,
         _executable_path: Option<String>,
         _working_directory_path: Option<String>,
+        _runtime: Option<ResolvedRuntimeLaunch>,
     ) -> Result<CustomLaunchDispatch, Status> {
         Err(Status::unimplemented(
             "custom launch is unavailable on this platform",
@@ -786,6 +893,14 @@ pub trait LibraryHost: Send + Sync {
     async fn launch_fingerprint(&self, entry_key: String) -> Result<u64, Status> {
         let _ = entry_key;
         Ok(0)
+    }
+
+    /// The revision of the detected target as shown by the user's launch selector.
+    async fn launch_target_revision(&self, entry_key: String) -> Result<u64, Status> {
+        let _ = entry_key;
+        Err(Status::failed_precondition(
+            "detected launch target changed",
+        ))
     }
 
     /// Stores the display-name override of `entry_key` if `expected_revision` is current,

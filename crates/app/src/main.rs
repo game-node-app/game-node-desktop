@@ -181,6 +181,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         ..Default::default()
     };
+    plugin_api.providers.set_state_layout(
+        gamenode_app::plugin_host::profile::PluginStateLayout::new(paths.plugin_data_dir()),
+    );
     #[cfg(target_os = "linux")]
     let plugin_api_server = match gamenode_app::plugin_host::PluginApiServer::start(
         runtime.handle(),
@@ -424,6 +427,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             root_approvals.clone(),
         ),
     );
+    if let Some(server) = plugin_api_server.as_ref() {
+        engine.set_selected_launch_api(server.resource_api());
+    }
 
     let mut builder = tauri::Builder::default();
     builder = builder.plugin(tauri_plugin_dialog::init());
@@ -492,6 +498,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::activate_entry,
         commands::open_entry,
         commands::review_detected_target,
+        commands::launch_recipe_choices,
+        commands::select_launch_recipe,
+        commands::use_detected_default,
         commands::repair_detected_target,
         commands::launch_selected,
         commands::start_extension_action,
@@ -556,6 +565,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_settings_describe,
         commands::plugin_settings_submit,
         commands::plugin_settings_cancel,
+        commands::plugin_playtime_inventory,
+        commands::plugin_playtime_set_accounting,
         commands::plugin_update_preferences,
         commands::plugin_update_available,
         commands::plugin_update_set_periodic_checks,

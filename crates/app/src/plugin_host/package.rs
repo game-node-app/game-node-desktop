@@ -24,6 +24,10 @@ pub struct Manifest {
     pub api: ApiRange,
     #[serde(default)]
     pub permissions: Vec<PermissionRequest>,
+    /// Signed disclosure of this package's gameplay and pause identification capability.
+    /// Missing declarations are treated as disabled for backward compatibility.
+    #[serde(default)]
+    pub playtime: PlaytimeCapabilities,
     /// OS-level capabilities requested by the package. These are disclosures only; package
     /// updates never grant them automatically.
     #[serde(default)]
@@ -42,6 +46,25 @@ pub struct Manifest {
     pub resources: BTreeMap<String, String>,
     #[serde(default)]
     pub schemas: Vec<PackagedSchema>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaytimeAccountingMode {
+    #[default]
+    Disabled,
+    ApplicationOpen,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaytimeCapabilities {
+    #[serde(default)]
+    pub identifies_gameplay: bool,
+    #[serde(default)]
+    pub identifies_pauses: bool,
+    #[serde(default)]
+    pub without_pause_detection: PlaytimeAccountingMode,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -278,6 +301,14 @@ impl Manifest {
         if self.kind == PluginKind::Extension && self.resources.contains_key("provider") {
             return invalid("extension packages must not declare a provider resource");
         }
+        if self.playtime.identifies_pauses && !self.playtime.identifies_gameplay {
+            return invalid("pause detection requires gameplay identification");
+        }
+        if !self.playtime.identifies_gameplay
+            && self.playtime.without_pause_detection != PlaytimeAccountingMode::Disabled
+        {
+            return invalid("application-open accounting requires gameplay identification");
+        }
         if self.name.trim().is_empty() || self.name.len() > 128 {
             return invalid("name must contain 1 to 128 characters");
         }
@@ -369,6 +400,12 @@ impl Manifest {
             if !permissions.insert(&permission.id) {
                 return invalid("duplicate permission request");
             }
+        }
+        if self.permissions.iter().any(|permission| {
+            permission.id == gamenode_plugin_protocol::capability::GAME_SESSIONS_REPORT
+        }) && !self.playtime.identifies_gameplay
+        {
+            return invalid("game.sessions.report requires declared gameplay identification");
         }
         if self.publisher.key_id.trim().is_empty()
             || self.publisher.key_id.len() > 128
@@ -1141,6 +1178,38 @@ mod tests {
             "\"os\":\"windows\",\"arch\":\"x86_64\",\"abi\":\"msvc\",\"entrypoint\":\"bin/windows-x64/plugin.exe\",\"requires\":{\"windows\":{\"product\":\"client\",\"min_version\":\"10.0\",\"max_version\":\"10.0.99999\",\"min_build\":22000,\"max_build\":30000}},\"tested_on\":[{\"product\":\"windows-11\",\"release\":\"23H2\"}]",
         );
         assert!(Manifest::parse_json(windows.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn validates_signed_playtime_disclosure_and_runtime_reporting_compatibility() {
+        let valid = VALID
+            .replace(
+                "\"permissions\":[{\"id\":\"library.read\",\"required\":false,\"scope\":\"own-provider\",\"reason\":\"Read imported games\"}]",
+                "\"permissions\":[{\"id\":\"game.sessions.report\",\"required\":false,\"scope\":\"selected-game-runtime\",\"reason\":\"Identify game content\"}]",
+            )
+            .replace(
+                "\"permissions\":",
+                "\"playtime\":{\"identifies_gameplay\":true,\"identifies_pauses\":false,\"without_pause_detection\":\"application_open\"},\"permissions\":",
+            );
+        assert!(Manifest::parse_json(valid.as_bytes()).is_ok());
+
+        let report_without_gameplay = valid.replace(
+            "\"identifies_gameplay\":true",
+            "\"identifies_gameplay\":false",
+        );
+        assert!(Manifest::parse_json(report_without_gameplay.as_bytes()).is_err());
+
+        let pauses_without_gameplay = VALID.replace(
+            "\"permissions\":",
+            "\"playtime\":{\"identifies_gameplay\":false,\"identifies_pauses\":true,\"without_pause_detection\":\"disabled\"},\"permissions\":",
+        );
+        assert!(Manifest::parse_json(pauses_without_gameplay.as_bytes()).is_err());
+
+        let application_open_without_gameplay = VALID.replace(
+            "\"permissions\":",
+            "\"playtime\":{\"identifies_gameplay\":false,\"identifies_pauses\":false,\"without_pause_detection\":\"application_open\"},\"permissions\":",
+        );
+        assert!(Manifest::parse_json(application_open_without_gameplay.as_bytes()).is_err());
     }
 
     #[test]

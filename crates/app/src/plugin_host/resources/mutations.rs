@@ -127,7 +127,7 @@ pub(super) fn mutation_owner(caller: &ResourceCaller) -> String {
     caller
         .namespace
         .as_ref()
-        .map(|resolver| format!("namespace:{:?}", resolver.storage_owner().key()))
+        .map(|resolver| resolver.library_recipe_owner_key())
         .unwrap_or_else(|| format!("provider:{}", caller.provider_id))
 }
 

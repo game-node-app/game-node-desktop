@@ -359,6 +359,9 @@ fn remembered(id: &str, installation: &str, operation: &str) -> IntentApproval {
         installation_id: installation.into(),
         operation: operation.into(),
         target_revision: 7,
+        recipe_id: String::new(),
+        recipe_revision: 0,
+        plan_fingerprint: "v1:approval-plan".into(),
         game_name: "Game".into(),
         approved_at: 100,
     }
@@ -413,7 +416,76 @@ fn remembered_confirmations_are_kept_per_installation_and_operation_and_can_be_r
 }
 
 #[test]
-fn only_launch_and_install_can_be_remembered() {
+fn custom_launch_approval_persists_recipe_identity_and_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp.path().join("ns"));
+    let mut approval = remembered("custom", "inst", "custom_launch");
+    approval.recipe_id = "recipe-one".into();
+    approval.recipe_revision = 4;
+    store.save_intent_approval(&approval).unwrap();
+    assert_eq!(
+        store.intent_approval("inst", "custom_launch").unwrap(),
+        Some(approval)
+    );
+}
+
+#[test]
+fn schema_eight_approvals_upgrade_without_losing_their_target_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("ns");
+    let mut current = store(&dir);
+    current
+        .save_intent_approval(&remembered("old", "inst", "launch"))
+        .unwrap();
+    drop(current);
+
+    let conn = Connection::open(dir.join(STORE_FILE)).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE intent_approvals RENAME TO intent_approvals_v9;
+         CREATE TABLE intent_approvals (
+             id TEXT NOT NULL UNIQUE,
+             game_id TEXT NOT NULL,
+             installation_id TEXT NOT NULL,
+             operation TEXT NOT NULL CHECK (operation IN ('launch', 'install')),
+             target_revision INTEGER NOT NULL CHECK (target_revision >= 0),
+             game_name TEXT NOT NULL,
+             approved_at INTEGER NOT NULL,
+             PRIMARY KEY (installation_id, operation)
+         ) STRICT;
+         INSERT INTO intent_approvals
+             (id, game_id, installation_id, operation, target_revision, game_name, approved_at)
+         SELECT id, game_id, installation_id, operation, target_revision, game_name, approved_at
+         FROM intent_approvals_v9;
+         DROP TABLE intent_approvals_v9;
+         PRAGMA user_version = 8;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut upgraded = store(&dir);
+    let old = upgraded.intent_approval("inst", "launch").unwrap().unwrap();
+    assert_eq!(old.target_revision, 7);
+    assert_eq!(old.recipe_id, "");
+    assert_eq!(old.recipe_revision, 0);
+    assert!(
+        old.plan_fingerprint.is_empty(),
+        "legacy approvals must reconfirm"
+    );
+    let mut custom = remembered("new", "inst", "custom_launch");
+    custom.recipe_id = "custom-recipe".into();
+    custom.recipe_revision = 3;
+    upgraded.save_intent_approval(&custom).unwrap();
+    assert_eq!(
+        upgraded
+            .intent_approval("inst", "custom_launch")
+            .unwrap()
+            .unwrap(),
+        custom
+    );
+}
+
+#[test]
+fn only_launch_custom_launch_and_install_can_be_remembered() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp.path().join("ns"));
     assert!(

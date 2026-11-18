@@ -22,6 +22,7 @@ import { MatchSection } from './detail/MatchSection';
 import { AchievementsSection } from './detail/AchievementsSection';
 import { MultiSelectionPane } from './detail/MultiSelectionPane';
 import { OnThisPcSection } from './detail/OnThisPcSection';
+import { LaunchRecipeSelector } from './detail/LaunchRecipeSelector';
 import {
   entryRegistrationId,
   isDrmFreeKey,
@@ -130,6 +131,8 @@ export const DetailPane: React.FC = () => {
           return t('Library::The store application is not installed or cannot be opened.');
         case 'unsupported':
           return t('Library::This store does not support that action.');
+        case 'recipeNeedsAttention':
+          return t('Library::The selected launch recipe needs attention. Review it, choose another recipe, or use the detected default.');
         case 'failed':
         default:
           return t('Library::The link could not be opened.');
@@ -327,6 +330,8 @@ export const DetailPane: React.FC = () => {
                   )}
                 </section>
               )}
+
+              {detail && gameId !== null && <LaunchRecipeSelector entryKey={detail.row.key} />}
 
               <DetailPills
                 detail={detail}

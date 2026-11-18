@@ -14,6 +14,7 @@ fn request() -> ConfirmationRequest {
         game_name: "Game <b>one</b>".into(),
         operation: Operation::Install,
         details: vec![],
+        launch_plan: None,
     }
 }
 
@@ -143,6 +144,9 @@ async fn the_settings_list_reads_and_revokes_a_plugins_remembered_confirmations(
                     installation_id: "inst".into(),
                     operation: "launch".into(),
                     target_revision: 0,
+                    recipe_id: String::new(),
+                    recipe_revision: 0,
+                    plan_fingerprint: String::new(),
                     game_name: "Game".into(),
                     approved_at: 77,
                 },

@@ -13,7 +13,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use super::namespace::ExternalNamespaceResolver;
+use super::package::PlaytimeCapabilities;
 use super::profile::PluginProfiles;
+use super::runtime::RuntimeSessionHandler;
 
 const MAX_OPERATIONS: usize = 32;
 const COMMAND_QUEUE: usize = 32;
@@ -138,12 +140,28 @@ pub struct Registration {
     /// Provider id for provider registrations or a host-generated internal key for extensions.
     pub provider_id: String,
     pub plugin_id: String,
+    /// Display name from the verified descriptor/manifest, retained for provenance.
+    pub declared_developer: String,
+    /// Digest of the exact verified package contents. Empty for bundled official providers.
+    pub package_digest: Vec<u8>,
     pub kind: RegistrationKind,
     pub origin: RegistrationOrigin,
     pub capabilities: Vec<String>,
     /// Whether this provider's trusted manifest declares shared catalog access.
     pub shared_catalog: bool,
+    /// Policy copied from the signed third-party package manifest. Official providers use the
+    /// disabled default and cannot report plugin-owned runtime sessions.
+    pub playtime: PlaytimeCapabilities,
     pub services: Arc<dyn HostServices>,
+}
+
+impl PlaytimeCapabilities {
+    fn can_report_runtime_sessions(self) -> bool {
+        self.identifies_gameplay
+            && (self.identifies_pauses
+                || self.without_pause_detection
+                    == super::package::PlaytimeAccountingMode::ApplicationOpen)
+    }
 }
 
 /// Internal lookup key for one provider-free extension. It is not a provider id and is never
@@ -182,6 +200,7 @@ struct Pending {
 
 struct Session {
     provider: Arc<Provider>,
+    package_version: String,
     credential: [u8; 32],
     grants: BTreeSet<String>,
     kind: i32,
@@ -203,6 +222,10 @@ struct Session {
 pub(crate) struct ResourceCaller {
     pub session_id: String,
     pub provider_id: String,
+    pub declared_developer: String,
+    pub origin: String,
+    pub package_digest: Vec<u8>,
+    pub package_version: String,
     pub grants: BTreeSet<String>,
     pub grant_revision: u64,
     pub profile_epoch: u64,
@@ -261,6 +284,7 @@ pub struct ProviderApi {
     state: Arc<Mutex<State>>,
     profiles: Arc<PluginProfiles>,
     configuration_windows: Arc<tokio::sync::Mutex<HashMap<(String, String), ConfigurationWindow>>>,
+    runtime_session_handler: Arc<Mutex<Option<Arc<dyn RuntimeSessionHandler>>>>,
 }
 
 /// Declared configuration surfaces and the active session's explicit grants.
@@ -271,6 +295,7 @@ pub struct ConfigurationModes {
     pub external_authorized: bool,
     pub declarative_declared: bool,
     pub declarative_authorized: bool,
+}
 }
 
 pub struct Launch {
@@ -651,6 +676,176 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 }
 
 impl ProviderApi {
+    pub fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {
+        *lock(&self.runtime_session_handler) = Some(handler);
+    }
+
+    async fn runtime_session_event(
+        &self,
+        context: ServiceContext,
+        report: RuntimeSessionReport,
+    ) -> Result<(), Status> {
+        let (provider, commands, grant_revision, target_game, owner_key) = {
+            let state = lock(&self.state);
+            let session = state
+                .sessions
+                .get(&context.session_id)
+                .ok_or_else(|| Status::unauthenticated("provider session expired"))?;
+            if !super::constant_time_eq(&session.credential, &context.session_credential) {
+                return Err(Status::unauthenticated(
+                    "provider session credential is invalid",
+                ));
+            }
+            if session.resource_context.as_ref() != Some(&context)
+                || session.kind != SessionKind::Extension as i32
+                || session.provider.registration.kind != RegistrationKind::Extension
+            {
+                return Err(Status::permission_denied(
+                    "runtime reports require a scoped extension session",
+                ));
+            }
+            let current = epoch(&session.provider);
+            if current.1 != context.profile_epoch || current.0 != context.account_epoch {
+                return Err(Status::failed_precondition(
+                    "runtime report session is stale",
+                ));
+            }
+            let RegistrationOrigin::ThirdParty {
+                publisher_fingerprint,
+            } = &session.provider.registration.origin
+            else {
+                return Err(Status::permission_denied(
+                    "runtime reports require an authenticated plugin",
+                ));
+            };
+            if !session
+                .provider
+                .registration
+                .playtime
+                .can_report_runtime_sessions()
+            {
+                return Err(Status::permission_denied(
+                    "runtime reporting is disabled by the signed package policy",
+                ));
+            }
+            let profiles = session
+                .provider
+                .profiles
+                .as_ref()
+                .ok_or_else(super::profile::no_profile)?;
+            let resolver = profiles
+                .resolver(
+                    &session.provider.registration.plugin_id,
+                    publisher_fingerprint,
+                    None,
+                )
+                .map_err(|_| Status::unavailable("plugin scope is unavailable"))?;
+            (
+                session.provider.clone(),
+                session.commands.clone().ok_or_else(|| {
+                    Status::failed_precondition("provider stream is not connected")
+                })?,
+                session.grant_revision,
+                session.target_game.clone(),
+                resolver.library_recipe_owner_key(),
+            )
+        };
+
+        let commit = provider.commits.lock().await;
+        let (has_grant, scope_matches, revision_unchanged, denial_audit) = {
+            let state = lock(&self.state);
+            let Some(session) = state.sessions.get(&context.session_id) else {
+                return Err(Status::unauthenticated("provider session expired"));
+            };
+            if !super::constant_time_eq(&session.credential, &context.session_credential)
+                || session.resource_context.as_ref() != Some(&context)
+            {
+                return Err(Status::unauthenticated(
+                    "provider session context is invalid",
+                ));
+            }
+            let has_grant = session.grants.contains(cap::GAME_SESSIONS_REPORT);
+            let scope_matches = target_game.as_ref().is_some_and(|target| {
+                target.game_id == report.game_id && target.installation_id == report.installation_id
+            }) && report.reporter_session_id == context.session_id;
+            let reason = if !has_grant {
+                DenialReason::NotGranted
+            } else if !scope_matches {
+                DenialReason::ScopeDenied
+            } else {
+                DenialReason::Revoked
+            };
+            (
+                has_grant,
+                scope_matches,
+                session.grant_revision == grant_revision,
+                (!has_grant || !scope_matches || session.grant_revision != grant_revision)
+                    .then(|| denial_event(session, cap::GAME_SESSIONS_REPORT, reason)),
+            )
+        };
+        let authorized = has_grant && scope_matches && revision_unchanged;
+        let mut result = if !authorized {
+            let reason = if !has_grant {
+                DenialReason::NotGranted
+            } else if !scope_matches {
+                DenialReason::ScopeDenied
+            } else {
+                DenialReason::Revoked
+            };
+            if let Some(event) = denial_audit {
+                self.record_authorization_denial(event);
+            }
+            RuntimeSessionResult {
+                correlation_id: report.correlation_id.clone(),
+                outcome: RuntimeSessionOutcome::RejectedUnauthorized as i32,
+                host_session_id: String::new(),
+                accepted_sequence: 0,
+                accepted_at: 0,
+                reason: "report is outside the approved game/runtime session scope".into(),
+                denial: Some(DenialDetail {
+                    reason: reason as i32,
+                    permission_id: cap::GAME_SESSIONS_REPORT.into(),
+                    grant_revision,
+                }),
+            }
+        } else if let Some(handler) = lock(&self.runtime_session_handler).clone() {
+            handler
+                .report(
+                    provider.registration.plugin_id.clone(),
+                    owner_key,
+                    report.clone(),
+                )
+                .await
+        } else {
+            RuntimeSessionResult {
+                correlation_id: report.correlation_id.clone(),
+                outcome: RuntimeSessionOutcome::RejectedUnavailable as i32,
+                host_session_id: String::new(),
+                accepted_sequence: 0,
+                accepted_at: 0,
+                reason: "runtime session accounting is unavailable".into(),
+                denial: None,
+            }
+        };
+        result.correlation_id = report.correlation_id.clone();
+        commands
+            .send(Ok(ProviderCommand {
+                context: Some(context),
+                operation: ProviderOperation::RuntimeSessionResult as i32,
+                target_operation_id: report.correlation_id,
+                settings: None,
+                runtime_session_result: Some(result),
+                achievements: None,
+            }))
+            .await
+            .map_err(|_| Status::unavailable("provider command stream closed"))
+    }
+
+    /// Configures the private on-disk root used by the active plugin profile.
+    pub fn set_state_layout(&self, layout: super::profile::PluginStateLayout) {
+        self.profiles.set_state_layout(layout);
+    }
+
     fn scope_denial(&self, context: &ServiceContext, permission: &str) -> Option<Status> {
         let state = lock(&self.state);
         let session = state.sessions.get(&context.session_id)?;
@@ -778,7 +973,7 @@ impl ProviderApi {
             .get(session_id)
             .map(|session| session.provider.clone())
             .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
-        let _commit = provider.commits.lock().await;
+        let commit = provider.commits.lock().await;
         let mut state = lock(&self.state);
         let session = state
             .sessions
@@ -793,6 +988,7 @@ impl ProviderApi {
             .permission_watchers
             .retain(|watcher| watcher.try_send(Ok(change.clone())).is_ok());
         let revision = session.grant_revision;
+        let runtime_reporting_revoked = removed.contains(cap::GAME_SESSIONS_REPORT);
         if revoked {
             let obsolete: Vec<_> = state
                 .operations
@@ -822,7 +1018,7 @@ impl ProviderApi {
         }
         let close_configuration = removed.contains(cap::CONFIGURE);
         drop(state);
-        drop(_commit);
+        drop(commit);
         if close_configuration {
             let api = self.clone();
             let session_id = session_id.to_owned();
@@ -834,6 +1030,14 @@ impl ProviderApi {
                     );
                 }
             });
+        }
+        if runtime_reporting_revoked
+            && let Some(handler) = lock(&self.runtime_session_handler).clone()
+        {
+            handler
+                .disconnected(provider.registration.plugin_id.clone())
+                .await;
+        }
         }
         Ok(revision)
     }
@@ -890,6 +1094,12 @@ impl ProviderApi {
             || registration.provider_id.len() > 256
             || registration.plugin_id.is_empty()
             || registration.plugin_id.len() > 256
+            || registration.declared_developer.trim().is_empty()
+            || registration.declared_developer.len() > 256
+            || registration
+                .package_digest
+                .iter()
+                .any(|_| registration.package_digest.len() != 32)
         {
             return Err(Status::invalid_argument("invalid provider registration"));
         }
@@ -916,6 +1126,16 @@ impl ProviderApi {
             cap::KNOWN,
         )
         .map_err(|_| Status::invalid_argument("invalid provider grants"))?;
+        if registration
+            .capabilities
+            .iter()
+            .any(|capability| capability == cap::GAME_SESSIONS_REPORT)
+            && !registration.playtime.can_report_runtime_sessions()
+        {
+            return Err(Status::invalid_argument(
+                "game.sessions.report requires a compatible signed playtime declaration",
+            ));
+        }
         match registration.kind {
             RegistrationKind::Provider
                 if !registration
@@ -1234,6 +1454,7 @@ impl ProviderApi {
             session_id.clone(),
             Session {
                 provider: pending.provider,
+                package_version: hello.plugin_version.clone(),
                 credential: pending.credential,
                 grants: granted.clone(),
                 kind: hello.session_kind,
@@ -1515,7 +1736,7 @@ impl ProviderApi {
             return;
         };
         let guard = provider.commits.lock().await;
-        let services = {
+        let (services, plugin_id, reported_sessions) = {
             let mut state = lock(&self.state);
             let Some(session) = state.sessions.remove(session_id) else {
                 return;
@@ -1533,7 +1754,11 @@ impl ProviderApi {
                         .send(Err(Status::unavailable("provider process disconnected")));
                 }
             }
-            session.provider.registration.services.clone()
+            (
+                session.provider.registration.services.clone(),
+                session.provider.registration.plugin_id.clone(),
+                session.grants.contains(cap::GAME_SESSIONS_REPORT),
+            )
         };
         drop(guard);
         self.configuration_windows
@@ -1541,6 +1766,9 @@ impl ProviderApi {
             .await
             .retain(|_, window| window.session_id != session_id);
         services.session_closed(session_id).await;
+        if reported_sessions && let Some(handler) = lock(&self.runtime_session_handler).clone() {
+            handler.disconnected(plugin_id).await;
+        }
     }
 
     /// Delivers the validation error that ended a provider event stream to the operation it
@@ -1734,6 +1962,13 @@ impl ProviderApi {
         Ok(ResourceCaller {
             session_id: context.session_id.clone(),
             provider_id: session.provider.registration.provider_id.clone(),
+            declared_developer: session.provider.registration.declared_developer.clone(),
+            origin: match session.provider.registration.origin {
+                RegistrationOrigin::Official => "official".into(),
+                RegistrationOrigin::ThirdParty { .. } => "third-party-package".into(),
+            },
+            package_digest: session.provider.registration.package_digest.clone(),
+            package_version: session.package_version.clone(),
             grants: session.grants.clone(),
             grant_revision: session.grant_revision,
             profile_epoch,
@@ -2483,6 +2718,9 @@ impl ProviderApi {
         let context = event
             .context
             .ok_or_else(|| Status::unauthenticated("provider context is required"))?;
+        if let Some(provider_event::Event::RuntimeSession(report)) = event.event.as_ref() {
+            return self.runtime_session_event(context, report.clone()).await;
+        }
         let permission = match event.event.as_ref() {
             Some(provider_event::Event::AccountStatus(_)) => cap::ACCOUNT_PUBLISH,
             Some(provider_event::Event::CatalogChunk(_)) => cap::CATALOG,
@@ -2540,11 +2778,7 @@ impl ProviderApi {
                     .push(chunk)
                     .map_err(|_| Status::invalid_argument("invalid catalog transfer"))?;
             }
-            provider_event::Event::RuntimeSession(_) => {
-                return Err(Status::unimplemented(
-                    "runtime session reporting is not available in this host version",
-                ));
-            }
+            provider_event::Event::RuntimeSession(_) => unreachable!("handled above"),
             provider_event::Event::Result(result) => {
                 for (present, permission) in [
                     (result.status.is_some(), cap::ACCOUNT_PUBLISH),

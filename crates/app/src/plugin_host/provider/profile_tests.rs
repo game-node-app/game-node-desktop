@@ -14,6 +14,7 @@ fn third_party_registration(provider_id: &str) -> Registration {
         },
         capabilities: vec![cap::CONTEXT.into()],
         shared_catalog: false,
+        playtime: Default::default(),
         services: Arc::new(Services::default()),
     }
 }

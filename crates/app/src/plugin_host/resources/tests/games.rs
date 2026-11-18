@@ -62,6 +62,25 @@ impl Fixture {
         (fixture, host, dialog)
     }
 
+    async fn extension_game(
+        grants: &[&'static str],
+        target: TargetGameContext,
+        dialog: Option<Dialog>,
+    ) -> (Self, Arc<FakeHost>, Option<Arc<Dialog>>) {
+        let fixture = Fixture::start_with_target(grants, true, None, Some(target)).await;
+        fixture.library(&[
+            ("steam:1", Some(5), "Selected Steam game"),
+            ("steam:2", Some(6), "Other Steam game"),
+            ("manual:1", Some(9), "Manual game"),
+        ]);
+        let host = fixture.with_host();
+        let dialog = dialog.map(Arc::new);
+        if let Some(dialog) = &dialog {
+            fixture.intents.set_prompter(dialog.clone());
+        }
+        (fixture, host, dialog)
+    }
+
     /// The revision of the fixture's own entry, as the host holds it.
     async fn revision(&self) -> u64 {
         let own = Scope {
@@ -111,27 +130,100 @@ impl Fixture {
     }
 
     /// What the host binds an intent to for the fixture's own entry.
-    fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
+    async fn binding(&self, operation: Operation, target_revision: u64) -> Binding {
+        self.binding_for(operation, target_revision, "3", INSTALLATION, "")
+            .await
+    }
+
+    async fn binding_for(
+        &self,
+        operation: Operation,
+        target_revision: u64,
+        game_id: &str,
+        installation_id: &str,
+        recipe_id: &str,
+    ) -> Binding {
+        let permission = match operation {
+            Operation::Launch => cap::GAME_LAUNCH,
+            Operation::CustomLaunch => cap::GAME_CUSTOM_LAUNCH,
+            Operation::Install => cap::GAMES_INSTALL,
+            Operation::BackupRestore => cap::BACKUPS_RESTORE,
+        };
         let caller = self
             .api
-            .authorize_resource(Some(&self.context()), GRANTS[0])
+            .authorize_resource(Some(&self.context()), permission)
             .unwrap();
+        let (_, entry) = self
+            .feed
+            .target(
+                &super::super::Scope {
+                    own_provider: caller.provider_id.clone(),
+                    read_all: true,
+                    provider_filter: None,
+                },
+                installation_id,
+            )
+            .unwrap();
+        let (recipe, dispatch, resources) = if operation == Operation::CustomLaunch {
+            let host = self.feed.host().unwrap();
+            let recipe = host
+                .custom_launch_recipe(
+                    super::super::mutations::mutation_owner(&caller),
+                    recipe_id.to_owned(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let dispatch = host
+                .prepare_custom_launch(recipe.clone(), None, None, None)
+                .await
+                .unwrap();
+            (Some(recipe), Some(dispatch), Vec::new())
+        } else {
+            (None, None, Vec::new())
+        };
+        let plan = super::super::super::launch_plan::resolve(
+            &caller,
+            &entry,
+            target_revision,
+            recipe.as_ref(),
+            dispatch.as_ref(),
+            &resources,
+        )
+        .unwrap();
+        let plan_fingerprint = if matches!(operation, Operation::Launch | Operation::CustomLaunch) {
+            plan.fingerprint().unwrap()
+        } else {
+            String::new()
+        };
         Binding {
             plugin_id: "fixture.plugin".into(),
             publisher_fingerprint: "ab".repeat(32),
             profile_epoch: caller.profile_epoch,
-            game_id: "3".into(),
-            installation_id: INSTALLATION.into(),
+            game_id: game_id.into(),
+            installation_id: installation_id.into(),
             operation,
             target_revision,
+            recipe_id: recipe_id.into(),
+            recipe_revision: u64::from(operation == Operation::CustomLaunch),
+            plan_fingerprint,
         }
     }
 
     fn game_owner(&self) -> JobOwner {
+        let permission = [
+            cap::GAME_LAUNCH,
+            cap::GAME_CUSTOM_LAUNCH,
+            cap::GAMES_INSTALL,
+            cap::BACKUPS_RESTORE,
+        ]
+        .into_iter()
+        .find(|permission| self.capabilities.contains(permission))
+        .expect("game fixture needs an action grant");
         JobOwner::of(
             &self
                 .api
-                .authorize_resource(Some(&self.context()), GRANTS[0])
+                .authorize_resource(Some(&self.context()), permission)
                 .unwrap(),
         )
         .unwrap()
@@ -277,12 +369,405 @@ async fn a_retry_opens_no_second_dialog() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_recipes_are_idempotent_requestable_and_removable() {
+    let (fixture, host, _) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let proposal = CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        idempotency_key: "propose-custom-1".into(),
+        uri: "steam://rungameid/3".into(),
+        ..CustomLaunchRequest::default()
+    };
+
+    let first = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let replay = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.recipe_id, first.recipe_id);
+    assert_eq!(replay.recipe_revision, first.recipe_revision);
+    assert_eq!(host.custom_launch_recipes.lock().unwrap().len(), 1);
+
+    let mut changed = proposal;
+    changed.uri = "steam://rungameid/4".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_propose_custom_launch(changed)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+
+    let intent = fixture
+        .intents
+        .issue(
+            fixture
+                .binding_for(
+                    Operation::CustomLaunch,
+                    1,
+                    "3",
+                    INSTALLATION,
+                    &first.recipe_id,
+                )
+                .await,
+        )
+        .unwrap();
+    let request = CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        user_intent_id: intent,
+        idempotency_key: "execute-custom-1".into(),
+        recipe_id: first.recipe_id.clone(),
+        recipe_revision: first.recipe_revision,
+        ..CustomLaunchRequest::default()
+    };
+    let reply = fixture
+        .client()
+        .games_request_custom_launch(request)
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&reply.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert!(matches!(
+        host.custom_launch_dispatches.lock().unwrap().as_slice(),
+        [crate::plugin_host::library::CustomLaunchDispatch::Uri { uri, .. }]
+            if uri.as_str() == "steam://rungameid/3"
+    ));
+
+    let removed = fixture
+        .client()
+        .games_remove_custom_launch(CustomLaunchRemoveRequest {
+            mutation: Some(fixture.mutation("remove-custom-1", first.recipe_revision)),
+            game_id: "3".into(),
+            recipe_id: first.recipe_id,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
+    assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_play_reviews_selected_recipe_remembers_exact_plan_and_never_falls_back() {
+    let (fixture, host, dialog) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE_AND_REMEMBER])),
+    )
+    .await;
+    host.launch_target.store(1, Ordering::SeqCst);
+
+    let profiles = fixture.api.profiles();
+    let layout = crate::plugin_host::profile::PluginStateLayout::new(
+        fixture.plugin_data.join("host-launch-profile"),
+    );
+    profiles.set_state_layout(layout.clone());
+    let profile = profiles.current().unwrap();
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "host-selected-game".into(),
+    };
+    let request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [scope.clone()].into(),
+    };
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(
+            identity.clone(),
+            &[request],
+            &[crate::plugin_host::grants::PermissionDecision {
+                permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+                scope,
+                granted: true,
+            }],
+        )
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled(&identity.plugin_id, true)
+        .unwrap();
+
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "host-play-recipe".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let resolver = profiles
+        .resolver("fixture.plugin", &"ab".repeat(32), None)
+        .unwrap();
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "fixture:3".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "fixture:3".into(),
+            owner_key: resolver.library_recipe_owner_key(),
+            plugin_id: identity.plugin_id.clone(),
+            publisher_fingerprint: identity.publisher_fingerprint.clone(),
+            recipe_id: recipe.recipe_id,
+            recipe_revision: recipe.recipe_revision,
+            base_target_revision: 1,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap()
+    );
+    let shown = dialog.as_ref().unwrap().shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    let reviewed = shown[0].launch_plan.as_ref().unwrap();
+    assert_eq!(reviewed.source_id, "fixture");
+    assert_eq!(reviewed.target, "steam://rungameid/3");
+    assert!(!reviewed.fingerprint.is_empty());
+
+    // The exact same plan uses the user-approved fingerprint and does not prompt again.
+    assert!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(dialog.as_ref().unwrap().shown.lock().unwrap().len(), 1);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // A changed detected target invalidates the selected recipe and blocks all dispatch.
+    host.launch_target.store(2, Ordering::SeqCst);
+    assert_eq!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+
+    // Revoking custom-launch permission after approval is also fail-closed.
+    let revoked_request = crate::plugin_host::grants::PermissionRequest {
+        permission_id: cap::GAME_CUSTOM_LAUNCH.into(),
+        required: false,
+        allowed_scopes: [crate::plugin_host::grants::GrantScope::Declared {
+            value: "host-selected-game".into(),
+        }]
+        .into(),
+    };
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity, &[revoked_request], &[])
+        .unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    assert_eq!(
+        api.launch_selected_recipe("fixture:3".into())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_launch_recipe_removal_during_confirmation_blocks_dispatch() {
+    let (dialog, gate) = held(&[APPROVE]);
+    let (fixture, host, dialog) =
+        Fixture::game(&[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH], Some(dialog)).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "propose-recipe-before-confirmation".into(),
+            uri: "steam://rungameid/3".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let pending = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "execute-recipe-after-confirmation".into(),
+            recipe_id: recipe.recipe_id.clone(),
+            recipe_revision: recipe.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    Fixture::dialog_shown(&dialog.unwrap(), 1).await;
+
+    let removed = fixture
+        .client()
+        .games_remove_custom_launch(CustomLaunchRemoveRequest {
+            mutation: Some(fixture.mutation("remove-during-confirmation", recipe.recipe_revision)),
+            game_id: "3".into(),
+            recipe_id: recipe.recipe_id,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(removed.outcome, MutationOutcome::Applied as i32);
+    gate.notify_one();
+
+    let ended = fixture.ended(&pending.job_id).await;
+    assert_eq!(ended.state(), JobState::Failed);
+    assert_eq!(ended.result_code, "recipe_changed");
+    assert!(host.custom_launch_dispatches.lock().unwrap().is_empty());
+    assert!(host.opened.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_custom_launch_approval_is_bound_to_recipe_identity() {
+    let (fixture, host, dialog) = Fixture::game(
+        &[cap::GAME_LAUNCH, cap::GAME_CUSTOM_LAUNCH],
+        Some(answering(&[APPROVE_AND_REMEMBER, APPROVE])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.revision().await;
+    let propose = |key: &'static str, uri: &'static str| CustomLaunchRequest {
+        context: Some(fixture.context()),
+        game_id: "3".into(),
+        installation_id: INSTALLATION.into(),
+        expected_revision: revision,
+        idempotency_key: key.into(),
+        uri: uri.into(),
+        ..CustomLaunchRequest::default()
+    };
+    let first = fixture
+        .client()
+        .games_propose_custom_launch(propose("remember-recipe-a", "steam://rungameid/3"))
+        .await
+        .unwrap()
+        .into_inner();
+    let first_recipe_id = first.recipe_id.clone();
+    let first_recipe_revision = first.recipe_revision;
+    let first_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-recipe-a".into(),
+            recipe_id: first.recipe_id,
+            recipe_revision: first.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&first_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+    let remembered_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-remembered-recipe-a".into(),
+            recipe_id: first_recipe_id,
+            recipe_revision: first_recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&remembered_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+
+    let second = fixture
+        .client()
+        .games_propose_custom_launch(propose("remember-recipe-b", "steam://rungameid/4"))
+        .await
+        .unwrap()
+        .into_inner();
+    let second_job = fixture
+        .client()
+        .games_request_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "3".into(),
+            installation_id: INSTALLATION.into(),
+            expected_revision: revision,
+            idempotency_key: "run-recipe-b".into(),
+            recipe_id: second.recipe_id,
+            recipe_revision: second.recipe_revision,
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&second_job.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pre_issued_intent_skips_the_dialog_and_is_spent_once() {
     // No dialog at all in this build: the intent is enough.
     let (fixture, host, _) = Fixture::game(GRANTS, None).await;
     let id = fixture
         .intents
-        .issue(fixture.binding(Operation::Launch, 0))
+        .issue(fixture.binding(Operation::Launch, 0).await)
         .unwrap();
     let reply = fixture.launch_game("one", &id).await.unwrap();
     let done = fixture.ended(&reply.job_id).await;
@@ -312,12 +797,12 @@ async fn an_invalid_intent_falls_back_to_confirmation_for_the_current_action() {
     // Issued for an install: not a launch.
     let install = fixture
         .intents
-        .issue(fixture.binding(Operation::Install, 0))
+        .issue(fixture.binding(Operation::Install, 0).await)
         .unwrap();
     // Issued for a target that is not the current one.
     let stale = fixture
         .intents
-        .issue(fixture.binding(Operation::Launch, 99))
+        .issue(fixture.binding(Operation::Launch, 99).await)
         .unwrap();
     for (key, intent) in [
         ("a", install.as_str()),
@@ -619,4 +1104,217 @@ async fn an_extension_session_reaches_only_its_target_and_reading_the_library_ad
             .action_target(&caller, &fixture.context(), "", INSTALLATION)
             .is_ok()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extension_custom_overlay_targets_selected_steam_without_read_or_provider_identity() {
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "steam-target-r1".into(),
+    };
+    let (fixture, host, _) =
+        Fixture::extension_game(&[cap::GAME_CUSTOM_LAUNCH], target, None).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let context = fixture.context();
+    assert_eq!(context.session_kind(), SessionKind::Extension);
+    assert!(context.provider_id.is_empty());
+    assert_eq!(
+        context.target_game.as_ref().unwrap().installation_id,
+        "id-steam:1"
+    );
+    assert_eq!(
+        fixture.list("").await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    assert_eq!(
+        fixture
+            .client()
+            .games_request_launch(GameLaunchRequest {
+                context: Some(context.clone()),
+                game_id: "5".into(),
+                installation_id: "id-steam:1".into(),
+                expected_revision: revision,
+                user_intent_id: String::new(),
+                idempotency_key: "normal-without-grant".into(),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let proposal = CustomLaunchRequest {
+        context: Some(context.clone()),
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        expected_revision: revision,
+        idempotency_key: "extension-custom-proposal".into(),
+        uri: "steam://rungameid/5".into(),
+        ..CustomLaunchRequest::default()
+    };
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(proposal.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(host.custom_launch_recipes.lock().unwrap().len(), 1);
+    let stored = host
+        .custom_launch_recipes
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (stored.game_id, stored.installation_id.as_str()),
+        (5, "id-steam:1")
+    );
+
+    let mut forged_provider = proposal.clone();
+    forged_provider.context.as_mut().unwrap().provider_id = "steam".into();
+    forged_provider.idempotency_key = "forged-provider".into();
+    assert!(
+        fixture
+            .client()
+            .games_propose_custom_launch(forged_provider)
+            .await
+            .is_err()
+    );
+    let mut other_game = proposal;
+    other_game.game_id = "6".into();
+    other_game.installation_id = "id-steam:2".into();
+    other_game.idempotency_key = "other-steam-game".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_propose_custom_launch(other_game)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+
+    let intent = fixture
+        .intents
+        .issue(
+            fixture
+                .binding_for(
+                    Operation::CustomLaunch,
+                    1,
+                    "5",
+                    "id-steam:1",
+                    &recipe.recipe_id,
+                )
+                .await,
+        )
+        .unwrap();
+    let request = CustomLaunchRequest {
+        context: Some(context),
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        expected_revision: revision,
+        user_intent_id: intent,
+        idempotency_key: "extension-custom-execution".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.recipe_revision,
+        ..CustomLaunchRequest::default()
+    };
+    let executed = fixture
+        .client()
+        .games_request_custom_launch(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let replay = fixture
+        .client()
+        .games_request_custom_launch(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.job_id, executed.job_id);
+    assert_eq!(
+        fixture.ended(&executed.job_id).await.state(),
+        JobState::Succeeded
+    );
+    let mut reused_intent = request;
+    reused_intent.idempotency_key = "extension-custom-reuse-intent".into();
+    assert_eq!(
+        fixture
+            .client()
+            .games_request_custom_launch(reused_intent)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 1);
+    assert!(host.opened.lock().unwrap().is_empty());
+    let steam_scope = Scope {
+        own_provider: "steam".into(),
+        read_all: false,
+        provider_filter: None,
+    };
+    let (_, selected_steam_entry) = fixture.feed.target(&steam_scope, "id-steam:1").unwrap();
+    assert_eq!(selected_steam_entry.name, "Selected Steam game");
+    assert_eq!(selected_steam_entry.game_id, Some(5));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "steam-target-r1".into(),
+    };
+    let (fixture, host, _) = Fixture::extension_game(&[cap::GAME_LAUNCH], target, None).await;
+    host.launch_target.store(1, Ordering::SeqCst);
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    let custom_proposal = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "without-custom-grant".into(),
+            uri: "steam://rungameid/5".into(),
+            ..CustomLaunchRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(custom_proposal.code(), Code::PermissionDenied);
+
+    let intent = fixture
+        .intents
+        .issue(
+            fixture
+                .binding_for(Operation::Launch, 1, "5", "id-steam:1", "")
+                .await,
+        )
+        .unwrap();
+    let launched = fixture
+        .client()
+        .games_request_launch(GameLaunchRequest {
+            context: Some(fixture.context()),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            user_intent_id: intent,
+            idempotency_key: "normal-launch".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        fixture.ended(&launched.job_id).await.state(),
+        JobState::Succeeded
+    );
+    assert_eq!(*host.opened.lock().unwrap(), [("steam:1".into(), false)]);
+    assert!(host.custom_launch_recipes.lock().unwrap().is_empty());
 }

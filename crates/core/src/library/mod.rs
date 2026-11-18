@@ -13,6 +13,7 @@ mod cover_queue;
 pub mod custom_launch;
 pub mod favorites;
 pub mod launch;
+pub mod launch_plan;
 pub mod layout;
 mod lookup;
 pub mod machine;
@@ -22,6 +23,7 @@ pub mod membership;
 pub mod organization;
 pub mod plugin_match;
 pub mod query;
+pub mod runtime;
 pub mod selection;
 pub mod store;
 pub mod suggest;
@@ -38,9 +40,15 @@ pub use add_run::{
 };
 pub use batch::{CollectionRunView, StatusRunView, UndoAddView, UndoState};
 pub use catalog::{CatalogResult, CatalogStatus, CatalogView};
-pub use custom_launch::{CustomLaunchMutation, CustomLaunchRecipe};
+pub use custom_launch::{
+    CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
+};
 pub use launch::{
     LaunchError, LaunchKind, LaunchState, LaunchStateView, LaunchStatus, open_action,
+};
+pub use launch_plan::{
+    LAUNCH_PLAN_VERSION, LaunchPlan, LaunchPlanComponent, LaunchPlanError, LaunchPlanResource,
+    LaunchPlanTarget,
 };
 pub use layout::{
     AddedFilter, AvailabilityFilter, DAY_SECONDS, FIRST_RELEASE_DECADE, GameNodeStatusFilter,
@@ -64,6 +72,10 @@ pub use query::{
     LastPlayedCounts, MatchStateCounts, PlayedCounts, PlaytimeCounts, ProviderCount, ReleaseCount,
     Row, RowGameNode, RowGroup, SavedViewCount, ScopeCounts, StoreCount, TitleSource,
     TitleSourceKind,
+};
+pub use runtime::{
+    ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
+    RuntimeResource,
 };
 pub use selection::{Direction, SelectMode, Selection};
 pub use store::{

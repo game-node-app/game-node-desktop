@@ -2147,14 +2147,19 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
     let recipe = CustomLaunchRecipe {
         recipe_id: "recipe-1".into(),
         revision: 1,
+        requester_package_version: "1.0".into(),
         game_id: 620,
         installation_id: "install-1".into(),
         base_target_revision: 1,
+        base_launch_fingerprint: 9,
         executable_handle: "approved-executable-handle".into(),
+        executable: None,
         uri: String::new(),
         arguments: vec!["--profile".into(), "a profile & literal".into()],
         working_directory_handle: "approved-directory-handle".into(),
+        working_directory: None,
         runtime_handle: String::new(),
+        content_id: String::new(),
         environment_set: BTreeMap::from([("GAME_MODE".into(), "custom".into())]),
         environment_unset: Default::default(),
     };
@@ -2206,4 +2211,353 @@ fn custom_launch_recipes_are_plugin_scoped_revision_checked_and_persistent() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_silently() {
+    use gamenode_core::library::{
+        CustomLaunchMutation, CustomLaunchRecipe, LaunchRecipeSelection,
+        LaunchRecipeSelectionWrite, TargetSpec,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    store
+        .save_scan(
+            "steam",
+            &[record("620", "Portal 2")],
+            &BTreeMap::from([(
+                "620".into(),
+                TargetSpec::Executable {
+                    root: r"C:\Games\Portal 2".into(),
+                    path: "Portal2.exe".into(),
+                    arguments: vec![],
+                    working_directory: String::new(),
+                },
+            )]),
+            100,
+        )
+        .unwrap();
+    let target = store
+        .load_cache(None)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.key == "steam:620")
+        .unwrap()
+        .target
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO library_installations (entry_key, installation_id) VALUES ('steam:620', 'install-1')",
+            [],
+        )
+        .unwrap();
+    let recipe = CustomLaunchRecipe {
+        recipe_id: "recipe-1".into(),
+        revision: 1,
+        requester_package_version: "1.0".into(),
+        game_id: 620,
+        installation_id: "install-1".into(),
+        base_target_revision: target.revision,
+        base_launch_fingerprint: 9,
+        executable_handle: "approved-executable-handle".into(),
+        executable: None,
+        uri: String::new(),
+        arguments: vec!["--custom".into()],
+        working_directory_handle: String::new(),
+        working_directory: None,
+        runtime_handle: String::new(),
+        content_id: String::new(),
+        environment_set: Default::default(),
+        environment_unset: Default::default(),
+    };
+    assert_eq!(
+        store
+            .save_custom_launch_recipe("plugin-owner", &recipe)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    let selection = LaunchRecipeSelection {
+        entry_key: "steam:620".into(),
+        owner_key: "plugin-owner".into(),
+        plugin_id: "example.launcher".into(),
+        publisher_fingerprint: "publisher-key-fingerprint".into(),
+        recipe_id: recipe.recipe_id.clone(),
+        recipe_revision: recipe.revision,
+        base_target_revision: target.revision,
+        approved_plan_fingerprint: String::new(),
+    };
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(
+        store
+            .save_launch_recipe_selection(&selection, target.revision + 1)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Conflict
+    );
+    drop(store);
+    drop(db);
+
+    let reopened = SqliteSettingsStore::open(&path).unwrap();
+    let store = reopened.library_store();
+    assert_eq!(
+        store.launch_recipe_selection("steam:620").unwrap(),
+        Some(selection)
+    );
+    assert_eq!(
+        store
+            .remove_custom_launch_recipe("plugin-owner", "recipe-1", 1)
+            .unwrap(),
+        CustomLaunchMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .launch_recipe_selection("steam:620")
+            .unwrap()
+            .unwrap()
+            .recipe_id,
+        "recipe-1",
+        "a removed recipe stays selected and unavailable until the user chooses a route"
+    );
+    assert_eq!(
+        store
+            .clear_launch_recipe_selection("steam:620", target.revision)
+            .unwrap(),
+        LaunchRecipeSelectionWrite::Applied
+    );
+    assert_eq!(store.launch_recipe_selection("steam:620").unwrap(), None);
+}
+
+#[test]
+fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_removal() {
+    use gamenode_core::library::{
+        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
+        RuntimeResource,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.sqlite3");
+    let db = SqliteSettingsStore::open(&path).unwrap();
+    let store = db.library_store();
+    db.conn()
+        .execute(
+            "INSERT INTO games (game_id, name) VALUES (72, 'Game A'), (73, 'Game B')",
+            [],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO playtime_totals (account_id, entry_key, total_seconds)
+             VALUES ('account-1', 'steam:72', 600)",
+            [],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO save_profiles (id, installation_id, revision, payload)
+             VALUES ('save-1', 'steam:72', 1, '{}')",
+            [],
+        )
+        .unwrap();
+
+    let runtime = |id: &str| RuntimeResource {
+        id: id.into(),
+        name: format!("Runtime {id}"),
+        version: "1.0".into(),
+        executable: ApprovedFileReference {
+            approval_id: format!("approval-{id}"),
+            relative_path: vec!["bin".into(), "emulator".into()],
+        },
+        platform: "linux".into(),
+        supported_formats: vec!["snes-rom".into()],
+        launch_arguments: vec![
+            RuntimeArgumentTemplate::Literal("--fullscreen".into()),
+            RuntimeArgumentTemplate::ContentPath,
+        ],
+        revision: 1,
+        observed_at: 100,
+    };
+    let plugin = "plugin-a/profile-1";
+    let runtime_a = runtime("runtime-a");
+    let runtime_b = runtime("runtime-b");
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_b).unwrap(),
+        RuntimeMutation::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store.save_runtime_resource(plugin, &runtime_a).unwrap(),
+        RuntimeMutation::Conflict { current: 1 }
+    );
+    let mut updated_runtime = runtime_a.clone();
+    updated_runtime.revision = 2;
+    updated_runtime.version = "1.1".into();
+    assert_eq!(
+        store
+            .save_runtime_resource(plugin, &updated_runtime)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    assert_eq!(
+        store
+            .runtime_resource("plugin-b/profile-1", "runtime-a")
+            .unwrap(),
+        None,
+        "runtime records are scoped to their registering plugin"
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 3);
+
+    let binding = |game_id, content_id: &str, runtime_id: &str, path: &str| RuntimeContentBinding {
+        game_id,
+        installation_id: format!("steam:{game_id}"),
+        content_id: content_id.into(),
+        content: ApprovedFileReference {
+            approval_id: format!("content-approval-{content_id}"),
+            relative_path: vec![path.into()],
+        },
+        content_kind: "snes-rom".into(),
+        runtime_id: runtime_id.into(),
+        supported_platforms: vec!["linux".into()],
+        revision: 1,
+    };
+    let content_a_runtime_a = binding(72, "content-a", "runtime-a", "a.sfc");
+    let content_a_runtime_b = binding(72, "content-a", "runtime-b", "a.sfc");
+    let content_a_variant = binding(72, "content-a-patched", "runtime-a", "a-patched.sfc");
+    let content_b_runtime_a = binding(73, "content-b", "runtime-a", "b.sfc");
+    for binding in [
+        &content_a_runtime_a,
+        &content_a_runtime_b,
+        &content_a_variant,
+        &content_b_runtime_a,
+    ] {
+        assert_eq!(
+            store.save_runtime_content_binding(plugin, binding).unwrap(),
+            RuntimeMutation::Applied { revision: 1 }
+        );
+    }
+
+    // Moving a file updates its approved location under the same stable content identity.
+    let mut moved_content = content_a_runtime_a.clone();
+    moved_content.revision = 2;
+    moved_content.content.relative_path = vec!["moved".into(), "renamed.sfc".into()];
+    assert_eq!(
+        store
+            .save_runtime_content_binding(plugin, &moved_content)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 3);
+
+    assert_eq!(
+        store
+            .remove_runtime_resource(plugin, "runtime-a", 1)
+            .unwrap(),
+        RuntimeMutation::Conflict { current: 2 }
+    );
+    assert_eq!(
+        store
+            .remove_runtime_resource(plugin, "runtime-a", 2)
+            .unwrap(),
+        RuntimeMutation::Applied { revision: 2 }
+    );
+    assert_eq!(store.runtime_resource(plugin, "runtime-a").unwrap(), None);
+    let bindings = store
+        .runtime_content_bindings(plugin, 72, "steam:72")
+        .unwrap();
+    assert_eq!(
+        bindings.len(),
+        3,
+        "two content variants and both runtime choices remain"
+    );
+    assert_eq!(
+        bindings
+            .iter()
+            .find(|binding| binding.runtime_id == "runtime-a")
+            .unwrap()
+            .content
+            .relative_path,
+        ["moved", "renamed.sfc"]
+    );
+    let sibling = bindings
+        .iter()
+        .find(|binding| binding.runtime_id == "runtime-b")
+        .unwrap();
+    assert_eq!(sibling.content_id, "content-a");
+    assert_eq!(sibling.revision, 2);
+    assert_eq!(
+        sibling.content.relative_path,
+        ["moved", "renamed.sfc"],
+        "all runtime choices for one content follow its moved locator"
+    );
+    assert!(bindings.iter().any(|binding| {
+        binding.content_id == "content-a-patched"
+            && binding.content.relative_path == ["a-patched.sfc"]
+    }));
+    assert_eq!(
+        store
+            .runtime_content_bindings(plugin, 73, "steam:73")
+            .unwrap()
+            .len(),
+        1,
+        "one runtime can bind content from another game"
+    );
+    assert_eq!(
+        store
+            .runtime_resources(plugin)
+            .unwrap()
+            .iter()
+            .map(|runtime| runtime.id.as_str())
+            .collect::<Vec<_>>(),
+        ["runtime-b"]
+    );
+    assert_eq!(store.runtime_catalog_revision(plugin).unwrap(), 4);
+
+    let games: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM games WHERE game_id IN (72, 73)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let registered_game_count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM games WHERE game_id = 72", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let history: i64 = db
+        .conn()
+        .query_row(
+            "SELECT total_seconds FROM playtime_totals
+             WHERE account_id = 'account-1' AND entry_key = 'steam:72'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let saves: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM save_profiles WHERE id = 'save-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(games, 2);
+    assert_eq!(
+        registered_game_count, 1,
+        "multiple runtime bindings do not duplicate the game"
+    );
+    assert_eq!(history, 600);
+    assert_eq!(saves, 1);
 }

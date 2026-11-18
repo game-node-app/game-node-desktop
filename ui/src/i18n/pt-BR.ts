@@ -975,6 +975,7 @@ export const ptBR: TranslationCatalog = {
   "plugins.import.install": "Instalar sem iniciar",
   "plugins.import.version": "Versão instalada",
   "plugins.import.restartRequired": "Reinicie o GameNode para carregar o pacote antes de gerenciá-lo ou iniciá-lo.",
+  "plugins.import.extensionRuntimeUnavailable": "Esta extensão está instalada, mas ainda não pode ser iniciada. O suporte a runtime de extensões não está disponível nesta versão.",
   "plugins.permissionScopes": "Escopos de permissão",
   "plugins.permissions.save": "Salvar permissões",
   "plugins.required": "obrigatória",

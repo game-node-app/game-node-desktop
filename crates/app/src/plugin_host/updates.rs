@@ -654,6 +654,11 @@ impl PluginUpdateService {
                     .clone()
                     .unwrap_or_else(|| manifest.id.clone()),
                 plugin_id: manifest.id,
+                plugin_kind: match manifest.kind {
+                    super::package::PluginKind::Provider => "provider",
+                    super::package::PluginKind::Extension => "extension",
+                }
+                .into(),
                 name: manifest.name,
                 source: "community".into(),
                 status: if compatibility {

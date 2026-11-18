@@ -973,6 +973,7 @@ export const en = {
   "plugins.import.install": "Install without starting",
   "plugins.import.version": "Installed version",
   "plugins.import.restartRequired": "Restart GameNode to load this package before managing or starting it.",
+  "plugins.import.extensionRuntimeUnavailable": "This extension is installed but cannot be started yet. Extension runtime support is not available in this release.",
   "plugins.permissionScopes": "Permission scopes",
   "plugins.permissions.save": "Save permission choices",
   "plugins.required": "required",

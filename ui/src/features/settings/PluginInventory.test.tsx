@@ -23,6 +23,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }));
 const plugin: PluginInfo = {
   providerId: 'steam',
   pluginId: 'org.gamenode.plugin.steam-discovery',
+  pluginKind: 'provider',
   name: 'Steam',
   source: 'official',
   status: 'installed',
@@ -102,6 +103,31 @@ describe('PluginInventory', () => {
     expect(await screen.findByText('Sign in to manage community plugins.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['en', 'This extension is installed but cannot be started yet. Extension runtime support is not available in this release.'],
+    ['pt-BR', 'Esta extensão está instalada, mas ainda não pode ser iniciada. O suporte a runtime de extensões não está disponível nesta versão.'],
+  ])('explains unavailable extension runtime in %s and keeps removal available', async (locale, explanation) => {
+    const extension: PluginInfo = {
+      ...plugin,
+      providerId: 'org.example.extension',
+      pluginId: 'org.example.extension',
+      pluginKind: 'extension',
+      source: 'community',
+      session: 'stopped',
+      enabled: false,
+      runtimeAvailable: false,
+      publisherFingerprint: `SHA256:${'e'.repeat(64)}`,
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([extension]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    renderInventory(locale, 'user-1');
+
+    expect(await screen.findByText(explanation)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: locale === 'pt-BR' ? 'Remover' : 'Remove' })).toBeInTheDocument();
   });
 
   it('lets the user select a plugin and inspect its identity and permissions', async () => {

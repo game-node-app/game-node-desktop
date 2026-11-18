@@ -51,6 +51,8 @@ include!(concat!(env!("OUT_DIR"), "/plugin_descriptors.rs"));
 pub struct PluginInfo {
     pub provider_id: String,
     pub plugin_id: String,
+    /// Package execution kind from the verified manifest; bundled plugins are providers.
+    pub plugin_kind: String,
     pub name: String,
     pub source: String,
     pub status: String,
@@ -95,6 +97,7 @@ fn inventory_at(
             PluginInfo {
                 provider_id: plugin.provider_id.clone(),
                 plugin_id: plugin.plugin_id.clone(),
+                plugin_kind: "provider".to_owned(),
                 name: plugin.name.clone(),
                 source: "official".to_owned(),
                 status: if !installed {

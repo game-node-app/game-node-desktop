@@ -197,7 +197,11 @@ A managed package SHALL declare whether it owns a provider or acts as an extensi
 
 #### Scenario: Install a launch-only extension
 - **WHEN** a valid package declares extension kind and requests game.custom_launch
-- **THEN** it can be installed without a provider manifest and remains subject to normal identity, permission, signature and activation checks
+- **THEN** it can be reviewed and stored disabled without a provider manifest and remains subject to normal identity, permission and signature checks; while provider-free process supervision is unavailable, inventory explains that runtime activation is unavailable and offers no activation control
+
+#### Scenario: Activate an extension after provider-free supervision is available
+- **WHEN** the host supports the extension's negotiated runtime and the user enables it for the active account
+- **THEN** the host starts it under the supervised lifecycle using its authenticated plugin identity and user-selected target-game context, with no provider identity or provider-owned service context
 
 ### Requirement: Attributed persistence budgets
 The host SHALL account managed persistent data by owning plugin, dataset/category, logical/physical usage, quota, last use and retention. Plugin callers SHALL receive only their own logical accounting. Exact local paths and global accounting SHALL be visible only through host-owned user administration.

@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Third-party plugin management in Stores
-The Stores panel SHALL extend its plugin inventory with separate official and third-party attribution and actions to import, enable, disable, review permissions, check/review updates and remove third-party packages. It SHALL show active version, publisher fingerprint, compatibility and failure status without adding a new navigation topic.
+The Stores panel SHALL extend its plugin inventory with separate official and third-party attribution and actions to import, enable, disable, review permissions, check/review updates and remove third-party packages. It SHALL show active version, publisher fingerprint, compatibility and failure status without adding a new navigation topic. The MVP activation controls apply to provider packages. An installed provider-free extension whose process runtime is unsupported SHALL remain disabled; the inventory SHALL explain runtime unavailability in the user's locale and SHALL NOT offer activation.
 
 #### Scenario: Import example plugin
 - **WHEN** the user selects Install plugin and chooses a reference package
@@ -20,6 +20,10 @@ The Stores panel SHALL extend its plugin inventory with separate official and th
 #### Scenario: Import review and publisher trust
 - **WHEN** the user selects a local plugin package
 - **THEN** an asynchronous host command stages and validates the archive without executing its payload, and the UI reviews identity, version, compatibility, license, requested permission scopes and publisher fingerprint before installation; first-key trust requires confirmation of the displayed fingerprint and changed keys require explicit re-trust
+
+#### Scenario: Extension package is installed before runtime support
+- **WHEN** the user selects an installed extension package while provider-free process supervision is unavailable
+- **THEN** the inventory shows that its runtime is unavailable, exposes no enable action, and still permits package removal without implying the package is running
 
 #### Scenario: Permission scopes are host-validated
 - **WHEN** a signed-in user saves permission decisions for a third-party plugin

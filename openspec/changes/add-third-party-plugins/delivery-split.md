@@ -6,7 +6,7 @@ The original 128-task program is now split into a provider/catalog MVP and three
 
 Change: [`add-third-party-plugins`](.)
 
-The MVP enables managed signed package import, provider composition, account-bound plugin sessions, external account/login isolation, provider discovery/catalog/counters, library read/presentation endpoints, permission and publisher review, activation controls, staged update recovery, public SDK distributions and focused Go/Rust provider examples.
+The MVP enables managed signed package import, provider composition, account-bound provider sessions, external account/login isolation, provider discovery/catalog/counters, library read/presentation endpoints, permission and publisher review, provider activation controls, staged update recovery, public SDK distributions and focused Go/Rust provider examples. Inventory import/review may accept a valid extension package, but must keep it disabled and display a localized runtime-unavailable explanation without an activation control until provider-free process supervision ships in Follow-up B.
 
 MVP completion criteria include Linux and Windows native acceptance and preserving the official Steam and PackageKit behavior. The MVP does **not** expose launch/install requests, plugin filesystem access, folder approvals, custom launch, runtime registration, shared datasets, telemetry or managed durable persistence. Update downgrade/re-trust policy is deferred; MVP updates are limited to staged activation and last-known-good recovery. Methods outside the MVP surface must be omitted from `DescribeApi` and return `UNIMPLEMENTED` when not implemented.
 
@@ -34,7 +34,7 @@ Source tasks: `8.4–8.6`, `8.8`, `10.3`, `10.9–10.10`, `11.4`. This adds plug
 
 Change: [`third-party-plugin-custom-launch-runtimes`](../third-party-plugin-custom-launch-runtimes/)
 
-Source tasks: `7.8–7.11`, `10.6–10.7`, `11.8`, `14.2–14.5`, `18.5`, `18.8–18.9`, `19.1–19.2`, `19.5`. This includes the existing uncommitted partial implementation of 7.8; it remains local and must be preserved. It depends on MVP and on host-issued action confirmation from Follow-up A.
+Source tasks: `7.8–7.11`, `10.6–10.7`, `11.8`, `14.2–14.5`, `18.5`, `18.8–18.9`, `19.1–19.2`, `19.5`, plus new task 1.18 for provider-free extension supervision. This includes the existing uncommitted partial implementation of 7.8; it remains local and must be preserved. It depends on MVP and on host-issued action confirmation from Follow-up A. The inventory's localized runtime-unavailable state remains part of MVP task 10.2; this follow-up owns only runtime capability and activation behavior.
 
 ## Follow-up C: shared data and persistence
 

@@ -492,3 +492,13 @@ A primeira linha foi decidida com o usuário; o resto é detalhe de engenharia.
 | A leitura roda sem segurar a trava do namespace do plugin (as pastas são abertas sob a trava e a trava é solta), para uma varredura longa não bloquear as outras chamadas do plugin. Cancelar o job para a varredura e a leitura no próximo arquivo ou bloco e não guarda nada. | 13.4. |
 | `require_fresh` não muda nada: toda chamada relê o conteúdo e não há cache. Um fingerprint de handle de runtime espera os recursos de runtime (14.x). | 13.4, 14.x. |
 
+## V. Decisão sobre runtime de extensões e tarefa 10.2 (2026-11-16)
+
+Confirmada pelo usuário: a UI de indisponibilidade de runtime pertence à tarefa 10.2 da change MVP `add-third-party-plugins`; a execução supervisionada de extensões pertence ao follow-up `third-party-plugin-custom-launch-runtimes`.
+
+| Decisão | Alcance |
+| --- | --- |
+| A tarefa 10.2 cobre importação/revisão e ciclo de ativação apenas para pacotes provider no MVP. Pacotes extension podem ser revisados e armazenados desativados, mas a UI deve explicar que o runtime não está disponível e não oferecer ativação. Remoção continua disponível. | 10.2, specs `desktop-settings` e `desktop-external-plugins`. |
+| O follow-up de runtimes implementará supervisão e ativação account-bound de extensões com identidade autenticada própria e contexto de jogo escolhido pelo usuário; não cria `provider_id`, não entrega contexto de provider e não habilita RPCs exclusivas de provider. Deve aplicar integridade, prontidão limitada, fencing de sessão/conta/concessões e parada supervisionada. | Follow-up de runtimes, nova tarefa 1.18; complemento à 8.3. |
+| A decisão de escopo não conclui 10.2. A UI e o DTO receberam a indicação localizada de runtime indisponível, mas 10.2 permanece aberta até sua verificação focalizada e os demais critérios de aceite. | 10.2. |
+

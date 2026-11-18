@@ -98,6 +98,7 @@ describe('RememberedConfirmations', () => {
     const community: PluginInfo = {
       providerId: 'community',
       pluginId: 'org.example.community',
+      pluginKind: 'provider',
       name: 'Community',
       source: 'community',
       status: 'installed',

@@ -2947,6 +2947,7 @@ export function createMockHost(options: {
         const steamPlugin: PluginInfo = {
           providerId: 'steam',
           pluginId: 'org.gamenode.plugin.steam-discovery',
+          pluginKind: 'provider',
           name: 'Steam',
           source: 'official',
           status: 'installed',
@@ -2965,6 +2966,7 @@ export function createMockHost(options: {
         const epicPlugin: PluginInfo = {
           providerId: 'epic',
           pluginId: 'org.gamenode.plugin.epic',
+          pluginKind: 'provider',
           name: 'Epic Games Store',
           source: 'official',
           status: 'installed',
@@ -2981,6 +2983,7 @@ export function createMockHost(options: {
           const packageManagerPlugin: PluginInfo = {
             providerId: 'packagekit',
             pluginId: 'org.gamenode.plugin.packagekit-discovery',
+            pluginKind: 'provider',
             name: 'Gerenciador de pacotes Linux',
             source: 'official',
             status: 'installed',

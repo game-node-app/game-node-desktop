@@ -37,6 +37,10 @@ pub(super) struct Playtime {
     display_dirty: bool,
 }
 impl Playtime {
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     pub fn new(platform: Platform) -> Self {
         Self {
             tracker: Tracker::new(platform == Platform::Windows),

@@ -372,7 +372,7 @@ impl Engine {
         }
 
         let mut state = self.lock();
-        if !state.playtime.ready || state.playtime.stopped {
+        if !state.playtime.ready || state.playtime.is_stopped() {
             return runtime_result(
                 correlation_id,
                 RuntimeSessionOutcome::RejectedUnavailable,

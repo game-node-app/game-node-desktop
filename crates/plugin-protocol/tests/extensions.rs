@@ -37,6 +37,39 @@ fn descriptor() -> ExtensionSchemaDescriptor {
     }
 }
 
+fn broker_projection_descriptor() -> ExtensionSchemaDescriptor {
+    let schema_json = br#"{"type":"object","properties":{"summary":{"type":"string"},"custom":{"type":"string"},"sensitive_history":{"type":"string"}}}"#.to_vec();
+    use sha2::Digest;
+    ExtensionSchemaDescriptor {
+        namespace: "org.example.telemetry".into(),
+        schema_id: "org.example.telemetry.v1".into(),
+        schema_version: 1,
+        schema_digest: sha2::Sha256::digest(&schema_json).to_vec(),
+        schema_json,
+        fields: vec![
+            ExtensionSchemaField {
+                path: "summary".into(),
+                classification: ExtensionFieldClassification::Public as i32,
+            },
+            ExtensionSchemaField {
+                path: "custom".into(),
+                classification: ExtensionFieldClassification::Private as i32,
+            },
+            ExtensionSchemaField {
+                path: "sensitive_history".into(),
+                classification: ExtensionFieldClassification::Sensitive as i32,
+            },
+        ],
+        optional: true,
+    }
+}
+
+fn string_value(value: &str) -> Value {
+    Value {
+        kind: Some(Kind::StringValue(value.into())),
+    }
+}
+
 #[test]
 fn extension_schema_is_bounded_packaged_and_digest_checked() {
     let descriptor = descriptor();
@@ -117,6 +150,54 @@ fn extension_payload_limits_and_classification_are_enforced() {
     let mut deep_payload = payload("org.example.runtime.v1", "stable");
     deep_payload.data.as_mut().unwrap().fields = BTreeMap::from([("root".into(), deep)]);
     assert_eq!(validate_payload(&deep_payload), Err(WireError));
+}
+
+#[test]
+fn broker_projection_returns_only_explicitly_granted_custom_fields() {
+    let descriptor = broker_projection_descriptor();
+    let mut payload = ExtensionPayload {
+        schema_id: descriptor.schema_id.clone(),
+        schema_version: descriptor.schema_version,
+        schema_digest: descriptor.schema_digest.clone(),
+        data: Some(Struct {
+            fields: BTreeMap::from([
+                ("summary".into(), string_value("frame pacing")),
+                ("custom".into(), string_value("producer-specific detail")),
+                (
+                    "sensitive_history".into(),
+                    string_value("session observation"),
+                ),
+            ]),
+        }),
+    };
+    validate_payload_for_schema(&payload, &descriptor).unwrap();
+
+    let public_only =
+        project_payload_fields(&payload, &descriptor, &["summary".to_owned()].into()).unwrap();
+    let fields = &public_only.data.as_ref().unwrap().fields;
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields["summary"], string_value("frame pacing"));
+    assert!(!fields.contains_key("custom"));
+    assert!(!fields.contains_key("sensitive_history"));
+
+    let reviewed = project_payload_fields(
+        &payload,
+        &descriptor,
+        &["summary".to_owned(), "sensitive_history".to_owned()].into(),
+    )
+    .unwrap();
+    let fields = &reviewed.data.as_ref().unwrap().fields;
+    assert_eq!(fields.len(), 2);
+    assert!(fields.contains_key("summary"));
+    assert!(fields.contains_key("sensitive_history"));
+    assert!(!fields.contains_key("custom"));
+
+    // An unreviewed custom namespace is not made visible by a field grant from another schema.
+    payload.schema_id = "org.example.other.v1".into();
+    assert_eq!(
+        project_payload_fields(&payload, &descriptor, &["summary".to_owned()].into()),
+        Err(WireError)
+    );
 }
 
 #[test]

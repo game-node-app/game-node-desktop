@@ -3,6 +3,7 @@
 //! This module models consent separately from a live RPC session. A session receives only the
 //! current effective grant revision; a grant update is persisted before it can become effective.
 
+use super::package::Manifest;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -349,6 +350,67 @@ impl PermissionGrantStore {
             self.state = next;
         }
         Ok(())
+    }
+
+    /// Restricts a persisted grant set to permissions whose identifier and declared scope are
+    /// unchanged in the selected package. New or widened requests remain default-deny; changing
+    /// a required bit updates disclosure metadata but does not create a grant.
+    pub fn intersect_with_selected_manifest(
+        &mut self,
+        identity: &PluginIdentity,
+        previous: &Manifest,
+        selected: &Manifest,
+    ) -> Result<u64, GrantError> {
+        identity.validate()?;
+        let key = identity_key(identity);
+        let Some(existing) = self.state.plugins.get(&key) else {
+            return Ok(0);
+        };
+        if existing.identity != *identity {
+            return Err(GrantError::InvalidIdentity);
+        }
+        let old_scopes: BTreeMap<_, _> = previous
+            .permissions
+            .iter()
+            .map(|permission| (permission.id.as_str(), permission.scope.as_str()))
+            .collect();
+        let selected_permissions: BTreeMap<_, _> = selected
+            .permissions
+            .iter()
+            .map(|permission| {
+                (
+                    permission.id.as_str(),
+                    (permission.scope.as_str(), permission.required),
+                )
+            })
+            .collect();
+        let record = self
+            .state
+            .plugins
+            .get(&key)
+            .expect("record was checked above");
+        let mut narrowed = record.clone();
+        narrowed.grants.retain_mut(|grant| {
+            let Some((scope, required)) = selected_permissions.get(grant.permission_id.as_str())
+            else {
+                return false;
+            };
+            if old_scopes.get(grant.permission_id.as_str()) != Some(scope) {
+                return false;
+            }
+            grant.required = *required;
+            true
+        });
+        if narrowed.grants == record.grants {
+            return Ok(record.revision);
+        }
+        narrowed.revision = record.revision.saturating_add(1);
+        let revision = narrowed.revision;
+        let mut next = self.state.clone();
+        next.plugins.insert(key, narrowed);
+        self.persist(&next)?;
+        self.state = next;
+        Ok(revision)
     }
 
     /// Required requests gate activation when denied or unsupported.

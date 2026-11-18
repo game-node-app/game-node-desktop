@@ -17,6 +17,7 @@ import type {
   PluginPlaytimeInfo,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
+  AvailablePluginRollback,
   PluginUpdateReview,
   PlaytimeSource,
   Registration,
@@ -273,7 +274,26 @@ export const commands = {
       candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
       playtimeChanged: false,
       installedPublisherKeyId: 'publisher', candidatePublisherKeyId: 'publisher', requiresManualApproval: true,
+      publisherFingerprint: '', changedDataSchemas: [], preservesPriorData: true, isDowngrade: false,
     })),
+  pluginRollbackAvailable: () =>
+    safeInvoke<AvailablePluginRollback[]>('plugin_rollback_available', undefined, () => []),
+  pluginRollbackReview: (pluginId: string, version: string) =>
+    safeInvoke<PluginUpdateReview>('plugin_rollback_review', { pluginId, version }, () => ({
+      pluginId, installedVersion: '2.0.0', candidateVersion: version,
+      addedPermissions: [], removedPermissions: [], changedPermissions: [], permissionChanges: [],
+      addedNativeAccess: [], removedNativeAccess: [], apiChanged: false, installedApi: '1.0.0 – 1.0.0',
+      candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT', candidateLicense: 'MIT',
+      installedLicenseFiles: [], candidateLicenseFiles: [], installedLicenseNotices: [], candidateLicenseNotices: [],
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false, publisherChanged: false, installedPublisherKeyId: '', candidatePublisherKeyId: '', publisherFingerprint: '',
+      changedDataSchemas: [], preservesPriorData: true, isDowngrade: true, requiresManualApproval: true,
+    })),
+  pluginUpdateRetrustPublisher: (pluginId: string, version: string, fingerprint: string) =>
+    safeInvoke<void>('plugin_update_retrust_publisher', { pluginId, version, fingerprint }, () => undefined),
+  pluginRollbackApprove: (pluginId: string, version: string, confirmed: boolean) =>
+    safeInvoke<string>('plugin_rollback_approve', { pluginId, version, confirmed }, () => version),
   pluginUpdateApprove: (pluginId: string, version: string) =>
     safeInvoke<string>('plugin_update_approve', { pluginId, version }, () => version),
   pluginUpdateDecline: (pluginId: string) =>

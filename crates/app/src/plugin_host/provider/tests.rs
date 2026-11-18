@@ -62,7 +62,6 @@ impl super::super::runtime::RuntimeSessionHandler for RuntimeSessionFixture {
         self.disconnects.fetch_add(1, Ordering::Relaxed);
     }
 }
-}
 
 #[tonic::async_trait]
 impl HostServices for Services {
@@ -173,6 +172,8 @@ impl Harness {
         ];
         capabilities.extend_from_slice(extra);
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             kind: RegistrationKind::Provider,
@@ -1161,6 +1162,8 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     let plugin_id = "org.example.launch-helper";
     let internal_id = super::extension_registration_id(plugin_id);
     api.register(Registration {
+        declared_developer: "Fixture developer".into(),
+        package_digest: Vec::new(),
         provider_id: internal_id.clone(),
         plugin_id: plugin_id.into(),
         kind: RegistrationKind::Extension,
@@ -1218,7 +1221,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
         mismatched.is_err(),
         "the plugin cannot replace Core's target"
     );
-    let session = gamenode_plugin_sdk::Session::open_extension(
+    let mut session = gamenode_plugin_sdk::Session::open_extension(
         gamenode_plugin_sdk::Launch {
             endpoint: endpoint.clone(),
             credential,

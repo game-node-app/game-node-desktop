@@ -2,15 +2,15 @@
 
 This follow-up is part of the delivery split documented in `../add-third-party-plugins/delivery-split.md`. Source task IDs are retained for traceability.
 
-- [ ] 1.1 **Source 12.1.** Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and get/list/watch access; add a typed per-query selector for category grants and independently selected record grants that defaults to excluded, then verify both authorization paths plus sensitive/custom broker projections.
+- [x] 1.1 **Source 12.1.** Define typed stable domain/report bases, versioned namespaced Struct schemas, opaque byte envelopes and get/list/watch access; add a typed per-query selector for category grants and independently selected record grants that defaults to excluded, then verify both authorization paths plus sensitive/custom broker projections.
 
-- [ ] 1.2 **Source 12.2.** Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
+- [x] 1.2 **Source 12.2.** Implement bounded publication/session retention with host-assigned source/developer/origin/publisher/version/package provenance, schema versions, sequence and TTL; verify forged attribution, duplicate/out-of-order records and oversized payloads produce explicit outcomes.
 
-- [ ] 1.3 **Source 12.3.** Implement default-deny common-data category read grants selected during activation and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify grants permit but do not trigger queries, explicit common queries cover all publishers within scope, and denied queries leave private data available.
+- [x] 1.3 **Source 12.3.** Implement default-deny common-data category read grants selected during activation and separate sensitive/custom source-to-recipient field/history/live-sharing policies; verify grants permit but do not trigger queries, explicit common queries cover all publishers within scope, and denied queries leave private data available.
 
-- [ ] 1.4 **Source 12.4.** Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
+- [x] 1.4 **Source 12.4.** Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; return the DataList snapshot revision for gap-free DataWatch resumption; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
 
-- [ ] 1.5 **Source 12.5.** Document each dataset/method/permission/projection and safe non-shareable exclusions; verify the published producer-consumer contract can be followed without source-private RPCs or Core dashboards.
+- [ ] 1.5 **Source 12.5.** Document each dataset/method/permission/projection and safe non-shareable exclusions; after task 1.27, verify the published producer-consumer contract can be followed through public APIs without source-private RPCs or Core dashboards.
 
 
 - [ ] 1.6 **Source 12.6.** Implement structural Struct validation, size/depth/key budgets and namespace/field projection; verify metadata cannot shadow typed execution/ownership/grant fields and unknown optional schemas do not invalidate usable base resources.
@@ -40,7 +40,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 - [ ] 1.17 **Source 16.5.** Implement own-namespace automatic cleanup policy within user limits and reviewed host-wide cleanup for unused/large datasets, coordinated with active readers/writers; verify deletion events/tokens, protected data, partial failures and measured reclaimed space, and document API isolation versus native OS access.
 
 
-- [ ] 1.18 **Source 17.1.** Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/retention review, explaining that grants do not trigger per-query use; verify all start off, private-only query defaults and common lookup has no mandatory transfer wizard in en/pt-BR component tests.
+- [x] 1.18 **Source 17.1.** Add activation-time common-data category read controls and separate sensitive-data source/recipient field/history/delivery/retention review, explaining that grants do not trigger per-query use; verify all start off, private-only query defaults and common lookup has no mandatory transfer wizard in en/pt-BR component tests. This task covers the review UI; persistence and enforcement belong to task 1.27.
 
 - [ ] 1.19 **Source 17.2.** Add host-only physical-path storage accounting, uninstall retain/delete and cleanup preview/policy screens; verify plugin IPC cannot access these host administrative paths and slow accounting/deletion remains off the UI thread.
 
@@ -60,7 +60,9 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [ ] 1.25 **Source 19.4.** Add installation/settings controls for public-pool publication, operation and category/record scopes; verify default denial and no implicit permission expansion.
 
-- [ ] 1.26 **Source 9.4.** Implement explicit downgrade and publisher-key re-trust review with a versioned private-data policy; verify automated feeds cannot silently downgrade or change identity and document rollback-safe storage requirements.
+- [x] 1.26 **Source 9.4.** Implement update review that rejects feed downgrades, supports only explicitly confirmed user-requested downgrades through the verified-package path, and requires separate re-trust of the exact changed publisher fingerprint; keep the plugin/publisher/profile data namespace stable across versions with the same publisher key, require versioned logical keys or schema IDs for incompatible private-data changes, preserve older values for rollback, and intersect current grants with the selected package manifest; verify feed downgrade/key changes never activate silently and rollback preserves compatible data without restoring broader grants.
+
+- [ ] 1.27 **Shared-data policy integration.** Build on `add-third-party-plugins` tasks 10.2/10.4 for verified plugin identity, profile-bound activation and generic permission inventory; do not duplicate that lifecycle. Connect common-category and selected-record review choices to persisted `SharedSharingPolicies` grants keyed by host-authenticated plugin/publisher/profile identity, and add host-controlled exact source/recipient/dataset review for sensitive/custom fields and history/live delivery. Keep read grants separate from recipient persistence/retention consent and prevent plugin RPCs from creating or widening policy. Verify grants reload only for the same identity/profile but still require explicit query selectors, separate pair/dataset/field/delivery rules, revocation fences queued watches and cursors, and a two-plugin producer/consumer flow works through public APIs without filtered-field leakage. Task 1.5's end-to-end contract verification depends on this task.
 
 - [ ] 1.28 **Reviewed publisher-key data migration.** After 1.26 re-trust and MVP 10.2/10.4 identity and review, add host-controlled preview and explicit migration of compatible data from the old publisher identity to the new one. Preserve original provenance and source data; report incompatible schemas, conflicts and partial failures; never migrate secrets or grants automatically. Verify rejection, cancellation, profile isolation, rollback and separate authorization of new sharing and retention.
 

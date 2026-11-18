@@ -13,7 +13,8 @@ the generated protobuf descriptors. Unknown routes remain `UNIMPLEMENTED`.
 The route tables below describe the API contract, not a claim that every route
 is currently served. The implemented resource adapters cover library reads,
 presentation, storage, files, network, notifications, standard launch/install,
-jobs, backups, tools, PC ports and logical libraries/roots. Saves and Locations also have handlers;
+jobs, backups, tools, PC ports, logical libraries/roots and the four `Data*`
+methods. Saves and Locations also have handlers;
 custom launches and the other domain services remain
 unimplemented. `DescribeApi` lists exactly the served methods; generated
 bindings alone do not establish availability. The persisted
@@ -49,8 +50,8 @@ unserved handlers as requirements, not evidence of runtime enforcement.
 | `ComputerPublishHardware` | `computer.hardware.publish` |
 | `GamePresencePublish`, `GamePresenceClear` | `game.presence.publish` |
 | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` | `game.performance.publish` |
-| `DataPublish` | `data.publish` for declared custom data, or the domain-specific producer grant; durable publication additionally requires `storage.persist` |
-| `DataGet`, `DataList`, `DataWatch` | read grant for the selected dataset/category or record; public records are excluded unless a query explicitly opts in |
+| `DataPublish` | `data.publish`; accepts custom datasets only, append-only and session-retained (`SESSION_ONLY`) |
+| `DataGet`, `DataList`, `DataWatch` | authenticated resource session plus owner access or the host's current dataset/record sharing policy; selectors request authorized scopes but grant no access |
 | `PersistenceGetUsage`, `PersistenceListEntries`, `PersistenceDeleteEntries`, `PersistenceClear`, `PersistenceSetRetentionPolicy` | `storage.persist`, restricted to the caller's namespace |
 | `ToolsList`, `ToolsRequestApply`, `ToolsRequestRemove` | `tools.read`, `tools.apply`, `tools.remove` |
 | `PortsList`, `PortsDetail`, `PortsRequestInstall` | `ports.read`, `ports.install` |
@@ -92,8 +93,13 @@ scope. Selectors request data; they do not grant authority. The contract
 requires the host to check each requested scope on every query. Activation
 grants only make queries eligible and do not trigger reads or delivery.
 Sensitive/custom datasets still require their separate sharing review, and
-secrets remain excluded. The common-data selector RPC handlers are not mounted
-yet, as noted above.
+secrets remain excluded. `Data.Get`, `Data.List` and `Data.Watch` accept this
+selector in the current host. `Data.Publish` creates custom-class records and
+does not classify them as one of the common categories. The category enum is a
+set of consent scopes, not a guarantee that every domain data source is
+currently populated; see [Shared plugin data](plugin-shared-data.md) for the
+served producer/consumer contract and its source limitations. Other domain
+routes remain unserved unless `DescribeApi` says otherwise.
 
 The former `include_common` boolean and string `selected_categories` fields
 remain deprecated at their original wire numbers for draft-client decoding.

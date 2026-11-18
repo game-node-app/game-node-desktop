@@ -348,6 +348,7 @@ impl ResourceApi {
             platform: runtime.platform,
             argument_template: proto_arguments(&runtime.launch_arguments),
             extensions: Default::default(),
+            provenance: None,
         })
     }
 

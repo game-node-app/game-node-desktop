@@ -313,6 +313,7 @@ describe('PluginInventory', () => {
       candidatePlaytime: { identifiesGameplay: true, identifiesPauses: false, withoutPauseDetection: 'application_open' },
       playtimeChanged: true,
       publisherChanged: false, installedPublisherKeyId: 'publisher-1', candidatePublisherKeyId: 'publisher-1',
+      publisherFingerprint: '', changedDataSchemas: [], preservesPriorData: true, isDowngrade: false,
       requiresManualApproval: true,
     });
     const approve = vi.spyOn(commands, 'pluginUpdateApprove').mockResolvedValue('2.0.0');
@@ -566,5 +567,44 @@ describe('PluginInventory', () => {
     });
     expect(screen.getByRole('button', { name: 'Review version 3.0.0' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review version 2.0.0' })).not.toBeInTheDocument();
+  });
+
+  it('requires separate rollback and exact publisher fingerprint confirmations', async () => {
+    const fingerprint = `SHA256:${'a'.repeat(64)}`;
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+    vi.spyOn(commands, 'pluginRollbackAvailable').mockResolvedValue([{
+      pluginId: 'org.example.update', name: 'Example update', activeVersion: '2.0.0', versions: ['1.0.0'],
+    }]);
+    vi.spyOn(commands, 'pluginRollbackReview').mockResolvedValue({
+      pluginId: 'org.example.update', installedVersion: '2.0.0', candidateVersion: '1.0.0',
+      addedPermissions: [], removedPermissions: ['files.read'], changedPermissions: [], permissionChanges: [],
+      addedNativeAccess: [], removedNativeAccess: [], apiChanged: false, installedApi: '1.0.0 – 1.0.0',
+      candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT', candidateLicense: 'MIT',
+      installedLicenseFiles: [], candidateLicenseFiles: [], installedLicenseNotices: [], candidateLicenseNotices: [],
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false,
+      publisherChanged: true, installedPublisherKeyId: 'new-key', candidatePublisherKeyId: 'old-key',
+      publisherFingerprint: fingerprint, changedDataSchemas: [], preservesPriorData: true, isDowngrade: true,
+      requiresManualApproval: true,
+    });
+    const retrust = vi.spyOn(commands, 'pluginUpdateRetrustPublisher').mockResolvedValue(undefined);
+    const approveRollback = vi.spyOn(commands, 'pluginRollbackApprove').mockResolvedValue('1.0.0');
+    renderInventory();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review rollback to 1.0.0' }));
+    await screen.findByRole('article', { name: 'Review plugin rollback' });
+    const approve = screen.getByRole('button', { name: 'Confirm rollback' });
+    expect(approve).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I understand this will activate/ }));
+    expect(approve).toBeDisabled();
+    fireEvent.change(screen.getByRole('textbox', { name: /Type the new publisher fingerprint/ }), {
+      target: { value: fingerprint },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm publisher re-trust' }));
+    await waitFor(() => expect(retrust).toHaveBeenCalledWith('org.example.update', '1.0.0', fingerprint));
+    await waitFor(() => expect(approve).toBeEnabled());
+    fireEvent.click(approve);
+    await waitFor(() => expect(approveRollback).toHaveBeenCalledWith('org.example.update', '1.0.0', true));
   });
 });

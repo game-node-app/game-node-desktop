@@ -3067,6 +3067,7 @@ export function createMockHost(options: {
         const communityPlugin: PluginInfo = {
           providerId: 'community-save-sync',
           pluginId: 'community.example.save-sync',
+          pluginKind: 'extension',
           name: 'Community Save Sync',
           source: 'community',
           status: 'installed',

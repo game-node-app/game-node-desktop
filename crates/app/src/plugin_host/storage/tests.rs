@@ -14,6 +14,9 @@ fn caller(
     session: &str,
 ) -> ResourceCaller {
     ResourceCaller {
+        declared_developer: "Fixture developer".into(),
+        origin: "fixture".into(),
+        package_digest: Vec::new(),
         session_id: session.into(),
         provider_id: "provider".into(),
         package_version: "1.0.0".into(),

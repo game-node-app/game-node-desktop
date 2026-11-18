@@ -3,7 +3,13 @@ import { Switch } from '@mantine/core';
 import { useI18n } from '../../i18n';
 import { settingsCard, settingsRow, settingsRowDescription, settingsRowInfo, settingsRowTitle } from './settingsClasses';
 
-export type CommonDataCategory = 'library' | 'playtime' | 'performance' | 'runtime';
+export type CommonDataCategory =
+  | 'gamePaths'
+  | 'gamePerformanceHistory'
+  | 'runtimeCatalog'
+  | 'contentAvailability'
+  | 'libraryRoots'
+  | 'saveProfiles';
 export type SensitiveDataReview = 'source' | 'recipient' | 'fields' | 'history' | 'delivery' | 'retention';
 
 export interface PluginActivationPermissionsValue {
@@ -12,16 +18,24 @@ export interface PluginActivationPermissionsValue {
 }
 
 interface Props {
+  initialValue?: PluginActivationPermissionsValue;
   onContinue: (value: PluginActivationPermissionsValue) => void;
 }
 
-const COMMON_CATEGORIES: CommonDataCategory[] = ['library', 'playtime', 'performance', 'runtime'];
+const COMMON_CATEGORIES: CommonDataCategory[] = [
+  'gamePaths',
+  'gamePerformanceHistory',
+  'runtimeCatalog',
+  'contentAvailability',
+  'libraryRoots',
+  'saveProfiles',
+];
 const SENSITIVE_REVIEW: SensitiveDataReview[] = ['source', 'recipient', 'fields', 'history', 'delivery', 'retention'];
 
-export const PluginActivationPermissions: React.FC<Props> = ({ onContinue }) => {
+export const PluginActivationPermissions: React.FC<Props> = ({ initialValue, onContinue }) => {
   const { t } = useI18n();
-  const [commonDataRead, setCommonDataRead] = useState<CommonDataCategory[]>([]);
-  const [sensitiveDataReview, setSensitiveDataReview] = useState<SensitiveDataReview[]>([]);
+  const [commonDataRead, setCommonDataRead] = useState<CommonDataCategory[]>(() => initialValue?.commonDataRead ?? []);
+  const [sensitiveDataReview, setSensitiveDataReview] = useState<SensitiveDataReview[]>(() => initialValue?.sensitiveDataReview ?? []);
 
   const toggle = <T extends string>(values: T[], value: T, update: (next: T[]) => void) => {
     update(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);

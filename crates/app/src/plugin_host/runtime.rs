@@ -953,6 +953,8 @@ impl HostedProviders {
                 plugin_id: descriptor.plugin_id.clone(),
                 kind: super::provider::RegistrationKind::Provider,
                 origin: crate::plugin_host::provider::RegistrationOrigin::Official,
+                declared_developer: descriptor.name.clone(),
+                package_digest: Vec::new(),
                 capabilities: descriptor.capabilities.clone(),
                 shared_catalog: descriptor.shared_catalog,
                 playtime: Default::default(),
@@ -1105,6 +1107,9 @@ impl HostedProviders {
                 origin: super::provider::RegistrationOrigin::ThirdParty {
                     publisher_fingerprint,
                 },
+                declared_developer: report.manifest.name.clone(),
+                package_digest: Vec::new(),
+                playtime: report.manifest.playtime,
                 capabilities: config.manifest_capabilities.clone(),
                 shared_catalog: false,
                 services: services.clone(),
@@ -1348,6 +1353,9 @@ impl ProviderRuntime for HostedProviders {
             installation_id: installation_id.to_owned(),
             operation,
             target_revision,
+            recipe_id: String::new(),
+            recipe_revision: 0,
+            plan_fingerprint: String::new(),
         };
         let intent_id = self.intents.issue(binding)?;
         let target = gamenode_plugin_protocol::proto::TargetGameContext {
@@ -1535,6 +1543,8 @@ mod managed_runtime_tests {
         let plugin_id = "org.example.community";
         let fingerprint = "cd".repeat(32);
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "community".into(),
             plugin_id: plugin_id.into(),
             kind: RegistrationKind::Provider,
@@ -1543,6 +1553,7 @@ mod managed_runtime_tests {
             },
             capabilities: vec![cap::CONTEXT.into()],
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(PermissionSnapshotServices),
         })
         .unwrap();
@@ -1576,12 +1587,15 @@ mod managed_runtime_tests {
 
         api.profiles().update(Some("account-one"), true);
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "official".into(),
             plugin_id: "org.example.official".into(),
             kind: RegistrationKind::Provider,
             origin: RegistrationOrigin::Official,
             capabilities: vec![cap::CONTEXT.into()],
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(PermissionSnapshotServices),
         })
         .unwrap();
@@ -1673,6 +1687,7 @@ mod managed_runtime_tests {
             configuration: Default::default(),
             resources: BTreeMap::new(),
             schemas: vec![],
+            playtime: Default::default(),
         };
         let package_path = PathBuf::from("managed-package");
         let installed = gamenode_platform::plugin_registry::InstalledPluginVersion {

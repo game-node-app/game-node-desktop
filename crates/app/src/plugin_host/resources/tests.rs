@@ -23,6 +23,7 @@ use tonic::transport::Channel;
 
 mod artwork_handles;
 mod backups;
+mod data;
 mod declared_locations;
 mod files;
 mod fingerprints;
@@ -176,6 +177,8 @@ impl Fixture {
             "fixture".into()
         };
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: vec![7; 32],
             provider_id: registration_id.clone(),
             plugin_id: "fixture.plugin".into(),
             kind: if extension_session {

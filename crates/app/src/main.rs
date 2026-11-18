@@ -171,6 +171,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(gamenode_platform::processes::HostProcesses::new());
 
     let plugin_api = gamenode_app::plugin_host::PluginApi {
+        shared_policies: Arc::new(
+            gamenode_app::plugin_host::sharing_policy::SharedSharingPolicies::open(
+                paths.plugin_data_dir().join("shared-data-policies"),
+            )?,
+        ),
         storage: Arc::new(gamenode_app::plugin_host::storage::PluginStorage::new(
             paths.plugin_data_dir(),
         )),
@@ -416,6 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // HostedProviders owns the single profile lifecycle observer: it fences sessions, reaps old
     // process trees, then restores only the new account's enabled plugins.
     engine.set_plugin_profiles(plugin_api.providers.profiles());
+    plugin_updates.set_profiles(plugin_api.providers.profiles());
     // Plugins read the library through a host-owned projection the engine keeps current.
     engine.set_library_feed(plugin_api.library.clone());
     let folder_approvals = Arc::new(
@@ -572,6 +578,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_update_set_periodic_checks,
         commands::plugin_update_check,
         commands::plugin_update_review,
+        commands::plugin_rollback_available,
+        commands::plugin_rollback_review,
+        commands::plugin_update_retrust_publisher,
+        commands::plugin_rollback_approve,
         commands::plugin_update_approve,
         commands::plugin_update_decline,
         commands::plugin_confirmation_answer,

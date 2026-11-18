@@ -6,6 +6,8 @@ use crate::plugin_host::profile::ProfileTransition;
 
 fn third_party_registration(provider_id: &str) -> Registration {
     Registration {
+        declared_developer: "Fixture developer".into(),
+        package_digest: Vec::new(),
         provider_id: provider_id.into(),
         plugin_id: format!("{provider_id}.plugin"),
         kind: super::RegistrationKind::Provider,

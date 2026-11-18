@@ -177,3 +177,131 @@ fn common_data_fixture_matches_the_generated_wire_contract() {
     }
     assert_eq!(contract["excluded_data"].as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn generated_descriptor_keeps_typed_data_extensions_and_byte_envelopes_stable() {
+    let descriptor = FileDescriptorSet::decode(DESCRIPTOR).unwrap();
+    let message = |name: &str| {
+        descriptor
+            .file
+            .iter()
+            .flat_map(|file| &file.message_type)
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{name} descriptor"))
+    };
+    let field = |name: &str, field_name: &str| {
+        message(name)
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap_or_else(|| panic!("{name}.{field_name} descriptor"))
+    };
+
+    let resource_host = descriptor
+        .file
+        .iter()
+        .flat_map(|file| &file.service)
+        .find(|service| service.name.as_deref() == Some("ResourceHost"))
+        .expect("ResourceHost descriptor");
+    for method in ["DataGet", "DataList", "DataWatch"] {
+        assert!(
+            resource_host
+                .method
+                .iter()
+                .any(|candidate| candidate.name.as_deref() == Some(method)),
+            "ResourceHost.{method} access"
+        );
+    }
+    for request in ["DataGetRequest", "DataListRequest", "DataWatchRequest"] {
+        assert_eq!(
+            field(request, "common_data_categories")
+                .type_name
+                .as_deref(),
+            Some(".gamenode.plugin.v1.CommonDataSelector")
+        );
+    }
+
+    for (field_name, number) in [
+        ("schema_id", 1),
+        ("schema_version", 2),
+        ("schema_digest", 3),
+        ("data", 4),
+    ] {
+        assert_eq!(field("ExtensionPayload", field_name).number, Some(number));
+    }
+    assert_eq!(
+        field("ExtensionPayload", "data").type_name.as_deref(),
+        Some(".google.protobuf.Struct")
+    );
+    for expected in [
+        "namespace",
+        "schema_id",
+        "schema_version",
+        "schema_digest",
+        "schema_json",
+        "fields",
+    ] {
+        assert!(
+            message("ExtensionSchemaDescriptor")
+                .field
+                .iter()
+                .any(|candidate| candidate.name.as_deref() == Some(expected)),
+            "versioned namespaced schema field {expected}"
+        );
+    }
+    for expected in ["schema_id", "schema_version", "value"] {
+        assert!(
+            message("DataPublishRequest")
+                .field
+                .iter()
+                .any(|candidate| candidate.name.as_deref() == Some(expected)),
+            "typed custom-data envelope field {expected}"
+        );
+    }
+    assert_eq!(
+        field("DataPublishRequest", "value").type_name.as_deref(),
+        Some(".google.protobuf.Struct")
+    );
+    assert_eq!(
+        field("StoragePutRequest", "value").r#type,
+        Some(prost_types::field_descriptor_proto::Type::Bytes as i32)
+    );
+    assert_eq!(
+        field("StorageGetReply", "value").r#type,
+        Some(prost_types::field_descriptor_proto::Type::Bytes as i32)
+    );
+
+    for (message_name, expected_fields) in [
+        ("RuntimeRecord", &["id", "revision", "extensions"][..]),
+        (
+            "PerformanceSample",
+            &[
+                "observed_at",
+                "frames_per_second",
+                "cpu_percent",
+                "memory_bytes",
+                "sequence",
+            ][..],
+        ),
+        (
+            "HardwareReportRequest",
+            &["schema_id", "schema_version", "observations"][..],
+        ),
+    ] {
+        for expected in expected_fields {
+            assert!(
+                message(message_name)
+                    .field
+                    .iter()
+                    .any(|field| field.name.as_deref() == Some(*expected)),
+                "typed base field {message_name}.{expected}"
+            );
+        }
+    }
+    assert_eq!(
+        field("HardwareReportRequest", "observations")
+            .type_name
+            .as_deref(),
+        Some(".google.protobuf.Struct")
+    );
+}

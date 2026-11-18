@@ -438,7 +438,7 @@ message DataRecord { string record_id = 1; string dataset_id = 2; string publish
 // Host-assigned provenance for published data and common domain projections.
 message DataProvenance { string producer_plugin_id = 1; string declared_developer = 2; string origin = 3; string publisher_fingerprint = 4; string package_version = 5; bytes package_digest = 6; string resource_id = 7; int64 observed_at = 8; int64 received_at = 9; repeated string source_record_ids = 10; }
 message DataGetReply { DataRecord record = 1; }
-message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; }
+message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; uint64 revision = 3; }
 message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
 message PersistenceUsageRequest { ServiceContext context = 1; }
 message PersistenceUsageReply { uint64 logical_bytes = 1; uint64 physical_bytes = 2; uint64 quota_bytes = 3; }

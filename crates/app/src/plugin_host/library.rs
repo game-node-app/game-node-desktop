@@ -111,6 +111,7 @@ impl Projected {
             display_name: self.display_name.clone().unwrap_or_default(),
             metadata_revision: self.metadata_revision,
             artwork_revision: self.artwork_revision,
+            runtime_availability: Vec::new(),
         }
     }
 

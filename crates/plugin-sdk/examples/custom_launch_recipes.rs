@@ -75,3 +75,5 @@ pub async fn remove_recipe(
         .await?;
     Ok(())
 }
+
+fn main() {}

@@ -41,6 +41,7 @@ pub mod runtime;
 pub mod saves;
 pub mod services;
 pub mod shared_data;
+pub mod sharing_policy;
 pub mod storage;
 mod transport;
 pub mod updates;
@@ -503,6 +504,10 @@ pub fn backends(platform: Platform) -> Vec<gamenode_core::provider::PluginBacken
 #[derive(Clone, Default)]
 pub struct PluginApi {
     pub providers: provider::ProviderApi,
+    /// Host-owned shared-data category grants and source/recipient sharing policies.
+    pub shared_policies: Arc<sharing_policy::SharedSharingPolicies>,
+    /// Shared published datasets; all provider sessions use the same broker.
+    pub data_broker: Arc<shared_data::DataBroker>,
     /// The library projection plugins read; the engine keeps it current.
     pub library: Arc<library::LibraryFeed>,
     /// The plugins' private key/value storage.
@@ -755,18 +760,21 @@ impl PluginApiServer {
             .buffer_unordered(MAX_CONNECTIONS)
             .filter_map(|item| async move { item });
 
-        let resource_api = Arc::new(resources::ResourceApi::new(
-            api.providers.clone(),
-            api.library.clone(),
-            api.storage.clone(),
-            api.files.clone(),
-            api.network.clone(),
-            api.notifications.clone(),
-            api.jobs.clone(),
-            api.intents.clone(),
-            api.saves.clone(),
-            api.fingerprints.clone(),
-        ));
+        let resource_api = Arc::new(
+            resources::ResourceApi::new(
+                api.providers.clone(),
+                api.library.clone(),
+                api.storage.clone(),
+                api.files.clone(),
+                api.network.clone(),
+                api.notifications.clone(),
+                api.jobs.clone(),
+                api.intents.clone(),
+                api.saves.clone(),
+                api.fingerprints.clone(),
+            )
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
+        );
         let service_resource_api = resource_api.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = runtime.spawn(async move {
@@ -854,18 +862,21 @@ impl PluginApiServer {
                 }
             },
         );
-        let resource_api = Arc::new(resources::ResourceApi::new(
-            api.providers.clone(),
-            api.library.clone(),
-            api.storage.clone(),
-            api.files.clone(),
-            api.network.clone(),
-            api.notifications.clone(),
-            api.jobs.clone(),
-            api.intents.clone(),
-            api.saves.clone(),
-            api.fingerprints.clone(),
-        ));
+        let resource_api = Arc::new(
+            resources::ResourceApi::new(
+                api.providers.clone(),
+                api.library.clone(),
+                api.storage.clone(),
+                api.files.clone(),
+                api.network.clone(),
+                api.notifications.clone(),
+                api.jobs.clone(),
+                api.intents.clone(),
+                api.saves.clone(),
+                api.fingerprints.clone(),
+            )
+            .with_shared_data(api.data_broker.clone(), api.shared_policies.clone()),
+        );
         let service_resource_api = resource_api.clone();
         let (shutdown, stopped) = oneshot::channel();
         let task = runtime.spawn(async move {

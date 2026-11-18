@@ -829,6 +829,8 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
             policy()
         };
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "fixture".into(),
             plugin_id: "fixture.login".into(),
             kind: crate::plugin_host::provider::RegistrationKind::Provider,

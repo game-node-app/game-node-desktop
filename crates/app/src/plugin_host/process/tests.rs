@@ -156,6 +156,8 @@ async fn manager_with_origin_and_lifecycle(
     let root = super::super::PluginApi::default();
     root.providers
         .register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "fixture".into(),
             plugin_id: "fixture.plugin".into(),
             kind: crate::plugin_host::provider::RegistrationKind::Provider,

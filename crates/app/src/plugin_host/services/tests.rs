@@ -228,6 +228,8 @@ impl Harness {
         let root = PluginApi::default();
         let api = root.providers.clone();
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "steam".into(),
             plugin_id: "fixture.steam".into(),
             kind: crate::plugin_host::provider::RegistrationKind::Provider,
@@ -323,6 +325,8 @@ impl Harness {
         let api = root.providers.clone();
         api.profiles().update(Some(account_id), true);
         api.register(Registration {
+            declared_developer: "Fixture developer".into(),
+            package_digest: Vec::new(),
             provider_id: "fixture-provider".into(),
             plugin_id: plugin_id.into(),
             kind: crate::plugin_host::provider::RegistrationKind::Provider,
@@ -334,6 +338,7 @@ impl Harness {
                 .map(|capability| (*capability).into())
                 .collect(),
             shared_catalog: false,
+            playtime: Default::default(),
             services: services.clone(),
         })
         .unwrap();

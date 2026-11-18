@@ -2,13 +2,13 @@
 //! every provider message is validated before those services can be called.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use gamenode_plugin_protocol::{
     capability as cap, catalog::CatalogTransfer, models, proto::*, settings,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
@@ -16,6 +16,7 @@ use super::namespace::ExternalNamespaceResolver;
 use super::package::PlaytimeCapabilities;
 use super::profile::PluginProfiles;
 use super::runtime::RuntimeSessionHandler;
+use super::shared_data::DataBroker;
 
 const MAX_OPERATIONS: usize = 32;
 const COMMAND_QUEUE: usize = 32;
@@ -285,6 +286,7 @@ pub struct ProviderApi {
     profiles: Arc<PluginProfiles>,
     configuration_windows: Arc<tokio::sync::Mutex<HashMap<(String, String), ConfigurationWindow>>>,
     runtime_session_handler: Arc<Mutex<Option<Arc<dyn RuntimeSessionHandler>>>>,
+    shared_data_broker: Arc<Mutex<Option<Weak<DataBroker>>>>,
 }
 
 /// Declared configuration surfaces and the active session's explicit grants.
@@ -295,7 +297,6 @@ pub struct ConfigurationModes {
     pub external_authorized: bool,
     pub declarative_declared: bool,
     pub declarative_authorized: bool,
-}
 }
 
 pub struct Launch {
@@ -676,6 +677,10 @@ fn permission_set(kind: ProviderOperation) -> BTreeSet<&'static str> {
 }
 
 impl ProviderApi {
+    pub(crate) fn set_shared_data_broker(&self, broker: &Arc<DataBroker>) {
+        *lock(&self.shared_data_broker) = Some(Arc::downgrade(broker));
+    }
+
     pub fn set_runtime_session_handler(&self, handler: Arc<dyn RuntimeSessionHandler>) {
         *lock(&self.runtime_session_handler) = Some(handler);
     }
@@ -751,7 +756,7 @@ impl ProviderApi {
             )
         };
 
-        let commit = provider.commits.lock().await;
+        let _commit = provider.commits.lock().await;
         let (has_grant, scope_matches, revision_unchanged, denial_audit) = {
             let state = lock(&self.state);
             let Some(session) = state.sessions.get(&context.session_id) else {
@@ -808,7 +813,7 @@ impl ProviderApi {
                     grant_revision,
                 }),
             }
-        } else if let Some(handler) = lock(&self.runtime_session_handler).clone() {
+        } else if let Some(handler) = { lock(&self.runtime_session_handler).clone() } {
             handler
                 .report(
                     provider.registration.plugin_id.clone(),
@@ -973,52 +978,56 @@ impl ProviderApi {
             .get(session_id)
             .map(|session| session.provider.clone())
             .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
-        let commit = provider.commits.lock().await;
-        let mut state = lock(&self.state);
-        let session = state
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
-        let removed: BTreeSet<_> = session.grants.difference(&grants).cloned().collect();
-        let revoked = !removed.is_empty();
-        session.grants = grants;
-        session.grant_revision = session.grant_revision.saturating_add(1);
-        let change = permission_change(session, revoked);
-        session
-            .permission_watchers
-            .retain(|watcher| watcher.try_send(Ok(change.clone())).is_ok());
-        let revision = session.grant_revision;
-        let runtime_reporting_revoked = removed.contains(cap::GAME_SESSIONS_REPORT);
-        if revoked {
-            let obsolete: Vec<_> = state
-                .operations
-                .iter()
-                .filter(|((id, _), operation)| {
-                    id == session_id && operation.permissions.iter().any(|p| removed.contains(*p))
-                })
-                .map(|(key, operation)| {
-                    let permission = operation
-                        .permissions
-                        .iter()
-                        .find(|permission| removed.contains(**permission))
-                        .copied()
-                        .unwrap_or(cap::CONTEXT);
-                    (key.clone(), permission)
-                })
-                .collect();
-            for (key, permission) in obsolete {
-                if let Some(operation) = state.operations.remove(&key) {
-                    let _ = operation.result.send(Err(denial(
-                        DenialReason::Revoked,
-                        permission,
-                        revision,
-                    )));
+        let (revision, runtime_reporting_revoked, close_configuration) = {
+            let commit = provider.commits.lock().await;
+            let mut state = lock(&self.state);
+            let session = state
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
+            let removed: BTreeSet<_> = session.grants.difference(&grants).cloned().collect();
+            let revoked = !removed.is_empty();
+            session.grants = grants;
+            session.grant_revision = session.grant_revision.saturating_add(1);
+            let change = permission_change(session, revoked);
+            session
+                .permission_watchers
+                .retain(|watcher| watcher.try_send(Ok(change.clone())).is_ok());
+            let revision = session.grant_revision;
+            let runtime_reporting_revoked = removed.contains(cap::GAME_SESSIONS_REPORT);
+            if revoked {
+                let obsolete: Vec<_> = state
+                    .operations
+                    .iter()
+                    .filter(|((id, _), operation)| {
+                        id == session_id
+                            && operation.permissions.iter().any(|p| removed.contains(*p))
+                    })
+                    .map(|(key, operation)| {
+                        let permission = operation
+                            .permissions
+                            .iter()
+                            .find(|permission| removed.contains(**permission))
+                            .copied()
+                            .unwrap_or(cap::CONTEXT);
+                        (key.clone(), permission)
+                    })
+                    .collect();
+                for (key, permission) in obsolete {
+                    if let Some(operation) = state.operations.remove(&key) {
+                        let _ = operation.result.send(Err(denial(
+                            DenialReason::Revoked,
+                            permission,
+                            revision,
+                        )));
+                    }
                 }
             }
-        }
-        let close_configuration = removed.contains(cap::CONFIGURE);
-        drop(state);
-        drop(commit);
+            let close_configuration = removed.contains(cap::CONFIGURE);
+            drop(state);
+            drop(commit);
+            (revision, runtime_reporting_revoked, close_configuration)
+        };
         if close_configuration {
             let api = self.clone();
             let session_id = session_id.to_owned();
@@ -1031,13 +1040,11 @@ impl ProviderApi {
                 }
             });
         }
-        if runtime_reporting_revoked
-            && let Some(handler) = lock(&self.runtime_session_handler).clone()
-        {
+        let runtime_session_handler = { lock(&self.runtime_session_handler).clone() };
+        if runtime_reporting_revoked && let Some(handler) = runtime_session_handler {
             handler
                 .disconnected(provider.registration.plugin_id.clone())
                 .await;
-        }
         }
         Ok(revision)
     }
@@ -1766,7 +1773,14 @@ impl ProviderApi {
             .await
             .retain(|_, window| window.session_id != session_id);
         services.session_closed(session_id).await;
-        if reported_sessions && let Some(handler) = lock(&self.runtime_session_handler).clone() {
+        if let Some(broker) = lock(&self.shared_data_broker)
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
+            broker.close_session(session_id);
+        }
+        let runtime_session_handler = { lock(&self.runtime_session_handler).clone() };
+        if reported_sessions && let Some(handler) = runtime_session_handler {
             handler.disconnected(plugin_id).await;
         }
     }
@@ -1871,6 +1885,34 @@ impl ProviderApi {
         permission: &'static str,
     ) -> Result<ResourceCaller, Status> {
         self.resource_caller(context, Some(permission))
+    }
+
+    /// Authorizes a resource mutation while holding the provider's session commit lock. Session
+    /// disconnect waits for this guard, then removes any session-retained data written here.
+    pub(crate) async fn authorize_resource_commit(
+        &self,
+        context: &ServiceContext,
+        permission: &'static str,
+    ) -> Result<(ResourceCaller, OwnedMutexGuard<()>), Status> {
+        let initial = self.authorize_resource(Some(context), permission)?;
+        let provider = {
+            let state = lock(&self.state);
+            state
+                .sessions
+                .get(&context.session_id)
+                .map(|session| session.provider.clone())
+                .ok_or_else(|| Status::unauthenticated("plugin session expired"))?
+        };
+        let guard = provider.commits.clone().lock_owned().await;
+        let current = self.authorize_resource(Some(context), permission)?;
+        if current.grant_revision != initial.grant_revision
+            || current.profile_epoch != initial.profile_epoch
+        {
+            return Err(Status::failed_precondition(
+                "plugin permissions changed; retry the resource mutation",
+            ));
+        }
+        Ok((current, guard))
     }
 
     /// [`authorize_resource`](Self::authorize_resource) without naming a permission: the session,

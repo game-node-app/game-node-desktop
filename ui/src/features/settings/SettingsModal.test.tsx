@@ -181,7 +181,7 @@ describe('SettingsModal Feature Suite', () => {
 
     it('keeps settings topic navigation responsive while Configure awaits the external window', async () => {
       vi.spyOn(commands, 'pluginInventory').mockResolvedValue([{
-        providerId: 'fixture', pluginId: 'org.example.fixture', name: 'Fixture', source: 'community',
+        providerId: 'fixture', pluginId: 'org.example.fixture', pluginKind: 'extension', name: 'Fixture', source: 'community',
         status: 'installed', capabilities: ['ui.configure'], session: 'active', nativeAccess: [],
       }]);
       vi.spyOn(commands, 'pluginConfigurationModes').mockResolvedValue({

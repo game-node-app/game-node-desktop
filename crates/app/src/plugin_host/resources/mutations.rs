@@ -141,6 +141,18 @@ pub(super) fn request_hash(parts: &[&str]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// Hashes a request containing a potentially large binary field without expanding it into text.
+pub(super) fn request_hash_with_bytes(parts: &[&str], bytes: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    for part in parts {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    hash.update((bytes.len() as u64).to_be_bytes());
+    hash.update(bytes);
+    hash.finalize().into()
+}
+
 /// The idempotency key of a mutation, after the shape checks every mutation shares.
 pub(super) fn mutation_key(mutation: &MutationContext) -> Result<&str, Status> {
     if mutation.operation_id.len() > MAX_KEY_BYTES {

@@ -1,6 +1,26 @@
 //! Typed per-query selection of published data projections.
 
+use std::collections::BTreeSet;
+
 use crate::proto::{CommonDataCategory, CommonDataSelector};
+
+/// The part of a query selector that the host has independently authorized.
+/// Empty selections intentionally mean that no shared records are visible.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizedSelection {
+    categories: BTreeSet<CommonDataCategory>,
+    record_ids: BTreeSet<String>,
+}
+
+impl AuthorizedSelection {
+    pub fn includes_category(&self, category: CommonDataCategory) -> bool {
+        self.categories.contains(&category)
+    }
+
+    pub fn includes_record(&self, record_id: &str) -> bool {
+        self.record_ids.contains(record_id)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SelectorError {
@@ -65,6 +85,51 @@ pub fn selected_record_ids(
         ids.push(id.as_str());
     }
     Ok(ids)
+}
+
+/// Resolves per-query selection against two separate current grants. Category
+/// grants never authorize a selected record, and record grants never opt a
+/// whole category into the query. Missing selectors therefore stay private.
+pub fn authorize_selector(
+    selector: Option<&CommonDataSelector>,
+    granted_categories: &BTreeSet<CommonDataCategory>,
+    granted_record_ids: &BTreeSet<String>,
+) -> Result<AuthorizedSelection, SelectorError> {
+    let categories = categories(selector)?
+        .into_iter()
+        .filter(|category| granted_categories.contains(category))
+        .collect();
+    let record_ids = selected_record_ids(selector)?
+        .into_iter()
+        .filter(|record_id| granted_record_ids.contains(*record_id))
+        .map(str::to_owned)
+        .collect();
+    Ok(AuthorizedSelection {
+        categories,
+        record_ids,
+    })
+}
+
+/// Resolves a selector from the permission identifiers in an authenticated
+/// session. Selected record grants remain a separate input and are never
+/// inferred from a category permission.
+pub fn authorize_grant_selector(
+    selector: Option<&CommonDataSelector>,
+    permission_grants: &BTreeSet<String>,
+    granted_record_ids: &BTreeSet<String>,
+) -> Result<AuthorizedSelection, SelectorError> {
+    let granted_categories = [
+        CommonDataCategory::GamePaths,
+        CommonDataCategory::GamePerformanceHistory,
+        CommonDataCategory::RuntimeCatalog,
+        CommonDataCategory::ContentAvailability,
+        CommonDataCategory::LibraryRoots,
+        CommonDataCategory::SaveProfiles,
+    ]
+    .into_iter()
+    .filter(|category| permission(*category).is_some_and(|id| permission_grants.contains(id)))
+    .collect();
+    authorize_selector(selector, &granted_categories, granted_record_ids)
 }
 
 /// Permission required by each stable common-data category.

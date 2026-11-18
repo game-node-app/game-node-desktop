@@ -41,7 +41,7 @@ const DISPLAY_NAME: &str = "display_name";
 
 /// A consistent walk of the library: the entries and the library revision they were read at,
 /// which is where [`Resources::library_watch`] should resume from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LibrarySnapshot {
     pub entries: Vec<LibraryEntry>,
     pub revision: u64,
@@ -156,6 +156,7 @@ fn runtime_record(spec: RuntimeSpec, id: &str, revision: u64) -> RuntimeRecord {
                 }),
             })
             .collect(),
+        provenance: None,
     }
 }
 
@@ -440,7 +441,6 @@ impl Resources {
             recipe_id: String::new(),
             recipe_revision: 0,
             uri: recipe.uri.clone(),
-            content_id: String::new(),
         }
     }
 
@@ -471,7 +471,6 @@ impl Resources {
             recipe_id: recipe_id.to_owned(),
             recipe_revision,
             uri: String::new(),
-            content_id: String::new(),
         }
     }
 

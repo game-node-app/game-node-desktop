@@ -476,6 +476,9 @@ impl ResourceApi {
         let caller = crate::plugin_host::provider::ResourceCaller {
             session_id: "host-user-play".into(),
             provider_id: String::new(),
+            declared_developer: String::new(),
+            origin: String::new(),
+            package_digest: Vec::new(),
             package_version: recipe.requester_package_version.clone(),
             grants,
             grant_revision,

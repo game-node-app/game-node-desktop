@@ -1,7 +1,7 @@
 //! The API 1.6 `ResourceHost` service. Library list/get/watch are served from the host-owned
-//! [`LibraryFeed`], display metadata and favorites through the engine's [`LibraryHost`]; every
-//! other method answers `UNIMPLEMENTED` until its adapter exists, and
-//! `DescribeApi` advertises only what is served.
+//! [`LibraryFeed`], shared Data access through the bounded broker, and display metadata and
+//! favorites through the engine's [`LibraryHost`]; other methods remain `UNIMPLEMENTED` until
+//! their adapters exist, and `DescribeApi` advertises only what is served.
 //!
 //! Calls are plugin-initiated: they carry the session's resource context from `OpenSession`,
 //! which [`ProviderApi::authorize_resource`] checks against the session, profile and grants.
@@ -9,10 +9,15 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::Stream;
-use gamenode_plugin_protocol::{capability as cap, proto::*};
+use gamenode_plugin_protocol::{
+    capability as cap,
+    prost_types::{self, value::Kind},
+    proto::*,
+};
+use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -20,7 +25,6 @@ use tonic::{Request, Response, Status};
 mod artwork;
 mod backups;
 mod custom_launch;
-mod data;
 mod files;
 mod games;
 mod jobs;
@@ -36,6 +40,7 @@ mod saves;
 mod storage;
 mod tools;
 
+use self::mutations::mutation_key;
 use super::files::FileAccess;
 use super::fingerprints;
 use super::intents::Intents;
@@ -48,6 +53,10 @@ use super::network::NetworkAccess;
 use super::notifications::Notifications;
 use super::provider::{ProviderApi, ResourceCaller};
 use super::saves::SaveAccess;
+use super::shared_data::{
+    BrokerError, DataBroker, ProjectedRecord, QueryCursor, QueryRequest, SubscriptionEnd,
+};
+use super::sharing_policy::{AccessDecision, AccessRequest, Authorizer, Delivery};
 use super::storage::PluginStorage;
 
 /// Open `LibraryWatch` streams allowed per plugin session.
@@ -56,6 +65,8 @@ pub const MAX_WATCHES_PER_SESSION: usize = 8;
 const WATCH_RECHECK: Duration = Duration::from_secs(5);
 const WATCH_QUEUE: usize = 16;
 const MAX_PROVIDER_ID_BYTES: usize = 128;
+const MAX_DATA_CURSORS: usize = 4096;
+const DATA_CURSOR_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// The ResourceHost methods this build serves, for `DescribeApi`.
 pub const SERVED: &[Served] = &[
@@ -265,6 +276,10 @@ pub const SERVED: &[Served] = &[
     Served::new("JobsGet", UNDERLYING, false, OWN_JOBS),
     Served::new("JobsWatch", UNDERLYING, false, OWN_JOBS),
     Served::new("JobsCancel", UNDERLYING, false, OWN_JOBS),
+    Served::new("DataPublish", cap::DATA_PUBLISH, false, DATA_SCOPE),
+    Served::new("DataGet", DATA_READ_SCOPE, false, DATA_SCOPE),
+    Served::new("DataList", DATA_READ_SCOPE, true, DATA_SCOPE),
+    Served::new("DataWatch", DATA_READ_SCOPE, false, DATA_SCOPE),
 ];
 
 const OWN_OR_TARGET: &str =
@@ -281,6 +296,8 @@ const PRIVATE_NAMESPACE: &str = "own plugin/publisher/profile namespace";
 const OWN_NOTICES: &str = "plain text attributed to the calling plugin";
 const APPROVED_ORIGINS: &str = "exact HTTPS origins the user approved for this plugin";
 const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and installation";
+const DATA_READ_SCOPE: &str = "authenticated owner data or explicit current sharing grants";
+const DATA_SCOPE: &str = "host-attributed dataset fields projected under current sharing policy";
 
 /// The `Saves` service methods this build serves, for `DescribeApi`.
 pub const SAVES_SERVED: &[Served] = saves::SERVED;
@@ -342,8 +359,30 @@ pub struct ResourceApi {
     /// The content fingerprints of approved places.
     snapshots: Arc<fingerprints::Snapshots>,
     libraries: Arc<libraries::Libraries>,
-    /// Session-scoped plugin-published data, separate from private Storage.
-    shared_data: Arc<super::shared_data::SharedDataStore>,
+    /// Host-owned records and policy projection boundary for domain/Data reads.
+    data: Arc<DataBroker>,
+    shared_authorizer: Arc<dyn Authorizer>,
+    data_cursors: Arc<Mutex<HashMap<String, DataCursorEntry>>>,
+}
+
+struct DataCursorEntry {
+    session_id: String,
+    cursor: QueryCursor,
+    expires_at: Instant,
+}
+
+/// Unit-test and compatibility fallback: own records remain available after the endpoint's
+/// session check, while foreign records are denied unless production injects the sharing store.
+struct DenySharedData;
+
+impl Authorizer for DenySharedData {
+    fn revision(&self, _recipient: &super::grants::PluginIdentity) -> u64 {
+        0
+    }
+
+    fn decide(&self, _request: &AccessRequest<'_>) -> AccessDecision {
+        AccessDecision::default()
+    }
 }
 
 impl ResourceApi {
@@ -363,7 +402,6 @@ impl ResourceApi {
         Self {
             providers,
             libraries: Arc::default(),
-            shared_data: Arc::default(),
             jobs,
             intents,
             saves,
@@ -378,7 +416,23 @@ impl ResourceApi {
             searches: Arc::default(),
             decoders: Arc::new(tokio::sync::Semaphore::new(artwork::DECODE_SLOTS)),
             backup_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            data: Arc::new(DataBroker::new()),
+            shared_authorizer: Arc::new(DenySharedData),
+            data_cursors: Arc::default(),
         }
+    }
+
+    /// Attach the host's live sharing policy index. Production owns its persistence and passes
+    /// the same revisioned policy used by settings/activation reviews.
+    pub fn with_shared_data(
+        mut self,
+        data: Arc<DataBroker>,
+        authorizer: Arc<dyn Authorizer>,
+    ) -> Self {
+        self.providers.set_shared_data_broker(&data);
+        self.data = data;
+        self.shared_authorizer = authorizer;
+        self
     }
 
     fn scope(caller: &ResourceCaller, provider_id: &str) -> Result<Scope, Status> {
@@ -406,6 +460,77 @@ impl ResourceApi {
             watches: self.watches.clone(),
             session_id: session_id.to_owned(),
         })
+    }
+
+    fn data_identity(caller: &ResourceCaller) -> Result<super::grants::PluginIdentity, Status> {
+        caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().clone())
+            .ok_or_else(|| {
+                Status::permission_denied(
+                    "shared plugin data is available only to authenticated third-party plugins",
+                )
+            })
+    }
+
+    fn take_data_cursor(
+        &self,
+        token: &str,
+        session_id: &str,
+    ) -> Result<Option<QueryCursor>, Status> {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        if token.len() != 48 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Status::invalid_argument("invalid data cursor"));
+        }
+        let mut cursors = self
+            .data_cursors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cursors.retain(|_, entry| entry.expires_at > Instant::now());
+        let Some(entry) = cursors.get(token) else {
+            return Err(Status::failed_precondition(
+                "data cursor is stale; list again",
+            ));
+        };
+        if entry.session_id != session_id {
+            return Err(Status::invalid_argument("invalid data cursor"));
+        }
+        Ok(Some(entry.cursor.clone()))
+    }
+
+    fn issue_data_cursor(&self, session_id: &str, cursor: QueryCursor) -> Result<String, Status> {
+        let mut cursors = self
+            .data_cursors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cursors.retain(|_, entry| entry.expires_at > Instant::now());
+        if cursors.len() >= MAX_DATA_CURSORS
+            && let Some(oldest) = cursors
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires_at)
+                .map(|(token, _)| token.clone())
+        {
+            cursors.remove(&oldest);
+        }
+        let mut bytes = [0_u8; 24];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| Status::internal("no source of randomness for data cursor"))?;
+        let token = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        cursors.insert(
+            token.clone(),
+            DataCursorEntry {
+                session_id: session_id.to_owned(),
+                cursor,
+                expires_at: Instant::now() + DATA_CURSOR_TTL,
+            },
+        );
+        Ok(token)
     }
 }
 
@@ -456,6 +581,152 @@ fn event(change: &Change) -> LibraryEvent {
         revision: change.revision,
         event_type: change.kind.as_str().to_owned(),
         entry: Some(change.entry.to_proto()),
+    }
+}
+
+const MAX_DATA_VALUE_DEPTH: usize = 32;
+const MAX_DATA_VALUE_ITEMS: usize = 4096;
+
+fn struct_to_json(value: &prost_types::Struct) -> Result<JsonMap<String, JsonValue>, Status> {
+    fn convert_struct(
+        value: &prost_types::Struct,
+        depth: usize,
+        items: &mut usize,
+    ) -> Result<JsonMap<String, JsonValue>, Status> {
+        if depth > MAX_DATA_VALUE_DEPTH {
+            return Err(Status::invalid_argument("data value is nested too deeply"));
+        }
+        let mut result = JsonMap::new();
+        for (key, value) in &value.fields {
+            *items += 1;
+            if *items > MAX_DATA_VALUE_ITEMS
+                || key.is_empty()
+                || key.len() > 256
+                || key.chars().any(char::is_control)
+            {
+                return Err(Status::invalid_argument(
+                    "data value has invalid or excessive fields",
+                ));
+            }
+            result.insert(key.clone(), convert_value(value, depth + 1, items)?);
+        }
+        Ok(result)
+    }
+
+    fn convert_value(
+        value: &prost_types::Value,
+        depth: usize,
+        items: &mut usize,
+    ) -> Result<JsonValue, Status> {
+        let kind = value
+            .kind
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("data value contains an unset value"))?;
+        match kind {
+            Kind::NullValue(_) => Ok(JsonValue::Null),
+            Kind::NumberValue(number) => JsonNumber::from_f64(*number)
+                .map(JsonValue::Number)
+                .ok_or_else(|| Status::invalid_argument("data value contains a non-finite number")),
+            Kind::StringValue(value) => Ok(JsonValue::String(value.clone())),
+            Kind::BoolValue(value) => Ok(JsonValue::Bool(*value)),
+            Kind::StructValue(value) => Ok(JsonValue::Object(convert_struct(value, depth, items)?)),
+            Kind::ListValue(value) => {
+                let mut result = Vec::with_capacity(value.values.len());
+                for item in &value.values {
+                    *items += 1;
+                    if *items > MAX_DATA_VALUE_ITEMS {
+                        return Err(Status::invalid_argument("data value has too many items"));
+                    }
+                    result.push(convert_value(item, depth + 1, items)?);
+                }
+                Ok(JsonValue::Array(result))
+            }
+        }
+    }
+
+    let mut items = 0;
+    convert_struct(value, 1, &mut items)
+}
+
+fn json_to_struct(value: &JsonMap<String, JsonValue>) -> prost_types::Struct {
+    fn convert(value: &JsonValue) -> prost_types::Value {
+        let kind = match value {
+            JsonValue::Null => Kind::NullValue(0),
+            JsonValue::Bool(value) => Kind::BoolValue(*value),
+            JsonValue::Number(value) => Kind::NumberValue(value.as_f64().unwrap_or_default()),
+            JsonValue::String(value) => Kind::StringValue(value.clone()),
+            JsonValue::Array(values) => Kind::ListValue(prost_types::ListValue {
+                values: values.iter().map(convert).collect(),
+            }),
+            JsonValue::Object(values) => Kind::StructValue(json_to_struct(values)),
+        };
+        prost_types::Value { kind: Some(kind) }
+    }
+
+    prost_types::Struct {
+        fields: value
+            .iter()
+            .map(|(key, value)| (key.clone(), convert(value)))
+            .collect(),
+    }
+}
+
+fn data_record(record: &ProjectedRecord) -> DataRecord {
+    DataRecord {
+        record_id: record.record_id().to_owned(),
+        dataset_id: record.dataset_id().to_owned(),
+        publisher_id: record.provenance().source.plugin_id.clone(),
+        revision: record.revision(),
+        value: (!record.fields().is_empty()).then(|| json_to_struct(record.fields())),
+        schema_id: record.schema().0.to_owned(),
+        schema_version: record.schema().1,
+        opaque_payload: record.opaque_payload().to_vec(),
+        provenance: Some(DataProvenance {
+            producer_plugin_id: record.provenance().source.plugin_id.clone(),
+            declared_developer: record.provenance().declared_developer.clone(),
+            origin: record.provenance().origin.clone(),
+            publisher_fingerprint: record.provenance().source.publisher_fingerprint.clone(),
+            package_version: record.provenance().package_version.clone(),
+            package_digest: record.provenance().package_digest.clone(),
+            resource_id: record.resource_id().to_owned(),
+            observed_at: record.observed_at(),
+            received_at: record.received_at(),
+            source_record_ids: record.provenance().source_record_ids.clone(),
+        }),
+        resource_id: record.resource_id().to_owned(),
+        observed_at: record.observed_at(),
+        received_at: record.received_at(),
+        expires_at: record.expires_at().unwrap_or_default(),
+        sequence: record.sequence(),
+        source_observation_id: record.source_observation_id().to_owned(),
+        ..Default::default()
+    }
+}
+
+fn unix_now() -> Result<i64, Status> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Status::internal("system clock is before the Unix epoch"))?
+        .as_secs()
+        .try_into()
+        .map_err(|_| Status::internal("system clock exceeds the supported range"))
+}
+
+fn data_broker_status(error: BrokerError) -> Status {
+    match &error {
+        BrokerError::InvalidSelector
+        | BrokerError::InvalidPublication
+        | BrokerError::ReservedField => Status::invalid_argument(error.to_string()),
+        BrokerError::RecordTooLarge | BrokerError::QuotaExceeded => {
+            Status::resource_exhausted(error.to_string())
+        }
+        BrokerError::StaleCursor
+        | BrokerError::AuthorizationChanged
+        | BrokerError::StaleSubscription
+        | BrokerError::SequenceConflict(_) => Status::failed_precondition(error.to_string()),
+        BrokerError::WrongRecipient | BrokerError::Expired => {
+            Status::permission_denied(error.to_string())
+        }
     }
 }
 
@@ -690,6 +961,432 @@ impl resource_host_server::ResourceHost for ResourceApi {
                     && tx.send(item).await.is_err()
                 {
                     return;
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn data_publish(
+        &self,
+        request: Request<DataPublishRequest>,
+    ) -> Result<Response<DataMutationReply>, Status> {
+        let request = request.into_inner();
+        let mutation = request
+            .mutation
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("mutation is required"))?;
+        let context = mutation
+            .context
+            .clone()
+            .ok_or_else(|| Status::unauthenticated("resource context required"))?;
+        let (caller, _session_commit) = self
+            .providers
+            .authorize_resource_commit(&context, cap::DATA_PUBLISH)
+            .await?;
+        let owner = Self::data_identity(&caller)?;
+        let key = mutation_key(mutation)?;
+        // Published records end with this authenticated producer session, so a later session
+        // must not replay a receipt whose record was already purged at disconnect.
+        let session_key = format!("{}:{key}", caller.session_id);
+        if mutation.expected_revision != 0 {
+            return Err(Status::invalid_argument(
+                "data publication is append-only; expected_revision must be 0",
+            ));
+        }
+        let durability = StorageDurability::try_from(request.durability)
+            .map_err(|_| Status::invalid_argument("unknown data durability"))?;
+        if durability != StorageDurability::SessionOnly {
+            return Err(Status::failed_precondition(
+                "published shared data is session-retained; use Persistence for durable values",
+            ));
+        }
+        if request.value.is_some() != !request.opaque_payload.is_empty() {
+            return Err(Status::invalid_argument(
+                "provide exactly one of value or opaque_payload",
+            ));
+        }
+        if request
+            .value
+            .as_ref()
+            .is_some_and(|value| value.fields.is_empty())
+        {
+            return Err(Status::invalid_argument(
+                "value must be a non-empty Struct; use opaque_payload for opaque bytes",
+            ));
+        }
+        let fields = request
+            .value
+            .as_ref()
+            .map(struct_to_json)
+            .transpose()?
+            .unwrap_or_default();
+        let payload_json = if request.value.is_some() {
+            JsonValue::Object(fields.clone()).to_string()
+        } else {
+            String::new()
+        };
+        let now = unix_now()?;
+        if request.ttl_seconds > super::shared_data::MAX_TTL_SECONDS {
+            return Err(Status::invalid_argument(
+                "ttl_seconds is outside the supported range",
+            ));
+        }
+        let expires_at = if request.ttl_seconds == 0 {
+            None
+        } else {
+            let seconds = i64::try_from(request.ttl_seconds)
+                .map_err(|_| Status::invalid_argument("ttl_seconds is too large"))?;
+            Some(
+                now.checked_add(seconds)
+                    .ok_or_else(|| Status::invalid_argument("ttl_seconds is too large"))?,
+            )
+        };
+        let hash = mutations::request_hash_with_bytes(
+            &[
+                "data.publish",
+                if request.value.is_some() {
+                    "struct"
+                } else {
+                    "opaque"
+                },
+                &request.dataset_id,
+                &request.schema_id,
+                &request.schema_version.to_string(),
+                &request.ttl_seconds.to_string(),
+                &payload_json,
+                &request.resource_id,
+                &request.observed_at.to_string(),
+                &request.sequence.to_string(),
+                &request.source_observation_id,
+                &request.durability.to_string(),
+                &mutation.expected_revision.to_string(),
+            ],
+            &request.opaque_payload,
+        );
+
+        let _serial = self.mutations.lock.lock().await;
+        if let Some((original, expires_at)) =
+            self.mutations.replay_with(&caller, &session_key, hash)?
+        {
+            return Ok(Response::new(DataMutationReply {
+                record_id: original.resource_id,
+                revision: original.revision,
+                expires_at,
+                outcome: original.outcome,
+            }));
+        }
+        let current = self
+            .providers
+            .authorize_resource(Some(&context), cap::DATA_PUBLISH)?;
+        if current.grant_revision != caller.grant_revision {
+            return Err(Status::failed_precondition(
+                "plugin permissions changed; retry the publication",
+            ));
+        }
+        let receipt = match self.data.publish(
+            super::shared_data::Publication {
+                owner,
+                dataset_id: request.dataset_id,
+                category: None,
+                class: super::sharing_policy::SharingClass::Custom,
+                schema_id: request.schema_id,
+                schema_version: request.schema_version,
+                fields,
+                opaque_payload: request.opaque_payload,
+                resource_id: request.resource_id,
+                observed_at: request.observed_at,
+                sequence: request.sequence,
+                source_observation_id: request.source_observation_id,
+                session_id: Some(caller.session_id.clone()),
+                publisher: Some(super::shared_data::PublisherMetadata {
+                    declared_developer: caller.declared_developer.clone(),
+                    origin: caller.origin.clone(),
+                    package_version: caller.package_version.clone(),
+                    package_digest: caller.package_digest.clone(),
+                }),
+                expires_at,
+            },
+            now,
+        ) {
+            Ok(receipt) => receipt,
+            Err(BrokerError::SequenceConflict(revision)) => {
+                return Ok(Response::new(DataMutationReply {
+                    revision,
+                    outcome: MutationOutcome::RevisionConflict as i32,
+                    ..Default::default()
+                }));
+            }
+            Err(error) => return Err(data_broker_status(error)),
+        };
+        let expiry = expires_at.unwrap_or_default();
+        let generic_reply = mutations::reply(
+            &receipt.record_id,
+            receipt.revision,
+            if receipt.duplicate {
+                MutationOutcome::AlreadyApplied
+            } else {
+                MutationOutcome::Applied
+            },
+        );
+        self.mutations
+            .remember_with(&caller, &session_key, hash, &generic_reply, expiry);
+        Ok(Response::new(DataMutationReply {
+            record_id: receipt.record_id,
+            revision: receipt.revision,
+            expires_at: expiry,
+            outcome: if receipt.duplicate {
+                MutationOutcome::AlreadyApplied as i32
+            } else {
+                MutationOutcome::Applied as i32
+            },
+        }))
+    }
+
+    async fn data_get(
+        &self,
+        request: Request<DataGetRequest>,
+    ) -> Result<Response<DataGetReply>, Status> {
+        let request = request.into_inner();
+        if request.dataset_id.trim().is_empty()
+            || request.record_id.trim().is_empty()
+            || request.record_id.len() > 256
+        {
+            return Err(Status::invalid_argument(
+                "dataset_id and record_id are required",
+            ));
+        }
+        let caller = self
+            .providers
+            .authorize_resource_session(request.context.as_ref())?;
+        let identity = Self::data_identity(&caller)?;
+        let mut selector = request.common_data_categories.unwrap_or_default();
+        if !selector
+            .selected_record_ids
+            .iter()
+            .any(|record_id| record_id == &request.record_id)
+        {
+            if selector.selected_record_ids.len() >= 1000 {
+                return Err(Status::invalid_argument(
+                    "common-data selector has too many selected records",
+                ));
+            }
+            selector.selected_record_ids.push(request.record_id.clone());
+        }
+        let result = self
+            .data
+            .query_data(
+                QueryRequest {
+                    caller: identity,
+                    dataset_id: request.dataset_id,
+                    record_id: Some(request.record_id.clone()),
+                    category: None,
+                    selector: Some(selector),
+                    delivery: Delivery::Query,
+                    page_size: 1,
+                    cursor: None,
+                },
+                self.shared_authorizer.as_ref(),
+                unix_now()?,
+            )
+            .map_err(data_broker_status)?;
+        let record = result
+            .records
+            .into_iter()
+            .find(|record| record.record_id() == request.record_id)
+            .ok_or_else(|| Status::not_found("data record not found"))?;
+        Ok(Response::new(DataGetReply {
+            record: Some(data_record(&record)),
+        }))
+    }
+
+    async fn data_list(
+        &self,
+        request: Request<DataListRequest>,
+    ) -> Result<Response<DataListReply>, Status> {
+        let request = request.into_inner();
+        let page = request
+            .page
+            .ok_or_else(|| Status::invalid_argument("page is required"))?;
+        if request.dataset_id.trim().is_empty() || request.dataset_id.len() > 256 {
+            return Err(Status::invalid_argument("dataset_id is invalid"));
+        }
+        if !request.filter.trim().is_empty() {
+            return Err(Status::invalid_argument(
+                "Data.List filter is not available for this schema",
+            ));
+        }
+        let caller = self
+            .providers
+            .authorize_resource_session(page.context.as_ref())?;
+        let identity = Self::data_identity(&caller)?;
+        let selector = match (request.common_data_categories, page.common_data_categories) {
+            (Some(outer), Some(inner)) if outer != inner => {
+                return Err(Status::invalid_argument("Data.List selectors disagree"));
+            }
+            (Some(outer), _) => Some(outer),
+            (_, Some(inner)) => Some(inner),
+            _ => None,
+        };
+        let cursor = self.take_data_cursor(&page.cursor, &caller.session_id)?;
+        let page_size = match page.page_size as usize {
+            0 => DEFAULT_PAGE_SIZE,
+            size => size.min(MAX_PAGE_SIZE),
+        };
+        let result = self
+            .data
+            .query_data(
+                QueryRequest {
+                    caller: identity,
+                    dataset_id: request.dataset_id,
+                    record_id: None,
+                    category: None,
+                    selector,
+                    delivery: Delivery::History,
+                    page_size,
+                    cursor,
+                },
+                self.shared_authorizer.as_ref(),
+                unix_now()?,
+            )
+            .map_err(data_broker_status)?;
+        let next_cursor = match result.next_cursor {
+            Some(cursor) => self.issue_data_cursor(&caller.session_id, cursor)?,
+            None => String::new(),
+        };
+        Ok(Response::new(DataListReply {
+            records: result.records.iter().map(data_record).collect(),
+            next_cursor,
+            revision: result.revision,
+        }))
+    }
+
+    async fn data_watch(
+        &self,
+        request: Request<DataWatchRequest>,
+    ) -> Result<Response<Self::DataWatchStream>, Status> {
+        let request = request.into_inner();
+        if request.dataset_id.trim().is_empty() || request.dataset_id.len() > 256 {
+            return Err(Status::invalid_argument("dataset_id is invalid"));
+        }
+        let context = request.context.clone();
+        let caller = self
+            .providers
+            .authorize_resource_session(context.as_ref())?;
+        let identity = Self::data_identity(&caller)?;
+        self.data.expire(unix_now()?);
+        let subscription = self
+            .data
+            .subscribe(
+                QueryRequest {
+                    caller: identity,
+                    dataset_id: request.dataset_id,
+                    record_id: None,
+                    category: None,
+                    selector: request.common_data_categories,
+                    delivery: Delivery::Live,
+                    page_size: DEFAULT_PAGE_SIZE,
+                    cursor: None,
+                },
+                request.after_revision,
+                WATCH_QUEUE,
+                self.shared_authorizer.clone(),
+            )
+            .map_err(data_broker_status)?;
+        let slot = self.watch_slot(&caller.session_id)?;
+        let (tx, rx) = mpsc::channel(WATCH_QUEUE);
+        let providers = self.providers.clone();
+        let grant_revision = caller.grant_revision;
+        tokio::spawn(async move {
+            let _slot = slot;
+            loop {
+                match tokio::time::timeout(
+                    WATCH_RECHECK,
+                    subscription.recv(unix_now().unwrap_or(0)),
+                )
+                .await
+                {
+                    Ok(Ok(Some(record))) => {
+                        let active = match providers.authorize_resource_session(context.as_ref()) {
+                            Ok(active) if active.grant_revision == grant_revision => active,
+                            Ok(_) => {
+                                let _ = tx
+                                    .send(Err(Status::failed_precondition(
+                                        "plugin permissions changed; list and watch again",
+                                    )))
+                                    .await;
+                                break;
+                            }
+                            Err(status) => {
+                                let _ = tx.send(Err(status)).await;
+                                break;
+                            }
+                        };
+                        drop(active);
+                        let item = Ok(DataEvent {
+                            revision: record.revision(),
+                            event_type: "published".into(),
+                            record: Some(data_record(&record)),
+                        });
+                        if tx.send(item).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Ok(None)) => continue,
+                    Ok(Err(ended)) => {
+                        let status = match ended {
+                            SubscriptionEnd::Revoked => Status::failed_precondition(
+                                "data sharing permissions changed; list and watch again",
+                            ),
+                            SubscriptionEnd::FellBehind => Status::resource_exhausted(
+                                "data watch fell behind; list and watch again",
+                            ),
+                        };
+                        let _ = tx.send(Err(status)).await;
+                        break;
+                    }
+                    Err(_) => {
+                        match providers.authorize_resource_session(context.as_ref()) {
+                            Ok(active) if active.grant_revision == grant_revision => {}
+                            Ok(_) => {
+                                let _ = tx
+                                    .send(Err(Status::failed_precondition(
+                                        "plugin permissions changed; list and watch again",
+                                    )))
+                                    .await;
+                                break;
+                            }
+                            Err(status) => {
+                                let _ = tx.send(Err(status)).await;
+                                break;
+                            }
+                        }
+                        match subscription.next(unix_now().unwrap_or(0)) {
+                            Ok(Some(record)) => {
+                                let item = Ok(DataEvent {
+                                    revision: record.revision(),
+                                    event_type: "published".into(),
+                                    record: Some(data_record(&record)),
+                                });
+                                if tx.send(item).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(ended) => {
+                                let status = match ended {
+                                    SubscriptionEnd::Revoked => Status::failed_precondition(
+                                        "data sharing permissions changed; list and watch again",
+                                    ),
+                                    SubscriptionEnd::FellBehind => Status::resource_exhausted(
+                                        "data watch fell behind; list and watch again",
+                                    ),
+                                };
+                                let _ = tx.send(Err(status)).await;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -1108,33 +1805,11 @@ impl resource_host_server::ResourceHost for ResourceApi {
         game_presence_clear(PresenceClearRequest) -> MutationReply;
         game_performance_publish_samples(PerformanceSamplesRequest) -> ReportMutationReply;
         game_performance_end_series(PerformanceEndSeriesRequest) -> MutationReply;
-        data_watch(DataWatchRequest) -> Self::DataWatchStream;
         persistence_get_usage(PersistenceUsageRequest) -> PersistenceUsageReply;
         persistence_list_entries(PersistenceListRequest) -> PersistenceListReply;
         persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
         persistence_clear(PersistenceClearRequest) -> MutationReply;
         persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
-    }
-
-    async fn data_publish(
-        &self,
-        request: Request<DataPublishRequest>,
-    ) -> Result<Response<DataMutationReply>, Status> {
-        self.publish_data(request).await
-    }
-
-    async fn data_get(
-        &self,
-        request: Request<DataGetRequest>,
-    ) -> Result<Response<DataGetReply>, Status> {
-        self.get_data(request).await
-    }
-
-    async fn data_list(
-        &self,
-        request: Request<DataListRequest>,
-    ) -> Result<Response<DataListReply>, Status> {
-        self.list_data(request).await
     }
 }
 

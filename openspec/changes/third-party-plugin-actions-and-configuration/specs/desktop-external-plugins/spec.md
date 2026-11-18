@@ -34,3 +34,7 @@ The host MUST route Configure to an isolated plugin-owned window or an explicitl
 #### Scenario: Account profile changes
 - **WHEN** the active account changes while a plugin window is open
 - **THEN** the old window context is fenced before another profile is exposed
+
+#### Scenario: An install intent enters host review
+- **WHEN** a plugin presents a valid user intent for installation
+- **THEN** the host starts the install workflow but does not install until the Core preview, validations and explicit user confirmation complete

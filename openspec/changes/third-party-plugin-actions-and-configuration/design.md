@@ -8,9 +8,9 @@ This is the second delivery slice after `add-third-party-plugins` (provider/cata
 
 Core exposes an explicit **Start with extension** action on a game. The user chooses an installed, trusted, enabled extension and either Play or Install. Core resolves the selected installation and target itself, checks the current profile and extension grants, then starts that extension in a one-shot supervised `Extension` session. The extension cannot provide or widen its target context.
 
-For that action only, the host issues a short-lived, single-use intent bound to plugin, publisher, account epoch, selected game/installation, operation and detected-target revision. It passes the opaque intent id to the extension as `GAMENODE_PLUGIN_USER_INTENT_ID` at process startup; the Rust SDK exposes it on `Launch`, while other SDKs can read the documented environment variable. Provider sessions and extension sessions not started by this Core action receive no intent. The extension must submit the same game action and binding to spend the intent. Any missing, expired, reused, foreign or mismatched intent follows the ordinary explicit-confirmation path; it never authorizes direct execution by itself.
+For that action only, the host issues a short-lived, single-use intent bound to plugin, publisher, account epoch, selected game/installation, operation and, for launch only, detected-target revision. It passes the opaque intent id to the extension as `GAMENODE_PLUGIN_USER_INTENT_ID` at process startup; the Rust SDK exposes it on `Launch`, while other SDKs can read the documented environment variable. Provider sessions and extension sessions not started by this Core action receive no intent. The extension must submit the same game action and binding to spend the intent. Any missing, expired, reused, foreign or mismatched intent follows the ordinary explicit-confirmation path; it never authorizes direct execution by itself.
 
-Launch/install requests without a valid intent remain pending for explicit confirmation and never fall back to direct execution. Confirmation is cancel-first, time-bounded and can remember approval only for the exact scoped operation and target revision. Revocation, profile changes, process exit and job cancellation fence pending work and terminate the one-shot extension process.
+Launch/install requests without a valid intent remain pending for explicit confirmation and never fall back to direct execution. Confirmation is cancel-first, time-bounded and can remember approval only for the exact scoped operation and, for launch only, target revision. Revocation, profile changes, process exit and job cancellation fence pending work and terminate the one-shot extension process.
 
 ## Filesystem approvals
 
@@ -19,3 +19,7 @@ Folder approvals are host-owned and separate from API permission grants. Show th
 ## Configuration lifecycle
 
 A Configure action opens or focuses one plugin-owned window per plugin/profile. The host keeps window handles opaque, correlates lifecycle results, and fences them on account/profile changes, disable, revocation, update or removal. Declarative settings remain a separate optional, closed-schema fallback; no plugin code is rendered inside the GameNode frontend.
+
+## Installation confirmation and network origins
+
+A user intent starts the host install workflow but never substitutes for its preview, validation and explicit confirmation. Bind the detected-target revision only to launch intents. Persist exact HTTPS origins under the authenticated plugin, pinned publisher and account profile; widening requires review and revocation or profile changes fence in-flight fetches. This connects MVP 10.2/10.4 permission review to the existing 6.3 network port.

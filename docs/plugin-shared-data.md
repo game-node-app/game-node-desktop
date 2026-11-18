@@ -7,6 +7,35 @@ RPC or Core dashboard is part of this contract. `DataPublish` requires the
 `data.publish` capability. Reads require an authenticated plugin session and
 host authorization for each record; there is no general `data.read` grant.
 
+## Dataset, method, permission and projection contract
+
+The protobuf service definitions and the checked route catalogs are the wire
+contract. A generated client only proves that a method can be called by name;
+`DescribeApi` is the runtime availability check. `projection_id` selects a
+host-defined projection and never lets the caller request arbitrary fields.
+For every list/get/watch path, the host applies the same current authorization
+and field projection before returning records or events.
+
+| Dataset or information family | Producer methods | Consumer methods | Permission and sharing scope | Projection and current availability |
+| --- | --- | --- | --- | --- |
+| Custom shared dataset | `DataPublish` | `DataGet`, `DataList`, `DataWatch` | Producer: `data.publish`. Consumer: authenticated session, owner access, or exact source/recipient/dataset sharing policy. `CommonDataSelector` categories and record IDs only request scopes; current grants authorize each independently. | `DataRecord` exposes host-assigned record ID, dataset ID, publisher ID, revision and the authorized `Struct` fields. Uses the host's custom-dataset projection; no caller-selected field mask. `Data*` is served. |
+| Game paths | No shared-data producer adapter | `DataGet`/`DataList`/`DataWatch` selector; typed `Locations` methods are separate | `COMMON_DATA_CATEGORY_GAME_PATHS` plus a selected-record grant, or an explicitly reviewed sensitive projection where applicable. Typed location methods require `game.storage.inspect` or `game.saves.inspect` and approved resource scope. | Common category is a consent scope only. No adapter currently publishes this category to the shared-data broker. Physical managed paths and raw paths are excluded from shared projections. |
+| Performance history | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` (typed telemetry); `DataPublish` for an independent custom dataset | `GamePerformance.List`, `Get`, `Watch`, `QuerySeries`, `Aggregate`; `Data*` for custom datasets | Producer: `game.performance.publish` or `data.publish`. Consumer: `game.performance.read` plus explicit common category/record selection or exact sensitive projection policy. | Typed series retain game, installation, computer context, session, owner, samples and revision; queries return samples/coverage and aggregates include unit, count, coverage and provenance. Custom `DataRecord` fields are projected separately. Typed telemetry consumer routes are currently unserved; custom `Data*` is served. |
+| Runtime catalog | No shared-data producer adapter | `Data*` selector; typed runtime methods are separate | `COMMON_DATA_CATEGORY_RUNTIME_CATALOG` or selected-record grants; typed runtime methods require `game.runtime.read` for reads. | Category is a consent scope; no shared-broker adapter currently publishes it. Typed runtime routes are not served in this build. |
+| Content availability | No shared-data producer adapter | `Data*` selector; typed library/content methods are separate | `COMMON_DATA_CATEGORY_CONTENT_AVAILABILITY` or selected-record grants; typed library reads require `library.read` and may require `library.read.all` for whole-library scope. | No shared-broker adapter currently publishes this category. Use only fields exposed by a served typed method; store identifiers, credentials and install paths are not shared projection fields. |
+| Library roots | No shared-data producer adapter | `Data*` selector; typed `Libraries.List/Get/Watch` are separate | `COMMON_DATA_CATEGORY_LIBRARY_ROOTS` or selected-record grants; typed methods require `library.roots.read`. | No shared-broker adapter currently publishes this category. Typed logical root APIs do not expose physical managed-storage paths. |
+| Save profiles | No shared-data producer adapter | `Data*` selector; typed `Saves.ListProfiles/GetProfile` are separate | `COMMON_DATA_CATEGORY_SAVE_PROFILES` or selected-record grants; typed reads require `game.saves.read` and approved game/resource scope. | No shared-broker adapter currently publishes this category. Typed profile projection contains logical profile metadata and approved-resource handles, not raw filesystem paths or save bytes. |
+| Storage diagnostics | `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart` | `StorageDiagnostics.List`, `Get`, `Watch` | Producer: `storage.diagnostics.publish`. Consumer: `storage.diagnostics.read` and the user's explicit sensitive-data projection review. | Report projection contains report kind, host-attributed owner, opaque volume identity token, schema/version, typed measurements, approved extension, observation time and revision. Consumer domain routes are in the protocol/catalog but unserved here. |
+| Computer hardware | `ComputerPublishHardware` | `Computer.List`, `Get`, `Watch` | Producer: `computer.hardware.publish`. Consumer: `computer.hardware.read` and explicit sensitive-data projection review. | Projection contains host-attributed owner, schema/version, typed observations, approved extension, observed time and revision; raw serials and absent identifiers stay absent. Consumer domain routes are currently unserved. |
+| Game presence | `GamePresencePublish`, `GamePresenceClear` | `GamePresence.List`, `Get`, `Watch` | Producer: `game.presence.publish`. Consumer: `game.presence.read` and explicit sensitive-data projection review. | Projection is scoped by game/session and includes host-attributed owner, sequence, observation/expiry and approved details. It does not trigger online publication or host process-state decisions. Consumer domain routes are currently unserved. |
+| Private durable plugin data | `StoragePut` or Persistence write methods | `StorageGet` or Persistence read/list methods | `storage.write`/`storage.read`; durable writes additionally require `storage.persist`. Persistence remains restricted to the authenticated owner's namespace. | Private bytes are returned only to their owner through the private storage API. They are not a shared dataset and cannot be made readable by another plugin through a sharing grant. |
+
+The method-level permission catalog in [Plugin API 1.6 method
+permissions](plugin-api-permissions.md) is authoritative for required grants.
+The matrix above also distinguishes API shape from runtime availability: typed
+producer/consumer service routes listed as unserved must not be treated as
+available merely because generated bindings exist.
+
 ## What this build serves
 
 | Method | Request and result | Permission and behavior |

@@ -20,6 +20,9 @@ pub const MAX_RECORDS: usize = 16_384;
 pub const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PAGE_SIZE: usize = 256;
 pub const MAX_SUBSCRIPTION_QUEUE: usize = 128;
+const MAX_FIELD_DEPTH: usize = 32;
+const MAX_FIELD_ITEMS: usize = 4096;
+const MAX_FIELD_KEY_BYTES: usize = 256;
 
 const RESERVED_FIELDS: &[&str] = &[
     "source",
@@ -37,6 +40,19 @@ const RESERVED_FIELDS: &[&str] = &[
     "revision",
     "published_at",
     "expires_at",
+    "creator",
+    "permissions",
+    "scope",
+    "executable",
+    "executable_handle",
+    "argv",
+    "cwd",
+    "path",
+    "launch_target",
+    "operation",
+    "command",
+    "grant",
+    "permission",
 ];
 
 /// A host-resolved publication. `owner` must come from the authenticated producer session, and
@@ -845,6 +861,8 @@ fn validate_publication(publication: &Publication, now: i64) -> Result<(), Broke
     {
         return Err(BrokerError::ReservedField);
     }
+    let mut item_count = 0;
+    validate_field_object(&publication.fields, 1, &mut item_count)?;
     let bytes = serde_json::to_vec(&publication.fields)
         .map_err(|_| BrokerError::InvalidPublication)?
         .len();
@@ -852,6 +870,55 @@ fn validate_publication(publication: &Publication, now: i64) -> Result<(), Broke
         return Err(BrokerError::RecordTooLarge);
     }
     Ok(())
+}
+
+fn validate_field_object(
+    fields: &Map<String, Value>,
+    depth: usize,
+    item_count: &mut usize,
+) -> Result<(), BrokerError> {
+    if depth > MAX_FIELD_DEPTH {
+        return Err(BrokerError::InvalidPublication);
+    }
+    for (key, value) in fields {
+        *item_count += 1;
+        if *item_count > MAX_FIELD_ITEMS
+            || key.is_empty()
+            || key.len() > MAX_FIELD_KEY_BYTES
+            || key.chars().any(char::is_control)
+        {
+            return Err(BrokerError::InvalidPublication);
+        }
+        validate_field_value(value, depth + 1, item_count)?;
+    }
+    Ok(())
+}
+
+fn validate_field_value(
+    value: &Value,
+    depth: usize,
+    item_count: &mut usize,
+) -> Result<(), BrokerError> {
+    if depth > MAX_FIELD_DEPTH {
+        return Err(BrokerError::InvalidPublication);
+    }
+    match value {
+        Value::Object(fields) => validate_field_object(fields, depth, item_count),
+        Value::Array(values) => {
+            for child in values {
+                *item_count += 1;
+                if *item_count > MAX_FIELD_ITEMS {
+                    return Err(BrokerError::InvalidPublication);
+                }
+                validate_field_value(child, depth + 1, item_count)?;
+            }
+            Ok(())
+        }
+        Value::Number(number) if number.as_f64().is_none_or(|number| !number.is_finite()) => {
+            Err(BrokerError::InvalidPublication)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1347,6 +1414,43 @@ mod tests {
         assert_eq!(
             broker.publish(uncategorized, 100),
             Err(BrokerError::InvalidPublication)
+        );
+    }
+
+    #[test]
+    fn publication_structural_budgets_apply_at_the_broker_boundary() {
+        let broker = DataBroker::new();
+        let producer = identity("producer");
+
+        let mut too_deep = serde_json::json!("leaf");
+        for _ in 0..=MAX_FIELD_DEPTH {
+            too_deep = serde_json::json!({"nested": too_deep});
+        }
+        let deep = publication(&producer, &[("value", too_deep)]);
+        assert_eq!(
+            broker.publish(deep, 100),
+            Err(BrokerError::InvalidPublication)
+        );
+
+        let too_many_items = serde_json::json!({
+            "values": vec![serde_json::Value::Null; MAX_FIELD_ITEMS],
+        });
+        let oversized_shape = publication(&producer, &[("value", too_many_items)]);
+        assert_eq!(
+            broker.publish(oversized_shape, 100),
+            Err(BrokerError::InvalidPublication)
+        );
+
+        let invalid_key = publication(&producer, &[("bad\nkey", serde_json::json!(true))]);
+        assert_eq!(
+            broker.publish(invalid_key, 100),
+            Err(BrokerError::InvalidPublication)
+        );
+
+        let forged_execution = publication(&producer, &[("command", serde_json::json!("run"))]);
+        assert_eq!(
+            broker.publish(forged_execution, 100),
+            Err(BrokerError::ReservedField)
         );
     }
 }

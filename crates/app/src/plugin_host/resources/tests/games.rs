@@ -303,8 +303,12 @@ async fn a_pre_issued_intent_skips_the_dialog_and_is_spent_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_intent_for_another_operation_target_or_nothing_at_all_is_refused() {
-    let (fixture, host, _) = Fixture::game(GRANTS, None).await;
+async fn an_invalid_intent_falls_back_to_confirmation_for_the_current_action() {
+    let dialog = Dialog {
+        answers: StdMutex::new(vec![APPROVE; 3].into()),
+        ..Dialog::default()
+    };
+    let (fixture, host, shown) = Fixture::game(GRANTS, Some(dialog)).await;
     // Issued for an install: not a launch.
     let install = fixture
         .intents
@@ -315,27 +319,26 @@ async fn an_intent_for_another_operation_target_or_nothing_at_all_is_refused() {
         .intents
         .issue(fixture.binding(Operation::Launch, 99))
         .unwrap();
-    let refusals = [
-        fixture.launch_game("a", &install).await.unwrap_err(),
-        fixture.launch_game("b", &stale).await.unwrap_err(),
-        fixture.launch_game("c", "intent-forged").await.unwrap_err(),
-    ];
-    for refused in &refusals {
-        assert_eq!(refused.code(), Code::FailedPrecondition);
+    for (key, intent) in [
+        ("a", install.as_str()),
+        ("b", stale.as_str()),
+        ("c", "intent-forged"),
+    ] {
+        let reply = fixture.launch_game(key, intent).await.unwrap();
         assert_eq!(
-            refused.message(),
-            refusals[0].message(),
-            "nothing says which part was wrong"
+            fixture.ended(&reply.job_id).await.state(),
+            JobState::Succeeded
         );
     }
-    assert!(host.opened.lock().unwrap().is_empty());
-    // The refusals spent neither: the install intent still installs.
+    assert_eq!(shown.unwrap().shown.lock().unwrap().len(), 3);
+    assert_eq!(host.opened.lock().unwrap().len(), 3);
+    // The mismatched intent was not spent: its operation can still redeem it.
     let reply = fixture.install_game("d", &install).await.unwrap();
     assert_eq!(
         fixture.ended(&reply.job_id).await.state(),
         JobState::Succeeded
     );
-    assert_eq!(*host.opened.lock().unwrap(), [(ENTRY.to_owned(), true)]);
+    assert_eq!(host.opened.lock().unwrap().len(), 4);
 }
 
 #[tokio::test(flavor = "multi_thread")]

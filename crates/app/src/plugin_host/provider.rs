@@ -175,6 +175,8 @@ struct Pending {
     provider: Arc<Provider>,
     credential: [u8; 32],
     profile_epoch: Option<u64>,
+    session_kind: i32,
+    target_game: Option<TargetGameContext>,
     ready: oneshot::Sender<()>,
 }
 
@@ -227,6 +229,22 @@ struct Operation {
     secret_deleted: bool,
     identity_accepted: bool,
     settings: Option<settings::Request>,
+    configuration: Option<ConfigurationBinding>,
+    configuration_cleanup: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ConfigurationBinding {
+    profile_id: String,
+    session_id: String,
+    window_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct ConfigurationWindow {
+    profile_epoch: u64,
+    session_id: String,
+    window_id: String,
 }
 
 #[derive(Default)]
@@ -242,6 +260,17 @@ struct State {
 pub struct ProviderApi {
     state: Arc<Mutex<State>>,
     profiles: Arc<PluginProfiles>,
+    configuration_windows: Arc<tokio::sync::Mutex<HashMap<(String, String), ConfigurationWindow>>>,
+}
+
+/// Declared configuration surfaces and the active session's explicit grants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationModes {
+    pub external_declared: bool,
+    pub external_authorized: bool,
+    pub declarative_declared: bool,
+    pub declarative_authorized: bool,
 }
 
 pub struct Launch {
@@ -505,6 +534,9 @@ fn operation_timeout(kind: ProviderOperation) -> Duration {
         ProviderOperation::ReadAchievements => Duration::from_secs(300),
         ProviderOperation::Initialize | ProviderOperation::Check => Duration::from_secs(105),
         ProviderOperation::SettingsCancel => Duration::from_secs(3),
+        ProviderOperation::ConfigurationOpen
+        | ProviderOperation::ConfigurationFocus
+        | ProviderOperation::ConfigurationClose => Duration::from_secs(5),
         _ => Duration::from_secs(90),
     }
 }
@@ -788,6 +820,21 @@ impl ProviderApi {
                 }
             }
         }
+        let close_configuration = removed.contains(cap::CONFIGURE);
+        drop(state);
+        drop(_commit);
+        if close_configuration {
+            let api = self.clone();
+            let session_id = session_id.to_owned();
+            tokio::spawn(async move {
+                if !api.close_configuration_for_session(&session_id).await {
+                    tracing::warn!(
+                        %session_id,
+                        "plugin configuration window did not acknowledge close"
+                    );
+                }
+            });
+        }
         Ok(revision)
     }
 
@@ -823,6 +870,17 @@ impl ProviderApi {
                     }));
                 }
             }
+        }
+    }
+
+    /// Requests a graceful shutdown of the process that owns a terminal one-shot extension job.
+    pub(crate) fn request_shutdown_session(&self, session_id: &str) {
+        let provider_id = lock(&self.state)
+            .sessions
+            .get(session_id)
+            .map(|session| session.provider.registration.provider_id.clone());
+        if let Some(provider_id) = provider_id {
+            self.request_shutdown(&provider_id);
         }
     }
 
@@ -870,10 +928,9 @@ impl ProviderApi {
                 ));
             }
             RegistrationKind::Extension
-                if !registration
-                    .capabilities
-                    .iter()
-                    .any(|s| s == cap::GAME_LAUNCH || s == cap::GAME_CUSTOM_LAUNCH) =>
+                if !registration.capabilities.iter().any(|s| {
+                    s == cap::GAME_LAUNCH || s == cap::GAME_CUSTOM_LAUNCH || s == cap::GAMES_INSTALL
+                }) =>
             {
                 return Err(Status::invalid_argument(
                     "extension requires an approved game action",
@@ -915,6 +972,37 @@ impl ProviderApi {
         &self,
         provider_id: &str,
         expected_profile_epoch: Option<u64>,
+    ) -> Result<Launch, Status> {
+        self.begin_scoped_launch(
+            provider_id,
+            expected_profile_epoch,
+            SessionKind::Provider as i32,
+            None,
+        )
+    }
+
+    pub(crate) fn begin_extension_launch(
+        &self,
+        provider_id: &str,
+        expected_profile_epoch: u64,
+        target_game: TargetGameContext,
+    ) -> Result<Launch, Status> {
+        cap::validate_target(&target_game)
+            .map_err(|_| Status::invalid_argument("invalid target game context"))?;
+        self.begin_scoped_launch(
+            provider_id,
+            Some(expected_profile_epoch),
+            SessionKind::Extension as i32,
+            Some(target_game),
+        )
+    }
+
+    fn begin_scoped_launch(
+        &self,
+        provider_id: &str,
+        expected_profile_epoch: Option<u64>,
+        session_kind: i32,
+        target_game: Option<TargetGameContext>,
     ) -> Result<Launch, Status> {
         let mut state = lock(&self.state);
         let provider = state
@@ -958,6 +1046,8 @@ impl ProviderApi {
             provider,
             credential,
             profile_epoch,
+            session_kind,
+            target_game,
             ready,
         });
         Ok(Launch {
@@ -1011,6 +1101,15 @@ impl ProviderApi {
         )
         .map_err(|_| Status::invalid_argument("invalid session scope"))?;
         let extension_session = hello.session_kind == SessionKind::Extension as i32;
+        let legacy_provider_scope = pending.session_kind == SessionKind::Provider as i32
+            && hello.session_kind == SessionKind::Unspecified as i32;
+        if (!legacy_provider_scope && hello.session_kind != pending.session_kind)
+            || hello.target_game != pending.target_game
+        {
+            return Err(Status::permission_denied(
+                "session scope does not match the host-selected launch",
+            ));
+        }
         if extension_session != (pending.provider.registration.kind == RegistrationKind::Extension)
         {
             return Err(Status::permission_denied(
@@ -1076,7 +1175,7 @@ impl ProviderApi {
                 "required provider capabilities are missing",
             ));
         }
-        let granted: BTreeSet<String> = if third_party {
+        let mut granted: BTreeSet<String> = if third_party {
             requested
                 .intersection(&current_capabilities.iter().cloned().collect())
                 .cloned()
@@ -1084,6 +1183,11 @@ impl ProviderApi {
         } else {
             requested
         };
+        // An extension's context is the target the Core chose for this launch. It is an
+        // implicit session scope, not a permission to enumerate or widen the library.
+        if extension_session {
+            granted.insert(cap::CONTEXT.to_owned());
+        }
         if !granted.contains(cap::CONTEXT) {
             return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
         }
@@ -1121,7 +1225,7 @@ impl ProviderApi {
                 account_epoch,
                 profile_epoch,
                 session_kind: hello.session_kind,
-                target_game: hello.target_game.clone(),
+                target_game: pending.target_game.clone(),
             })
         } else {
             None
@@ -1133,7 +1237,7 @@ impl ProviderApi {
                 credential: pending.credential,
                 grants: granted.clone(),
                 kind: hello.session_kind,
-                target_game: hello.target_game.clone(),
+                target_game: pending.target_game,
                 grant_revision: 1,
                 permission_watchers: Vec::new(),
                 commands: None,
@@ -1209,6 +1313,13 @@ impl ProviderApi {
             .get(provider_id)
             .filter(|provider| provider.profiles.is_some())
             .map(|provider| provider.registration.plugin_id.clone())
+    }
+
+    pub(crate) fn is_extension(&self, provider_id: &str) -> bool {
+        lock(&self.state)
+            .providers
+            .get(provider_id)
+            .is_some_and(|provider| provider.registration.kind == RegistrationKind::Extension)
     }
 
     pub(crate) fn third_party_identity(&self, provider_id: &str) -> Option<(String, String)> {
@@ -1335,15 +1446,21 @@ impl ProviderApi {
     /// that passed its check finish in the previous profile before the session goes away.
     /// Official providers are not account-profile scoped and keep running.
     pub async fn fence_third_party_sessions(&self) {
-        let providers: Vec<_> = lock(&self.state)
-            .providers
-            .values()
-            .filter(|provider| provider.profiles.is_some())
-            .cloned()
+        let sessions: Vec<_> = lock(&self.state)
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.provider.profiles.is_some())
+            .map(|(id, session)| {
+                (
+                    id.clone(),
+                    session.provider.registration.provider_id.clone(),
+                )
+            })
             .collect();
-        for provider in providers {
-            drop(provider.commits.lock().await);
-            self.disconnect(&provider.registration.provider_id).await;
+        for (session_id, provider_id) in sessions {
+            let _ = self.close_configuration_for_session(&session_id).await;
+            self.request_shutdown(&provider_id);
+            self.disconnect(&provider_id).await;
         }
     }
 
@@ -1369,12 +1486,23 @@ impl ProviderApi {
     pub async fn invalidate_profile(&self) {
         let providers: Vec<_> = lock(&self.state).providers.values().cloned().collect();
         for provider in providers {
+            let provider_id = provider.registration.provider_id.clone();
+            let session_ids: Vec<_> = lock(&self.state)
+                .sessions
+                .iter()
+                .filter(|(_, session)| session.provider.registration.provider_id == provider_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for session_id in session_ids {
+                let _ = self.close_configuration_for_session(&session_id).await;
+            }
+            self.request_shutdown(&provider_id);
             let guard = provider.commits.lock().await;
             provider
                 .profile_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             drop(guard);
-            self.disconnect(&provider.registration.provider_id).await;
+            self.disconnect(&provider_id).await;
         }
     }
 
@@ -1408,6 +1536,10 @@ impl ProviderApi {
             session.provider.registration.services.clone()
         };
         drop(guard);
+        self.configuration_windows
+            .lock()
+            .await
+            .retain(|_, window| window.session_id != session_id);
         services.session_closed(session_id).await;
     }
 
@@ -1434,15 +1566,6 @@ impl ProviderApi {
                 "provider operations are unavailable to extensions",
             ));
         }
-        // Without an account profile, profile-scoped services are unavailable, not denied.
-        if session
-            .provider
-            .profiles
-            .as_ref()
-            .is_some_and(|profiles| profiles.current().is_none())
-        {
-            return Err(super::profile::no_profile());
-        }
         if context.session_kind != session.kind || context.target_game != session.target_game {
             let event = denial_event(session, permission, DenialReason::ScopeDenied);
             let revision = event.grant_revision;
@@ -1457,21 +1580,39 @@ impl ProviderApi {
             self.record_authorization_denial(event);
             return Err(denial(DenialReason::ScopeDenied, permission, revision));
         }
-        if !session.grants.contains(permission) {
+        let operation = state
+            .operations
+            .get(&(context.session_id.clone(), context.operation_id.clone()));
+        // A close acknowledgement is a host cleanup signal. After profile fencing or grant
+        // revocation it may finish against the old context, but this exception applies only to
+        // the correlated `ui.configure` result and never authorizes provider/resource services.
+        let configuration_cleanup = permission == cap::CONFIGURE
+            && operation.is_some_and(|operation| {
+                operation.kind == ProviderOperation::ConfigurationClose
+                    && operation.configuration_cleanup
+            });
+        if !configuration_cleanup
+            && session
+                .provider
+                .profiles
+                .as_ref()
+                .is_some_and(|profiles| profiles.current().is_none())
+        {
+            return Err(super::profile::no_profile());
+        }
+        if !session.grants.contains(permission) && !configuration_cleanup {
             let event = denial_event(session, permission, DenialReason::NotGranted);
             let revision = event.grant_revision;
             drop(state);
             self.record_authorization_denial(event);
             return Err(denial(DenialReason::NotGranted, permission, revision));
         }
-        let operation = state
-            .operations
-            .get(&(context.session_id.clone(), context.operation_id.clone()))
-            .ok_or_else(|| Status::failed_precondition("provider operation is stale"))?;
+        let operation =
+            operation.ok_or_else(|| Status::failed_precondition("provider operation is stale"))?;
         let current = epoch(&session.provider);
         let account_scoped = account_scoped(operation.kind);
         if operation.context != *context
-            || current.1 != context.profile_epoch
+            || (!configuration_cleanup && current.1 != context.profile_epoch)
             || (account_scoped
                 && (current.0 != context.account_epoch
                     || operation.identity_revision
@@ -1482,7 +1623,7 @@ impl ProviderApi {
         {
             return Err(Status::failed_precondition("provider operation is stale"));
         }
-        if !operation.permissions.contains(permission) {
+        if !operation.permissions.contains(permission) && !configuration_cleanup {
             let event = denial_event(session, permission, DenialReason::NotGranted);
             let revision = event.grant_revision;
             drop(state);
@@ -1663,7 +1804,304 @@ impl ProviderApi {
         provider_id: &str,
         kind: ProviderOperation,
     ) -> Result<Completion, Status> {
-        self.execute_payload(provider_id, kind, None, None).await
+        if is_configuration(kind) {
+            return Err(Status::invalid_argument(
+                "configuration operations require a host-managed window",
+            ));
+        }
+        self.execute_payload(provider_id, kind, None, None, None, String::new())
+            .await
+    }
+
+    /// Opens or focuses the one external configuration window owned by this plugin in the
+    /// active account profile. The host supplies an opaque handle and requires every lifecycle
+    /// acknowledgement to echo that handle, session and profile exactly.
+    pub async fn configure(
+        &self,
+        provider_id: &str,
+        requested: ProviderOperation,
+    ) -> Result<Completion, Status> {
+        if !matches!(
+            requested,
+            ProviderOperation::ConfigurationOpen
+                | ProviderOperation::ConfigurationFocus
+                | ProviderOperation::ConfigurationClose
+        ) {
+            return Err(Status::invalid_argument("invalid configuration operation"));
+        }
+
+        let provider = lock(&self.state)
+            .providers
+            .get(provider_id)
+            .cloned()
+            .ok_or_else(|| Status::unavailable("provider unavailable"))?;
+        if !matches!(
+            provider.registration.origin,
+            RegistrationOrigin::ThirdParty { .. }
+        ) {
+            return Err(Status::failed_precondition(
+                "external configuration is only available to third-party plugins",
+            ));
+        }
+        let profile = provider
+            .profiles
+            .as_ref()
+            .ok_or_else(super::profile::no_profile)?
+            .require()?;
+        let key = (
+            provider.registration.plugin_id.clone(),
+            profile.profile_id().to_owned(),
+        );
+        let active_session_id = lock(&self.state)
+            .sessions
+            .iter()
+            .find(|(_, session)| {
+                session.provider.registration.provider_id == provider_id
+                    && session.commands.is_some()
+            })
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| Status::unavailable("provider process is unavailable"))?;
+        {
+            let state = lock(&self.state);
+            let session = state
+                .sessions
+                .get(&active_session_id)
+                .ok_or_else(|| Status::unavailable("provider process is unavailable"))?;
+            if !session.grants.contains(cap::CONFIGURE) {
+                return Err(denial(
+                    DenialReason::NotGranted,
+                    cap::CONFIGURE,
+                    session.grant_revision,
+                ));
+            }
+        }
+
+        // Serialize only lifecycle requests for configuration windows. Provider operations use
+        // their normal bounded command path and remain serviceable while this lock is held.
+        let mut windows = self.configuration_windows.lock().await;
+        let existing = windows
+            .get(&key)
+            .filter(|window| {
+                window.profile_epoch == profile.epoch() && window.session_id == active_session_id
+            })
+            .cloned();
+        if existing.is_none() {
+            windows.remove(&key);
+        }
+
+        let (operation, window_id, store_on_accept) = match (requested, existing) {
+            (ProviderOperation::ConfigurationClose, None)
+            | (ProviderOperation::ConfigurationFocus, None) => {
+                return Err(Status::failed_precondition(
+                    "plugin configuration window is not open",
+                ));
+            }
+            (ProviderOperation::ConfigurationOpen, Some(window)) => (
+                ProviderOperation::ConfigurationFocus,
+                window.window_id,
+                false,
+            ),
+            (operation, Some(window)) => (operation, window.window_id, false),
+            (ProviderOperation::ConfigurationOpen, None) => (
+                ProviderOperation::ConfigurationOpen,
+                super::random_session_id()?,
+                true,
+            ),
+            _ => unreachable!("validated configuration operation"),
+        };
+        let binding = ConfigurationBinding {
+            profile_id: profile.profile_id().to_owned(),
+            session_id: active_session_id,
+            window_id: window_id.clone(),
+        };
+        if store_on_accept {
+            windows.insert(
+                key.clone(),
+                ConfigurationWindow {
+                    profile_epoch: profile.epoch(),
+                    session_id: binding.session_id.clone(),
+                    window_id: window_id.clone(),
+                },
+            );
+        }
+        let completion = match self
+            .execute_payload(
+                provider_id,
+                operation,
+                None,
+                None,
+                Some(binding),
+                window_id.clone(),
+            )
+            .await
+        {
+            Ok(completion) => completion,
+            Err(error) => {
+                if error.code() == tonic::Code::ResourceExhausted {
+                    windows.remove(&key);
+                }
+                return Err(error);
+            }
+        };
+        let accepted = completion
+            .result
+            .configuration
+            .as_ref()
+            .is_some_and(|result| result.accepted);
+        if operation == ProviderOperation::ConfigurationClose {
+            if accepted {
+                windows.remove(&key);
+            }
+        } else if !accepted {
+            // A rejected Focus means the cached window handle no longer describes a live
+            // window. Clear it so the next Configure request can retry with a fresh Open.
+            windows.remove(&key);
+        }
+        Ok(completion)
+    }
+
+    /// Close a configuration window before its process is stopped. The window entry is consumed
+    /// even if the plugin does not acknowledge, so a later session cannot inherit its handle.
+    pub(crate) async fn close_configuration_before_stop(&self, provider_id: &str) -> bool {
+        let session_id = lock(&self.state)
+            .sessions
+            .iter()
+            .find(|(_, session)| {
+                session.provider.registration.provider_id == provider_id
+                    && session.commands.is_some()
+            })
+            .map(|(id, _)| id.clone());
+        match session_id {
+            Some(id) => self.close_configuration_for_session(&id).await,
+            None => false,
+        }
+    }
+
+    /// A profile or permission fence has already invalidated the old context before this runs.
+    /// Send a narrowly scoped Close command using that old epoch and accept only its correlated
+    /// lifecycle result. This cleanup exception never authorizes data or provider operations.
+    async fn close_configuration_for_session(&self, session_id: &str) -> bool {
+        let window = {
+            let mut windows = self.configuration_windows.lock().await;
+            let entry = windows
+                .iter()
+                .find(|(_, window)| window.session_id == session_id)
+                .map(|(key, window)| (key.clone(), window.clone()));
+            entry.and_then(|(key, window)| windows.remove(&key).map(|_| (key, window)))
+        };
+        let Some(((plugin_id, profile_id), window)) = window else {
+            return false;
+        };
+        let operation_id = match super::random_session_id() {
+            Ok(operation_id) => operation_id,
+            Err(_) => return false,
+        };
+        let (context, commands, result_receiver) = {
+            let mut state = lock(&self.state);
+            let (
+                commands,
+                credential,
+                provider_id,
+                account_epoch,
+                session_kind,
+                target_game,
+                identity_revision,
+            ) = {
+                let Some(session) = state.sessions.get(session_id) else {
+                    return false;
+                };
+                if session.provider.registration.plugin_id != plugin_id
+                    || !matches!(
+                        session.provider.registration.origin,
+                        RegistrationOrigin::ThirdParty { .. }
+                    )
+                {
+                    return false;
+                }
+                let Some(commands) = session.commands.clone() else {
+                    return false;
+                };
+                (
+                    commands,
+                    session.credential,
+                    context_provider_id(&session.provider.registration).to_owned(),
+                    session
+                        .provider
+                        .account_epoch
+                        .load(std::sync::atomic::Ordering::Acquire),
+                    session.kind,
+                    session.target_game.clone(),
+                    session
+                        .provider
+                        .identity_revision
+                        .load(std::sync::atomic::Ordering::Acquire),
+                )
+            };
+            let context = ServiceContext {
+                session_id: session_id.to_owned(),
+                session_credential: credential.to_vec(),
+                provider_id,
+                operation_id,
+                account_epoch,
+                profile_epoch: window.profile_epoch,
+                session_kind,
+                target_game,
+            };
+            let binding = ConfigurationBinding {
+                profile_id,
+                session_id: session_id.to_owned(),
+                window_id: window.window_id.clone(),
+            };
+            let (result_sender, result_receiver) = oneshot::channel();
+            state.operations.insert(
+                (session_id.to_owned(), context.operation_id.clone()),
+                Operation {
+                    context: context.clone(),
+                    kind: ProviderOperation::ConfigurationClose,
+                    permissions: [cap::CONFIGURE].into(),
+                    catalog: CatalogTransfer::default(),
+                    requested_achievements: BTreeSet::new(),
+                    result: result_sender,
+                    identity_revision,
+                    secret_written: false,
+                    secret_deleted: false,
+                    identity_accepted: false,
+                    settings: None,
+                    configuration: Some(binding),
+                    configuration_cleanup: true,
+                },
+            );
+            (context, commands, result_receiver)
+        };
+        let operation_id = context.operation_id.clone();
+        if commands
+            .try_send(Ok(ProviderCommand {
+                context: Some(context),
+                operation: ProviderOperation::ConfigurationClose as i32,
+                target_operation_id: window.window_id,
+                settings: None,
+                runtime_session_result: None,
+                achievements: None,
+            }))
+            .is_err()
+        {
+            lock(&self.state)
+                .operations
+                .remove(&(session_id.to_owned(), operation_id));
+            return false;
+        }
+        match tokio::time::timeout(Duration::from_secs(5), result_receiver).await {
+            Ok(Ok(Ok(completion))) => completion
+                .result
+                .configuration
+                .is_some_and(|result| result.accepted),
+            _ => {
+                lock(&self.state)
+                    .operations
+                    .remove(&(session_id.to_owned(), operation_id));
+                false
+            }
+        }
     }
 
     pub async fn execute_achievements(
@@ -1678,6 +2116,8 @@ impl ProviderApi {
             ProviderOperation::ReadAchievements,
             None,
             Some(request),
+            None,
+            String::new(),
         )
         .await
     }
@@ -1691,6 +2131,8 @@ impl ProviderApi {
             request.operation(),
             Some(request),
             None,
+            None,
+            String::new(),
         )
         .await
     }
@@ -1729,6 +2171,37 @@ impl ProviderApi {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .any(|c| c == cap::SETTINGS)
+        })
+    }
+
+    /// Report configuration declarations separately from the permissions granted to the live
+    /// session. UI must never infer authorization from package declarations alone.
+    pub fn configuration_modes(&self, provider: &str) -> Result<ConfigurationModes, Status> {
+        let state = lock(&self.state);
+        let registration = state
+            .providers
+            .get(provider)
+            .ok_or_else(|| Status::not_found("provider not registered"))?;
+        let external_declared = registration
+            .registration
+            .capabilities
+            .contains(&cap::CONFIGURE.into());
+        let declarative_declared = registration
+            .registration
+            .capabilities
+            .contains(&cap::SETTINGS.into());
+        let session = state.sessions.values().find(|session| {
+            session.provider.registration.provider_id == provider && session.commands.is_some()
+        });
+        let external_authorized = external_declared
+            && session.is_some_and(|session| session.grants.contains(cap::CONFIGURE));
+        let declarative_authorized = declarative_declared
+            && session.is_some_and(|session| session.grants.contains(cap::SETTINGS));
+        Ok(ConfigurationModes {
+            external_declared,
+            external_authorized,
+            declarative_declared,
+            declarative_authorized,
         })
     }
 
@@ -1786,9 +2259,12 @@ impl ProviderApi {
         kind: ProviderOperation,
         settings: Option<settings::Request>,
         achievements: Option<models::AchievementsRequest>,
+        configuration: Option<ConfigurationBinding>,
+        target_operation_id: String,
     ) -> Result<Completion, Status> {
         if is_settings(kind) != settings.is_some()
             || (kind == ProviderOperation::ReadAchievements) != achievements.is_some()
+            || is_configuration(kind) != configuration.is_some()
         {
             return Err(Status::invalid_argument("missing operation scope"));
         }
@@ -1912,7 +2388,7 @@ impl ProviderApi {
             }
             let (account_epoch, profile_epoch) = epoch(&provider);
             let context = ServiceContext {
-                session_id,
+                session_id: session_id.clone(),
                 session_credential: credential.to_vec(),
                 provider_id: provider_id.into(),
                 operation_id: super::random_session_id()?,
@@ -1925,6 +2401,24 @@ impl ProviderApi {
                 && !request.matches_service(&context, &provider.registration.plugin_id)
             {
                 return Err(Status::failed_precondition("settings form expired"));
+            }
+            if let Some(binding) = &configuration
+                && (!matches!(
+                    provider.registration.origin,
+                    RegistrationOrigin::ThirdParty { .. }
+                ) || binding.profile_id
+                    != provider
+                        .profiles
+                        .as_ref()
+                        .and_then(|profiles| profiles.current())
+                        .map(|profile| profile.profile_id().to_owned())
+                        .unwrap_or_default()
+                    || binding.session_id != session_id
+                    || binding.window_id != target_operation_id)
+            {
+                return Err(Status::failed_precondition(
+                    "plugin configuration profile changed",
+                ));
             }
             let (complete, result) = oneshot::channel();
             let permissions = permission_set(kind)
@@ -1950,6 +2444,8 @@ impl ProviderApi {
                     secret_deleted: false,
                     identity_accepted: false,
                     settings: settings.clone(),
+                    configuration: configuration.clone(),
+                    configuration_cleanup: false,
                 },
             );
             (context, commands, result)
@@ -1960,7 +2456,7 @@ impl ProviderApi {
             .try_send(Ok(ProviderCommand {
                 context: Some(context.clone()),
                 operation: kind as i32,
-                target_operation_id: String::new(),
+                target_operation_id,
                 settings: settings.map(Into::into),
                 runtime_session_result: None,
                 achievements: achievements.map(Into::into),
@@ -2075,11 +2571,25 @@ impl ProviderApi {
                 }) {
                     return Err(Status::invalid_argument("invalid login outcome"));
                 }
-                let operation_kind = lock(&self.state)
+                let (operation_kind, configuration_binding) = lock(&self.state)
                     .operations
                     .get(&(context.session_id.clone(), context.operation_id.clone()))
-                    .map(|operation| operation.kind)
+                    .map(|operation| (operation.kind, operation.configuration.clone()))
                     .ok_or_else(|| Status::failed_precondition("operation already completed"))?;
+                match (&configuration_binding, &result.configuration) {
+                    (Some(expected), Some(actual))
+                        if actual.session_id == context.session_id
+                            && expected.session_id == context.session_id
+                            && (actual.profile_id.is_empty()
+                                || actual.profile_id == expected.profile_id)
+                            && actual.window_id == expected.window_id => {}
+                    (None, None) if !is_configuration(operation_kind) => {}
+                    _ => {
+                        return Err(Status::invalid_argument(
+                            "invalid plugin configuration acknowledgement",
+                        ));
+                    }
+                }
                 if (result.login_outcome.is_some() && operation_kind != ProviderOperation::SignIn)
                     || (result.focused.is_some()
                         && operation_kind != ProviderOperation::FocusSignIn)

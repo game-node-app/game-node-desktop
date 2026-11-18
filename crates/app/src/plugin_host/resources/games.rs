@@ -38,6 +38,17 @@ struct Action {
     custom_dispatch: Option<crate::plugin_host::library::CustomLaunchDispatch>,
 }
 
+struct ExtensionActionShutdown {
+    providers: crate::plugin_host::provider::ProviderApi,
+    session_id: String,
+}
+
+impl Drop for ExtensionActionShutdown {
+    fn drop(&mut self) {
+        self.providers.request_shutdown_session(&self.session_id);
+    }
+}
+
 /// How the request was authorized before its job started.
 enum Authorized {
     /// A pre-issued intent was spent, or the user had remembered this plugin and game.
@@ -195,9 +206,17 @@ impl ResourceApi {
             .clone();
         let (entry_key, entry) =
             self.action_target(&caller, &context, &action.game_id, &action.installation_id)?;
+        let current_revision = if context.session_kind() == SessionKind::Extension {
+            context
+                .target_game
+                .as_ref()
+                .and_then(|target| target.revision.parse::<u64>().ok())
+        } else {
+            Some(entry.revision)
+        };
         if action
             .expected_revision
-            .is_some_and(|expected| expected != entry.revision)
+            .is_some_and(|expected| current_revision != Some(expected))
         {
             return Err(Status::failed_precondition(
                 "the game changed since it was read; read it again",
@@ -250,24 +269,26 @@ impl ResourceApi {
         if let Some(job) = self.jobs.replay(&owner, &action.key, hash)? {
             return Ok(job);
         }
-        let authorized = if !action.intent.is_empty() {
-            self.intents.redeem(&binding, &action.intent)?;
-            Authorized::Already
-        } else if self.remembered(&caller, &binding).await? {
-            Authorized::Already
-        } else {
-            if !self.intents.can_confirm() {
-                return Err(Status::failed_precondition(
-                    "this GameNode build cannot ask for confirmations yet",
-                ));
-            }
-            Authorized::Ask(self.intents.begin_pending(&binding)?)
-        };
+        let authorized =
+            if !action.intent.is_empty() && self.intents.redeem(&binding, &action.intent).is_ok() {
+                Authorized::Already
+            } else if self.remembered(&caller, &binding).await? {
+                Authorized::Already
+            } else {
+                if !self.intents.can_confirm() {
+                    return Err(Status::failed_precondition(
+                        "this GameNode build cannot ask for confirmations yet",
+                    ));
+                }
+                Authorized::Ask(self.intents.begin_pending(&binding)?)
+            };
         let awaiting = matches!(authorized, Authorized::Ask(_)).then_some(AWAITING);
 
         let api = self.clone();
         let work_caller = caller.clone();
         let work_context = context.clone();
+        let extension_session = context.session_kind() == SessionKind::Extension;
+        let extension_session_id = context.session_id.clone();
         let request = ConfirmationRequest {
             plugin_id: identity.plugin_id,
             publisher_fingerprint: identity.publisher_fingerprint,
@@ -287,6 +308,10 @@ impl ResourceApi {
         let custom_dispatch = action.custom_dispatch.clone();
         let permission = action.permission;
         let run = work(move |ctx| async move {
+            let _shutdown = extension_session.then(|| ExtensionActionShutdown {
+                providers: api.providers.clone(),
+                session_id: extension_session_id,
+            });
             api.run_action(
                 ctx,
                 &work_caller,

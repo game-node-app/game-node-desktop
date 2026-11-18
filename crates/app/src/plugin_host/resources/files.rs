@@ -31,7 +31,7 @@ use super::mutations::{mutation_key, reply, request_hash};
 use super::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ResourceApi};
 use crate::plugin_host::files::{
     APPROVAL_TIMEOUT, AffectedGame, DEFAULT_READ_BYTES, DeclaredFolder, FileAccess, KINDS,
-    MAX_CHUNK_BYTES, RootRequest, RootScope, affected_keys,
+    MAX_CHUNK_BYTES, PreviousRootApproval, RootRequest, RootScope, affected_keys,
 };
 use crate::plugin_host::library::{CommitGuard, LibraryFeed};
 use crate::plugin_host::notifications::is_plain_line;
@@ -507,6 +507,33 @@ impl ResourceApi {
             return Ok(approval);
         }
 
+        let previous_approval = self
+            .in_namespace(caller, {
+                let installation_id = installation_id.to_owned();
+                let kind = kind.to_owned();
+                move |namespace| {
+                    Ok(namespace
+                        .approval_for(&installation_id, &kind)?
+                        .filter(|approval| {
+                            approval.revoked_at.is_none() && approval.operations & wanted != wanted
+                        })
+                        .map(|approval| PreviousRootApproval {
+                            root: PathBuf::from(approval.root),
+                            operations: [
+                                (operation::READ, "read"),
+                                (operation::WRITE, "write"),
+                                (operation::DELETE, "delete"),
+                            ]
+                            .into_iter()
+                            .filter_map(|(bit, name)| {
+                                (approval.operations & bit != 0).then_some(name)
+                            })
+                            .collect(),
+                        }))
+                }
+            })
+            .await?;
+
         let approver = files.approver().ok_or_else(|| {
             Status::failed_precondition("file access approval is not available in this build")
         })?;
@@ -530,12 +557,11 @@ impl ResourceApi {
         })
         .await
         .map_err(|_| Status::internal("the suggestions could not be checked"))?;
-        let preselected = host_suggestion.clone().or_else(|| {
-            declared_folders
-                .iter()
-                .find(|folder| folder.exists)
-                .map(|folder| folder.path.clone())
-        });
+        let preselected = declared_folders
+            .iter()
+            .find(|folder| folder.exists)
+            .map(|folder| folder.path.clone())
+            .or(host_suggestion.clone());
 
         let chosen = tokio::time::timeout(
             APPROVAL_TIMEOUT,
@@ -545,6 +571,7 @@ impl ResourceApi {
                 installation_name: installation_name.to_owned(),
                 kind: kind.to_owned(),
                 operations: names.clone(),
+                previously_approved: previous_approval,
                 suggested: host_suggestion,
                 declared: declared_folders.clone(),
                 preselected,

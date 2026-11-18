@@ -53,12 +53,15 @@ import type {
 } from '../api/ports';
 import type { PluginNotice } from '../api/pluginNotices';
 import type { PluginConfirmation, RememberedConfirmation } from '../api/pluginConfirmations';
+import type { PluginFolderApproval, RootConfirmationPrompt, RootSelectionPrompt } from '../api/pluginFolderApprovals';
 
 type Listener = (snapshot: Snapshot) => void;
 type ProgressListener = (progress: PortProgress) => void;
 type PluginNoticeListener = (notice: PluginNotice) => void;
 type PluginConfirmationListener = (confirmation: unknown) => void;
 type PluginConfirmationClosedListener = (id: string) => void;
+type PluginRootPromptListener = (prompt: unknown) => void;
+type PluginRootPromptClosedListener = (id: string) => void;
 
 export type MockSteamScenario =
   | 'notConnected'
@@ -1187,9 +1190,32 @@ export function createMockHost(options: {
   const pluginNoticeListeners = new Set<PluginNoticeListener>();
   const confirmationListeners = new Set<PluginConfirmationListener>();
   const confirmationClosedListeners = new Set<PluginConfirmationClosedListener>();
+  const rootSelectionListeners = new Set<PluginRootPromptListener>();
+  const rootConfirmationListeners = new Set<PluginRootPromptListener>();
+  const rootPromptClosedListeners = new Set<PluginRootPromptClosedListener>();
   /** Confirmations the fictional user left open, and what they chose to remember, by plugin. */
   const openConfirmations = new Map<string, PluginConfirmation>();
+  const openRootSelections = new Map<string, RootSelectionPrompt>();
+  const openRootConfirmations = new Map<string, RootConfirmationPrompt>();
   const remembered = new Map<string, RememberedConfirmation[]>();
+  const mockPublisher = 'cd'.repeat(32);
+  const folderApprovals = new Map<string, PluginFolderApproval[]>([[
+    'community.example.save-sync',
+    [
+      {
+        id: 'mock-file-approval', pluginId: 'community.example.save-sync', publisherFingerprint: mockPublisher,
+        installationName: 'Aster Vale', kind: 'save', root: 'C:\\Games\\Aster Vale\\Saves',
+        operations: ['read'], affectedGames: ['Aster Vale'], revoked: false, declaredByPlugin: false,
+        logicalLibrary: false, libraryId: null, watching: null,
+      },
+      {
+        id: 'mock-library-root', pluginId: 'community.example.save-sync', publisherFingerprint: mockPublisher,
+        installationName: 'Community library', kind: 'library', root: 'C:\\Games',
+        operations: ['read', 'plugin_discovery', 'core_executable_discovery'], affectedGames: [],
+        revoked: false, declaredByPlugin: true, logicalLibrary: true, libraryId: 'mock-library', watching: true,
+      },
+    ],
+  ]]);
   let periodicPluginChecks = false;
   const snapshot = createDefaultSnapshot();
   // The status bar fixture: the watched folders were checked 12 minutes ago.
@@ -2905,6 +2931,31 @@ export function createMockHost(options: {
       openConfirmations.delete(id);
       confirmationClosedListeners.forEach((listener) => listener(id));
     },
+    subscribeRootSelections(listener: PluginRootPromptListener) {
+      rootSelectionListeners.add(listener);
+      return () => { rootSelectionListeners.delete(listener); };
+    },
+    subscribeRootConfirmations(listener: PluginRootPromptListener) {
+      rootConfirmationListeners.add(listener);
+      return () => { rootConfirmationListeners.delete(listener); };
+    },
+    subscribeRootPromptsClosed(listener: PluginRootPromptClosedListener) {
+      rootPromptClosedListeners.add(listener);
+      return () => { rootPromptClosedListeners.delete(listener); };
+    },
+    publishRootSelection(prompt: RootSelectionPrompt) {
+      openRootSelections.set(prompt.id, prompt);
+      rootSelectionListeners.forEach((listener) => listener(prompt));
+    },
+    publishRootConfirmation(prompt: RootConfirmationPrompt) {
+      openRootConfirmations.set(prompt.id, prompt);
+      rootConfirmationListeners.forEach((listener) => listener(prompt));
+    },
+    closeRootPrompt(id: string) {
+      openRootSelections.delete(id);
+      openRootConfirmations.delete(id);
+      rootPromptClosedListeners.forEach((listener) => listener(id));
+    },
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
       if (cmd === 'plugin_update_preferences') return { periodicChecks: periodicPluginChecks };
@@ -2916,6 +2967,8 @@ export function createMockHost(options: {
       if (cmd === 'plugin_update_check') return [];
       if (cmd === 'plugin_update_review') return null;
       if (cmd === 'plugin_update_approve' || cmd === 'plugin_update_decline') return undefined;
+      if (cmd === 'available_plugin_extensions') return [];
+      if (cmd === 'start_extension_action') return undefined;
       if (cmd === 'plugin_confirmation_answer') {
         const id = String(args.id ?? '');
         const asked = openConfirmations.get(id);
@@ -2931,6 +2984,38 @@ export function createMockHost(options: {
           remembered.set(asked.pluginId, list);
         }
         return undefined;
+      }
+      if (cmd === 'plugin_folder_selection_answer') {
+        openRootSelections.delete(String(args.id ?? ''));
+        return undefined;
+      }
+      if (cmd === 'plugin_folder_approval_answer') {
+        openRootConfirmations.delete(String(args.id ?? ''));
+        return undefined;
+      }
+      if (cmd === 'plugin_folder_approvals') {
+        return structuredClone(folderApprovals.get(String(args.pluginId ?? '')) ?? []);
+      }
+      if (cmd === 'plugin_folder_revoke') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = folderApprovals.get(pluginId) ?? [];
+        const current = before.find((item) => item.id === args.id);
+        if (!current || current.revoked) return false;
+        if (current.logicalLibrary) {
+          folderApprovals.set(pluginId, before.filter((item) => item.id !== args.id));
+        } else {
+          folderApprovals.set(pluginId, before.map((item) => item.id === args.id ? { ...item, revoked: true } : item));
+        }
+        return true;
+      }
+      if (cmd === 'plugin_folder_change') return undefined;
+      if (cmd === 'plugin_library_root_set_watching') {
+        const pluginId = String(args.pluginId ?? '');
+        const before = folderApprovals.get(pluginId) ?? [];
+        const current = before.find((item) => item.id === args.id && item.logicalLibrary);
+        if (!current) return false;
+        folderApprovals.set(pluginId, before.map((item) => item.id === args.id ? { ...item, watching: args.watching === true } : item));
+        return true;
       }
       if (cmd === 'plugin_remembered_confirmations') {
         return [...(remembered.get(String(args.pluginId ?? '')) ?? [])];
@@ -2979,6 +3064,17 @@ export function createMockHost(options: {
           session: scenarios.epic === 'notConnected' ? 'stopped' : 'active',
           nativeAccess: ['files', 'network', 'registry'],
         };
+        const communityPlugin: PluginInfo = {
+          providerId: 'community-save-sync',
+          pluginId: 'community.example.save-sync',
+          name: 'Community Save Sync',
+          source: 'community',
+          status: 'installed',
+          capabilities: ['library.read', 'files.read', 'libraries.roots.write'],
+          session: 'active',
+          nativeAccess: ['files', 'network'],
+          publisherFingerprint: mockPublisher,
+        };
         if (platform === 'linux') {
           const packageManagerPlugin: PluginInfo = {
             providerId: 'packagekit',
@@ -2993,7 +3089,7 @@ export function createMockHost(options: {
           };
           return [steamPlugin, packageManagerPlugin];
         }
-        return [steamPlugin, epicPlugin];
+        return [steamPlugin, epicPlugin, communityPlugin];
       }
       if (cmd === 'get_app_info') {
         return {

@@ -17,6 +17,7 @@ import { useLocalGameErrorToast } from './features/drm-free/useLocalGameErrorToa
 import { usePluginNotices } from './features/plugins/usePluginNotices';
 import { PluginPortSetupHost } from './features/ports/setup/PluginPortSetupHost';
 import { PluginConfirmationHost } from './features/plugins/PluginConfirmationHost';
+import { PluginFolderApprovalHost } from './features/plugins/PluginFolderApprovalHost';
 import { useUiStore } from './store/uiStore';
 
 // Snapshot- or store-gated overlays are split out of the startup bundle. They are
@@ -172,6 +173,7 @@ export const App: React.FC = () => {
         <GameToolsPanel />
       </LazyOverlay>
       <PluginConfirmationHost />
+      <PluginFolderApprovalHost />
       <PluginPortSetupHost />
       <ToastContainer />
     </div>

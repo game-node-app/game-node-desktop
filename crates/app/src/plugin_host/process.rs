@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gamenode_plugin_protocol::proto::ProviderOperation;
+use gamenode_plugin_protocol::proto::TargetGameContext;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tonic::Status;
 
@@ -102,6 +103,12 @@ struct ChildProcess {
     stopped: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct ExtensionLaunch {
+    target: TargetGameContext,
+    intent_id: String,
+    required_permission: &'static str,
 }
 
 /// Owns the OS-level process group assigned to a supervised plugin. Dropping this guard kills
@@ -334,20 +341,45 @@ impl ProviderProcesses {
     }
 
     pub async fn ensure_started(&self, provider_id: &str) -> Result<(), Status> {
-        self.ensure_started_inner(provider_id, false).await
+        self.ensure_started_inner(provider_id, false, None).await
+    }
+
+    /// Starts an extension only for a host-selected game and passes its one-use user intent to
+    /// that child. Extension launches never join a previously running process session.
+    pub(crate) async fn ensure_extension_started(
+        &self,
+        provider_id: &str,
+        target: TargetGameContext,
+        intent_id: String,
+        required_permission: &'static str,
+    ) -> Result<(), Status> {
+        if intent_id.is_empty() || intent_id.len() > 128 {
+            return Err(Status::invalid_argument("invalid user intent"));
+        }
+        self.ensure_started_inner(
+            provider_id,
+            false,
+            Some(ExtensionLaunch {
+                target,
+                intent_id,
+                required_permission,
+            }),
+        )
+        .await
     }
 
     /// One-shot readiness check used only after explicit update approval. It may start a plugin
     /// whose account activation is disabled, but still requires an active profile and current
     /// grants. Callers must stop it again after readiness when the user had disabled it.
     pub(crate) async fn ensure_ready_for_update(&self, provider_id: &str) -> Result<(), Status> {
-        self.ensure_started_inner(provider_id, true).await
+        self.ensure_started_inner(provider_id, true, None).await
     }
 
     async fn ensure_started_inner(
         &self,
         provider_id: &str,
         allow_disabled: bool,
+        extension: Option<ExtensionLaunch>,
     ) -> Result<(), Status> {
         if *self.inner.shutdown.borrow() {
             return Err(Status::unavailable("desktop is shutting down"));
@@ -395,7 +427,10 @@ impl ProviderProcesses {
         // blocking another provider or a native UI callback.
         let mut stored = slot.child.lock().await;
         if let Some(child) = stored.as_mut() {
-            if child.running.load(Ordering::Acquire) && self.inner.api.connected(provider_id) {
+            if extension.is_none()
+                && child.running.load(Ordering::Acquire)
+                && self.inner.api.connected(provider_id)
+            {
                 return Ok(());
             }
             if child.running.load(Ordering::Acquire) {
@@ -466,6 +501,15 @@ impl ProviderProcesses {
             })
             .await
             .map_err(|_| Status::internal("plugin permission worker failed"))??;
+            if extension.as_ref().is_some_and(|launch| {
+                !effective
+                    .iter()
+                    .any(|permission| permission == launch.required_permission)
+            }) {
+                return Err(Status::permission_denied(
+                    "extension action permission is not granted",
+                ));
+            }
             if !self.inner.api.profiles().is_current(profile.epoch()) {
                 return Err(Status::failed_precondition(
                     "plugin profile changed during startup",
@@ -483,10 +527,20 @@ impl ProviderProcesses {
                 "plugin profile changed during startup",
             ));
         }
-        let launch = self
-            .inner
-            .api
-            .begin_launch_for_profile(provider_id, active_profile_epoch)?;
+        let launch = if let Some(extension) = extension.as_ref() {
+            let profile_epoch = active_profile_epoch.ok_or_else(|| {
+                Status::failed_precondition("extension launch requires an active account")
+            })?;
+            self.inner.api.begin_extension_launch(
+                provider_id,
+                profile_epoch,
+                extension.target.clone(),
+            )?
+        } else {
+            self.inner
+                .api
+                .begin_launch_for_profile(provider_id, active_profile_epoch)?
+        };
         let mut command = tokio::process::Command::new(&config.executable);
         command
             .args(&config.arguments)
@@ -494,10 +548,32 @@ impl ProviderProcesses {
             .env("GAMENODE_PLUGIN_ENDPOINT", &self.inner.endpoint)
             .env("GAMENODE_PLUGIN_OPERATION_ID", "initialization")
             .env("GAMENODE_PLUGIN_SESSION_CREDENTIAL", &launch.credential)
+            .env_remove("GAMENODE_PLUGIN_USER_INTENT_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_GAME_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_INSTALLATION_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_PROFILE_ID")
+            .env_remove("GAMENODE_PLUGIN_TARGET_REVISION")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        if let Some(extension) = extension.as_ref() {
+            command.env("GAMENODE_PLUGIN_USER_INTENT_ID", &extension.intent_id);
+            command
+                .env("GAMENODE_PLUGIN_TARGET_GAME_ID", &extension.target.game_id)
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_INSTALLATION_ID",
+                    &extension.target.installation_id,
+                )
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_PROFILE_ID",
+                    &extension.target.profile_id,
+                )
+                .env(
+                    "GAMENODE_PLUGIN_TARGET_REVISION",
+                    &extension.target.revision,
+                );
+        }
         #[cfg(target_os = "linux")]
         command.process_group(0);
         #[cfg(windows)]
@@ -549,9 +625,19 @@ impl ProviderProcesses {
             stop: Some(stop),
             task,
         });
-        started
+        let result = started
             .await
-            .map_err(|_| Status::unavailable("provider startup failed"))?
+            .map_err(|_| Status::unavailable("provider startup failed"))??;
+        if extension.is_some() {
+            drop(stored);
+            let processes = self.clone();
+            let provider_id = provider_id.to_owned();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                processes.stop_provider(&provider_id).await;
+            });
+        }
+        Ok(result)
     }
 
     pub async fn execute(
@@ -593,6 +679,11 @@ impl ProviderProcesses {
     }
 
     pub async fn stop_provider(&self, provider_id: &str) {
+        let _ = self
+            .inner
+            .api
+            .close_configuration_before_stop(provider_id)
+            .await;
         if let Some(slot) = self.inner.slots.get(provider_id) {
             let mut child = slot.child.lock().await;
             if let Some(mut child) = child.take() {
@@ -669,9 +760,25 @@ impl ProviderProcesses {
     }
 
     pub async fn shutdown(&self) {
+        // Send correlated Close acknowledgements while provider command sessions are still
+        // serviceable. Broadcasting shutdown first would let supervisors tear down those sessions
+        // before the configuration windows could be fenced.
+        let provider_ids: Vec<_> = self
+            .inner
+            .slots
+            .iter()
+            .map(|(provider_id, _)| provider_id.clone())
+            .collect();
+        for provider_id in &provider_ids {
+            let _ = self
+                .inner
+                .api
+                .close_configuration_before_stop(provider_id)
+                .await;
+        }
         self.inner.shutdown.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(4), async {
-            for id in self.inner.slots.keys() {
+            for id in &provider_ids {
                 self.stop_provider(id).await;
             }
         })

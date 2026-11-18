@@ -225,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider_runtime = match runtime.block_on(
         gamenode_app::plugin_host::runtime::HostedProviders::bundled(
             plugin_api.providers.clone(),
+            plugin_api.intents.clone(),
             plugin_endpoint,
             paths.clone(),
             library_store.clone(),
@@ -265,6 +266,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     plugin_api
         .notifications
         .set_sink(Arc::new(NoticeSink(app_handle_slot.clone())));
+
+    // Folder approvals are collected by the host, correlated through one-use ids, and answered
+    // by the shared React window. No plugin-suggested path is trusted until the user selects it
+    // and the host validates/canonicalizes it in the resource handler.
+    let root_approval_slot = app_handle_slot.clone();
+    let root_approvals = Arc::new(gamenode_app::plugin_host::files::RootApprovalBridge::new(
+        Arc::new(move |signal| {
+            use gamenode_app::plugin_host::files::{
+                ROOT_CLOSED_EVENT, ROOT_CONFIRM_EVENT, ROOT_SELECT_EVENT, RootApprovalSignal,
+            };
+            use tauri::Emitter;
+            let guard = root_approval_slot.lock().unwrap();
+            let Some(app) = guard.as_ref() else {
+                return false;
+            };
+            match signal {
+                RootApprovalSignal::Select(prompt) => app.emit(ROOT_SELECT_EVENT, &prompt).is_ok(),
+                RootApprovalSignal::Confirm(prompt) => {
+                    app.emit(ROOT_CONFIRM_EVENT, &prompt).is_ok()
+                }
+                RootApprovalSignal::Closed(id) => app.emit(ROOT_CLOSED_EVENT, id).is_ok(),
+            }
+        }),
+    ));
+    plugin_api.files.set_approver(root_approvals.clone());
 
     // A plugin's request to launch or install a game is confirmed in the window: the bridge shows
     // it with an event and takes the answer from a command. With no window listening, a request
@@ -389,8 +415,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.set_plugin_profiles(plugin_api.providers.profiles());
     // Plugins read the library through a host-owned projection the engine keeps current.
     engine.set_library_feed(plugin_api.library.clone());
+    let folder_approvals = Arc::new(
+        gamenode_app::plugin_host::file_approvals::PluginFolderApprovals::new(
+            plugin_api.storage.clone(),
+            plugin_api.providers.profiles(),
+            plugin_api.files.clone(),
+            plugin_api.library.clone(),
+            root_approvals.clone(),
+        ),
+    );
 
     let mut builder = tauri::Builder::default();
+    builder = builder.plugin(tauri_plugin_dialog::init());
     builder = gamenode_app::protocol::register_asset_protocol(
         builder,
         paths.covers_dir(),
@@ -398,10 +434,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     builder = builder.manage(engine.clone());
+    builder = builder.manage(plugin_api.providers.clone());
     if let Some(provider_runtime) = provider_runtime.as_ref() {
         builder = builder.manage(provider_runtime.lifecycle());
     }
     builder = builder.manage(confirmations);
+    builder = builder.manage(root_approvals);
+    builder = builder.manage(folder_approvals);
     builder = builder.manage(plugin_approvals);
     builder = builder.manage(plugin_updates.clone());
     builder = builder.manage(logging.location().clone());
@@ -455,6 +494,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::review_detected_target,
         commands::repair_detected_target,
         commands::launch_selected,
+        commands::start_extension_action,
+        commands::available_plugin_extensions,
         commands::dismiss_launch,
         commands::rescan_library,
         commands::open_gamenode_page,
@@ -510,6 +551,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_disable,
         commands::plugin_remove,
         commands::plugin_configuration_state,
+        commands::plugin_configuration_modes,
+        commands::plugin_configuration_open,
+        commands::plugin_settings_describe,
+        commands::plugin_settings_submit,
+        commands::plugin_settings_cancel,
         commands::plugin_update_preferences,
         commands::plugin_update_available,
         commands::plugin_update_set_periodic_checks,
@@ -518,6 +564,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_update_approve,
         commands::plugin_update_decline,
         commands::plugin_confirmation_answer,
+        commands::plugin_folder_selection_answer,
+        commands::plugin_folder_approval_answer,
+        commands::plugin_folder_approvals,
+        commands::plugin_folder_revoke,
+        commands::plugin_folder_change,
+        commands::plugin_library_root_set_watching,
         commands::plugin_remembered_confirmations,
         commands::plugin_revoke_confirmation,
         commands::provider_sign_in,

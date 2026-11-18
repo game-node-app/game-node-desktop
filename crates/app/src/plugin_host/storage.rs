@@ -618,6 +618,14 @@ impl Namespace<'_> {
         }
     }
 
+    /// Every persistent folder approval in this plugin/profile namespace, revoked or active.
+    pub fn file_approvals(&mut self) -> Result<Vec<FileApproval>, Status> {
+        match self.durable(false)? {
+            Some(store) => store.approvals().map_err(unavailable),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Records an approval, replacing the earlier one of the same installation and kind.
     /// `guard` is checked right before the change.
     pub fn save_approval(
@@ -677,7 +685,6 @@ impl Namespace<'_> {
     }
 
     /// Revokes an approval; its handles stop working at once. Returns whether it was active.
-    #[cfg(test)]
     pub fn revoke_approval(&mut self, id: &str) -> Result<bool, Status> {
         let now = self.now;
         match self.durable(false)? {

@@ -8,6 +8,9 @@ import { AppModal } from '../../components/AppModal';
 import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
+import { PluginFolderApprovals } from './PluginFolderApprovals';
+import { selectPluginConfiguration } from '../../api/pluginSettings';
+import { PluginConfigurationSurface } from './PluginConfigurationSurface';
 import {
   settingsCard,
   settingsPill,
@@ -83,6 +86,15 @@ export const PluginInventory: React.FC = () => {
   const managed = Boolean(selectedPlugin?.publisherFingerprint);
   const canManageRuntime = managed && selectedPlugin?.runtimeAvailable === true && profileId !== null;
   const canManageAccount = managed && profileId !== null;
+  const configurationQuery = useQuery({
+    queryKey: ['plugin-configuration-modes', selectedPlugin?.providerId],
+    queryFn: () => commands.pluginConfigurationModes(selectedPlugin!.providerId),
+    enabled: Boolean(selectedPlugin && selectedPlugin.status === 'installed' && selectedPlugin.session === 'active'),
+    staleTime: 5_000,
+  });
+  const configurationModes = configurationQuery.data;
+  const configurationChoice = configurationModes ? selectPluginConfiguration(configurationModes) : undefined;
+
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -434,11 +446,24 @@ export const PluginInventory: React.FC = () => {
                 </ul>
                 <p className={`${settingsRowDescription} mt-1`}>{t('plugins.nativeAccessNote')}</p>
               </div>
-              {selectedPlugin.publisherFingerprint && (
-                <RememberedConfirmations
-                  pluginId={selectedPlugin.pluginId}
-                  publisherFingerprint={selectedPlugin.publisherFingerprint}
+              <section className="mt-compact" aria-label={t('plugins.settings.title')}>
+                <PluginConfigurationSurface
+                  plugin={selectedPlugin}
+                  choice={configurationChoice}
+                  loading={configurationQuery.isPending && !configurationQuery.isError}
                 />
+              </section>
+              {selectedPlugin.publisherFingerprint && (
+                <>
+                  <RememberedConfirmations
+                    pluginId={selectedPlugin.pluginId}
+                    publisherFingerprint={selectedPlugin.publisherFingerprint}
+                  />
+                  <PluginFolderApprovals
+                    pluginId={selectedPlugin.pluginId}
+                    publisherFingerprint={selectedPlugin.publisherFingerprint}
+                  />
+                </>
               )}
             </article>
           )}

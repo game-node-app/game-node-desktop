@@ -212,6 +212,33 @@ impl Default for SessionOptions {
 }
 
 impl Launch {
+    /// The opaque, host-issued user intent for a Core-started extension action, if present.
+    /// Provider sessions and extensions started outside that Core action have no intent.
+    pub fn user_intent_id(&self) -> Option<String> {
+        std::env::var("GAMENODE_PLUGIN_USER_INTENT_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+    }
+
+    /// The target Core selected for a one-shot extension session, if present. The host still
+    /// verifies this exact value during `OpenSession`; editing environment values cannot widen it.
+    pub fn selected_target(&self) -> Option<TargetGameContext> {
+        Some(TargetGameContext {
+            game_id: std::env::var("GAMENODE_PLUGIN_TARGET_GAME_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            installation_id: std::env::var("GAMENODE_PLUGIN_TARGET_INSTALLATION_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            profile_id: std::env::var("GAMENODE_PLUGIN_TARGET_PROFILE_ID")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+            revision: std::env::var("GAMENODE_PLUGIN_TARGET_REVISION")
+                .ok()
+                .filter(|value| !value.is_empty())?,
+        })
+    }
+
     pub fn from_env() -> Result<Self, Error> {
         let endpoint = std::env::var_os("GAMENODE_PLUGIN_ENDPOINT")
             .or_else(|| std::env::var_os("GAMENODE_PLUGIN_SOCKET"))
@@ -667,13 +694,21 @@ impl Session {
         capabilities: &[&str],
     ) -> Result<Self, Error> {
         let channel = connect(&launch.endpoint).await?;
+        let mut session_capabilities = Vec::with_capacity(capabilities.len() + 1);
+        session_capabilities.push(capability::CONTEXT);
+        session_capabilities.extend(
+            capabilities
+                .iter()
+                .copied()
+                .filter(|permission| *permission != capability::CONTEXT),
+        );
         Self::from_channel_with_options(
             channel,
             launch,
             plugin_id,
             "",
             plugin_version,
-            capabilities,
+            &session_capabilities,
             SessionOptions {
                 min_api_major: 1,
                 min_api_minor: gamenode_plugin_protocol::API_MINOR,
@@ -685,6 +720,18 @@ impl Session {
             },
         )
         .await
+    }
+
+    /// Opens the one-shot extension session using only the target selected by Core at process
+    /// startup. Prefer this for packages launched from the desktop's game actions.
+    pub async fn open_extension_from_launch(
+        launch: Launch,
+        plugin_id: &str,
+        plugin_version: &str,
+        capabilities: &[&str],
+    ) -> Result<Self, Error> {
+        let target = launch.selected_target().ok_or(Error::Configuration)?;
+        Self::open_extension(launch, plugin_id, plugin_version, target, capabilities).await
     }
 
     /// Also allows independent reference hosts to exercise the public protocol.

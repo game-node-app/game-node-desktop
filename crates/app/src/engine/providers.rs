@@ -188,6 +188,71 @@ fn category(
 }
 
 impl Engine {
+    pub async fn available_extensions(
+        &self,
+        operation: crate::plugin_host::intents::Operation,
+    ) -> Result<Vec<crate::plugin_host::PluginInfo>, tonic::Status> {
+        self.provider_runtime()
+            .ok_or_else(|| tonic::Status::unavailable("plugin runtime is unavailable"))?
+            .available_extensions(operation)
+            .await
+    }
+
+    pub async fn start_extension_action(
+        &self,
+        entry_key: &str,
+        plugin_id: &str,
+        operation: crate::plugin_host::intents::Operation,
+    ) -> Result<(), tonic::Status> {
+        let feed = self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("the game library is unavailable"))?;
+        let (source, projected) = feed
+            .projected_entry(entry_key)
+            .ok_or_else(|| tonic::Status::not_found("the selected installation is unavailable"))?;
+        if operation == crate::plugin_host::intents::Operation::Launch
+            && source.install_state != crate::plugin_host::library::InstallState::Installed
+        {
+            return Err(tonic::Status::failed_precondition(
+                "extension actions require an installed game",
+            ));
+        }
+        let game_id = projected
+            .game_id
+            .ok_or_else(|| tonic::Status::failed_precondition("the game is not matched"))?
+            .to_string();
+        let target_revision = match operation {
+            crate::plugin_host::intents::Operation::Launch => {
+                feed.host()
+                    .ok_or_else(|| tonic::Status::unavailable("the game library is unavailable"))?
+                    .launch_fingerprint(entry_key.to_owned())
+                    .await?
+            }
+            crate::plugin_host::intents::Operation::Install => 0,
+            _ => {
+                return Err(tonic::Status::invalid_argument(
+                    "unsupported extension action",
+                ));
+            }
+        };
+        let runtime = self
+            .provider_runtime()
+            .ok_or_else(|| tonic::Status::unavailable("plugin runtime is unavailable"))?;
+        runtime
+            .start_extension(
+                plugin_id,
+                &game_id,
+                &projected.installation_id,
+                target_revision,
+                operation,
+            )
+            .await
+    }
+
     pub fn set_provider_runtime(&self, runtime: Arc<dyn ProviderRuntime>) {
         runtime.set_account_persistence(Arc::new(EngineAccounts(Arc::downgrade(&self.shared))));
         let weak = Arc::downgrade(&self.shared);
@@ -216,6 +281,12 @@ impl Engine {
         self.provider_runtime()
             .map(|runtime| runtime.availability(id))
             .unwrap_or("unavailable")
+    }
+
+    pub fn managed_plugin_inventory(&self) -> Vec<crate::plugin_host::PluginInfo> {
+        self.provider_runtime()
+            .map(|runtime| runtime.managed_plugin_inventory())
+            .unwrap_or_default()
     }
 
     pub(super) fn provider_runtime(&self) -> Option<Arc<dyn ProviderRuntime>> {

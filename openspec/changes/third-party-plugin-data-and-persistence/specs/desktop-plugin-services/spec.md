@@ -22,3 +22,10 @@ The host MUST expose durable plugin data only through logical owner-scoped APIs 
 #### Scenario: Cleanup targets a foreign namespace
 - **WHEN** a plugin requests deletion by a foreign namespace selector
 - **THEN** the host rejects the operation without disclosing physical paths or foreign records
+
+### Requirement: Publisher-key changes isolate data and require reviewed migration
+A changed publisher key MUST establish a distinct identity. Old data MUST remain isolated until the user explicitly reviews and requests migration of compatible data. The host MUST preserve source provenance and MUST NOT automatically migrate secrets or permissions.
+
+#### Scenario: Publisher key is re-trusted
+- **WHEN** the user trusts a changed publisher key
+- **THEN** old data and grants remain inaccessible to the new identity until any separate authorized migration or grant is completed

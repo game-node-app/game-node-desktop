@@ -11,3 +11,7 @@ Keep plugin-private storage separate from published datasets. Attribute every re
 ## Persistence and administration
 
 Durable records use a logical owner namespace and explicit retention choice. Quotas, cleanup and uninstall retention operate only on the authenticated owner's data. Host administration may report physical usage, but plugin IPC never receives physical paths. Diagnostics and gameplay observations remain plugin-produced data; Core does not add collectors or dashboards here.
+
+## Publisher key change and data migration
+
+A changed publisher fingerprint creates a distinct security identity even after explicit re-trust. Keep old data isolated and inert until the user reviews and explicitly requests migration of compatible data. The host previews source, destination and eligible data, checks schema compatibility and reports conflicts or partial failures; preserve old data and provenance until separately deleted. Never migrate secrets or grants automatically; access and retention require their own current approvals. This is separate from ordinary version upgrades under the same pinned identity.

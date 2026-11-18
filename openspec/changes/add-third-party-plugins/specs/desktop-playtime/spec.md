@@ -77,7 +77,7 @@ Core SHALL validate authorized plugin observations to distinguish content sessio
 - **THEN** the existing platform limitation remains and no measured session is recorded
 
 ### Requirement: Runtime uncertainty and common pause policy
-Runtime accounting SHALL require bounded sequence/timestamps and fresh authorized evidence with a documented finite timeout. Lost, stale, conflicting or revoked identification SHALL stop extension at the last accepted observation and mark activity unknown. Fresh evidence SHALL NOT backfill gaps or infer content from a surviving PID. Confirmed pauses SHALL be excluded; absent pause detection SHALL follow the declared accounting mode and user preference.
+Runtime accounting SHALL require bounded sequence/timestamps and fresh authorized evidence with a documented finite timeout. Lost, stale, conflicting or revoked identification SHALL stop extension at the last accepted observation and mark activity unknown. Fresh evidence SHALL NOT backfill gaps or infer content from a surviving PID. The initial host freshness timeout SHALL be 30 seconds measured from host receipt; a validated transition to another authorized game SHALL NOT require restarting the runtime process. Confirmed pauses SHALL be excluded; absent pause detection SHALL follow the declared accounting mode and user preference.
 
 #### Scenario: Emulator remains open without content
 - **WHEN** confirmed content ends while the emulator stays open in its menu

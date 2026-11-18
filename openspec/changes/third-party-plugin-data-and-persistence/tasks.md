@@ -61,3 +61,7 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 - [ ] 1.25 **Source 19.4.** Add installation/settings controls for public-pool publication, operation and category/record scopes; verify default denial and no implicit permission expansion.
 
 - [ ] 1.26 **Source 9.4.** Implement explicit downgrade and publisher-key re-trust review with a versioned private-data policy; verify automated feeds cannot silently downgrade or change identity and document rollback-safe storage requirements.
+
+- [ ] 1.28 **Reviewed publisher-key data migration.** After 1.26 re-trust and MVP 10.2/10.4 identity and review, add host-controlled preview and explicit migration of compatible data from the old publisher identity to the new one. Preserve original provenance and source data; report incompatible schemas, conflicts and partial failures; never migrate secrets or grants automatically. Verify rejection, cancellation, profile isolation, rollback and separate authorization of new sharing and retention.
+
+Tasks 1.5 and end-to-end shared-runtime projections depend on 1.27; 1.27 depends on MVP 10.2/10.4. Backup coordination 1.8 depends on actions 1.5; shared-runtime examples depend on runtime identity and runtime 1.10.

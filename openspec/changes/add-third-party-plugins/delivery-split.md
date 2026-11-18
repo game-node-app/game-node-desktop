@@ -34,7 +34,7 @@ Source tasks: `8.4–8.6`, `8.8`, `10.3`, `10.9–10.10`, `11.4`. This adds plug
 
 Change: [`third-party-plugin-custom-launch-runtimes`](../third-party-plugin-custom-launch-runtimes/)
 
-Source tasks: `7.8–7.11`, `10.6–10.7`, `11.8`, `14.2–14.5`, `18.5`, `18.8–18.9`, `19.1–19.2`, `19.5`, plus new task 1.18 for provider-free extension supervision. This includes the existing uncommitted partial implementation of 7.8; it remains local and must be preserved. It depends on MVP and on host-issued action confirmation from Follow-up A. The inventory's localized runtime-unavailable state remains part of MVP task 10.2; this follow-up owns only runtime capability and activation behavior.
+Source tasks: `7.8–7.11`, `10.6–10.7`, `11.8`, `14.2–14.5`, `18.5`, `18.8–18.9`, `19.1–19.2`, `19.5`, plus new task 1.18 for provider-free extension supervision. The runtime worktree contains committed implementation of 7.8; preserve it and its validation state during integration. It depends on MVP and on host-issued action confirmation from Follow-up A. The inventory's localized runtime-unavailable state remains part of MVP task 10.2; this follow-up owns only runtime capability and activation behavior.
 
 ## Follow-up C: shared data and persistence
 

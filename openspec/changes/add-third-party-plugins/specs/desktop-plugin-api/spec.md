@@ -7,7 +7,11 @@ Expose a language-neutral, versioned and permission-scoped host API that indepen
 ## ADDED Requirements
 
 ### Requirement: Host-issued user intent for standard launch and install
-The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. Intents SHALL be bound to the authenticated scope, expire and be single use. Missing intent SHALL require a cancellable job awaiting host confirmation. Remembered confirmation MAY replace the dialog only within its approved plugin/game scope and SHALL remain revocable.
+The standard launch and install requests SHALL execute only with an explicit user intent held by the host. The plugin SHALL NOT be able to create or alter an intent. Intents SHALL be bound to the authenticated scope, expire and be single use. Missing intent SHALL require a cancellable job awaiting host confirmation. Remembered confirmation MAY replace the intent dialog only within its approved plugin/game scope and SHALL remain revocable.
+
+#### Scenario: Installation intent does not bypass review
+- **WHEN** a plugin presents a valid or remembered install intent
+- **THEN** Core still requires its separate installation preview, validations and explicit confirmation
 
 #### Scenario: Intent binding
 - **WHEN** Core issues an intent for standard launch or install

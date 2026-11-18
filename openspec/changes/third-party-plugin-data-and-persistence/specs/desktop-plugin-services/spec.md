@@ -25,3 +25,10 @@ Sensitive/custom datasets MUST use a separate persisted review bound to the exac
 #### Scenario: Sensitive sharing stays bound to the reviewed source, recipient and fields
 - **WHEN** the user approves fields and history/live delivery for one source-to-recipient dataset pair
 - **THEN** only that recipient receives those fields through the approved delivery paths; other recipients, datasets and fields remain denied, and the policy does not grant durable retention
+
+### Requirement: Publisher-key changes isolate data and require reviewed migration
+A changed publisher key MUST establish a distinct identity. Old data MUST remain isolated until the user explicitly reviews and requests migration of compatible data. The host MUST preserve source provenance and MUST NOT automatically migrate secrets or permissions.
+
+#### Scenario: Publisher key is re-trusted
+- **WHEN** the user trusts a changed publisher key
+- **THEN** old data and grants remain inaccessible to the new identity until any separate authorized migration or grant is completed

@@ -48,37 +48,37 @@ Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Required Cargo target location
 
-All project worktrees on this machine share the external Cargo target
-**`/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`**. It is outside the worktrees, so Cargo can reuse
-dependency
+All project worktrees on this Linux workstation share the external Cargo target
+**`/data/DADOS_LINUX/geral/area_troca_rust/target`**. It is outside the worktrees
+on the persistent `/data/DADOS_LINUX` mount, so Cargo can reuse dependency
 artifacts when the Rust toolchain, target, features, flags and dependency graph
 match. Reuse is partial: workspace crates and artifacts with different
 fingerprints are rebuilt.
 
-This machine has limited CPU and memory. Run builds, checks, tests, Clippy and
-packaging **sequentially** across worktrees. Do not start concurrent Cargo
-builds; resource contention and the shared Cargo target lock can make the first
-build especially slow. Let one Cargo invocation finish before starting another.
+Run builds, checks, tests, Clippy and packaging **sequentially** across worktrees.
+Do not start concurrent Cargo builds; resource contention and the shared Cargo
+target lock can make builds slower. Let one Cargo invocation finish before
+starting another.
 
 Always set `CARGO_TARGET_DIR` for every Cargo invocation and verify the effective
 location before compiling:
 
 ```sh
-export CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins
+export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
 
-The command must print `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`. For separate tool calls or fresh
+The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target`. For separate tool calls or fresh
 shells,
 pass the variable on **each invocation**, because an earlier export is not
 inherited:
 
 ```sh
-CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins cargo test --locked -p gamenode-app
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target cargo test --locked -p gamenode-app
 ```
 
 Never use Cargo's repository `target/`, `/home`, `/tmp`, `/var/tmp`, a RAM-backed
-filesystem or the root filesystem as a fallback. If the selected `/data/hdd1`
+filesystem or the root filesystem as a fallback. If the selected `/data/DADOS_LINUX`
 mount or target is unavailable, stop and report the problem instead of choosing
 another path. Check launcher scripts for target overrides; a launcher that
 resets the target must be corrected before use.
@@ -143,7 +143,7 @@ Every Cargo check in this workflow must use the external target configured in
 shell's `export` does not carry into a new tool invocation. For example:
 
 ```sh
-CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
   cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 

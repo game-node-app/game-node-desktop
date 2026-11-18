@@ -4,7 +4,8 @@ set -Eeuo pipefail
 # Export this worktree's tracked changes as a compact patch, then apply that patch
 # to an existing checkout on another machine and run only the related Rust tests.
 readonly EXPECTED_BASE="903e9972f81bcad6df01eba5a7efdaa1a5c06ff0"
-readonly CARGO_TARGET="/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins"
+readonly CARGO_TARGET="/data/DADOS_LINUX/geral/area_troca_rust/target"
+readonly CARGO_MOUNT="/data/DADOS_LINUX"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
@@ -61,7 +62,7 @@ run_tests() {
   cd -- "$REPO_ROOT"
 
   command -v mountpoint >/dev/null 2>&1 || fail "mountpoint is required to verify the Cargo data mount"
-  mountpoint -q /data/hdd1 || fail "/data/hdd1 is not mounted; refusing to use another Cargo target"
+  mountpoint -q "$CARGO_MOUNT" || fail "$CARGO_MOUNT is not mounted; refusing to use another Cargo target"
   mkdir -p -- "$CARGO_TARGET"
 
   local effective_target

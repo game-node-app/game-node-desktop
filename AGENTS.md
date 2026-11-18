@@ -16,26 +16,28 @@
 
 - ALWAYS use the shared external `CARGO_TARGET_DIR` for Cargo builds, checks,
   tests, Clippy, cross-compilation and packaging/development scripts. On this
-  machine all four project worktrees use the same target:
-  `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`.
-- This target is outside every worktree so Cargo can reuse compatible dependency
-  artifacts across them. Reuse is partial: Rust version, target, features, flags,
-  dependency graph and Cargo fingerprints must match; workspace crates or
-  differing configurations may be rebuilt.
-- This machine has limited CPU and memory. Run Cargo builds **sequentially**, not
-  concurrently across worktrees. Concurrent Cargo invocations can contend for
-  resources and the target lock, making all builds much slower.
+  Linux workstation all project worktrees use the same target:
+  `/data/DADOS_LINUX/geral/area_troca_rust/target`.
+- This target is outside every worktree on the persistent `/data/DADOS_LINUX`
+  mount, so Cargo can reuse compatible dependency artifacts across them. Reuse
+  is partial: Rust version, target, features, flags, dependency graph and Cargo
+  fingerprints must match; workspace crates or differing configurations may be
+  rebuilt.
+- Run Cargo builds **sequentially**, not concurrently across worktrees. Concurrent
+  Cargo invocations can contend for resources and the shared target lock, making
+  all builds much slower.
 - NEVER fall back to Cargo's repository `target/`, a target under `/home`,
   `/tmp`, `/var/tmp`, a RAM-backed filesystem or the root filesystem. If the
-  selected `/data/hdd1` mount or target is unavailable, stop and report it; do
+  selected `/data/DADOS_LINUX` mount or target is unavailable, stop and report it; do
   not choose another target.
-- Pass `CARGO_TARGET_DIR` set to `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins` on each Cargo invocation; an
+- Pass `CARGO_TARGET_DIR` set to `/data/DADOS_LINUX/geral/area_troca_rust/target` on each Cargo invocation; an
   earlier shell's export does not persist into a new invocation. Verify Cargo's effective
   `target_directory` with `cargo metadata` before compiling. Check launch/package
   scripts for overrides; a script that resets the target is not an exception.
 - Before finishing work on these instructions, reread this section and
   [the development guide](docs/development.md#required-cargo-target-location),
-  and verify both describe the shared external target and sequential-build rule.
+  and verify both specify `/data/DADOS_LINUX/geral/area_troca_rust/target` and
+  describe the sequential-build rule.
 
 ## Confirming and persisting specification decisions
 

@@ -69,6 +69,7 @@ impl Harness {
                 origin: RegistrationOrigin::Official,
                 capabilities: grants.iter().map(|v| (*v).into()).collect(),
                 shared_catalog: false,
+                playtime: Default::default(),
                 services: guarded.clone(),
             })
             .unwrap();

@@ -20,6 +20,7 @@ use tonic::{Request, Response, Status};
 mod artwork;
 mod backups;
 mod custom_launch;
+mod data;
 mod files;
 mod games;
 mod jobs;
@@ -216,6 +217,9 @@ pub const SERVED: &[Served] = &[
         false,
         PRIVATE_NAMESPACE,
     ),
+    Served::new("DataPublish", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
+    Served::new("DataGet", cap::DATA_PUBLISH, false, PRIVATE_NAMESPACE),
+    Served::new("DataList", cap::DATA_PUBLISH, true, PRIVATE_NAMESPACE),
     Served::new(
         "FilesRequestAccess",
         cap::FILES_READ,
@@ -338,6 +342,8 @@ pub struct ResourceApi {
     /// The content fingerprints of approved places.
     snapshots: Arc<fingerprints::Snapshots>,
     libraries: Arc<libraries::Libraries>,
+    /// Session-scoped plugin-published data, separate from private Storage.
+    shared_data: Arc<super::shared_data::SharedDataStore>,
 }
 
 impl ResourceApi {
@@ -357,6 +363,7 @@ impl ResourceApi {
         Self {
             providers,
             libraries: Arc::default(),
+            shared_data: Arc::default(),
             jobs,
             intents,
             saves,
@@ -1101,15 +1108,33 @@ impl resource_host_server::ResourceHost for ResourceApi {
         game_presence_clear(PresenceClearRequest) -> MutationReply;
         game_performance_publish_samples(PerformanceSamplesRequest) -> ReportMutationReply;
         game_performance_end_series(PerformanceEndSeriesRequest) -> MutationReply;
-        data_publish(DataPublishRequest) -> DataMutationReply;
-        data_get(DataGetRequest) -> DataGetReply;
-        data_list(DataListRequest) -> DataListReply;
         data_watch(DataWatchRequest) -> Self::DataWatchStream;
         persistence_get_usage(PersistenceUsageRequest) -> PersistenceUsageReply;
         persistence_list_entries(PersistenceListRequest) -> PersistenceListReply;
         persistence_delete_entries(PersistenceDeleteRequest) -> MutationReply;
         persistence_clear(PersistenceClearRequest) -> MutationReply;
         persistence_set_retention_policy(RetentionPolicyRequest) -> MutationReply;
+    }
+
+    async fn data_publish(
+        &self,
+        request: Request<DataPublishRequest>,
+    ) -> Result<Response<DataMutationReply>, Status> {
+        self.publish_data(request).await
+    }
+
+    async fn data_get(
+        &self,
+        request: Request<DataGetRequest>,
+    ) -> Result<Response<DataGetReply>, Status> {
+        self.get_data(request).await
+    }
+
+    async fn data_list(
+        &self,
+        request: Request<DataListRequest>,
+    ) -> Result<Response<DataListReply>, Status> {
+        self.list_data(request).await
     }
 }
 

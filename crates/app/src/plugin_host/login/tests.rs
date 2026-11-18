@@ -835,6 +835,7 @@ async fn public_sdk_reaches_broker_only_with_extraction_grants_and_session_exit_
             origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(Services(broker.clone(), login_policy)),
         })
         .unwrap();

@@ -1157,6 +1157,64 @@ mod custom_launch_tests {
     }
 
     #[test]
+    fn known_mod_layer_proposal_keeps_host_reviewed_fields_typed() {
+        let context = ServiceContext::default();
+        let recipe = CustomLaunchRecipe {
+            game_id: "fixture-game".into(),
+            installation_id: "fixture-install".into(),
+            expected_revision: 7,
+            executable_handle: "opaque-executable".into(),
+            runtime_handle: "opaque-known-mod-layer".into(),
+            argv: vec!["--profile".into(), "fixture".into()],
+            ..Default::default()
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "intent", "key");
+
+        assert_eq!(request.runtime_handle, "opaque-known-mod-layer");
+        assert_eq!(request.executable_handle, "opaque-executable");
+        assert_eq!(request.argv, ["--profile", "fixture"]);
+        assert_eq!(request.expected_revision, 7);
+    }
+
+    #[test]
+    fn environment_only_consent_stays_a_recipe_and_does_not_become_install_intent() {
+        let context = ServiceContext::default();
+        let recipe = CustomLaunchRecipe {
+            game_id: "fixture-game".into(),
+            installation_id: "fixture-install".into(),
+            expected_revision: 7,
+            environment_set: [("FIXTURE_MODE".into(), "enabled".into())].into(),
+            environment_unset: vec!["FIXTURE_LEGACY_MODE".into()],
+            ..Default::default()
+        };
+
+        let request = Resources::custom_launch_proposal(&context, &recipe, "launch-intent", "key");
+
+        assert!(request.executable_handle.is_empty());
+        assert!(request.uri.is_empty());
+        assert!(request.runtime_handle.is_empty());
+        assert!(request.argv.is_empty());
+        assert_eq!(
+            request
+                .environment_set
+                .get("FIXTURE_MODE")
+                .map(String::as_str),
+            Some("enabled")
+        );
+        assert_eq!(request.environment_unset, ["FIXTURE_LEGACY_MODE"]);
+        assert_eq!(request.user_intent_id, "launch-intent");
+        // Installation has a separate request type and intent field; launch consent cannot fill it.
+        let install = GameInstallRequest {
+            game_id: request.game_id.clone(),
+            installation_id: request.installation_id.clone(),
+            user_intent_id: "separate-install-intent".into(),
+            ..Default::default()
+        };
+        assert_ne!(install.user_intent_id, request.user_intent_id);
+    }
+
+    #[test]
     fn uri_proposal_uses_the_uri_target_without_executable_fields() {
         let context = ServiceContext::default();
         let recipe = CustomLaunchRecipe {

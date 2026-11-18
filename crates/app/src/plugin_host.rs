@@ -39,6 +39,7 @@ pub mod resources;
 pub mod runtime;
 pub mod saves;
 pub mod services;
+pub mod shared_data;
 pub mod storage;
 mod transport;
 pub mod updates;

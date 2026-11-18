@@ -1,11 +1,14 @@
 //! Store-neutral dispatch of provider observations through Core policy.
 use super::*;
-use crate::plugin_host::runtime::ProviderRuntime;
+use crate::plugin_host::runtime::{ProviderRuntime, RuntimeSessionHandler};
 use crate::plugin_host::services::{AccountPersistence, LibraryAccounts};
 use gamenode_core::snapshot::StoreAccountState;
 use gamenode_plugin_protocol::{
     models,
-    proto::{AccountLoginOutcome, OperationDisposition, ProviderOperation},
+    proto::{
+        AccountLoginOutcome, OperationDisposition, ProviderOperation, RuntimeSessionOutcome,
+        RuntimeSessionReport, RuntimeSessionResult, RuntimeSessionTransition,
+    },
 };
 
 /// The launch targets a provider reported for its own games, keyed by record id (task 7.7).
@@ -190,6 +193,9 @@ fn category(
 impl Engine {
     pub fn set_provider_runtime(&self, runtime: Arc<dyn ProviderRuntime>) {
         runtime.set_account_persistence(Arc::new(EngineAccounts(Arc::downgrade(&self.shared))));
+        runtime.set_runtime_session_handler(Arc::new(EngineRuntimeSessionHandler(Arc::downgrade(
+            &self.shared,
+        ))));
         let weak = Arc::downgrade(&self.shared);
         let background = self.shared.runtime.clone();
         runtime.set_observer(Arc::new(move || {
@@ -205,6 +211,313 @@ impl Engine {
             .providers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runtime);
+    }
+
+    /// Accepts authenticated runtime evidence after validating it against the host-owned content
+    /// binding and the current library/account state. Blocking database reads run on Tokio's
+    /// worker pool; only the short in-memory arbitration and effect scheduling use the engine lock.
+    pub(super) async fn report_runtime_session(
+        &self,
+        plugin_id: String,
+        owner_key: String,
+        report: RuntimeSessionReport,
+    ) -> RuntimeSessionResult {
+        let correlation_id = report.correlation_id.clone();
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(profiles) = profiles else {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnavailable,
+                "plugin profile service unavailable",
+            );
+        };
+        let accounting_plugin_id = plugin_id.clone();
+        let accounting_enabled = self
+            .shared
+            .runtime
+            .spawn_blocking(move || profiles.is_playtime_accounting_enabled(&accounting_plugin_id))
+            .await;
+        match accounting_enabled {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnavailable,
+                    "plugin playtime accounting is disabled",
+                );
+            }
+            _ => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnavailable,
+                    "plugin playtime preference unavailable",
+                );
+            }
+        }
+        let game_id = match report.game_id.parse::<u64>() {
+            Ok(id) if id > 0 => id,
+            _ => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedInvalid,
+                    "invalid game id",
+                );
+            }
+        };
+        let installation_for_read = report.installation_id.clone();
+        let runtime_id_for_read = report.runtime_id.clone();
+        let content_id_for_read = report.content_id.clone();
+        let library = self.shared.ports.library.clone();
+        let bindings = match self
+            .shared
+            .runtime
+            .spawn_blocking(move || {
+                library.runtime_content_bindings(&owner_key, game_id, &installation_for_read)
+            })
+            .await
+        {
+            Ok(Ok(bindings)) => bindings,
+            _ => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedUnavailable,
+                    "runtime binding store unavailable",
+                );
+            }
+        };
+        let binding = bindings.iter().find(|binding| {
+            binding.runtime_id == runtime_id_for_read
+                && binding.content_id == content_id_for_read
+                && binding
+                    .supported_platforms
+                    .iter()
+                    .any(|platform| platform == std::env::consts::OS)
+        });
+        if binding.is_none() {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnauthorized,
+                "content/runtime binding is not approved",
+            );
+        }
+
+        let mut state = self.lock();
+        if !state.playtime.ready || state.playtime.stopped {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnavailable,
+                "playtime service unavailable",
+            );
+        }
+        let Some(account) = state.library.account().map(|account| account.id.clone()) else {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnavailable,
+                "account profile unavailable",
+            );
+        };
+        let Some(entry) = state.library.entry(&report.installation_id) else {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnauthorized,
+                "installation is not in the library",
+            );
+        };
+        if state.library.match_status(entry).game_id() != Some(game_id) {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnauthorized,
+                "installation belongs to another game",
+            );
+        }
+        if state.playtime.tracker.running().contains(&entry.key) {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::Duplicate,
+                "process evidence already measures this installation",
+            );
+        }
+        let source = state.library.provider(&entry.provider).map_or_else(
+            || entry.provider.clone(),
+            |provider| provider.source().to_owned(),
+        );
+        let has_counter = state
+            .library
+            .provider(&entry.provider)
+            .is_some_and(|provider| provider.manifest().playtime.is_some());
+        if state.playtime.source.uses_counter(has_counter) {
+            return runtime_result(
+                correlation_id,
+                RuntimeSessionOutcome::RejectedUnavailable,
+                "selected playtime source is the provider counter",
+            );
+        }
+        let transition = match RuntimeSessionTransition::try_from(report.transition) {
+            Ok(RuntimeSessionTransition::Identified) => {
+                gamenode_core::tracker::runtime_sessions::Transition::Identified
+            }
+            Ok(RuntimeSessionTransition::Started) => {
+                gamenode_core::tracker::runtime_sessions::Transition::Started
+            }
+            Ok(RuntimeSessionTransition::Paused) => {
+                gamenode_core::tracker::runtime_sessions::Transition::Paused
+            }
+            Ok(RuntimeSessionTransition::Resumed) => {
+                gamenode_core::tracker::runtime_sessions::Transition::Resumed
+            }
+            Ok(RuntimeSessionTransition::ContentChanged) => {
+                gamenode_core::tracker::runtime_sessions::Transition::ContentChanged
+            }
+            Ok(RuntimeSessionTransition::Ended) => {
+                gamenode_core::tracker::runtime_sessions::Transition::Ended
+            }
+            Ok(RuntimeSessionTransition::IdentificationLost) => {
+                gamenode_core::tracker::runtime_sessions::Transition::IdentificationLost
+            }
+            _ => {
+                return runtime_result(
+                    correlation_id,
+                    RuntimeSessionOutcome::RejectedInvalid,
+                    "invalid transition",
+                );
+            }
+        };
+        let now = unix_now();
+        let observation = gamenode_core::tracker::runtime_sessions::Report {
+            correlation_id: report.correlation_id.clone(),
+            game_id,
+            installation_id: report.installation_id.clone(),
+            content_id: report.content_id,
+            runtime_id: report.runtime_id,
+            runtime_instance_id: report.runtime_instance_id,
+            reporter_session_id: report.reporter_session_id,
+            sequence: report.sequence,
+            observed_at: report.observed_at,
+            transition,
+            source_observation_id: report.source_observation_id,
+        };
+        let (outcome, effects) = state.playtime.runtime_sessions.report(
+            &plugin_id,
+            &account,
+            &source,
+            observation,
+            now,
+            gamenode_platform::random::session_id,
+        );
+        let (outcome, host_session_id, reason, accepted) = match outcome {
+            gamenode_core::tracker::runtime_sessions::Outcome::Accepted { host_session_id } => (
+                RuntimeSessionOutcome::Accepted,
+                host_session_id.unwrap_or_default(),
+                String::new(),
+                true,
+            ),
+            gamenode_core::tracker::runtime_sessions::Outcome::Duplicate => (
+                RuntimeSessionOutcome::Duplicate,
+                String::new(),
+                "duplicate evidence".into(),
+                true,
+            ),
+            gamenode_core::tracker::runtime_sessions::Outcome::Invalid(reason) => (
+                RuntimeSessionOutcome::RejectedInvalid,
+                String::new(),
+                reason.into(),
+                false,
+            ),
+            gamenode_core::tracker::runtime_sessions::Outcome::Stale => (
+                RuntimeSessionOutcome::RejectedStale,
+                String::new(),
+                "report is outside the freshness window".into(),
+                false,
+            ),
+            gamenode_core::tracker::runtime_sessions::Outcome::Conflict(reason) => (
+                RuntimeSessionOutcome::RejectedConflict,
+                String::new(),
+                reason.into(),
+                false,
+            ),
+            gamenode_core::tracker::runtime_sessions::Outcome::Unavailable(reason) => (
+                RuntimeSessionOutcome::RejectedUnavailable,
+                String::new(),
+                reason.into(),
+                false,
+            ),
+        };
+        self.track_effects(&mut state, runtime_track_effects(effects));
+        self.publish(&mut state);
+        RuntimeSessionResult {
+            correlation_id,
+            outcome: outcome as i32,
+            host_session_id,
+            accepted_sequence: if accepted { report.sequence } else { 0 },
+            accepted_at: if accepted { now } else { 0 },
+            reason,
+            denial: None,
+        }
+    }
+
+    /// Persist a per-plugin playtime preference. Disabling fences active runtime sessions at
+    /// their last accepted observation while preserving all completed history.
+    pub async fn set_plugin_playtime_accounting(
+        &self,
+        plugin_id: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        let persisted_plugin_id = plugin_id.clone();
+        self.shared
+            .runtime
+            .spawn_blocking(move || {
+                profiles
+                    .set_playtime_accounting_enabled(&persisted_plugin_id, enabled)
+                    .map_err(|error| error.message().to_owned())
+            })
+            .await
+            .map_err(|_| "plugin accounting preference worker failed".to_owned())??;
+        if !enabled {
+            self.fence_runtime_sessions(&plugin_id);
+        }
+        Ok(())
+    }
+
+    pub async fn plugin_playtime_accounting_enabled(
+        &self,
+        plugin_id: String,
+    ) -> Result<bool, String> {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| "plugin profiles are unavailable".to_owned())?;
+        self.shared
+            .runtime
+            .spawn_blocking(move || {
+                profiles
+                    .is_playtime_accounting_enabled(&plugin_id)
+                    .map_err(|error| error.message().to_owned())
+            })
+            .await
+            .map_err(|_| "plugin accounting preference worker failed".to_owned())?
+    }
+
+    fn fence_runtime_sessions(&self, plugin_id: &str) {
+        let mut state = self.lock();
+        let effects = state.playtime.runtime_sessions.fence_plugin(plugin_id);
+        let effects = runtime_track_effects(effects);
+        self.track_effects(&mut state, effects);
+        self.publish(&mut state);
     }
     pub fn provider_health(&self, id: &str) -> (bool, bool) {
         self.provider_runtime()
@@ -630,6 +943,76 @@ impl Engine {
                 fallback();
                 self.request_import_achievements();
             }
+        }
+    }
+}
+
+fn runtime_result(
+    correlation_id: String,
+    outcome: RuntimeSessionOutcome,
+    reason: &str,
+) -> RuntimeSessionResult {
+    RuntimeSessionResult {
+        correlation_id,
+        outcome: outcome as i32,
+        host_session_id: String::new(),
+        accepted_sequence: 0,
+        accepted_at: 0,
+        reason: reason.to_owned(),
+        denial: None,
+    }
+}
+
+fn runtime_track_effects(
+    effects: Vec<gamenode_core::tracker::runtime_sessions::Effect>,
+) -> Vec<gamenode_core::tracker::Effect> {
+    effects
+        .into_iter()
+        .map(|effect| match effect {
+            gamenode_core::tracker::runtime_sessions::Effect::Open(session) => {
+                gamenode_core::tracker::Effect::OpenSession(session)
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Checkpoint { id, at } => {
+                gamenode_core::tracker::Effect::Checkpoint { id, at }
+            }
+            gamenode_core::tracker::runtime_sessions::Effect::Close {
+                id,
+                ended_at,
+                game_id,
+            } => gamenode_core::tracker::Effect::CloseSession {
+                id,
+                ended_at,
+                game_id,
+            },
+        })
+        .collect()
+}
+
+struct EngineRuntimeSessionHandler(std::sync::Weak<Shared>);
+
+#[tonic::async_trait]
+impl RuntimeSessionHandler for EngineRuntimeSessionHandler {
+    async fn report(
+        &self,
+        plugin_id: String,
+        owner_key: String,
+        report: RuntimeSessionReport,
+    ) -> RuntimeSessionResult {
+        let Some(shared) = self.0.upgrade() else {
+            return runtime_result(
+                report.correlation_id,
+                RuntimeSessionOutcome::RejectedUnavailable,
+                "playtime engine unavailable",
+            );
+        };
+        Engine { shared }
+            .report_runtime_session(plugin_id, owner_key, report)
+            .await
+    }
+
+    async fn disconnected(&self, plugin_id: String) {
+        if let Some(shared) = self.0.upgrade() {
+            Engine { shared }.fence_runtime_sessions(&plugin_id);
         }
     }
 }

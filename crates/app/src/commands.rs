@@ -434,6 +434,33 @@ pub async fn plugin_inventory(
 }
 
 #[tauri::command]
+pub async fn plugin_playtime_inventory(
+    engine: tauri::State<'_, Engine>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+) -> Result<Vec<crate::plugin_host::updates::PluginPlaytimeInfo>, String> {
+    let engine = engine.inner().clone();
+    let mut plugins = updates.playtime_inventory().await?;
+    for plugin in &mut plugins {
+        plugin.accounting_enabled = engine
+            .plugin_playtime_accounting_enabled(plugin.plugin_id.clone())
+            .await?;
+    }
+    Ok(plugins)
+}
+
+#[tauri::command]
+pub async fn plugin_playtime_set_accounting(
+    engine: tauri::State<'_, Engine>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    engine
+        .inner()
+        .set_plugin_playtime_accounting(plugin_id, enabled)
+        .await
+}
+
+#[tauri::command]
 pub async fn plugin_update_preferences(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
 ) -> Result<crate::plugin_host::updates::PluginUpdatePreferences, String> {

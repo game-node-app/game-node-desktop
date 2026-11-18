@@ -263,6 +263,42 @@ fn account_state_is_private_to_the_os_user() {
 }
 
 #[test]
+fn playtime_accounting_preference_is_persistent_and_profile_scoped() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = PluginStateLayout::new(temp.path().join("plugins"));
+    let profiles = PluginProfiles::default();
+    profiles.set_state_layout(layout.clone());
+    profiles.update(Some("first-account"), true);
+
+    assert!(
+        profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    profiles
+        .set_playtime_accounting_enabled("org.example.reader", false)
+        .unwrap();
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+
+    profiles.update(Some("second-account"), true);
+    assert!(
+        profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+    profiles.update(Some("first-account"), true);
+    assert!(
+        !profiles
+            .is_playtime_accounting_enabled("org.example.reader")
+            .unwrap()
+    );
+}
+
+#[test]
 fn invalid_plugin_ids_do_not_change_activation() {
     let temp = tempfile::tempdir().unwrap();
     let layout = PluginStateLayout::new(temp.path().join("plugins"));

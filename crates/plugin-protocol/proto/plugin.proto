@@ -429,12 +429,14 @@ message PresenceClearRequest { MutationContext mutation = 1; string game_id = 2;
 message PerformanceSample { int64 observed_at = 1; double frames_per_second = 2; double cpu_percent = 3; uint64 memory_bytes = 4; uint64 sequence = 5; }
 message PerformanceSamplesRequest { MutationContext mutation = 1; string series_id = 2; string game_id = 3; string computer_id = 4; repeated PerformanceSample samples = 5; }
 message PerformanceEndSeriesRequest { MutationContext mutation = 1; string series_id = 2; int64 ended_at = 3; }
-message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; }
+message DataPublishRequest { MutationContext mutation = 1; string dataset_id = 2; string schema_id = 3; uint32 schema_version = 4; google.protobuf.Struct value = 5; StorageDurability durability = 6; uint64 ttl_seconds = 7; bytes opaque_payload = 8; string resource_id = 9; int64 observed_at = 10; uint64 sequence = 11; string source_observation_id = 12; }
 message DataMutationReply { string record_id = 1; uint64 revision = 2; int64 expires_at = 3; MutationOutcome outcome = 4; }
 message DataGetRequest { ServiceContext context = 1; string dataset_id = 2; string record_id = 3; CommonDataSelector common_data_categories = 4; }
 message DataListRequest { PageRequest page = 1; string dataset_id = 2; string filter = 3; CommonDataSelector common_data_categories = 4; }
 message DataWatchRequest { ServiceContext context = 1; string dataset_id = 2; uint64 after_revision = 3; CommonDataSelector common_data_categories = 4; }
-message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; }
+message DataRecord { string record_id = 1; string dataset_id = 2; string publisher_id = 3; uint64 revision = 4; google.protobuf.Struct value = 5; string schema_id = 6; uint32 schema_version = 7; bytes opaque_payload = 8; DataProvenance provenance = 9; string resource_id = 10; int64 observed_at = 11; int64 received_at = 12; int64 expires_at = 13; uint64 sequence = 14; string source_observation_id = 15; }
+// Host-assigned provenance for published data and common domain projections.
+message DataProvenance { string producer_plugin_id = 1; string declared_developer = 2; string origin = 3; string publisher_fingerprint = 4; string package_version = 5; bytes package_digest = 6; string resource_id = 7; int64 observed_at = 8; int64 received_at = 9; repeated string source_record_ids = 10; }
 message DataGetReply { DataRecord record = 1; }
 message DataListReply { repeated DataRecord records = 1; string next_cursor = 2; }
 message DataEvent { uint64 revision = 1; string event_type = 2; DataRecord record = 3; }
@@ -527,7 +529,9 @@ enum MutationOutcome { MUTATION_OUTCOME_UNSPECIFIED = 0; MUTATION_OUTCOME_APPLIE
 // installation (0 until first written); it is the expected_revision of the next MetadataUpdate.
 // `artwork_revision` is the same for the cover override ArtworkSet writes: 0 until first written,
 // and the expected_revision of the next ArtworkSet.
-message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; uint64 artwork_revision = 10; }
+message LibraryEntry { string game_id = 1; string installation_id = 2; string provider_id = 3; string name = 4; string version = 5; string install_state = 6; uint64 revision = 7; string display_name = 8; uint64 metadata_revision = 9; uint64 artwork_revision = 10; repeated RuntimeAvailability runtime_availability = 11; }
+// Safe content/runtime availability projection; it never includes a path, handle or payload.
+message RuntimeAvailability { string content_id = 1; string content_kind = 2; string runtime_id = 3; string runtime_name = 4; string platform = 5; string publisher_id = 6; uint64 revision = 7; }
 message FavoriteEntry { string game_id = 1; bool favorite = 2; uint64 revision = 3; }
 // A catalog game a search found. `platform` and `confidence` are reserved: the catalog carries
 // neither, so both are empty. `release_year` is 0 when unknown.
@@ -780,6 +784,7 @@ message RuntimeRecord {
   int64 observed_at = 8;
   string platform = 9;
   repeated RuntimeArgumentTemplate argument_template = 10;
+  DataProvenance provenance = 11;
 }
 
 // Epochs and operation ids are issued by the host; clients cannot widen them.

@@ -61,6 +61,58 @@ fn common_data_fixture_matches_the_generated_wire_contract() {
         "Data.List must support the same per-query category and record selector"
     );
 
+    let data_publish = descriptor
+        .file
+        .iter()
+        .flat_map(|file| &file.message_type)
+        .find(|message| message.name.as_deref() == Some("DataPublishRequest"))
+        .expect("DataPublishRequest descriptor");
+    for field in [
+        "dataset_id",
+        "schema_id",
+        "schema_version",
+        "value",
+        "opaque_payload",
+        "resource_id",
+        "observed_at",
+        "sequence",
+        "source_observation_id",
+    ] {
+        assert!(
+            data_publish
+                .field
+                .iter()
+                .any(|candidate| candidate.name.as_deref() == Some(field)),
+            "DataPublishRequest must carry typed {field} metadata"
+        );
+    }
+    let data_record = descriptor
+        .file
+        .iter()
+        .flat_map(|file| &file.message_type)
+        .find(|message| message.name.as_deref() == Some("DataRecord"))
+        .expect("DataRecord descriptor");
+    for field in [
+        "schema_id",
+        "schema_version",
+        "opaque_payload",
+        "provenance",
+        "resource_id",
+        "observed_at",
+        "received_at",
+        "expires_at",
+        "sequence",
+        "source_observation_id",
+    ] {
+        assert!(
+            data_record
+                .field
+                .iter()
+                .any(|candidate| candidate.name.as_deref() == Some(field)),
+            "DataRecord must carry typed {field} metadata"
+        );
+    }
+
     for category in contract["categories"].as_array().unwrap() {
         let name = category["name"].as_str().unwrap();
         let number = category["number"].as_i64().unwrap() as i32;

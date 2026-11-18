@@ -188,6 +188,7 @@ impl Fixture {
             },
             capabilities: capabilities.iter().map(|s| (*s).into()).collect(),
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(NoServices),
         })
         .unwrap();

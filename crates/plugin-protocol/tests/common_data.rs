@@ -47,6 +47,22 @@ fn explicit_categories_are_typed_and_map_to_independent_grants() {
 }
 
 #[test]
+fn shared_category_permissions_are_optional_known_third_party_grants() {
+    use gamenode_plugin_protocol::capability as cap;
+
+    for permission in [
+        cap::COMMON_GAME_PATHS_READ,
+        cap::COMMON_GAME_PERFORMANCE_HISTORY_READ,
+        cap::COMMON_RUNTIME_CATALOG_READ,
+        cap::COMMON_CONTENT_AVAILABILITY_READ,
+    ] {
+        assert!(cap::KNOWN.contains(&permission));
+        assert!(cap::THIRD_PARTY_CAPABILITIES.contains(&permission));
+        assert!(!cap::ALL.contains(&permission));
+    }
+}
+
+#[test]
 fn invalid_or_ambiguous_category_values_are_rejected() {
     for raw in [CommonDataCategory::Unspecified as i32, 99] {
         assert!(

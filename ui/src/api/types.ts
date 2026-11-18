@@ -1284,6 +1284,22 @@ export interface PluginUpdatePreferences {
   periodicChecks: boolean;
 }
 
+export type PlaytimeAccountingMode = 'disabled' | 'application_open';
+
+export interface PlaytimeCapabilities {
+  identifiesGameplay: boolean;
+  identifiesPauses: boolean;
+  withoutPauseDetection: PlaytimeAccountingMode;
+}
+
+export interface PluginPlaytimeInfo {
+  pluginId: string;
+  name: string;
+  version: string;
+  playtime: PlaytimeCapabilities;
+  accountingEnabled: boolean;
+}
+
 export interface AvailablePluginUpdate {
   pluginId: string;
   name: string;
@@ -1317,6 +1333,9 @@ export interface PluginUpdateReview {
   candidateLicenseFiles: string[];
   installedLicenseNotices: string[];
   candidateLicenseNotices: string[];
+  installedPlaytime: PlaytimeCapabilities;
+  candidatePlaytime: PlaytimeCapabilities;
+  playtimeChanged: boolean;
   publisherChanged: boolean;
   installedPublisherKeyId: string;
   candidatePublisherKeyId: string;

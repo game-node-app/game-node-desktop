@@ -114,6 +114,7 @@ async fn manager(
             origin: crate::plugin_host::provider::RegistrationOrigin::Official,
             capabilities: vec![capability::CONTEXT.into()],
             shared_catalog: false,
+            playtime: Default::default(),
             services: Arc::new(Services),
         })
         .unwrap();

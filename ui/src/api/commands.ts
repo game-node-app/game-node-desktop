@@ -10,6 +10,7 @@ import type {
   LaunchRecipeChoices,
   LibraryInput,
   PluginInfo,
+  PluginPlaytimeInfo,
   PluginUpdatePreferences,
   AvailablePluginUpdate,
   PluginUpdateReview,
@@ -167,6 +168,11 @@ export const commands = {
   pluginInventory: () =>
     safeInvoke<PluginInfo[]>('plugin_inventory', undefined, () => []),
 
+  pluginPlaytimeInventory: () =>
+    safeInvoke<PluginPlaytimeInfo[]>('plugin_playtime_inventory', undefined, () => []),
+  pluginPlaytimeSetAccounting: (pluginId: string, enabled: boolean) =>
+    safeInvoke<void>('plugin_playtime_set_accounting', { pluginId, enabled }, () => undefined),
+
   pluginUpdatePreferences: () =>
     safeInvoke<PluginUpdatePreferences>('plugin_update_preferences', undefined, () => ({ periodicChecks: false })),
   pluginUpdateAvailable: () =>
@@ -183,6 +189,9 @@ export const commands = {
       candidateApi: '1.0.0 – 1.0.0', licenseChanged: false, installedLicense: 'MIT',
       candidateLicense: 'MIT', installedLicenseFiles: [], candidateLicenseFiles: [],
       installedLicenseNotices: [], candidateLicenseNotices: [], publisherChanged: false,
+      installedPlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      candidatePlaytime: { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' },
+      playtimeChanged: false,
       installedPublisherKeyId: 'publisher', candidatePublisherKeyId: 'publisher', requiresManualApproval: true,
     })),
   pluginUpdateApprove: (pluginId: string, version: string) =>

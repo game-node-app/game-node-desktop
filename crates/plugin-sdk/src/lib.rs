@@ -600,10 +600,44 @@ impl HostClient {
         self.send(provider_event::Event::Result(result)).await
     }
 
+    /// Reports one plugin-observed runtime lifecycle transition using the host-issued API 1.6
+    /// resource context. This does not grant launch, process inspection or file access.
+    pub async fn report_runtime_session(&self, report: RuntimeSessionReport) -> Result<(), Error> {
+        let context = self.resource_context.clone().ok_or(Error::Configuration)?;
+        let target = context.target_game.as_ref().ok_or(Error::Denied)?;
+        if report.correlation_id.is_empty()
+            || report.game_id != target.game_id
+            || report.installation_id != target.installation_id
+            || report.content_id.is_empty()
+            || report.runtime_id.is_empty()
+            || report.runtime_instance_id.is_empty()
+            || report.reporter_session_id != context.session_id
+            || report.sequence == 0
+            || report.observed_at <= 0
+            || report.source_observation_id.is_empty()
+            || !matches!(
+                RuntimeSessionTransition::try_from(report.transition),
+                Ok(transition) if transition != RuntimeSessionTransition::Unspecified
+            )
+        {
+            return Err(Error::Protocol);
+        }
+        self.send_with_context(context, provider_event::Event::RuntimeSession(report))
+            .await
+    }
+
     async fn send(&self, event: provider_event::Event) -> Result<(), Error> {
+        self.send_with_context(self.context.clone(), event).await
+    }
+
+    async fn send_with_context(
+        &self,
+        context: ServiceContext,
+        event: provider_event::Event,
+    ) -> Result<(), Error> {
         self.events
             .send(ProviderEvent {
-                context: Some(self.context.clone()),
+                context: Some(context),
                 event: Some(event),
             })
             .await
@@ -857,6 +891,14 @@ pub trait ProviderPlugin: Send + Sync + 'static {
         command: ProviderCommand,
         host: HostClient,
     ) -> Result<OperationResult, Error>;
+    /// Receives correlated runtime-session acknowledgements without treating them as operations.
+    async fn runtime_session_result(
+        &self,
+        _result: RuntimeSessionResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
     /// Plugin-owned semantic validation and persistence. Check the immutable
     /// request's profile/session scope again immediately before applying work.
     /// The default keeps settings unavailable for existing provider plugins.
@@ -903,6 +945,14 @@ pub trait ExtensionPlugin: Send + Sync + 'static {
         host: HostClient,
     ) -> Result<OperationResult, Error>;
 
+    async fn runtime_session_result(
+        &self,
+        _result: RuntimeSessionResult,
+        _host: HostClient,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn configure(
         &self,
         command: ProviderCommand,
@@ -943,6 +993,13 @@ impl<P: ExtensionPlugin> ProviderPlugin for ExtensionAdapter<P> {
     ) -> Result<OperationResult, Error> {
         self.0.configure(command, host).await
     }
+    async fn runtime_session_result(
+        &self,
+        result: RuntimeSessionResult,
+        host: HostClient,
+    ) -> Result<(), Error> {
+        self.0.runtime_session_result(result, host).await
+    }
     async fn shutdown(&self) {
         self.0.shutdown().await;
     }
@@ -978,6 +1035,17 @@ pub async fn run<P: ProviderPlugin>(
                 let host = session.host.for_command(&command)?;
                 let operation = ProviderOperation::try_from(command.operation).map_err(|_| Error::Protocol)?;
                 if operation == ProviderOperation::Acknowledge { continue; }
+                if operation == ProviderOperation::RuntimeSessionResult {
+                    let result = command.runtime_session_result.clone().ok_or(Error::Protocol)?;
+                    if result.correlation_id != command.target_operation_id {
+                        return Err(Error::Protocol);
+                    }
+                    let plugin = plugin.clone();
+                    tasks.spawn(async move {
+                        plugin.runtime_session_result(result, host).await
+                    });
+                    continue;
+                }
                 if operation == ProviderOperation::Shutdown { break; }
                 let control = matches!(operation, ProviderOperation::FocusSignIn | ProviderOperation::CancelSignIn | ProviderOperation::Cancel | ProviderOperation::SignOut | ProviderOperation::SettingsCancel | ProviderOperation::ConfigurationFocus | ProviderOperation::ConfigurationClose);
                 let permit = if control { controls.clone() } else { work.clone() }.try_acquire_owned();

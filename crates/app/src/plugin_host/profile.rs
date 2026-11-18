@@ -221,6 +221,37 @@ impl PluginProfiles {
         Ok(activation.is_enabled(plugin_id))
     }
 
+    /// Whether this profile allows one signed plugin to contribute measured playtime.
+    /// The preference is independent of discovery, launch grants and plugin activation.
+    pub fn is_playtime_accounting_enabled(&self, plugin_id: &str) -> Result<bool, Status> {
+        let profile = self.require()?;
+        let layout = lock(&self.layout)
+            .clone()
+            .ok_or_else(|| Status::unavailable("plugin state layout is unavailable"))?;
+        let activation = layout
+            .open_activation(&profile)
+            .map_err(|_| Status::unavailable("plugin accounting preference is unavailable"))?;
+        Ok(activation.is_playtime_accounting_enabled(plugin_id))
+    }
+
+    /// Persist the accounting choice before it is applied to subsequent runtime reports.
+    pub fn set_playtime_accounting_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<(), Status> {
+        let profile = self.require()?;
+        let layout = lock(&self.layout)
+            .clone()
+            .ok_or_else(|| Status::unavailable("plugin state layout is unavailable"))?;
+        let mut activation = layout
+            .open_activation(&profile)
+            .map_err(|_| Status::unavailable("plugin accounting preference is unavailable"))?;
+        activation
+            .set_playtime_accounting_enabled(plugin_id, enabled)
+            .map_err(|_| Status::unavailable("plugin accounting preference could not be saved"))
+    }
+
     /// Current host-consented permissions for a package identity in the active profile.
     /// Used only for host actions explicitly initiated by the user, never to construct a plugin
     /// RPC context or elevate a plugin request.
@@ -328,6 +359,8 @@ impl PluginStateLayout {
 struct ActivationFile {
     schema: u32,
     enabled: BTreeSet<String>,
+    #[serde(default)]
+    accounting_disabled: BTreeSet<String>,
 }
 
 /// Which installed plugins one account has enabled. Absent plugins are disabled.
@@ -373,6 +406,32 @@ impl AccountActivationStore {
 
     pub fn enabled(&self) -> impl Iterator<Item = &str> {
         self.state.enabled.iter().map(String::as_str)
+    }
+
+    pub fn is_playtime_accounting_enabled(&self, plugin_id: &str) -> bool {
+        !self.state.accounting_disabled.contains(plugin_id)
+    }
+
+    pub fn set_playtime_accounting_enabled(
+        &mut self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<(), GrantError> {
+        if plugin_id.trim().is_empty()
+            || plugin_id.len() > 256
+            || plugin_id.chars().any(char::is_control)
+        {
+            return Err(GrantError::InvalidIdentity);
+        }
+        let mut next = self.state.clone();
+        if enabled {
+            next.accounting_disabled.remove(plugin_id);
+        } else {
+            next.accounting_disabled.insert(plugin_id.to_owned());
+        }
+        persist(&self.path, &next)?;
+        self.state = next;
+        Ok(())
     }
 
     /// Persists the change before it takes effect; a failed write leaves the state unchanged.

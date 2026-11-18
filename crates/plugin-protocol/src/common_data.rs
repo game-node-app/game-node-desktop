@@ -70,10 +70,14 @@ pub fn selected_record_ids(
 /// Permission required by each stable common-data category.
 pub fn permission(category: CommonDataCategory) -> Option<&'static str> {
     match category {
-        CommonDataCategory::GamePaths => Some("common.game_paths.read"),
-        CommonDataCategory::GamePerformanceHistory => Some("common.game_performance_history.read"),
-        CommonDataCategory::RuntimeCatalog => Some("common.runtime_catalog.read"),
-        CommonDataCategory::ContentAvailability => Some("common.content_availability.read"),
+        CommonDataCategory::GamePaths => Some(crate::capability::COMMON_GAME_PATHS_READ),
+        CommonDataCategory::GamePerformanceHistory => {
+            Some(crate::capability::COMMON_GAME_PERFORMANCE_HISTORY_READ)
+        }
+        CommonDataCategory::RuntimeCatalog => Some(crate::capability::COMMON_RUNTIME_CATALOG_READ),
+        CommonDataCategory::ContentAvailability => {
+            Some(crate::capability::COMMON_CONTENT_AVAILABILITY_READ)
+        }
         CommonDataCategory::LibraryRoots => Some("library.roots.read"),
         CommonDataCategory::SaveProfiles => Some("game.saves.read"),
         CommonDataCategory::Unspecified => None,

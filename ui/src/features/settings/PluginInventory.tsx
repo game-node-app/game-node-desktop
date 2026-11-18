@@ -2,7 +2,7 @@ import { providerLabel } from '../../i18n/providerLabel';
 import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginInfo, type PluginUpdateReview } from '../../api';
+import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginInfo, type PluginPlaytimeInfo, type PluginUpdateReview } from '../../api';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import {
@@ -28,6 +28,7 @@ export const PluginInventory: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
   const [periodicChecks, setPeriodicChecks] = useState(false);
+  const [playtimeError, setPlaytimeError] = useState(false);
   const { data: updatePreferences } = useQuery({
     queryKey: ['plugin-update-preferences'],
     queryFn: commands.pluginUpdatePreferences,
@@ -39,6 +40,16 @@ export const PluginInventory: React.FC = () => {
   const { data = [], isPending, isError } = useQuery({
     queryKey: inventoryQueryKey,
     queryFn: commands.pluginInventory,
+    staleTime: 30_000,
+  });
+  const {
+    data: playtimePlugins = [],
+    isPending: playtimePending,
+    isError: playtimeInventoryError,
+    refetch: refetchPlaytimePlugins,
+  } = useQuery({
+    queryKey: ['plugin-playtime-accounting'],
+    queryFn: commands.pluginPlaytimeInventory,
     staleTime: 30_000,
   });
   const selectedPlugin = data.find((plugin) => plugin.pluginId === selectedPluginId) ?? data[0];
@@ -94,6 +105,16 @@ export const PluginInventory: React.FC = () => {
     setReview(null);
   };
 
+  const setPlaytimeAccounting = async (plugin: PluginPlaytimeInfo, enabled: boolean) => {
+    setPlaytimeError(false);
+    try {
+      await commands.pluginPlaytimeSetAccounting(plugin.pluginId, enabled);
+      await refetchPlaytimePlugins();
+    } catch {
+      setPlaytimeError(true);
+    }
+  };
+
   const stateClass = (status: PluginInfo['status']) => status === 'installed'
     ? settingsPillSuccess
     : status === 'missing' || status === 'failed' || status === 'incompatible'
@@ -147,6 +168,11 @@ export const PluginInventory: React.FC = () => {
             <p className={settingsRowDescription}>{t('plugins.updates.licenseNotices')}: {review.installedLicenseNotices.join('; ') || '—'} → {review.candidateLicenseNotices.join('; ') || '—'}</p>
             <p className={settingsRowDescription}>{t('plugins.updates.publisher')}: {review.installedPublisherKeyId} → {review.candidatePublisherKeyId}</p>
             {review.publisherChanged && <p className={settingsRowDescription}>{t('plugins.updates.publisherChanged')}: {review.installedPublisherKeyId} → {review.candidatePublisherKeyId}</p>}
+            {review.playtimeChanged && (
+              <p className={settingsRowDescription}>
+                {t('plugins.playtime.updatePolicy')}: {t(`plugins.playtime.mode.${review.installedPlaytime.withoutPauseDetection}`)} → {t(`plugins.playtime.mode.${review.candidatePlaytime.withoutPauseDetection}`)}; {t('plugins.playtime.gameplayDetection')}: {review.installedPlaytime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')} → {review.candidatePlaytime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')}; {t('plugins.playtime.pauseDetection')}: {review.installedPlaytime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')} → {review.candidatePlaytime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')}
+              </p>
+            )}
             <p className={settingsRowDescription}>{t('plugins.updates.newPermissionsDenied')}</p>
             <div className="mt-compact flex gap-compact">
               <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void declineUpdate()}>{t('plugins.updates.decline')}</button>
@@ -222,6 +248,42 @@ export const PluginInventory: React.FC = () => {
           )}
         </div>
       )}
+      <section className="mt-md" aria-label={t('plugins.playtime.title')}>
+        <h3 className={settingsRowTitle}>{t('plugins.playtime.title')}</h3>
+        <p className={`${settingsRowDescription} mb-compact`}>{t('plugins.playtime.description')}</p>
+        {playtimePending ? (
+          <p className={settingsRowDescription} role="status">{t('plugins.loading')}</p>
+        ) : playtimeInventoryError ? (
+          <p className={settingsRowDescription} role="alert">{t('plugins.playtime.loadFailed')}</p>
+        ) : playtimePlugins.length === 0 ? (
+          <p className={settingsRowDescription}>{t('plugins.playtime.empty')}</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-compact">
+            {playtimePlugins.map((plugin) => (
+              <article key={plugin.pluginId} className={settingsCard} aria-label={plugin.name}>
+                <h4 className={settingsRowTitle}>{plugin.name}</h4>
+                <p className={settingsRowDescription}>{plugin.pluginId} · {plugin.version}</p>
+                <p className={settingsRowDescription}>{t('plugins.playtime.gameplayDetection')}: {plugin.playtime.identifiesGameplay ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+                <p className={settingsRowDescription}>{t('plugins.playtime.pauseDetection')}: {plugin.playtime.identifiesPauses ? t('plugins.playtime.yes') : t('plugins.playtime.no')}</p>
+                <p className={settingsRowDescription}>{t('plugins.playtime.modeLabel')}: {t(`plugins.playtime.mode.${plugin.playtime.withoutPauseDetection}`)}</p>
+                {plugin.playtime.identifiesGameplay && !plugin.playtime.identifiesPauses && plugin.playtime.withoutPauseDetection === 'application_open' && (
+                  <p className={`${settingsRowDescription} mt-1`} role="note">{t('plugins.playtime.applicationOpenWarning')}</p>
+                )}
+                <label className="mt-compact flex items-center gap-compact text-sm">
+                  <input
+                    type="checkbox"
+                    checked={plugin.accountingEnabled}
+                    disabled={!plugin.playtime.identifiesGameplay || plugin.playtime.withoutPauseDetection === 'disabled' && !plugin.playtime.identifiesPauses}
+                    onChange={(event) => void setPlaytimeAccounting(plugin, event.currentTarget.checked)}
+                  />
+                  <span>{t('plugins.playtime.enabled')}</span>
+                </label>
+              </article>
+            ))}
+          </div>
+        )}
+        {playtimeError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.playtime.saveFailed')}</p>}
+      </section>
     </section>
   );
 };

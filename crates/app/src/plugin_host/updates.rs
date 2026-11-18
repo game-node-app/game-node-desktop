@@ -7,7 +7,7 @@
 
 use super::{
     managed_packages::{ManagedPackageLifecycle, PackageLifecycleError},
-    package::Manifest,
+    package::{Manifest, PlaytimeCapabilities},
 };
 use gamenode_platform::{
     plugin_environment::EmulationPolicy,
@@ -75,6 +75,9 @@ pub struct UpdateReview {
     pub candidate_license_files: Vec<String>,
     pub installed_license_notices: Vec<String>,
     pub candidate_license_notices: Vec<String>,
+    pub installed_playtime: PlaytimeCapabilities,
+    pub candidate_playtime: PlaytimeCapabilities,
+    pub playtime_changed: bool,
     pub publisher_changed: bool,
     pub installed_publisher_key_id: String,
     pub candidate_publisher_key_id: String,
@@ -138,6 +141,7 @@ impl UpdateReview {
             old_native.difference(&new_native).cloned().collect();
         let installed_api = format!("{} – {}", installed.api.min, installed.api.max);
         let candidate_api = format!("{} – {}", candidate.api.min, candidate.api.max);
+        let playtime_changed = installed.playtime != candidate.playtime;
         let installed_license = installed.license.expression.clone();
         let candidate_license = candidate.license.expression.clone();
         let api_changed = installed_api != candidate_api;
@@ -167,6 +171,9 @@ impl UpdateReview {
             candidate_license_files: candidate.license.files.clone(),
             installed_license_notices: installed.license.notices.clone(),
             candidate_license_notices: candidate.license.notices.clone(),
+            installed_playtime: installed.playtime,
+            candidate_playtime: candidate.playtime,
+            playtime_changed,
             publisher_changed,
             installed_publisher_key_id: installed.publisher.key_id.clone(),
             candidate_publisher_key_id: candidate.publisher.key_id.clone(),
@@ -188,6 +195,16 @@ pub struct AvailablePluginUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct PluginUpdatePreferences {
     pub periodic_checks: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPlaytimeInfo {
+    pub plugin_id: String,
+    pub name: String,
+    pub version: String,
+    pub playtime: PlaytimeCapabilities,
+    pub accounting_enabled: bool,
 }
 
 struct PendingCandidate {
@@ -270,6 +287,61 @@ impl PluginUpdateService {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
+    }
+
+    /// Returns signed declarations for currently active, publisher-pinned third-party packages.
+    /// Package reads and signature checks run on a blocking worker.
+    pub async fn playtime_inventory(&self) -> Result<Vec<PluginPlaytimeInfo>, String> {
+        let registry = self.registry.clone();
+        let private_dir = self.private_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let active = registry
+                .active_versions()
+                .map_err(|error| error.to_string())?;
+            let trust = super::publisher_trust::PublisherTrustStore::open(&private_dir)
+                .map_err(|error| error.to_string())?;
+            let mut inventory = Vec::new();
+            for installed in active {
+                let key = match package_key(&installed.package_path) {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
+                if !trust
+                    .is_pinned(&installed.plugin_id, &key)
+                    .map_err(|error| error.to_string())?
+                {
+                    continue;
+                }
+                let integrity = match gamenode_platform::plugin_packages::verify_package_directory(
+                    &installed.package_path,
+                    &key,
+                ) {
+                    Ok(integrity) => integrity,
+                    Err(_) => continue,
+                };
+                let bytes = match read_signed_manifest(&installed.package_path, &integrity) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
+                let manifest = match Manifest::parse_json(&bytes) {
+                    Ok(manifest) => manifest.manifest().clone(),
+                    Err(_) => continue,
+                };
+                if manifest.id != installed.plugin_id || manifest.version != installed.version {
+                    continue;
+                }
+                inventory.push(PluginPlaytimeInfo {
+                    plugin_id: manifest.id,
+                    name: manifest.name,
+                    version: manifest.version,
+                    playtime: manifest.playtime,
+                    accounting_enabled: true,
+                });
+            }
+            Ok::<_, String>(inventory)
+        })
+        .await
+        .map_err(|_| "plugin inventory worker failed".to_owned())?
     }
 
     /// Check every active package with an update URL. This method verifies signed metadata only;
@@ -545,7 +617,8 @@ fn write_available(path: &Path, available: &[AvailablePluginUpdate]) -> Result<(
 mod review_tests {
     use super::*;
     use crate::plugin_host::package::{
-        ApiRange, LicenseNotice, PermissionRequest, PluginKind, Publisher, Target,
+        ApiRange, LicenseNotice, PermissionRequest, PlaytimeAccountingMode, PlaytimeCapabilities,
+        PluginKind, Publisher, Target,
     };
 
     fn manifest(
@@ -572,6 +645,7 @@ mod review_tests {
                 scope: scope.into(),
                 reason: "Read selected files".into(),
             }],
+            playtime: PlaytimeCapabilities::default(),
             native_access: native.iter().map(|value| (*value).to_owned()).collect(),
             targets: vec![Target {
                 os: "linux".into(),
@@ -625,6 +699,22 @@ mod review_tests {
         assert!(review.requires_manual_approval);
         assert!(review.added_permissions.is_empty());
         assert!(review.added_native_access.is_empty());
+    }
+
+    #[test]
+    fn update_review_discloses_signed_playtime_policy_changes() {
+        let before = manifest("1.0.0", "game:data", &[], "MIT", "1.4.0");
+        let mut after = manifest("1.1.0", "game:data", &[], "MIT", "1.4.0");
+        after.playtime = PlaytimeCapabilities {
+            identifies_gameplay: true,
+            identifies_pauses: false,
+            without_pause_detection: PlaytimeAccountingMode::ApplicationOpen,
+        };
+        let review = UpdateReview::compare(&before, &after);
+        assert!(review.playtime_changed);
+        assert_eq!(review.installed_playtime, before.playtime);
+        assert_eq!(review.candidate_playtime, after.playtime);
+        assert!(review.requires_manual_approval);
     }
 
     #[test]

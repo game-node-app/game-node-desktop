@@ -12,6 +12,8 @@ import type {
   PluginInfo,
   PluginPermissionSnapshot,
   PluginPermissionDecision,
+  PluginSharedDataSnapshot,
+  PluginSharedDataPolicyUpdate,
   PluginImportReview,
   PluginConfigurationState,
   PluginPlaytimeInfo,
@@ -184,8 +186,10 @@ export const commands = {
     safeInvoke<PluginImportReview>('plugin_import_review', { archivePath }),
   pluginImportConfirmPublisher: (token: string, confirmedFingerprint: string) =>
     safeInvoke<PluginImportReview>('plugin_import_confirm_publisher', { token, confirmedFingerprint }),
-  pluginImportInstall: (token: string) =>
-    safeInvoke<string>('plugin_import_install', { token }),
+  pluginImportInstall: (token: string, nativeCodeConsent: boolean) =>
+    safeInvoke<string>('plugin_import_install', { token, nativeCodeConsent }),
+  pluginImportLicenseText: (token: string, file: string) =>
+    safeInvoke<string>('plugin_import_license_text', { token, file }),
 
   pluginPermissionSnapshot: (pluginId: string) =>
     safeInvoke<PluginPermissionSnapshot>(
@@ -212,6 +216,23 @@ export const commands = {
     expectedRevision,
     decisions,
   }),
+  pluginSharedDataSnapshot: (pluginId: string, expectedProfileId: string) =>
+    safeInvoke<PluginSharedDataSnapshot>(
+      'plugin_shared_data_snapshot',
+      { pluginId, expectedProfileId },
+      () => ({
+        pluginId,
+        publisherFingerprint: '',
+        profileId: expectedProfileId,
+        policyRevision: 0,
+        commonCategories: [],
+        selectedRecordIds: [],
+        catalog: [],
+        sourcePolicies: [],
+      }),
+    ),
+  pluginSharedDataReplace: (pluginId: string, update: PluginSharedDataPolicyUpdate) =>
+    safeInvoke<PluginSharedDataSnapshot>('plugin_shared_data_replace', { pluginId, update }),
   pluginEnable: (pluginId: string) => safeInvoke<void>('plugin_enable', { pluginId }),
   pluginDisable: (pluginId: string) => safeInvoke<void>('plugin_disable', { pluginId }),
   pluginRemove: (pluginId: string) => safeInvoke<void>('plugin_remove', { pluginId }),

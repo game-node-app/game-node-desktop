@@ -19,9 +19,6 @@ The host MUST keep published datasets private by default and persist common-cate
 
 ## ADDED Requirements
 
-#### Scenario: Cleanup targets a foreign namespace
-- **WHEN** a plugin requests deletion by a foreign namespace selector
-- **THEN** the host rejects the operation without disclosing physical paths or foreign records
 ### Requirement: Sensitive and custom sharing remains separately scoped
 Sensitive/custom datasets MUST use a separate persisted review bound to the exact source, recipient and dataset. The review MUST specify allowed fields and history/live delivery. A common grant MUST NOT widen it; plugin RPC MUST NOT create or widen policy. Neither kind of grant authorizes recipient persistence or retention; durable copies require separate consent.
 

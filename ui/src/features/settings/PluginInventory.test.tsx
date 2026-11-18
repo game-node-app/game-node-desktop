@@ -362,6 +362,7 @@ describe('PluginInventory', () => {
     };
     const importReview = vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
     const confirm = vi.spyOn(commands, 'pluginImportConfirmPublisher').mockResolvedValue({ ...staged, trust: 'trusted' });
+    const viewLicense = vi.spyOn(commands, 'pluginImportLicenseText').mockResolvedValue('MIT license text available offline');
     const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
     renderInventory('en', 'account-import');
 
@@ -369,11 +370,39 @@ describe('PluginInventory', () => {
     await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
     expect(await screen.findByRole('article', { name: 'Review plugin package' })).toHaveTextContent('SHA256:abc');
     expect(screen.getByRole('article', { name: 'Review plugin package' })).toHaveTextContent('library.read · selected-game · optional · Read selected game data');
+    fireEvent.click(screen.getByText('LICENSE'));
+    fireEvent.click(screen.getByRole('button', { name: 'View this license or notice offline' }));
+    expect(await screen.findByText('MIT license text available offline')).toBeInTheDocument();
+    expect(viewLicense).toHaveBeenCalledWith('review-token', 'LICENSE');
     fireEvent.click(screen.getByRole('button', { name: 'Trust this publisher' }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith('review-token', 'SHA256:abc'));
     fireEvent.click(screen.getByRole('button', { name: 'Install without starting' }));
-    await waitFor(() => expect(install).toHaveBeenCalledWith('review-token'));
+    await waitFor(() => expect(install).toHaveBeenCalledWith('review-token', false));
     expect(importReview).toHaveBeenCalledWith('/packages/community.zip');
+  });
+
+  it('requires separate explicit consent for declared native access', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    const staged = {
+      token: 'native-review', pluginId: 'org.example.native', name: 'Native', version: '1.0.0',
+      publisherKeyId: 'key-native', publisherFingerprint: 'SHA256:native', trust: 'trusted' as const,
+      license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: [], requestedPermissions: [],
+      nativeAccess: ['process'], compatibility: 'compatible' as const,
+    };
+    const install = vi.spyOn(commands, 'pluginImportInstall').mockResolvedValue(staged.pluginId);
+    vi.spyOn(commands, 'pluginImportReview').mockResolvedValue(staged);
+    renderInventory('en', 'account-import');
+
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/native.zip' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review package' }));
+    const installButton = await screen.findByRole('button', { name: 'Install without starting' });
+    expect(installButton).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: /reviewed the declared native access/i }));
+    expect(installButton).toBeEnabled();
+    fireEvent.click(installButton);
+    await waitFor(() => expect(install).toHaveBeenCalledWith('native-review', true));
   });
 
   it('shows the old fingerprint and requires explicit re-trust when a publisher key changes', async () => {
@@ -419,7 +448,9 @@ describe('PluginInventory', () => {
     const replace = vi.spyOn(commands, 'pluginPermissionsReplace').mockResolvedValue({ ...permissionSnapshot, grantRevision: 13 });
     renderInventory('en', 'account-one');
 
+    expect(await screen.findByText(/Requested scopes come from the verified package manifest/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('checkbox', { name: /own-creator.*library-root/ }));
+    expect(screen.getByText(/Effective host decision: Denied/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save permission choices' }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith(
       managed.pluginId,

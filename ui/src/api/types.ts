@@ -1428,6 +1428,56 @@ export interface PluginPermissionDecision {
   granted: boolean;
 }
 
+export type SharedDataCategory =
+  | 'gamePaths'
+  | 'gamePerformanceHistory'
+  | 'runtimeCatalog'
+  | 'contentAvailability'
+  | 'libraryRoots'
+  | 'saveProfiles';
+
+export interface SharedDataCatalogRecord {
+  sourcePluginId: string;
+  sourcePublisherFingerprint: string;
+  datasetId: string;
+  class: 'common' | 'sensitive' | 'custom';
+  category: SharedDataCategory | null;
+  recordId: string;
+  fields: string[];
+}
+
+export interface SharedDataSourcePolicy {
+  sourcePluginId: string;
+  sourcePublisherFingerprint: string;
+  datasetId: string;
+  class: 'sensitive' | 'custom';
+  fields: string[];
+  history: boolean;
+  live: boolean;
+}
+
+export interface PluginSharedDataSnapshot {
+  pluginId: string;
+  publisherFingerprint: string;
+  profileId: string;
+  policyRevision: number;
+  commonCategories: SharedDataCategory[];
+  selectedRecordIds: string[];
+  /** Host metadata only; records contain no payload values. */
+  catalog: SharedDataCatalogRecord[];
+  sourcePolicies: SharedDataSourcePolicy[];
+}
+
+export interface SharedDataSourcePolicyDecision extends SharedDataSourcePolicy {}
+
+export interface PluginSharedDataPolicyUpdate {
+  profileId: string;
+  expectedRevision: number;
+  commonCategories: SharedDataCategory[];
+  selectedRecordIds: string[];
+  sourcePolicies: SharedDataSourcePolicyDecision[];
+}
+
 /** Host-owned configuration availability; no plugin preference values are included. */
 export interface PluginConfigurationState {
   pluginId: string;

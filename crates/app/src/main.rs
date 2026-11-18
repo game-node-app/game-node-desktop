@@ -447,6 +447,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder = builder.manage(engine.clone());
     builder = builder.manage(plugin_api.providers.clone());
+    builder = builder.manage(plugin_api.shared_policies.clone());
+    builder = builder.manage(plugin_api.data_broker.clone());
     if let Some(provider_runtime) = provider_runtime.as_ref() {
         builder = builder.manage(provider_runtime.lifecycle());
     }
@@ -560,8 +562,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands::plugin_import_review,
         commands::plugin_import_confirm_publisher,
         commands::plugin_import_install,
+        commands::plugin_import_license_text,
         commands::plugin_permission_snapshot,
         commands::plugin_permissions_replace,
+        commands::plugin_shared_data_snapshot,
+        commands::plugin_shared_data_replace,
         commands::plugin_enable,
         commands::plugin_disable,
         commands::plugin_remove,

@@ -1,9 +1,9 @@
 import { providerLabel } from '../../i18n/providerLabel';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuth } from '../../api/useSnapshot';
-import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginUpdateReview } from '../../api';
+import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
 import { AppModal } from '../../components/AppModal';
 import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
@@ -38,6 +38,8 @@ export const PluginInventory: React.FC = () => {
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [review, setReview] = useState<PluginUpdateReview | null>(null);
   const [importReview, setImportReview] = useState<PluginImportReview | null>(null);
+  const [nativeCodeConsent, setNativeCodeConsent] = useState(false);
+  const [licenseText, setLicenseText] = useState<Record<string, string>>({});
   const [archivePath, setArchivePath] = useState('');
   const [scopeChoices, setScopeChoices] = useState<Record<string, boolean>>({});
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -56,7 +58,6 @@ export const PluginInventory: React.FC = () => {
   const [retrustFingerprint, setRetrustFingerprint] = useState('');
   const [publisherRetrusted, setPublisherRetrusted] = useState(false);
   const [reviewingPluginId, setReviewingPluginId] = useState<string | null>(null);
-  const [activationReviews, setActivationReviews] = useState<Record<string, PluginActivationPermissionsValue>>({});
   const { data: updatePreferences } = useQuery({
     queryKey: pluginQueryKeys.updatePreferences,
     queryFn: commands.pluginUpdatePreferences,
@@ -107,6 +108,16 @@ export const PluginInventory: React.FC = () => {
     queryFn: () => commands.pluginConfigurationState(managedPluginId!),
     enabled: managedPluginId !== null,
   });
+  const { data: sharedDataSnapshot, isError: sharedDataError } = useQuery({
+    queryKey: pluginQueryKeys.sharedData(managedPluginId ?? '', profileId ?? ''),
+    queryFn: async () => {
+      if (!managedPluginId || !profileId) throw new Error('plugin data-sharing profile is unavailable');
+      const snapshot = await commands.pluginSharedDataSnapshot(managedPluginId, profileId);
+      if (snapshot.profileId !== profileId) throw new Error('plugin data-sharing profile changed');
+      return snapshot;
+    },
+    enabled: managedPluginId !== null && profileId !== null && selectedPlugin?.pluginKind === 'provider',
+  });
   const periodicChecks = updatePreferences?.periodicChecks ?? false;
   const managed = Boolean(selectedPlugin?.publisherFingerprint);
   const canManageRuntime = managed && selectedPlugin?.runtimeAvailable === true && profileId !== null;
@@ -119,6 +130,11 @@ export const PluginInventory: React.FC = () => {
   });
   const configurationModes = configurationQuery.data;
   const configurationChoice = configurationModes ? selectPluginConfiguration(configurationModes) : undefined;
+  const sharedDataInitialValue = useMemo(() => sharedDataSnapshot ? ({
+    commonDataRead: sharedDataSnapshot.commonCategories,
+    selectedRecordIds: sharedDataSnapshot.selectedRecordIds,
+    sourcePolicies: sharedDataSnapshot.sourcePolicies,
+  }) : undefined, [sharedDataSnapshot]);
 
 
   useEffect(() => {
@@ -150,6 +166,7 @@ export const PluginInventory: React.FC = () => {
     if (pluginId) {
       if (profileId) {
         refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(pluginId, profileId) }));
+        refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.sharedData(pluginId, profileId) }));
       }
       refreshes.push(queryClient.invalidateQueries({ queryKey: pluginQueryKeys.configuration(pluginId) }));
     }
@@ -247,6 +264,8 @@ export const PluginInventory: React.FC = () => {
     setBusy(true);
     setManagementError(false);
     setImportReview(null);
+    setNativeCodeConsent(false);
+    setLicenseText({});
     try { setImportReview(await commands.pluginImportReview(archivePath.trim())); }
     catch { setManagementError(true); }
     finally { setBusy(false); }
@@ -257,8 +276,10 @@ export const PluginInventory: React.FC = () => {
     setBusy(true);
     setManagementError(false);
     try {
-      await commands.pluginImportInstall(importReview.token);
+      await commands.pluginImportInstall(importReview.token, nativeCodeConsent);
       setImportReview(null);
+      setNativeCodeConsent(false);
+      setLicenseText({});
       setArchivePath('');
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
     } catch { setManagementError(true); }
@@ -283,6 +304,28 @@ export const PluginInventory: React.FC = () => {
       setManagementError(true);
       setScopeChoices({});
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(snapshot.pluginId, profileId) });
+    } finally { setBusy(false); }
+  };
+
+  const saveSharedDataPermissions = async (
+    snapshot: PluginSharedDataSnapshot,
+    value: PluginActivationPermissionsValue,
+  ) => {
+    if (!profileId || snapshot.profileId !== profileId || snapshot.pluginId !== selectedPlugin?.pluginId) return;
+    setBusy(true);
+    setManagementError(false);
+    try {
+      const saved = await commands.pluginSharedDataReplace(snapshot.pluginId, {
+        profileId,
+        expectedRevision: snapshot.policyRevision,
+        commonCategories: value.commonDataRead,
+        selectedRecordIds: value.selectedRecordIds,
+        sourcePolicies: value.sourcePolicies,
+      });
+      queryClient.setQueryData(pluginQueryKeys.sharedData(snapshot.pluginId, profileId), saved);
+    } catch {
+      setManagementError(true);
+      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.sharedData(snapshot.pluginId, profileId) });
     } finally { setBusy(false); }
   };
 
@@ -360,14 +403,30 @@ export const PluginInventory: React.FC = () => {
             ) : <p>—</p>}
           </div>
           <p className={settingsRowDescription}>{t('plugins.nativeAccess')}: {importReview.nativeAccess.join(', ') || '—'}</p>
-          <p className={settingsRowDescription}>{t('plugins.import.license')}: {importReview.license}; {importReview.licenseFiles.join(', ') || '—'}</p>
+          {importReview.nativeAccess.length > 0 && <label className="mt-compact flex items-start gap-compact text-sm">
+            <input type="checkbox" checked={nativeCodeConsent} disabled={busy} onChange={(event) => setNativeCodeConsent(event.currentTarget.checked)} />
+            <span>{t('plugins.import.nativeConsent')}</span>
+          </label>}
+          <p className={settingsRowDescription}>{t('plugins.import.license')}: {importReview.license}</p>
+          {[...new Set([...importReview.licenseFiles, ...importReview.licenseNotices])].map((file) => (
+            <details key={file} className="mt-1 text-sm">
+              <summary className="cursor-pointer">{file}</summary>
+              {licenseText[file] === undefined ? <button type="button" className="mt-1 underline" disabled={busy} onClick={() => {
+                setBusy(true);
+                void commands.pluginImportLicenseText(importReview.token, file)
+                  .then((text) => setLicenseText((current) => ({ ...current, [file]: text })))
+                  .catch(() => setManagementError(true))
+                  .finally(() => setBusy(false));
+              }}>{t('plugins.import.viewLicense')}</button> : <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-sm bg-raised p-sm">{licenseText[file]}</pre>}
+            </details>
+          ))}
           <p className={settingsRowDescription}>{t('plugins.import.compatibility')}: {t(`plugins.import.${importReview.compatibility}`)} {importReview.compatibilityReason ?? ''}</p>
           {importReview.trust !== 'trusted' ? <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || profileId === null || importReview.compatibility !== 'compatible'} onClick={() => {
             setBusy(true);
             setManagementError(false);
             void commands.pluginImportConfirmPublisher(importReview.token, importReview.publisherFingerprint).then(setImportReview).catch(() => setManagementError(true)).finally(() => setBusy(false));
           }}>{importReview.trust === 'changed' ? t('plugins.import.retrust') : t('plugins.import.trust')}</button> : null}
-          <button type="button" className="ml-compact mt-compact rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible'} onClick={() => void installImport()}>{t('plugins.import.install')}</button>
+          <button type="button" className="ml-compact mt-compact rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={busy || profileId === null || importReview.trust !== 'trusted' || importReview.compatibility !== 'compatible' || (importReview.nativeAccess.length > 0 && !nativeCodeConsent)} onClick={() => void installImport()}>{t('plugins.import.install')}</button>
         </article>}
       </div>
       <div className={`${settingsCard} mb-compact`}>
@@ -517,24 +576,27 @@ export const PluginInventory: React.FC = () => {
               </div>}
               {managed && profileId && permissionSnapshot && permissionSnapshot.pluginId === selectedPlugin.pluginId && <div className="mt-compact border-t border-border-subtle pt-compact" aria-label={t('plugins.permissionScopes')}>
                 <p className={settingsRowTitle}>{t('plugins.permissionScopes')}</p>
+                <p className={`${settingsRowDescription} mt-1 break-all`}>{t('plugins.publisherFingerprint')}: {permissionSnapshot.publisherFingerprint}</p>
+                <p className={`${settingsRowDescription} mt-1`}>{t('plugins.requestedGrantedEffectiveDescription')}</p>
                 {permissionSnapshot.requestedPermissions.map((request) => <fieldset key={request.permission_id} className="mt-compact">
-                  <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''}</legend>
+                  <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''} · {t('plugins.permissionRequested')}</legend>
                   {request.allowed_scopes.map((scope) => {
                     const key = scopeChoiceKey(permissionSnapshot.pluginId, profileId!, request.permission_id, scope);
-                    const active = permissionSnapshot.effectiveGrants.some((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope) && grant.state === 'granted');
+                    const effective = permissionSnapshot.effectiveGrants.find((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope));
+                    const active = effective?.state === 'granted';
                     return <label key={key} className="flex items-center gap-compact py-1 text-sm">
                       <input type="checkbox" disabled={!canManageRuntime || busy} checked={scopeChoices[key] ?? active} onChange={(event) => {
                         const checked = event.currentTarget.checked;
                         setScopeChoices((current) => ({ ...current, [key]: checked }));
                       }} />
-                      <span>{scope.scope}{'category' in scope ? ` · ${scope.category}` : 'value' in scope ? ` · ${scope.value}` : ''}</span>
+                      <span>{scope.scope}{'category' in scope ? ` · ${scope.category}` : 'value' in scope ? ` · ${scope.value}` : ''} · {t('plugins.permissionEffective')}: {t(`plugins.permissionState.${effective?.state ?? 'denied'}`)}</span>
                     </label>;
                   })}
                 </fieldset>)}
                 <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={!canManageRuntime || busy} onClick={() => void savePermissions(permissionSnapshot)}>{t('plugins.permissions.save')}</button>
               </div>}
 
-              <div className="mt-compact border-t border-border-subtle pt-compact">
+              {managed && selectedPlugin.pluginKind === 'provider' && <div className="mt-compact border-t border-border-subtle pt-compact">
                 <button
                   type="button"
                   aria-expanded={reviewingPluginId === selectedPlugin.pluginId}
@@ -544,26 +606,24 @@ export const PluginInventory: React.FC = () => {
                 >
                   {t('plugins.activation.openReview')}
                 </button>
-                {activationReviews[selectedPlugin.pluginId] && reviewingPluginId !== selectedPlugin.pluginId && (
-                  <p className={`${settingsRowDescription} mt-compact`} role="status">
-                    {t('plugins.activation.reviewOnly')}
-                  </p>
-                )}
                 {reviewingPluginId === selectedPlugin.pluginId && (
                   <div id={`plugin-activation-review-${selectedPlugin.pluginId}`} className="mt-compact border-t border-border-subtle pt-compact">
                     <p className={`${settingsRowDescription} mb-compact`}>
                       {t('plugins.activation.reviewFor', { plugin: providerLabel(selectedPlugin.providerId, selectedPlugin.name, t) })}
                     </p>
-                    <PluginActivationPermissions
-                      initialValue={activationReviews[selectedPlugin.pluginId]}
-                      onContinue={(value) => {
-                        setActivationReviews((current) => ({ ...current, [selectedPlugin.pluginId]: value }));
-                        setReviewingPluginId(null);
-                      }}
-                    />
+                    {sharedDataError && <p className="mb-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
+                    {sharedDataSnapshot && sharedDataInitialValue && sharedDataSnapshot.pluginId === selectedPlugin.pluginId ? (
+                      <PluginActivationPermissions
+                        pluginId={selectedPlugin.pluginId}
+                        catalog={sharedDataSnapshot.catalog}
+                        initialValue={sharedDataInitialValue}
+                        busy={busy}
+                        onSave={(value) => void saveSharedDataPermissions(sharedDataSnapshot, value)}
+                      />
+                    ) : <p className={settingsRowDescription} role="status">{profileId ? t('plugins.activation.loading') : t('plugins.signInRequired')}</p>}
                   </div>
                 )}
-              </div>
+              </div>}
 
               <div>
                 <p className={settingsRowDescription}>{selectedPlugin.source === 'official' ? t('plugins.grants') : t('plugins.import.permissions')}</p>

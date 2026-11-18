@@ -3,13 +3,40 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { appTheme } from '../../AppProviders';
 import { I18nProvider } from '../../i18n';
+import type { SharedDataCatalogRecord } from '../../api/types';
 import { PluginActivationPermissions, type PluginActivationPermissionsValue } from './PluginActivationPermissions';
 
-function renderPermissions(locale: 'en' | 'pt-BR', onContinue: (value: PluginActivationPermissionsValue) => void) {
+const consumerId = 'org.example.consumer';
+const catalog: SharedDataCatalogRecord[] = [
+  {
+    sourcePluginId: 'org.example.source',
+    sourcePublisherFingerprint: 'SHA256:source',
+    datasetId: 'org.example.metrics.v1',
+    class: 'custom',
+    category: null,
+    recordId: 'custom-record-1',
+    fields: ['fps', 'opaque_payload'],
+  },
+  {
+    sourcePluginId: 'org.example.telemetry',
+    sourcePublisherFingerprint: 'SHA256:telemetry',
+    datasetId: 'performance',
+    class: 'common',
+    category: 'gamePerformanceHistory',
+    recordId: 'common-record-1',
+    fields: ['fps'],
+  },
+];
+
+function renderPermissions(
+  locale: 'en' | 'pt-BR',
+  onSave: (value: PluginActivationPermissionsValue) => void,
+  initialValue?: PluginActivationPermissionsValue,
+) {
   return render(
     <MantineProvider theme={appTheme} defaultColorScheme="dark">
       <I18nProvider initialLocale={locale}>
-        <PluginActivationPermissions onContinue={onContinue} />
+        <PluginActivationPermissions pluginId={consumerId} catalog={catalog} initialValue={initialValue} onSave={onSave} />
       </I18nProvider>
     </MantineProvider>,
   );
@@ -17,54 +44,76 @@ function renderPermissions(locale: 'en' | 'pt-BR', onContinue: (value: PluginAct
 
 describe('PluginActivationPermissions', () => {
   it.each([
-    [
-      'en',
-      'Sensitive and custom data sharing',
-      ['Game paths', 'Game performance history', 'Runtime catalog', 'Content availability', 'Library roots', 'Save profiles'],
-      ['Review data sources', 'Review recipients', 'Review shared fields', 'Review historical sharing', 'Review live delivery', 'Review received-data retention'],
-    ],
-    [
-      'pt-BR',
-      'Compartilhamento de dados sensíveis e personalizados',
-      ['Caminhos dos jogos', 'Histórico de desempenho dos jogos', 'Catálogo de runtimes', 'Disponibilidade de conteúdo', 'Raízes de bibliotecas', 'Perfis de saves'],
-      ['Revisar fontes dos dados', 'Revisar destinatários', 'Revisar campos compartilhados', 'Revisar compartilhamento do histórico', 'Revisar entrega em tempo real', 'Revisar retenção dos dados recebidos'],
-    ],
-  ] as const)('shows all-off grants, private query defaults and separate sensitive review in %s', (locale, sensitiveTitle, categoryLabels, sensitiveLabels) => {
-    const onContinue = vi.fn();
-    renderPermissions(locale, onContinue);
+    ['en', 'Game performance history', 'Save data permissions'],
+    ['pt-BR', 'Histórico de desempenho dos jogos', 'Salvar permissões de dados'],
+  ] as const)('defaults to private data and explains separation from retention in %s', (locale, performanceLabel, saveLabel) => {
+    const onSave = vi.fn();
+    renderPermissions(locale, onSave);
 
-    for (const label of categoryLabels) {
-      expect(screen.getByRole('switch', { name: label })).not.toBeChecked();
-    }
-    for (const label of sensitiveLabels) {
-      expect(screen.getByRole('switch', { name: label })).not.toBeChecked();
-    }
-    expect(screen.queryByRole('switch', { name: /common data in plugin queries|dados comuns nas consultas do plugin/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('group', { name: sensitiveTitle })).toBeInTheDocument();
-    expect(screen.getByText(/does not automatically run queries|não executa consultas.*automaticamente/i)).toBeInTheDocument();
-    expect(screen.getByText(/must explicitly request common data on each query|precisa solicitar dados comuns explicitamente em cada consulta/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: performanceLabel })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /common-record-1/ })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'fps' })).not.toBeChecked();
+    expect(screen.getByText(/storage\.persist/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: saveLabel })).toBeEnabled();
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue|Continuar/ }));
-    expect(onContinue).toHaveBeenCalledWith({ commonDataRead: [], sensitiveDataReview: [] });
+    fireEvent.click(screen.getByRole('button', { name: saveLabel }));
+    expect(onSave).toHaveBeenCalledWith({ commonDataRead: [], selectedRecordIds: [], sourcePolicies: [] });
   });
 
-  it.each([
-    ['en', 'Game performance history'],
-    ['pt-BR', 'Histórico de desempenho dos jogos'],
-  ] as const)('lets a common-data lookup be selected without a transfer wizard in %s', (locale, performanceLabel) => {
-    const onContinue = vi.fn();
-    renderPermissions(locale, onContinue);
+  it('saves category, record, and exact source field/history/live choices together', () => {
+    const onSave = vi.fn();
+    renderPermissions('en', onSave);
 
-    fireEvent.click(screen.getByRole('switch', { name: performanceLabel }));
-    expect(screen.getByRole('switch', { name: performanceLabel })).toBeChecked();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('switch', { name: 'Game performance history' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /common-record-1/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'fps' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'opaque_payload' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow historical reads' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow live updates' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save data permissions' }));
 
-    fireEvent.click(screen.getByRole('switch', { name: /Review recipients|Revisar destinatários/ }));
-    fireEvent.click(screen.getByRole('button', { name: /Continue|Continuar/ }));
-
-    expect(onContinue).toHaveBeenCalledWith({
+    expect(onSave).toHaveBeenCalledWith({
       commonDataRead: ['gamePerformanceHistory'],
-      sensitiveDataReview: ['recipient'],
+      selectedRecordIds: ['common-record-1'],
+      sourcePolicies: [{
+        sourcePluginId: 'org.example.source',
+        sourcePublisherFingerprint: 'SHA256:source',
+        datasetId: 'org.example.metrics.v1',
+        class: 'custom',
+        fields: ['fps', 'opaque_payload'],
+        history: true,
+        live: true,
+      }],
+    });
+  });
+
+  it('restores persisted review choices and lets the user revoke a dataset policy', () => {
+    const onSave = vi.fn();
+    const initialValue: PluginActivationPermissionsValue = {
+      commonDataRead: ['gamePerformanceHistory'],
+      selectedRecordIds: ['common-record-1'],
+      sourcePolicies: [{
+        sourcePluginId: 'org.example.source',
+        sourcePublisherFingerprint: 'SHA256:source',
+        datasetId: 'org.example.metrics.v1',
+        class: 'custom',
+        fields: ['fps'],
+        history: true,
+        live: false,
+      }],
+    };
+    renderPermissions('en', onSave, initialValue);
+
+    expect(screen.getByRole('switch', { name: 'Game performance history' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /common-record-1/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'fps' })).toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'fps' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save data permissions' }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      commonDataRead: ['gamePerformanceHistory'],
+      selectedRecordIds: ['common-record-1'],
+      sourcePolicies: [],
     });
   });
 });

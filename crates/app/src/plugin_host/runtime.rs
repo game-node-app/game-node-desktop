@@ -341,6 +341,24 @@ impl ThirdPartyPluginLifecycle {
         })
     }
 
+    /// Resolve a UI-selected package id to the currently verified identity in the active
+    /// account. The caller never supplies a publisher fingerprint or profile identity.
+    pub async fn sharing_identity(
+        &self,
+        plugin_id: String,
+        expected_profile_id: &str,
+    ) -> Result<super::grants::PluginIdentity, Status> {
+        let snapshot = self.permission_snapshot(plugin_id).await?;
+        if snapshot.profile_id != expected_profile_id {
+            return Err(Status::failed_precondition("plugin profile changed"));
+        }
+        Ok(super::grants::PluginIdentity {
+            plugin_id: snapshot.plugin_id,
+            publisher_fingerprint: snapshot.publisher_fingerprint,
+            profile_id: snapshot.profile_id,
+        })
+    }
+
     /// Atomically replaces permissions only for the active account and the declarations in the
     /// currently trusted package. The caller's profile id and grant revision fence stale UI writes.
     pub async fn replace_permissions(

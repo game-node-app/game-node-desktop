@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -512,8 +513,18 @@ pub async fn plugin_import_confirm_publisher(
 pub async fn plugin_import_install(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     token: String,
+    native_code_consent: bool,
 ) -> Result<String, String> {
-    updates.import_install(&token).await
+    updates.import_install(&token, native_code_consent).await
+}
+
+#[tauri::command]
+pub async fn plugin_import_license_text(
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
+    token: String,
+    file: String,
+) -> Result<String, String> {
+    updates.import_license_text(&token, &file).await
 }
 
 #[tauri::command]
@@ -539,6 +550,330 @@ pub async fn plugin_permissions_replace(
         .replace_permissions(plugin_id, expected_profile_id, expected_revision, decisions)
         .await
         .map_err(|error| error.message().to_owned())
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedDataCatalogRecord {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub category: Option<String>,
+    pub record_id: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedDataSourcePolicy {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub fields: Vec<String>,
+    pub history: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSharedDataSnapshot {
+    pub plugin_id: String,
+    pub publisher_fingerprint: String,
+    pub profile_id: String,
+    pub policy_revision: u64,
+    pub common_categories: Vec<String>,
+    pub selected_record_ids: Vec<String>,
+    pub catalog: Vec<SharedDataCatalogRecord>,
+    pub source_policies: Vec<SharedDataSourcePolicy>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDataSourcePolicyDecision {
+    pub source_plugin_id: String,
+    pub source_publisher_fingerprint: String,
+    pub dataset_id: String,
+    pub class: String,
+    pub fields: BTreeSet<String>,
+    pub history: bool,
+    pub live: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginSharedDataPolicyUpdate {
+    pub profile_id: String,
+    pub expected_revision: u64,
+    pub common_categories: Vec<String>,
+    pub selected_record_ids: Vec<String>,
+    pub source_policies: Vec<SharedDataSourcePolicyDecision>,
+}
+
+fn common_data_category_name(
+    category: gamenode_plugin_protocol::proto::CommonDataCategory,
+) -> String {
+    use gamenode_plugin_protocol::proto::CommonDataCategory as C;
+    match category {
+        C::GamePaths => "gamePaths",
+        C::GamePerformanceHistory => "gamePerformanceHistory",
+        C::RuntimeCatalog => "runtimeCatalog",
+        C::ContentAvailability => "contentAvailability",
+        C::LibraryRoots => "libraryRoots",
+        C::SaveProfiles => "saveProfiles",
+        C::Unspecified => "unspecified",
+    }
+    .to_owned()
+}
+
+fn common_data_category(
+    value: &str,
+) -> Result<gamenode_plugin_protocol::proto::CommonDataCategory, String> {
+    use gamenode_plugin_protocol::proto::CommonDataCategory as C;
+    match value {
+        "gamePaths" => Ok(C::GamePaths),
+        "gamePerformanceHistory" => Ok(C::GamePerformanceHistory),
+        "runtimeCatalog" => Ok(C::RuntimeCatalog),
+        "contentAvailability" => Ok(C::ContentAvailability),
+        "libraryRoots" => Ok(C::LibraryRoots),
+        "saveProfiles" => Ok(C::SaveProfiles),
+        _ => Err("unknown shared-data category".into()),
+    }
+}
+
+fn sharing_class_name(class: crate::plugin_host::sharing_policy::SharingClass) -> String {
+    match class {
+        crate::plugin_host::sharing_policy::SharingClass::Common => "common",
+        crate::plugin_host::sharing_policy::SharingClass::Sensitive => "sensitive",
+        crate::plugin_host::sharing_policy::SharingClass::Custom => "custom",
+    }
+    .to_owned()
+}
+
+fn sharing_class(value: &str) -> Result<crate::plugin_host::sharing_policy::SharingClass, String> {
+    use crate::plugin_host::sharing_policy::SharingClass as C;
+    match value {
+        "sensitive" => Ok(C::Sensitive),
+        "custom" => Ok(C::Custom),
+        _ => Err("only sensitive and custom datasets use source-recipient review".into()),
+    }
+}
+
+fn unix_timestamp() -> Result<i64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before Unix epoch".to_owned())?
+        .as_secs()
+        .try_into()
+        .map_err(|_| "system time is outside supported range".to_owned())
+}
+
+#[tauri::command]
+pub async fn plugin_shared_data_snapshot(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    policies: tauri::State<'_, Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>>,
+    broker: tauri::State<'_, Arc<crate::plugin_host::shared_data::DataBroker>>,
+    plugin_id: String,
+    expected_profile_id: String,
+) -> Result<PluginSharedDataSnapshot, String> {
+    let identity = lifecycle
+        .sharing_identity(plugin_id, &expected_profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    plugin_shared_data_snapshot_for(identity, policies.inner().clone(), broker.inner().clone())
+        .await
+}
+
+async fn plugin_shared_data_snapshot_for(
+    identity: crate::plugin_host::grants::PluginIdentity,
+    policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
+    broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+) -> Result<PluginSharedDataSnapshot, String> {
+    let policy_snapshot = policies
+        .recipient_snapshot(&identity)
+        .map_err(|error| error.to_string())?;
+    let now = unix_timestamp()?;
+    let catalog = tokio::task::spawn_blocking(move || broker.sharing_catalog(now))
+        .await
+        .map_err(|_| "shared-data catalog worker failed".to_owned())?;
+    let catalog = catalog
+        .into_iter()
+        .filter(|record| record.owner.profile_id == identity.profile_id)
+        .map(|record| SharedDataCatalogRecord {
+            source_plugin_id: record.owner.plugin_id,
+            source_publisher_fingerprint: record.owner.publisher_fingerprint,
+            dataset_id: record.dataset_id,
+            class: sharing_class_name(record.class),
+            category: record.category.map(common_data_category_name),
+            record_id: record.record_id,
+            fields: record.fields.into_iter().collect(),
+        })
+        .collect();
+    let source_policies = policy_snapshot
+        .source_recipient_policies
+        .into_iter()
+        .map(|policy| SharedDataSourcePolicy {
+            source_plugin_id: policy.source().plugin_id.clone(),
+            source_publisher_fingerprint: policy.source().publisher_fingerprint.clone(),
+            dataset_id: policy.dataset_id().to_owned(),
+            class: sharing_class_name(policy.class()),
+            fields: policy.fields().iter().cloned().collect(),
+            history: policy.allows_history(),
+            live: policy.allows_live(),
+        })
+        .collect();
+    Ok(PluginSharedDataSnapshot {
+        plugin_id: identity.plugin_id,
+        publisher_fingerprint: identity.publisher_fingerprint,
+        profile_id: identity.profile_id,
+        policy_revision: policy_snapshot.revision,
+        common_categories: policy_snapshot
+            .categories
+            .into_iter()
+            .map(common_data_category_name)
+            .collect(),
+        selected_record_ids: policy_snapshot.selected_record_ids.into_iter().collect(),
+        catalog,
+        source_policies,
+    })
+}
+
+#[tauri::command]
+pub async fn plugin_shared_data_replace(
+    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    policies: tauri::State<'_, Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>>,
+    broker: tauri::State<'_, Arc<crate::plugin_host::shared_data::DataBroker>>,
+    plugin_id: String,
+    update: PluginSharedDataPolicyUpdate,
+) -> Result<PluginSharedDataSnapshot, String> {
+    let identity = lifecycle
+        .sharing_identity(plugin_id.clone(), &update.profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    let existing = policies
+        .recipient_snapshot(&identity)
+        .map_err(|error| error.to_string())?;
+    if existing.revision != update.expected_revision {
+        return Err("shared-data permissions changed; reload and try again".into());
+    }
+    let broker_handle = broker.inner().clone();
+    let now = unix_timestamp()?;
+    let catalog = tokio::task::spawn_blocking(move || broker_handle.sharing_catalog(now))
+        .await
+        .map_err(|_| "shared-data catalog worker failed".to_owned())?
+        .into_iter()
+        .filter(|record| record.owner.profile_id == identity.profile_id)
+        .collect::<Vec<_>>();
+    let categories = update
+        .common_categories
+        .iter()
+        .map(|category| common_data_category(category))
+        .collect::<Result<Vec<_>, _>>()?;
+    let grant = crate::plugin_host::sharing_policy::ActivationReadGrant::new(
+        categories,
+        update.selected_record_ids.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let available_common_records = catalog
+        .iter()
+        .filter(|record| record.class == crate::plugin_host::sharing_policy::SharingClass::Common)
+        .map(|record| record.record_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if update.selected_record_ids.iter().any(|record_id| {
+        !available_common_records.contains(record_id.as_str())
+            && !existing.selected_record_ids.contains(record_id)
+    }) {
+        return Err("selected record is not present in the host sharing catalog".into());
+    }
+    let mut source_policies = Vec::new();
+    for decision in update.source_policies {
+        let class = sharing_class(&decision.class)?;
+        let source = crate::plugin_host::grants::PluginIdentity {
+            plugin_id: decision.source_plugin_id,
+            publisher_fingerprint: decision.source_publisher_fingerprint,
+            profile_id: identity.profile_id.clone(),
+        };
+        let existing_policy = existing.source_recipient_policies.iter().find(|policy| {
+            policy.source() == &source
+                && policy.dataset_id() == decision.dataset_id
+                && policy.class() == class
+        });
+        if decision.fields.is_empty() {
+            if decision.history || decision.live {
+                return Err("history or live delivery requires at least one approved field".into());
+            }
+            continue;
+        }
+        let available_fields = catalog
+            .iter()
+            .filter(|record| {
+                record.owner == source
+                    && record.dataset_id == decision.dataset_id
+                    && record.class == class
+            })
+            .flat_map(|record| record.fields.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let source_is_current = !available_fields.is_empty()
+            && lifecycle
+                .sharing_identity(source.plugin_id.clone(), &identity.profile_id)
+                .await
+                .is_ok_and(|current| current == source);
+        if source_is_current {
+            if !decision.fields.is_subset(&available_fields) {
+                return Err("sharing policy names fields not published by this dataset".into());
+            }
+        } else {
+            let Some(previous) = existing_policy else {
+                return Err("source identity is not currently verified".into());
+            };
+            if !decision.fields.is_subset(previous.fields())
+                || (decision.history && !previous.allows_history())
+                || (decision.live && !previous.allows_live())
+            {
+                return Err("new sharing grants require a current verified source".into());
+            }
+        }
+        source_policies.push(
+            crate::plugin_host::sharing_policy::SourceRecipientPolicy::new(
+                source,
+                identity.clone(),
+                class,
+                decision.dataset_id,
+                decision.fields,
+                decision.history,
+                decision.live,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    let policies_handle = policies.inner().clone();
+    let expected_revision = update.expected_revision;
+    let identity_for_commit = identity.clone();
+    tokio::task::spawn_blocking(move || {
+        policies_handle.replace_recipient_policies(
+            &identity_for_commit,
+            expected_revision,
+            grant,
+            source_policies,
+        )
+    })
+    .await
+    .map_err(|_| "shared-data permission worker failed".to_owned())?
+    .map_err(|error| error.to_string())?;
+    let current_identity = lifecycle
+        .sharing_identity(plugin_id, &update.profile_id)
+        .await
+        .map_err(|status| status.message().to_owned())?;
+    if current_identity != identity {
+        return Err("plugin identity changed while saving shared-data permissions".into());
+    }
+    plugin_shared_data_snapshot_for(
+        current_identity,
+        policies.inner().clone(),
+        broker.inner().clone(),
+    )
+    .await
 }
 
 #[tauri::command]

@@ -33,6 +33,8 @@ const MAX_RECORD_ID_BYTES: usize = 256;
 const MAX_DATASET_ID_BYTES: usize = 256;
 const MAX_FIELD_BYTES: usize = 256;
 const MAX_FIELDS_PER_POLICY: usize = 256;
+const MAX_SELECTED_RECORDS_PER_RECIPIENT: usize = 1000;
+const MAX_SOURCE_POLICIES_PER_RECIPIENT: usize = 1024;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 /// An activation-time selection for one authenticated recipient.
@@ -57,9 +59,10 @@ impl ActivationReadGrant {
             return Err(SharingPolicyError::InvalidCategory);
         }
         let selected_record_ids = selected_record_ids.into_iter().collect::<BTreeSet<_>>();
-        if selected_record_ids
-            .iter()
-            .any(|id| !valid_plain_identifier(id, MAX_RECORD_ID_BYTES))
+        if selected_record_ids.len() > MAX_SELECTED_RECORDS_PER_RECIPIENT
+            || selected_record_ids
+                .iter()
+                .any(|id| !valid_plain_identifier(id, MAX_RECORD_ID_BYTES))
         {
             return Err(SharingPolicyError::InvalidRecordId);
         }
@@ -109,6 +112,15 @@ pub struct SourceRecipientPolicy {
     fields: BTreeSet<String>,
     history: bool,
     live: bool,
+}
+
+/// Host-owned view of all data-sharing choices for one authenticated recipient.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecipientSharingSnapshot {
+    pub revision: u64,
+    pub categories: BTreeSet<CommonDataCategory>,
+    pub selected_record_ids: BTreeSet<String>,
+    pub source_recipient_policies: Vec<SourceRecipientPolicy>,
 }
 
 impl SourceRecipientPolicy {
@@ -339,6 +351,30 @@ impl SharedSharingPolicies {
     ) -> Result<bool, SharingPolicyError> {
         self.write()?
             .revoke_source_recipient_policy(source, recipient, class, dataset_id)
+    }
+
+    pub fn recipient_snapshot(
+        &self,
+        recipient: &PluginIdentity,
+    ) -> Result<RecipientSharingSnapshot, SharingPolicyError> {
+        self.read()?.recipient_snapshot(recipient)
+    }
+
+    /// Atomically replace one recipient's complete data-sharing policy, fenced by the revision
+    /// shown in its current settings snapshot.
+    pub fn replace_recipient_policies(
+        &self,
+        recipient: &PluginIdentity,
+        expected_revision: u64,
+        grant: ActivationReadGrant,
+        source_policies: Vec<SourceRecipientPolicy>,
+    ) -> Result<u64, SharingPolicyError> {
+        self.write()?.replace_recipient_policies(
+            recipient,
+            expected_revision,
+            grant,
+            source_policies,
+        )
     }
 
     fn read(&self) -> Result<std::sync::RwLockReadGuard<'_, SharingPolicies>, SharingPolicyError> {
@@ -605,6 +641,81 @@ impl SharingPolicies {
             .get(&IdentityKey::from(recipient))
             .copied()
             .unwrap_or_default()
+    }
+
+    fn recipient_snapshot(
+        &self,
+        recipient: &PluginIdentity,
+    ) -> Result<RecipientSharingSnapshot, SharingPolicyError> {
+        validate_identity(recipient)?;
+        let key = IdentityKey::from(recipient);
+        let grant = self.activation.get(&key).cloned().unwrap_or_default();
+        let mut source_recipient_policies = self
+            .source_recipient
+            .iter()
+            .filter(|(policy_key, _)| policy_key.recipient == key)
+            .map(|(_, policy)| policy.clone())
+            .collect::<Vec<_>>();
+        source_recipient_policies.sort_by(|left, right| {
+            (&left.source.plugin_id, &left.dataset_id, left.class).cmp(&(
+                &right.source.plugin_id,
+                &right.dataset_id,
+                right.class,
+            ))
+        });
+        Ok(RecipientSharingSnapshot {
+            revision: self.revision(recipient),
+            categories: grant.categories,
+            selected_record_ids: grant.selected_record_ids,
+            source_recipient_policies,
+        })
+    }
+
+    fn replace_recipient_policies(
+        &mut self,
+        recipient: &PluginIdentity,
+        expected_revision: u64,
+        grant: ActivationReadGrant,
+        source_policies: Vec<SourceRecipientPolicy>,
+    ) -> Result<u64, SharingPolicyError> {
+        validate_identity(recipient)?;
+        if self.revision(recipient) != expected_revision {
+            return Err(SharingPolicyError::StaleRevision);
+        }
+        if source_policies.len() > MAX_SOURCE_POLICIES_PER_RECIPIENT {
+            return Err(SharingPolicyError::TooManyPolicies);
+        }
+        let recipient_key = IdentityKey::from(recipient);
+        let mut policy_keys = BTreeSet::new();
+        for policy in &source_policies {
+            validate_identity(&policy.source)?;
+            validate_identity(&policy.recipient)?;
+            if policy.recipient != *recipient
+                || policy.source == policy.recipient
+                || policy.class == SharingClass::Common
+                || !valid_plain_identifier(&policy.dataset_id, MAX_DATASET_ID_BYTES)
+                || policy.fields.is_empty()
+                || policy.fields.len() > MAX_FIELDS_PER_POLICY
+                || policy.fields.iter().any(|field| !valid_field_name(field))
+                || !policy_keys.insert(policy_key(policy))
+            {
+                return Err(SharingPolicyError::InvalidFields);
+            }
+        }
+
+        let mut candidate = self.clone();
+        let revision = candidate.bump_revision(recipient)?;
+        candidate.activation.insert(recipient_key.clone(), grant);
+        candidate
+            .source_recipient
+            .retain(|key, _| key.recipient != recipient_key);
+        for policy in source_policies {
+            candidate
+                .source_recipient
+                .insert(policy_key(&policy), policy);
+        }
+        self.commit_candidate(candidate)?;
+        Ok(revision)
     }
 
     fn bump_revision(&mut self, recipient: &PluginIdentity) -> Result<u64, SharingPolicyError> {
@@ -918,6 +1029,10 @@ pub enum SharingPolicyError {
     InvalidFields,
     #[error("common data cannot use a source-recipient policy")]
     InvalidPolicyClass,
+    #[error("sharing policy changed; reload the settings before saving")]
+    StaleRevision,
+    #[error("recipient has too many source-sharing policies")]
+    TooManyPolicies,
     #[error("policy revision exhausted")]
     RevisionExhausted,
     #[error("sharing policy lock is poisoned")]
@@ -1503,6 +1618,119 @@ mod tests {
             .authorize_common_query(&recipient, Some(&selected))
             .unwrap();
         assert!(common.includes_category(CommonDataCategory::GamePerformanceHistory));
+    }
+
+    #[test]
+    fn recipient_policy_replacement_is_atomic_persisted_and_revision_fenced() {
+        let directory = tempfile::tempdir().unwrap();
+        let shared = SharedSharingPolicies::open(directory.path()).unwrap();
+        let source = identity("org.source", "SHA256:source", "profile-a");
+        let recipient = identity("org.consumer", "SHA256:consumer", "profile-a");
+        let policy = SourceRecipientPolicy::new(
+            source.clone(),
+            recipient.clone(),
+            SharingClass::Custom,
+            "org.source.metrics".into(),
+            ["fps".into()],
+            true,
+            false,
+        )
+        .unwrap();
+        let expected_revision = shared.recipient_snapshot(&recipient).unwrap().revision;
+        let next_revision = shared
+            .replace_recipient_policies(
+                &recipient,
+                expected_revision,
+                ActivationReadGrant::new(
+                    [CommonDataCategory::GamePerformanceHistory],
+                    ["record-1".into()],
+                )
+                .unwrap(),
+                vec![policy],
+            )
+            .unwrap();
+        assert_eq!(next_revision, expected_revision + 1);
+        assert!(matches!(
+            shared.replace_recipient_policies(
+                &recipient,
+                expected_revision,
+                ActivationReadGrant::default(),
+                Vec::new(),
+            ),
+            Err(SharingPolicyError::StaleRevision)
+        ));
+
+        let snapshot = shared.recipient_snapshot(&recipient).unwrap();
+        assert!(
+            snapshot
+                .categories
+                .contains(&CommonDataCategory::GamePerformanceHistory)
+        );
+        assert!(snapshot.selected_record_ids.contains("record-1"));
+        assert_eq!(snapshot.source_recipient_policies.len(), 1);
+        assert!(
+            snapshot.source_recipient_policies[0]
+                .fields()
+                .contains("fps")
+        );
+
+        let reopened = SharedSharingPolicies::open(directory.path()).unwrap();
+        let reopened_snapshot = reopened.recipient_snapshot(&recipient).unwrap();
+        assert_eq!(reopened_snapshot, snapshot);
+        assert!(
+            reopened
+                .revoke_source_recipient_policy(
+                    &source,
+                    &recipient,
+                    SharingClass::Custom,
+                    "org.source.metrics",
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            reopened
+                .recipient_snapshot(&recipient)
+                .unwrap()
+                .source_recipient_policies
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn recipient_policy_replacement_rejects_foreign_recipients_and_duplicates() {
+        let recipient = identity("org.consumer", "SHA256:consumer", "profile-a");
+        let other = identity("org.other", "SHA256:other", "profile-a");
+        let source = identity("org.source", "SHA256:source", "profile-a");
+        let policy = SourceRecipientPolicy::new(
+            source,
+            other.clone(),
+            SharingClass::Custom,
+            "metrics".into(),
+            ["fps".into()],
+            false,
+            true,
+        )
+        .unwrap();
+        let mut policies = SharingPolicies::default();
+        assert!(matches!(
+            policies.replace_recipient_policies(
+                &recipient,
+                0,
+                ActivationReadGrant::default(),
+                vec![policy.clone()],
+            ),
+            Err(SharingPolicyError::InvalidFields)
+        ));
+        assert!(matches!(
+            policies.replace_recipient_policies(
+                &other,
+                0,
+                ActivationReadGrant::default(),
+                vec![policy.clone(), policy],
+            ),
+            Err(SharingPolicyError::InvalidFields)
+        ));
     }
 
     #[test]

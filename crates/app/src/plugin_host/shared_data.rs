@@ -160,6 +160,17 @@ pub struct ProjectedRecord {
     policy_revision: u64,
 }
 
+/// Host-only sharing metadata for settings review. This intentionally contains no payload values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDataCatalogRecord {
+    pub owner: PluginIdentity,
+    pub record_id: String,
+    pub dataset_id: String,
+    pub class: SharingClass,
+    pub category: Option<CommonDataCategory>,
+    pub fields: BTreeSet<String>,
+}
+
 impl ProjectedRecord {
     pub fn record_id(&self) -> &str {
         &self.record_id
@@ -702,6 +713,31 @@ impl DataBroker {
             }
         }
         removed
+    }
+
+    /// Returns only host-owned dataset and field names needed to review sharing. No plugin
+    /// values, paths, or opaque payload bytes leave the broker through this view.
+    pub fn sharing_catalog(&self, now: i64) -> Vec<SharedDataCatalogRecord> {
+        let mut state = self.lock();
+        prune_expired_locked(&mut state, now);
+        state
+            .rows
+            .iter()
+            .map(|record| {
+                let mut fields = record.fields.keys().cloned().collect::<BTreeSet<_>>();
+                if !record.opaque_payload.is_empty() {
+                    fields.insert("opaque_payload".to_owned());
+                }
+                SharedDataCatalogRecord {
+                    owner: record.owner.clone(),
+                    record_id: record.record_id.clone(),
+                    dataset_id: record.dataset_id.clone(),
+                    class: record.class,
+                    category: record.category,
+                    fields,
+                }
+            })
+            .collect()
     }
 
     fn insert(

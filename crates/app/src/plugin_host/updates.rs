@@ -305,6 +305,34 @@ struct PendingImport {
     created_at: std::time::Instant,
 }
 
+fn read_inert_license(package_path: &Path, file: &str) -> Result<String, String> {
+    const MAX_LICENSE_BYTES: u64 = 256 * 1024;
+    if Path::new(file)
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("license file path is not package-relative".into());
+    }
+    let root = fs::canonicalize(package_path).map_err(|error| error.to_string())?;
+    let requested = package_path.join(file);
+    let metadata = fs::symlink_metadata(&requested).map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_LICENSE_BYTES
+    {
+        return Err("license file is not a bounded regular file".to_owned());
+    }
+    let path = fs::canonicalize(&requested).map_err(|error| error.to_string())?;
+    if !path.starts_with(&root) {
+        return Err("license file escapes the validated package".into());
+    }
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_LICENSE_BYTES {
+        return Err("license file exceeds the size limit".to_owned());
+    }
+    String::from_utf8(bytes).map_err(|_| "license file is not valid UTF-8".to_owned())
+}
+
 /// User-facing updater. Periodic checks only fetch and authenticate feed metadata. Package
 /// contents remain inert through staging and review; activation is a separate user command.
 #[derive(Clone)]
@@ -573,9 +601,40 @@ impl PluginUpdateService {
         Ok(pending.review.clone())
     }
 
+    /// Reads a declared license or notice from the inert, validated import staging directory.
+    /// The frontend supplies only the exact manifest path; arbitrary filesystem paths are denied.
+    pub async fn import_license_text(&self, token: &str, file: &str) -> Result<String, String> {
+        let imports = self.imports.lock().await;
+        let pending = imports
+            .get(token)
+            .ok_or_else(|| "plugin import review expired".to_owned())?;
+        if pending.created_at.elapsed() >= std::time::Duration::from_secs(15 * 60) {
+            return Err("plugin import review expired".into());
+        }
+        if !pending.review.license_files.iter().any(|path| path == file)
+            && !pending
+                .review
+                .license_notices
+                .iter()
+                .any(|path| path == file)
+        {
+            return Err("file is not a declared license or notice".into());
+        }
+        let package_path = pending.package_path.clone();
+        let file = file.to_owned();
+        drop(imports);
+        tokio::task::spawn_blocking(move || read_inert_license(&package_path, &file))
+            .await
+            .map_err(|_| "license viewer worker failed".to_owned())?
+    }
+
     /// Imports a reviewed, compatible package as the selected version but leaves account
     /// activation disabled. No process is registered or executed by this operation.
-    pub async fn import_install(&self, token: &str) -> Result<String, String> {
+    pub async fn import_install(
+        &self,
+        token: &str,
+        native_code_consent: bool,
+    ) -> Result<String, String> {
         let lifecycle = self
             .lifecycle
             .read()
@@ -598,6 +657,9 @@ impl PluginUpdateService {
         }
         if pending.review.trust != "trusted" {
             return Err("confirm the publisher fingerprint before importing".into());
+        }
+        if !pending.review.native_access.is_empty() && !native_code_consent {
+            return Err("explicit native-code consent is required for this package".into());
         }
         let registry = self.registry.clone();
         let plugin_lookup = pending.review.plugin_id.clone();
@@ -1833,6 +1895,27 @@ mod tests {
     use ring::signature::KeyPair;
     use std::{collections::BTreeMap, io::Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn offline_license_reader_is_bounded_utf8_and_package_relative() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("licenses")).unwrap();
+        fs::write(temp.path().join("licenses/LICENSE"), "MIT notice").unwrap();
+        assert_eq!(
+            read_inert_license(temp.path(), "licenses/LICENSE").unwrap(),
+            "MIT notice"
+        );
+        assert!(read_inert_license(temp.path(), "../outside").is_err());
+        assert!(read_inert_license(temp.path(), "licenses/missing").is_err());
+        fs::write(temp.path().join("licenses/binary"), [0xff, 0xfe]).unwrap();
+        assert!(read_inert_license(temp.path(), "licenses/binary").is_err());
+        fs::write(
+            temp.path().join("licenses/large"),
+            vec![b'x'; 256 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(read_inert_license(temp.path(), "licenses/large").is_err());
+    }
 
     fn signed_package(root: &Path, version: &str, key: &ring::signature::Ed25519KeyPair) {
         signed_package_with_permissions(root, version, key, vec![]);

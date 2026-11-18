@@ -43,37 +43,45 @@ Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
 ## Required Cargo target location
 
-Always use the configured external `CARGO_TARGET_DIR`. In this Linux workspace
-the selected directory is **`/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes`**. Never compile into
-Cargo's default repository `target/`, `/home`, or a target inside the user's
-home directory. Do not substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem
-or a target on the root filesystem. The selected target is on the persistent
-`/data/DADOS_LINUX` mount. If it is unavailable, stop and report the problem;
-do not invent another path or silently choose a fallback.
+All project worktrees on this machine share the external Cargo target
+**`/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`**. It is outside the worktrees, so Cargo can reuse
+dependency
+artifacts when the Rust toolchain, target, features, flags and dependency graph
+match. Reuse is partial: workspace crates and artifacts with different
+fingerprints are rebuilt.
 
-Set the target before any Cargo build, check, test, Clippy, cross-compilation,
-or development/package launcher, and verify the effective location:
+This machine has limited CPU and memory. Run builds, checks, tests, Clippy and
+packaging **sequentially** across worktrees. Do not start concurrent Cargo
+builds; resource contention and the shared Cargo target lock can make the first
+build especially slow. Let one Cargo invocation finish before starting another.
+
+Always set `CARGO_TARGET_DIR` for every Cargo invocation and verify the effective
+location before compiling:
 
 ```sh
-export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes
+export CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
 
-The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes` in this workspace. All Cargo
-examples below require this setup. For separate tool calls or fresh shells,
+The command must print `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`. For separate tool calls or fresh
+shells,
 pass the variable on **each invocation**, because an earlier export is not
 inherited:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes cargo test --locked -p gamenode-app
+CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins cargo test --locked -p gamenode-app
 ```
 
+Never use Cargo's repository `target/`, `/home`, `/tmp`, `/var/tmp`, a RAM-backed
+filesystem or the root filesystem as a fallback. If the selected `/data/hdd1`
+mount or target is unavailable, stop and report the problem instead of choosing
+another path. Check launcher scripts for target overrides; a launcher that
+resets the target must be corrected before use.
+
 On native Windows, use the configured external Windows target outside the user
-profile; the Linux path above applies to Linux/WSL. Check launcher scripts for
-target overrides before running them. A launcher that forces a target inside
-the checkout must be corrected before use; it must not bypass this rule.
-Before handing back changes to this rule, reread this section and the matching
-section in `AGENTS.md`, and confirm that both retain the instruction.
+profile; the Linux path above applies to Linux/WSL. Before handing back changes
+to this rule, reread this section and the matching section in `AGENTS.md`, and
+confirm both retain the shared-target and sequential-build instructions.
 
 ## Linux (Ubuntu/Debian, native x86-64)
 
@@ -130,7 +138,7 @@ Every Cargo check in this workflow must use the external target configured in
 shell's `export` does not carry into a new tool invocation. For example:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target/third-party-plugin-custom-launch-runtimes \
+CARGO_TARGET_DIR=/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins \
   cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 

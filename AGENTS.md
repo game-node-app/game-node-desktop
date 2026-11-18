@@ -14,24 +14,28 @@
 
 ## Required Cargo target location
 
-- ALWAYS use the explicitly configured external `CARGO_TARGET_DIR` for Cargo
-  builds, checks, tests, Clippy, cross-compilation and packaging/development
-  scripts. In this Linux workspace the selected target is
-  `/data/DADOS_LINUX/geral/area_troca_rust/target`.
-- NEVER fall back to Cargo's default repository `target/` or create a build
-  target under `/home` (including this checkout and the user's home directory).
-  NEVER substitute `/tmp`, `/var/tmp`, a RAM-backed filesystem, or a target on
-  the root filesystem. The selected path is on the persistent
-  `/data/DADOS_LINUX` mount. Do not invent another target: if this location is
-  unavailable, stop and report the problem instead of choosing a fallback.
-- Pass `CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target` on each tool/shell invocation;
-  an `export` in an earlier tool call does not persist into a new shell. Verify
-  Cargo's effective `target_directory` with `cargo metadata` before compiling.
-  Check launch/package scripts for overrides; a script that resets the target to
-  the checkout is not an exception to this rule.
+- ALWAYS use the shared external `CARGO_TARGET_DIR` for Cargo builds, checks,
+  tests, Clippy, cross-compilation and packaging/development scripts. On this
+  machine all four project worktrees use the same target:
+  `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins`.
+- This target is outside every worktree so Cargo can reuse compatible dependency
+  artifacts across them. Reuse is partial: Rust version, target, features, flags,
+  dependency graph and Cargo fingerprints must match; workspace crates or
+  differing configurations may be rebuilt.
+- This machine has limited CPU and memory. Run Cargo builds **sequentially**, not
+  concurrently across worktrees. Concurrent Cargo invocations can contend for
+  resources and the target lock, making all builds much slower.
+- NEVER fall back to Cargo's repository `target/`, a target under `/home`,
+  `/tmp`, `/var/tmp`, a RAM-backed filesystem or the root filesystem. If the
+  selected `/data/hdd1` mount or target is unavailable, stop and report it; do
+  not choose another target.
+- Pass `CARGO_TARGET_DIR` set to `/data/hdd1/arquivos/t3/cargo-targets/third-party-plugins` on each Cargo invocation; an
+  earlier shell's export does not persist into a new invocation. Verify Cargo's effective
+  `target_directory` with `cargo metadata` before compiling. Check launch/package
+  scripts for overrides; a script that resets the target is not an exception.
 - Before finishing work on these instructions, reread this section and
   [the development guide](docs/development.md#required-cargo-target-location),
-  and verify that both still state the external-target requirement.
+  and verify both describe the shared external target and sequential-build rule.
 
 ## Confirming and persisting specification decisions
 

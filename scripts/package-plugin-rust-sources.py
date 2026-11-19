@@ -18,7 +18,6 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_TARGET = Path("/data/DADOS_LINUX/geral/area_troca_rust/target")
 PACKAGES = {
     "gamenode-plugin-protocol": "crates/plugin-protocol",
     "gamenode-plugin-sdk": "crates/plugin-sdk",
@@ -290,8 +289,10 @@ def main() -> int:
     if not configured_target:
         parser.error("CARGO_TARGET_DIR must be set explicitly")
     target_dir = Path(configured_target).resolve()
-    if target_dir != EXPECTED_TARGET:
-        parser.error(f"CARGO_TARGET_DIR must be {EXPECTED_TARGET}, got {target_dir}")
+    if not Path(configured_target).is_absolute():
+        parser.error(f"CARGO_TARGET_DIR must be an absolute path, got {configured_target}")
+    if target_dir == ROOT or ROOT in target_dir.parents:
+        parser.error(f"CARGO_TARGET_DIR must be outside the repository, got {target_dir}")
 
     with (ROOT / "Cargo.toml").open("rb") as stream:
         workspace = tomllib.load(stream)

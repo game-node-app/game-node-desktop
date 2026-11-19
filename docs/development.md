@@ -70,45 +70,50 @@ See [GitHub's skip instructions](https://docs.github.com/en/actions/how-tos/mana
 
 ## Required Cargo target location
 
-All project worktrees on this Linux workstation share the external Cargo target
-**`/data/DADOS_LINUX/geral/area_troca_rust/target`**. It is outside the worktrees
-on the persistent `/data/DADOS_LINUX` mount, so Cargo can reuse dependency
-artifacts when the Rust toolchain, target, features, flags and dependency graph
-match. Reuse is partial: workspace crates and artifacts with different
-fingerprints are rebuilt.
+Always build with an external `CARGO_TARGET_DIR`, never the repository's own
+`target/`. On this Linux workstation each worktree has its own target on the
+persistent `/data/DADOS_LINUX` mount, under
+`/data/DADOS_LINUX/geral/area_troca_rust/`: **`target`** for the integration
+checkout and **`target-<worktree-directory-name>`** for every other worktree.
 
-Run builds, checks, tests, Clippy and packaging **sequentially** across worktrees.
-Do not start concurrent Cargo builds; resource contention and the shared Cargo
-target lock can make builds slower. Let one Cargo invocation finish before
-starting another.
+Targets are not shared between worktrees on this workstation, so builds in
+different worktrees may run concurrently. Workspace crates hash independently of
+the checkout path and Cargo judges freshness by source modification time; a
+shared target can therefore reuse another worktree's stale artifacts and report
+a wrong compile error or test result.
 
-Always set `CARGO_TARGET_DIR` for every Cargo invocation and verify the effective
+A single shared target with sequential builds is a convenience for constrained
+machines such as the Raspberry Pi, where disk and CPU are scarce. On such a
+machine point every worktree at the same directory and let one Cargo invocation
+finish before starting another. It is not required here.
+
+Set `CARGO_TARGET_DIR` for every Cargo invocation and verify the effective
 location before compiling:
 
 ```sh
-export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target
+export CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD")
 cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
 ```
 
-The command must print `/data/DADOS_LINUX/geral/area_troca_rust/target`. For separate tool calls or fresh
-shells,
-pass the variable on **each invocation**, because an earlier export is not
-inherited:
+The command must print the directory you selected. For separate tool calls or
+fresh shells, pass the variable on **each invocation**, because an earlier
+export is not inherited:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target cargo test --locked -p gamenode-app
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") cargo test --locked -p gamenode-app
 ```
 
-Never use Cargo's repository `target/`, `/home`, `/tmp`, `/var/tmp`, a RAM-backed
-filesystem or the root filesystem as a fallback. If the selected `/data/DADOS_LINUX`
-mount or target is unavailable, stop and report the problem instead of choosing
-another path. Check launcher scripts for target overrides; a launcher that
-resets the target must be corrected before use.
+Never use `/tmp`, `/var/tmp`, a RAM-backed filesystem or the root filesystem as a
+fallback, and keep large targets off `/home` on this workstation. If the
+selected `/data/DADOS_LINUX` mount or target is unavailable, stop and report the
+problem instead of choosing another path. Check launcher scripts for target
+overrides; a launcher that resets the target must be corrected before use.
 
 On native Windows, use the configured external Windows target outside the user
-profile; the Linux path above applies to Linux/WSL. Before handing back changes
+profile; the Linux paths above apply to Linux/WSL. Before handing back changes
 to this rule, reread this section and the matching section in `AGENTS.md`, and
-confirm both retain the shared-target and sequential-build instructions.
+confirm both describe the per-worktree target, the shared-target option for
+constrained machines and the prohibited fallback locations.
 
 ## Linux (Ubuntu/Debian, native x86-64)
 
@@ -165,7 +170,7 @@ Every Cargo check in this workflow must use the external target configured in
 shell's `export` does not carry into a new tool invocation. For example:
 
 ```sh
-CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target \
+CARGO_TARGET_DIR=/data/DADOS_LINUX/geral/area_troca_rust/target-$(basename "$PWD") \
   cargo test --locked -p gamenode-app custom_launch_without_its_own_grant
 ```
 

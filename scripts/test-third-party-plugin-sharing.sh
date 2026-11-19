@@ -4,7 +4,9 @@ set -Eeuo pipefail
 # Export this worktree's tracked changes as a compact patch, then apply that patch
 # to an existing checkout on another machine and run only the related Rust tests.
 readonly EXPECTED_BASE="903e9972f81bcad6df01eba5a7efdaa1a5c06ff0"
-readonly CARGO_TARGET="/data/DADOS_LINUX/geral/area_troca_rust/target"
+# Defaults to the shared target used on the machine this script targets (a constrained
+# host such as the Raspberry Pi); export CARGO_TARGET_DIR to use another external directory.
+readonly CARGO_TARGET="${CARGO_TARGET_DIR:-/data/DADOS_LINUX/geral/area_troca_rust/target}"
 readonly CARGO_MOUNT="/data/DADOS_LINUX"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"

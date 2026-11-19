@@ -24,30 +24,33 @@
 
 ## Required Cargo target location
 
-- ALWAYS use the shared external `CARGO_TARGET_DIR` for Cargo builds, checks,
-  tests, Clippy, cross-compilation and packaging/development scripts. On this
-  Linux workstation all project worktrees use the same target:
-  `/data/DADOS_LINUX/geral/area_troca_rust/target`.
-- This target is outside every worktree on the persistent `/data/DADOS_LINUX`
-  mount, so Cargo can reuse compatible dependency artifacts across them. Reuse
-  is partial: Rust version, target, features, flags, dependency graph and Cargo
-  fingerprints must match; workspace crates or differing configurations may be
-  rebuilt.
-- Run Cargo builds **sequentially**, not concurrently across worktrees. Concurrent
-  Cargo invocations can contend for resources and the shared target lock, making
-  all builds much slower.
-- NEVER fall back to Cargo's repository `target/`, a target under `/home`,
-  `/tmp`, `/var/tmp`, a RAM-backed filesystem or the root filesystem. If the
-  selected `/data/DADOS_LINUX` mount or target is unavailable, stop and report it; do
-  not choose another target.
-- Pass `CARGO_TARGET_DIR` set to `/data/DADOS_LINUX/geral/area_troca_rust/target` on each Cargo invocation; an
-  earlier shell's export does not persist into a new invocation. Verify Cargo's effective
+- ALWAYS use an external `CARGO_TARGET_DIR` for Cargo builds, checks, tests,
+  Clippy, cross-compilation and packaging/development scripts; never the
+  repository's own `target/`. On this Linux workstation each worktree has its
+  own target under `/data/DADOS_LINUX/geral/area_troca_rust/`: `target` for the
+  integration checkout and `target-<worktree-directory-name>` for every other
+  worktree.
+- Targets are not shared between worktrees here, and builds in different
+  worktrees may run concurrently. Workspace crates hash independently of the
+  checkout path and Cargo judges freshness by source modification time, so a
+  shared target can reuse another worktree's stale artifacts and report wrong
+  results.
+- A single shared target (and sequential builds) is a convenience for
+  constrained machines such as the Raspberry Pi, where disk and CPU are scarce.
+  Use it there by pointing every worktree at one directory; it is not required
+  on this workstation.
+- NEVER fall back to a target under `/tmp`, `/var/tmp`, a RAM-backed filesystem
+  or the root filesystem, and keep large targets off `/home` on this workstation
+  (it is nearly full). If the selected `/data/DADOS_LINUX` mount or target is
+  unavailable, stop and report it; do not choose another target.
+- Pass `CARGO_TARGET_DIR` on each Cargo invocation; an earlier shell's export
+  does not persist into a new invocation. Verify Cargo's effective
   `target_directory` with `cargo metadata` before compiling. Check launch/package
   scripts for overrides; a script that resets the target is not an exception.
 - Before finishing work on these instructions, reread this section and
   [the development guide](docs/development.md#required-cargo-target-location),
-  and verify both specify `/data/DADOS_LINUX/geral/area_troca_rust/target` and
-  describe the sequential-build rule.
+  and verify both describe the per-worktree target, the shared-target option for
+  constrained machines and the prohibited fallback locations.
 
 ## Confirming and persisting specification decisions
 

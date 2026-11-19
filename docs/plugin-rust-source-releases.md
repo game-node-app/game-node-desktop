@@ -14,19 +14,18 @@ registry metadata. Have registry access for packaging and fetching dependencies.
 
 On the Linux development workstation, verify the external mount and target
 before packaging. From the repository root, use a fresh output directory to
-keep `SHA256SUMS` scoped to this release. Hold the shared Cargo lock for the
-whole packager invocation so its Cargo commands run sequentially with other
-worktrees.
+keep `SHA256SUMS` scoped to this release. The packager requires an absolute
+`CARGO_TARGET_DIR` outside the repository; use the worktree's own target as in
+[the development guide](development.md#required-cargo-target-location).
 
 ```sh
 area=/data/DADOS_LINUX/geral/area_troca_rust
-findmnt --mountpoint /data/DADOS_LINUX &&
-  test -d "$area/target" || exit 1
-export CARGO_TARGET_DIR="$area/target"
+findmnt --mountpoint /data/DADOS_LINUX || exit 1
+export CARGO_TARGET_DIR="$area/target-$(basename "$PWD")"
+mkdir -p "$CARGO_TARGET_DIR"
 export TMPDIR
 TMPDIR=$(mktemp -d "$area/plugin-rust.XXXXXXXX") || exit 1
-flock "$area/gamenode-agent-cargo.lock" \
-  python3 scripts/package-plugin-rust-sources.py --output "$TMPDIR/artifacts"
+python3 scripts/package-plugin-rust-sources.py --output "$TMPDIR/artifacts"
 ```
 
 The script requires clean public crate sources by default, checks Cargo's
@@ -87,18 +86,15 @@ publishing.
 
 Extract the matching `.tar.gz` into a fresh directory outside the repository.
 Run each command from the root of its respective bundle so rustup selects the
-pinned toolchain. On the Linux development workstation, use the external target
-and shared lock:
+pinned toolchain. On the Linux development workstation, use an external target
+outside the extracted bundle:
 
 ```sh
 area=/data/DADOS_LINUX/geral/area_troca_rust
-export CARGO_TARGET_DIR="$area/target"
-flock "$area/gamenode-agent-cargo.lock" \
-  cargo metadata --locked --no-deps --format-version 1
-flock "$area/gamenode-agent-cargo.lock" \
-  cargo test --locked -p gamenode-plugin-protocol
-flock "$area/gamenode-agent-cargo.lock" \
-  cargo test --locked -p gamenode-plugin-sdk --lib --tests
+export CARGO_TARGET_DIR="$area/target-plugin-rust-bundle"
+cargo metadata --locked --no-deps --format-version 1
+cargo test --locked -p gamenode-plugin-protocol
+cargo test --locked -p gamenode-plugin-sdk --lib --tests
 ```
 
 Run the metadata command in each bundle before testing. Confirm that

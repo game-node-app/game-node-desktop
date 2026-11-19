@@ -42,6 +42,8 @@ Change: [`third-party-plugin-data-and-persistence`](../third-party-plugin-data-a
 
 Source tasks: `9.4`, `12.1–12.7`, `13.2`, `15.1–15.4`, `16.1–16.5`, `17.1–17.4`, `18.6–18.7`, `19.3–19.4`. This adds consented producer/consumer datasets, diagnostics and gameplay telemetry, owner-scoped persistence, quotas, retention, cleanup and downgrade/re-trust data policy. It depends on MVP identity and grant fencing; backup coordination 13.2 waits for folder approvals in Follow-up A, and the shared-runtime example 17.3 waits for runtime identity in Follow-up B. Most data-plane work can proceed in parallel with Follow-ups A and B after the MVP.
 
+See [the worktree review](parallel-worktree-review.md) for current status and the next parallel batch.
+
 ## Dependency diagram
 
 ```mermaid

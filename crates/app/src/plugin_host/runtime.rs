@@ -1277,6 +1277,7 @@ impl HostedProviders {
                 version: Some(installed.version.clone()),
                 enabled: None,
                 runtime_available: None,
+                compatibility_details: Some(report.compatibility_review()),
             };
             let services = Arc::new(ProviderServices::new_external(
                 ProviderContext {

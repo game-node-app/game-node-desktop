@@ -1314,6 +1314,71 @@ export interface AvailablePluginRollback {
   versions: string[];
 }
 
+export type PluginCompatibilityState = 'compatible' | 'incompatible' | 'indeterminate';
+
+export type PluginCompatibilityReason =
+  | 'operatingSystemMismatch' | 'architectureMismatch' | 'abiMismatch'
+  | 'unknownOperatingSystem' | 'unknownArchitecture' | 'unknownAbi'
+  | 'emulationRejected' | 'emulationUnknown'
+  | 'windowsProductMismatch' | 'windowsVersionTooOld' | 'windowsVersionTooNew'
+  | 'windowsBuildTooOld' | 'windowsBuildTooNew'
+  | 'windowsProductUnknown' | 'windowsVersionUnknown' | 'windowsBuildUnknown'
+  | 'linuxLibcMismatch' | 'linuxLibcVersionTooOld' | 'linuxLibcUnknown'
+  | 'linuxDistributionMismatch' | 'linuxDistributionVersionMismatch' | 'linuxDistributionUnknown'
+  | 'noAdditionalRequirements' | 'requirementsMalformed' | 'requirementsSatisfied';
+
+/** One signed target. The nested manifest declarations keep their manifest (snake_case) names. */
+export interface PluginTargetDeclaration {
+  os: string;
+  arch: string;
+  abi: string;
+  entrypoint: string;
+  requires?: {
+    windows?: {
+      product?: 'client' | 'server' | null;
+      min_version?: string | null;
+      max_version?: string | null;
+      min_build?: number | null;
+      max_build?: number | null;
+    } | null;
+    linux?: {
+      libc?: { family: 'glibc' | 'musl'; min_version: string } | null;
+      distributions?: Array<{ id: string; versions: string[] }> | null;
+    } | null;
+  } | null;
+  /** Author-tested environments: informational only, never part of the verdict. */
+  tested_on: Array<{
+    product?: string | null;
+    release?: string | null;
+    distribution?: string | null;
+    version?: string | null;
+  }>;
+}
+
+export interface PluginTargetAssessment {
+  target: PluginTargetDeclaration;
+  verdict: {
+    state: PluginCompatibilityState;
+    reasons: PluginCompatibilityReason[];
+    unknownFacts: string[];
+  };
+}
+
+/** Effective execution facts and the per-target verdicts the host derived for a signed package. */
+export interface PluginCompatibilityDetails {
+  state: PluginCompatibilityState;
+  ambiguous: boolean;
+  os?: string | null;
+  release?: string | null;
+  product?: 'client' | 'server' | 'unknown' | null;
+  build?: number | null;
+  architecture?: string | null;
+  abi?: string | null;
+  libc?: { family: 'gnu' | 'musl'; version?: string | null } | { family: 'unknown' } | null;
+  emulation: 'native' | 'emulated' | 'unknown';
+  targets: PluginTargetAssessment[];
+}
+
 export interface PluginUpdateReview {
   pluginId: string;
   installedVersion: string;
@@ -1351,6 +1416,7 @@ export interface PluginUpdateReview {
   preservesPriorData: boolean;
   isDowngrade: boolean;
   requiresManualApproval: boolean;
+  compatibilityDetails?: PluginCompatibilityDetails;
 }
 
 export interface PluginInfo {
@@ -1368,6 +1434,7 @@ export interface PluginInfo {
   runtimeAvailable?: boolean;
   /** The pinned publisher of a third-party plugin; absent for the bundled ones. */
   publisherFingerprint?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
 }
 
 export interface PluginImportReview {
@@ -1393,6 +1460,7 @@ export interface PluginImportReview {
   nativeAccess: string[];
   compatibility: 'compatible' | 'incompatible' | 'unknown';
   compatibilityReason?: string;
+  compatibilityDetails?: PluginCompatibilityDetails;
 }
 
 /** Host-owned effective permission state for the currently active account profile. */

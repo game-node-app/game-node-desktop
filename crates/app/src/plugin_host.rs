@@ -73,6 +73,8 @@ pub struct PluginInfo {
     /// use it, with `plugin_id`, to find what the user allowed this plugin to start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publisher_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_details: Option<managed_packages::PackageCompatibilityReview>,
 }
 
 /// Resolving the current executable and checking sibling files touches disk;
@@ -117,6 +119,7 @@ fn inventory_at(
                 enabled: None,
                 runtime_available: None,
                 publisher_fingerprint: None,
+                compatibility_details: None,
             }
         })
         .collect()

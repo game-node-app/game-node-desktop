@@ -367,8 +367,8 @@ describe('PluginInventory', () => {
     expect(screen.getByText('D-Bus do sistema')).toBeInTheDocument();
   });
 
-  it('checks updates, presents the signed manifest diff, and requires explicit approval', async () => {
-    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
+  it.each([false, true])('reviews explicit updates and reports the active version (activation fails: %s)', async (fails) => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([{ ...plugin, version: '1.0.0' }]);
     const setPeriodic = vi.spyOn(commands, 'pluginUpdateSetPeriodicChecks').mockResolvedValue({ periodicChecks: true });
     vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
     vi.spyOn(commands, 'pluginUpdateCheck').mockResolvedValue([{
@@ -390,7 +390,10 @@ describe('PluginInventory', () => {
       publisherFingerprint: '', changedDataSchemas: [], preservesPriorData: true, isDowngrade: false,
       requiresManualApproval: true,
     });
-    const approve = vi.spyOn(commands, 'pluginUpdateApprove').mockResolvedValue('2.0.0');
+    let finish!: () => void;
+    const approve = vi.spyOn(commands, 'pluginUpdateApprove').mockReturnValue(new Promise((resolve, reject) => {
+      finish = () => fails ? reject(new Error('candidate did not become ready')) : resolve('2.0.0');
+    }));
     renderInventory();
 
     const periodicCheckbox = await screen.findByRole('checkbox', { name: /Check periodically/ });
@@ -404,6 +407,16 @@ describe('PluginInventory', () => {
     expect(screen.getByText(/New permissions and wider scopes stay denied/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Approve update' }));
     await waitFor(() => expect(approve).toHaveBeenCalledWith(plugin.pluginId, '2.0.0'));
+    expect(screen.getByRole('button', { name: 'Approve update' })).toBeDisabled();
+    expect(periodicCheckbox).toBeEnabled();
+    finish();
+    if (fails) {
+      expect(await screen.findByText('Active version: 1.0.0')).toBeInTheDocument();
+      expect(screen.getByText('candidate did not become ready')).toBeInTheDocument();
+    } else {
+      expect(await screen.findByText('Update complete. Active version: 2.0.0')).toBeInTheDocument();
+    }
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve update' })).not.toBeInTheDocument());
   });
 
   it('keeps the saved opt-in authoritative when persistence fails', async () => {
@@ -453,6 +466,33 @@ describe('PluginInventory', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Install without starting' }));
     await waitFor(() => expect(install).toHaveBeenCalledWith('review-token', false));
     expect(importReview).toHaveBeenCalledWith('/packages/community.zip');
+  });
+
+  it('blocks installing a package whose only target mismatches the libc family', async () => {
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([]);
+    vi.spyOn(commands, 'pluginUpdatePreferences').mockResolvedValue({ periodicChecks: false });
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);
+    const target = {
+      os: 'linux', arch: 'x86_64', abi: 'gnu', entrypoint: 'bin/plugin',
+      requires: { linux: { libc: { family: 'glibc' as const, min_version: '2.31' } } }, tested_on: [],
+    };
+    vi.spyOn(commands, 'pluginImportReview').mockResolvedValue({
+      token: 'musl-review', pluginId: 'org.example.musl', name: 'Musl', version: '1.0.0',
+      publisherKeyId: 'key-musl', publisherFingerprint: 'SHA256:musl', trust: 'trusted',
+      license: 'MIT', licenseFiles: [], licenseNotices: [], permissionIds: [], requestedPermissions: [],
+      nativeAccess: [], compatibility: 'incompatible', compatibilityReason: 'no compatible target',
+      compatibilityDetails: {
+        state: 'incompatible', ambiguous: false, os: 'alpine', release: '3.19', architecture: 'x86_64', abi: 'musl',
+        libc: { family: 'musl', version: '1.2.4' }, emulation: 'native',
+        targets: [{ target, verdict: { state: 'incompatible', reasons: ['linuxLibcMismatch'], unknownFacts: [] } }],
+      },
+    });
+    renderInventory('en', 'account-musl');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Path to signed ZIP package' }), { target: { value: '/packages/musl.zip' } });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Path to signed ZIP package' }), '{Enter}');
+    const review = await screen.findByRole('article', { name: 'Review plugin package' });
+    expect(within(review).getByRole('region', { name: 'Compatibility with this system' })).toHaveTextContent('The C library family does not match');
+    expect(screen.getByRole('button', { name: 'Install without starting' })).toBeDisabled();
   });
 
   it('requires separate explicit consent for declared native access', async () => {

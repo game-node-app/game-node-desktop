@@ -9,6 +9,7 @@ import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
 import { RememberedConfirmations } from './RememberedConfirmations';
 import { PluginFolderApprovals } from './PluginFolderApprovals';
+import { PluginCompatibilityReview } from './PluginCompatibilityReview';
 import { selectPluginConfiguration } from '../../api/pluginSettings';
 import { PluginConfigurationSurface } from './PluginConfigurationSurface';
 import {
@@ -45,6 +46,11 @@ export const PluginInventory: React.FC = () => {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [updateError, setUpdateError] = useState(false);
+  const [updateOperation, setUpdateOperation] = useState<'check' | 'review' | 'trust' | 'approve' | 'decline' | null>(null);
+  const [activationResult, setActivationResult] = useState<
+    { version: string; rollback: boolean; failed: false } |
+    { version: string | undefined; reason: string; failed: true } | null
+  >(null);
   const [managementError, setManagementError] = useState(false);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [playtimeError, setPlaytimeError] = useState(false);
@@ -176,7 +182,8 @@ export const PluginInventory: React.FC = () => {
   };
 
   const checkUpdates = async () => {
-    setBusy(true);
+    setUpdateOperation('check');
+    setActivationResult(null);
     setUpdateError(false);
     const eventRevisionAtStart = updateEventRevision.current;
     try {
@@ -186,11 +193,12 @@ export const PluginInventory: React.FC = () => {
       }
     }
     catch { setUpdateError(true); }
-    finally { setBusy(false); }
+    finally { setUpdateOperation(null); }
   };
 
   const reviewUpdate = async (pluginId: string, version: string) => {
-    setBusy(true);
+    setUpdateOperation('review');
+    setActivationResult(null);
     setUpdateError(false);
     setReview(null);
     setReviewIsRollback(false);
@@ -199,11 +207,12 @@ export const PluginInventory: React.FC = () => {
     setRetrustFingerprint('');
     try { setReview(await commands.pluginUpdateReview(pluginId, version)); }
     catch { setUpdateError(true); }
-    finally { setBusy(false); }
+    finally { setUpdateOperation(null); }
   };
 
   const reviewRollback = async (pluginId: string, version: string) => {
-    setBusy(true);
+    setUpdateOperation('review');
+    setActivationResult(null);
     setUpdateError(false);
     setReview(null);
     setReviewIsRollback(true);
@@ -212,46 +221,53 @@ export const PluginInventory: React.FC = () => {
     setRetrustFingerprint('');
     try { setReview(await commands.pluginRollbackReview(pluginId, version)); }
     catch { setUpdateError(true); }
-    finally { setBusy(false); }
+    finally { setUpdateOperation(null); }
   };
 
   const retrustPublisher = async () => {
     if (!review || retrustFingerprint !== review.publisherFingerprint) return;
-    setBusy(true);
+    setUpdateOperation('trust');
+    setActivationResult(null);
     setUpdateError(false);
     try {
       await commands.pluginUpdateRetrustPublisher(review.pluginId, review.candidateVersion, retrustFingerprint);
       setPublisherRetrusted(true);
     } catch { setUpdateError(true); }
-    finally { setBusy(false); }
+    finally { setUpdateOperation(null); }
   };
 
   const approveUpdate = async () => {
     if (!review) return;
-    setBusy(true);
+    setUpdateOperation('approve');
+    setActivationResult(null);
     setUpdateError(false);
     try {
-      if (reviewIsRollback) {
-        await commands.pluginRollbackApprove(review.pluginId, review.candidateVersion, rollbackConfirmed);
-      } else {
-        await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
-      }
+      const version = reviewIsRollback
+        ? await commands.pluginRollbackApprove(review.pluginId, review.candidateVersion, rollbackConfirmed)
+        : await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
+      setActivationResult({ version, rollback: reviewIsRollback, failed: false });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      const active = await queryClient.fetchQuery({
+        queryKey: pluginQueryKeys.inventory,
+        queryFn: commands.pluginInventory,
+        staleTime: 0,
+      }).catch(() => undefined);
+      setActivationResult({ failed: true, reason, version: active?.find((plugin) => plugin.pluginId === review.pluginId)?.version });
+    } finally {
       setReview(null);
       setReviewIsRollback(false);
       setRollbackConfirmed(false);
       setPublisherRetrusted(false);
-      await refetchRollbacks();
-      await refreshPluginHostState(review.pluginId);
-    } catch {
-      setUpdateError(true);
-      await refreshPluginHostState(review.pluginId);
+      await Promise.all([refetchRollbacks(), refreshPluginHostState(review.pluginId)]);
+      setUpdateOperation(null);
     }
-    finally { setBusy(false); }
   };
 
   const declineUpdate = async () => {
     if (!review) return;
-    setBusy(true);
+    setUpdateOperation('decline');
+    setActivationResult(null);
     setUpdateError(false);
     try {
       await commands.pluginUpdateDecline(review.pluginId);
@@ -259,7 +275,7 @@ export const PluginInventory: React.FC = () => {
     } catch {
       setUpdateError(true);
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.availableUpdates });
-    } finally { setBusy(false); }
+    } finally { setUpdateOperation(null); }
   };
 
   const reviewImport = async () => {
@@ -296,7 +312,7 @@ export const PluginInventory: React.FC = () => {
       return { permission_id: request.permission_id, scope, granted: scopeChoices[key] ?? persisted };
     }));
     setBusy(true);
-    setUpdateError(false);
+    setManagementError(false);
     try {
       const saved = await commands.pluginPermissionsReplace(snapshot.pluginId, profileId, snapshot.grantRevision, decisions);
       setScopeChoices({});
@@ -425,6 +441,7 @@ export const PluginInventory: React.FC = () => {
             </details>
           ))}
           <p className={settingsRowDescription}>{t('plugins.import.compatibility')}: {t(`plugins.import.${importReview.compatibility}`)} {importReview.compatibilityReason ?? ''}</p>
+          {importReview.compatibilityDetails && <PluginCompatibilityReview details={importReview.compatibilityDetails} />}
           {importReview.trust !== 'trusted' ? <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={busy || profileId === null || importReview.compatibility !== 'compatible'} onClick={() => {
             setBusy(true);
             setManagementError(false);
@@ -457,15 +474,15 @@ export const PluginInventory: React.FC = () => {
           />
           <span>{t('plugins.updates.optIn')}</span>
         </label>
-        <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void checkUpdates()}>
-          {busy ? t('plugins.updates.checking') : t('plugins.updates.checkNow')}
+        <button type="button" className="mt-compact rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null} onClick={() => void checkUpdates()}>
+          {updateOperation === 'check' ? t('plugins.updates.checking') : t('plugins.updates.checkNow')}
         </button>
         {updates.map((update) => (
           <div key={update.pluginId} className="mt-compact border-t border-border-subtle pt-compact">
             <p className={settingsRowTitle}>{update.name}: {update.installedVersion}</p>
             <div className="flex flex-wrap gap-1">
               {update.versions.map((version) => (
-                <button key={version} type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void reviewUpdate(update.pluginId, version)}>
+                <button key={version} type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null} onClick={() => void reviewUpdate(update.pluginId, version)}>
                   {t('plugins.updates.reviewVersion', { version })}
                 </button>
               ))}
@@ -478,17 +495,32 @@ export const PluginInventory: React.FC = () => {
             <p className={settingsRowDescription}>{t('plugins.updates.rollbackDescription')}</p>
             <div className="flex flex-wrap gap-1">
               {pkg.versions.map((version) => (
-                <button key={version} type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void reviewRollback(pkg.pluginId, version)}>
+                <button key={version} type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null} onClick={() => void reviewRollback(pkg.pluginId, version)}>
                   {t('plugins.updates.reviewRollback', { version })}
                 </button>
               ))}
             </div>
           </div>
         ))}
-        {(updateError || managementError) && <p className="mt-compact text-sm text-warning" role="alert">{t(managementError ? 'plugins.management.failed' : 'plugins.updates.failed')}</p>}
+        {updateOperation && updateOperation !== 'check' && (
+          <p role="status" className={settingsRowDescription}>{t('plugins.updates.working')}</p>
+        )}
+        {updateError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.updates.failed')}</p>}
+        {activationResult && (activationResult.failed ? (
+          <div role="alert" className="mt-compact text-sm text-warning">
+            <p>{t('plugins.updates.activationFailed')}</p>
+            <p>{activationResult.version
+              ? t('plugins.updates.activeVersion', { version: activationResult.version })
+              : t('plugins.updates.activeVersionUnavailable')}</p>
+            {activationResult.reason && <p>{activationResult.reason}</p>}
+          </div>
+        ) : (
+          <p role="status" className={settingsRowDescription}>{t(activationResult.rollback ? 'plugins.updates.rollbackComplete' : 'plugins.updates.updateComplete', { version: activationResult.version })}</p>
+        ))}
         {review && (
           <article className="mt-compact border-t border-border-subtle pt-compact" aria-label={reviewIsRollback ? t('plugins.updates.rollbackReviewTitle') : t('plugins.updates.reviewTitle')}>
             <h3 className={settingsRowTitle}>{reviewIsRollback ? t('plugins.updates.rollbackReviewTitle') : t('plugins.updates.reviewTitle')}: {review.installedVersion} → {review.candidateVersion}</h3>
+            {review.compatibilityDetails && <PluginCompatibilityReview details={review.compatibilityDetails} />}
             {reviewIsRollback && (
               <label className="my-compact flex items-start gap-compact text-sm">
                 <input type="checkbox" checked={rollbackConfirmed} onChange={(event) => setRollbackConfirmed(event.currentTarget.checked)} />
@@ -510,7 +542,7 @@ export const PluginInventory: React.FC = () => {
                 {!publisherRetrusted ? (
                   <div className="mt-compact flex flex-wrap items-center gap-compact">
                     <input aria-label={t('plugins.updates.publisherFingerprintConfirm')} className="min-w-64 rounded-sm border border-border-subtle bg-raised px-sm py-1 text-sm" value={retrustFingerprint} onChange={(event) => setRetrustFingerprint(event.currentTarget.value)} />
-                    <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy || retrustFingerprint !== review.publisherFingerprint} onClick={() => void retrustPublisher()}>{t('plugins.updates.publisherRetrust')}</button>
+                    <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null || retrustFingerprint !== review.publisherFingerprint} onClick={() => void retrustPublisher()}>{t('plugins.updates.publisherRetrust')}</button>
                   </div>
                 ) : <p className={`${settingsRowDescription} mt-compact`} role="status">{t('plugins.updates.publisherRetrusted')}</p>}
               </div>
@@ -520,12 +552,13 @@ export const PluginInventory: React.FC = () => {
             {review.changedDataSchemas.length > 0 && <p className={settingsRowDescription}>{t('plugins.updates.dataSchemaChanged')}: {review.changedDataSchemas.join(', ')}. {t('plugins.updates.versionedDataKeysRequired')}</p>}
             <p className={settingsRowDescription}>{t('plugins.updates.newPermissionsDenied')}</p>
             <div className="mt-compact flex gap-compact">
-              <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={busy} onClick={() => void declineUpdate()}>{t('plugins.updates.decline')}</button>
-              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={busy || (reviewIsRollback && !rollbackConfirmed) || (review.publisherChanged && !publisherRetrusted)} onClick={() => void approveUpdate()}>{reviewIsRollback ? t('plugins.updates.rollbackApprove') : t('plugins.updates.approve')}</button>
+              <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null} onClick={() => void declineUpdate()}>{t('plugins.updates.decline')}</button>
+              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={updateOperation !== null || (reviewIsRollback && !rollbackConfirmed) || (review.publisherChanged && !publisherRetrusted)} onClick={() => void approveUpdate()}>{reviewIsRollback ? t('plugins.updates.rollbackApprove') : t('plugins.updates.approve')}</button>
             </div>
           </article>
         )}
       </div>
+      {managementError && <p className="mt-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
       {isPending ? (
         <div className={settingsCard}>
           <p className={settingsRowDescription} role="status">{t('plugins.loading')}</p>
@@ -571,6 +604,7 @@ export const PluginInventory: React.FC = () => {
               <p className={settingsRowDescription}>{t('plugins.identifier')}: {selectedPlugin.pluginId}</p>
               <p className={settingsRowDescription}>{t('plugins.session')}: {selectedPlugin.session === 'active' ? t('plugins.sessionActive') : t('plugins.sessionStopped')}</p>
               {managed && selectedPlugin.version && <p className={settingsRowDescription}>{t('plugins.import.version')}: {selectedPlugin.version}</p>}
+              {managed && selectedPlugin.compatibilityDetails && <PluginCompatibilityReview details={selectedPlugin.compatibilityDetails} />}
               {managed && selectedPlugin.pluginKind === 'extension' && selectedPlugin.runtimeAvailable !== true && <p className={settingsRowDescription} role="status">{t('plugins.import.extensionRuntimeUnavailable')}</p>}
               {managed && selectedPlugin.pluginKind !== 'extension' && selectedPlugin.runtimeAvailable === false && <p className={settingsRowDescription} role="status">{t('plugins.import.restartRequired')}</p>}
               {managed && profileId === null && <p className={settingsRowDescription} role="status">{t('plugins.signInRequired')}</p>}

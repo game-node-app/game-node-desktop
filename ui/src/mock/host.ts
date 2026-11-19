@@ -16,7 +16,9 @@ import {
   type LibraryView,
   type EntryStatus,
   type PaletteEntry,
+  type PluginCompatibilityDetails,
   type PluginInfo,
+  type PluginUpdateReview,
   type Row,
   type SavedView,
   type SavedViewNotice,
@@ -1217,6 +1219,25 @@ export function createMockHost(options: {
     ],
   ]]);
   let periodicPluginChecks = false;
+  const mockUpdatePlugin = 'community.example.save-sync';
+  let mockPluginVersion = '1.0.0';
+  let mockRollbackVersion: string | undefined;
+  let mockUpdateReview: PluginUpdateReview | undefined;
+  const mockCompatibility: PluginCompatibilityDetails = {
+    state: 'compatible', ambiguous: false, os: 'ubuntu', release: '24.04', architecture: 'x86_64', abi: 'gnu',
+    libc: { family: 'gnu', version: '2.39' }, emulation: 'native',
+    targets: [{
+      target: {
+        os: 'linux', arch: 'x86_64', abi: 'gnu', entrypoint: 'bin/linux-x86_64-gnu/save-sync',
+        requires: { linux: { libc: { family: 'glibc', min_version: '2.31' } } },
+        tested_on: [{ distribution: 'ubuntu', version: '22.04' }],
+      },
+      verdict: { state: 'compatible', reasons: ['requirementsSatisfied'], unknownFacts: [] },
+    }],
+  };
+  const mockUpdates = () => mockPluginVersion === '1.0.0' ? [{
+    pluginId: mockUpdatePlugin, name: 'Community Save Sync', installedVersion: mockPluginVersion, versions: ['2.0.0'],
+  }] : [];
   const snapshot = createDefaultSnapshot();
   // The status bar fixture: the watched folders were checked 12 minutes ago.
   snapshot.localGames.discoveryLastCheckedAt = NOW - 12 * 60;
@@ -2959,14 +2980,50 @@ export function createMockHost(options: {
     async invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
       if (cmd === 'get_snapshot') return copy();
       if (cmd === 'plugin_update_preferences') return { periodicChecks: periodicPluginChecks };
-      if (cmd === 'plugin_update_available') return [];
+      if (cmd === 'plugin_update_available' || cmd === 'plugin_update_check') return mockUpdates();
       if (cmd === 'plugin_update_set_periodic_checks') {
         periodicPluginChecks = args.enabled === true;
         return { periodicChecks: periodicPluginChecks };
       }
-      if (cmd === 'plugin_update_check') return [];
-      if (cmd === 'plugin_update_review') return null;
-      if (cmd === 'plugin_update_approve' || cmd === 'plugin_update_decline') return undefined;
+      if (cmd === 'plugin_rollback_available') {
+        return mockRollbackVersion && mockPluginVersion === '2.0.0' ? [{
+          pluginId: mockUpdatePlugin, name: 'Community Save Sync', activeVersion: mockPluginVersion, versions: [mockRollbackVersion],
+        }] : [];
+      }
+      if (cmd === 'plugin_update_review' || cmd === 'plugin_rollback_review') {
+        const rollback = cmd === 'plugin_rollback_review';
+        const version = rollback ? mockRollbackVersion : mockUpdates()[0]?.versions[0];
+        if (!version || args.pluginId !== mockUpdatePlugin || args.version !== version) throw new Error('Package version is unavailable');
+        const playtime = { identifiesGameplay: false, identifiesPauses: false, withoutPauseDetection: 'disabled' } as const;
+        mockUpdateReview = {
+          pluginId: mockUpdatePlugin, installedVersion: mockPluginVersion, candidateVersion: version,
+          addedPermissions: rollback ? [] : ['network.fetch'], removedPermissions: rollback ? ['network.fetch'] : [],
+          changedPermissions: [], permissionChanges: [], addedNativeAccess: [], removedNativeAccess: [],
+          apiChanged: false, installedApi: '1.0.0', candidateApi: '1.0.0',
+          licenseChanged: false, installedLicense: 'MIT', candidateLicense: 'MIT',
+          installedLicenseFiles: ['LICENSE'], candidateLicenseFiles: ['LICENSE'],
+          installedLicenseNotices: [], candidateLicenseNotices: [],
+          installedPlaytime: playtime, candidatePlaytime: playtime, playtimeChanged: false,
+          publisherChanged: false, installedPublisherKeyId: 'mock-publisher', candidatePublisherKeyId: 'mock-publisher',
+          publisherFingerprint: mockPublisher, changedDataSchemas: [], preservesPriorData: true,
+          isDowngrade: rollback, requiresManualApproval: true, compatibilityDetails: mockCompatibility,
+        };
+        return mockUpdateReview;
+      }
+      if (cmd === 'plugin_update_approve' || cmd === 'plugin_rollback_approve') {
+        const rollback = cmd === 'plugin_rollback_approve';
+        const review = mockUpdateReview;
+        if (!review || args.pluginId !== review.pluginId || args.version !== review.candidateVersion
+          || review.isDowngrade !== rollback || (rollback && args.confirmed !== true)) throw new Error('Review and confirm the package first');
+        mockUpdateReview = undefined;
+        mockRollbackVersion = mockPluginVersion;
+        mockPluginVersion = review.candidateVersion;
+        return mockPluginVersion;
+      }
+      if (cmd === 'plugin_update_decline') {
+        if (args.pluginId === mockUpdateReview?.pluginId) mockUpdateReview = undefined;
+        return undefined;
+      }
       if (cmd === 'available_plugin_extensions') return [];
       if (cmd === 'start_extension_action') return undefined;
       if (cmd === 'plugin_confirmation_answer') {
@@ -3069,6 +3126,8 @@ export function createMockHost(options: {
           pluginId: 'community.example.save-sync',
           pluginKind: 'extension',
           name: 'Community Save Sync',
+          version: mockPluginVersion,
+          compatibilityDetails: mockCompatibility,
           source: 'community',
           status: 'installed',
           capabilities: ['library.read', 'files.read', 'libraries.roots.write'],
@@ -3088,7 +3147,7 @@ export function createMockHost(options: {
             session: 'stopped',
             nativeAccess: ['files', 'process', 'dbus'],
           };
-          return [steamPlugin, packageManagerPlugin];
+          return [steamPlugin, packageManagerPlugin, communityPlugin];
         }
         return [steamPlugin, epicPlugin, communityPlugin];
       }

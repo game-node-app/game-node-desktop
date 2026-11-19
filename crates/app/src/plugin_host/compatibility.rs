@@ -10,14 +10,16 @@ use super::package::{LibcFamily, Target, WindowsProduct};
 use super::package::{Manifest, ManifestError};
 use std::path::Path;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CompatibilityState {
     Compatible,
     Incompatible,
     Indeterminate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CompatibilityReason {
     OperatingSystemMismatch,
     ArchitectureMismatch,
@@ -46,7 +48,8 @@ pub enum CompatibilityReason {
     RequirementsSatisfied,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompatibilityVerdict {
     pub state: CompatibilityState,
     /// Stable machine-readable reasons; strings suitable for logs/UI belong in
@@ -56,7 +59,8 @@ pub struct CompatibilityVerdict {
     pub unknown_facts: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TargetCompatibilityAssessment {
     /// Retains all signed target declarations, including informational `tested_on` entries.
     pub target: Target,

@@ -90,6 +90,8 @@ pub struct UpdateReview {
     pub preserves_prior_data: bool,
     pub is_downgrade: bool,
     pub requires_manual_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_details: Option<super::managed_packages::PackageCompatibilityReview>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -215,6 +217,7 @@ impl UpdateReview {
                 .is_some_and(|(candidate, installed)| candidate < installed),
             changed_data_schemas,
             requires_manual_approval,
+            compatibility_details: None,
         }
     }
 }
@@ -263,6 +266,7 @@ pub struct PluginImportReview {
     pub native_access: Vec<String>,
     pub compatibility: String,
     pub compatibility_reason: Option<String>,
+    pub compatibility_details: super::managed_packages::PackageCompatibilityReview,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -455,9 +459,20 @@ impl PluginUpdateService {
             .map_err(|error| format!("staged plugin package is invalid: {error}"))?;
         super::grants::manifest_permission_requests(&report.manifest.permissions)
             .map_err(|error| format!("plugin declares unsupported permission scopes: {error}"))?;
+        let compatibility_details = report.compatibility_review();
         let (compatibility, compatibility_reason) = match report.selected_target() {
             Ok(_) => ("compatible".to_owned(), None),
-            Err(error) => ("incompatible".to_owned(), Some(error.to_string())),
+            Err(error) => (
+                if compatibility_details.state
+                    == super::compatibility::CompatibilityState::Indeterminate
+                {
+                    "unknown"
+                } else {
+                    "incompatible"
+                }
+                .to_owned(),
+                Some(error.to_string()),
+            ),
         };
         let private_dir = self.trust_dir.clone();
         let plugin_id = manifest.id.clone();
@@ -525,6 +540,7 @@ impl PluginUpdateService {
             native_access: manifest.native_access.clone(),
             compatibility,
             compatibility_reason,
+            compatibility_details,
         };
         imports.insert(
             token,
@@ -816,6 +832,7 @@ impl PluginUpdateService {
                 version: Some(package.version),
                 enabled: Some(false),
                 runtime_available: Some(report.selected_target().is_ok()),
+                compatibility_details: Some(report.compatibility_review()),
                 publisher_fingerprint: Some(super::publisher_trust::key_fingerprint(&key)),
             });
         }
@@ -1032,6 +1049,7 @@ impl PluginUpdateService {
         let candidate_manifest = report.manifest.clone();
         let review = UpdateReview::compare(&current.manifest, &candidate_manifest);
         let mut review = review;
+        review.compatibility_details = Some(report.compatibility_review());
         review.publisher_fingerprint = super::publisher_trust::key_fingerprint(&candidate_key);
         let mut pending = self.pending.lock().await;
         pending.insert(
@@ -1163,10 +1181,8 @@ impl PluginUpdateService {
         if candidate.manifest.id != plugin_id || candidate.manifest.version != version {
             return Err("rollback package identity does not match the selected version".into());
         }
-        candidate
-            .selected_target()
-            .map_err(|error| error.to_string())?;
         let mut review = UpdateReview::compare(&current.manifest, &candidate.manifest);
+        review.compatibility_details = Some(candidate.compatibility_review());
         review.publisher_fingerprint = super::publisher_trust::key_fingerprint(&candidate_key);
         if !review.is_downgrade {
             return Err("selected package is not older than the active version".into());
@@ -1236,6 +1252,16 @@ impl PluginUpdateService {
             .ok_or_else(|| "plugin is no longer installed".to_owned())?;
         if active.version != candidate.installed_version {
             return Err("the active plugin changed after review; review the update again".into());
+        }
+        if candidate
+            .review
+            .compatibility_details
+            .as_ref()
+            .is_some_and(|details| {
+                details.state != super::compatibility::CompatibilityState::Compatible
+            })
+        {
+            return Err("the reviewed package has no compatible target".into());
         }
         // New and rescaled requests never receive a grant from package activation.
         if candidate.review.publisher_changed && !candidate.confirmed_retrust {
@@ -1727,7 +1753,6 @@ impl ManagedPluginUpdater {
         {
             return Err(ManagedUpdateError::PackageIdentityMismatch);
         }
-        report.selected_target()?;
         Ok((work, report, candidate_key))
     }
 

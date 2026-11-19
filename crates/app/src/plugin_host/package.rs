@@ -90,7 +90,7 @@ pub struct PermissionRequest {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub os: String,
@@ -103,7 +103,7 @@ pub struct Target {
     pub tested_on: Vec<TestedEnvironment>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetRequirements {
     #[serde(default)]
@@ -112,14 +112,14 @@ pub struct TargetRequirements {
     pub linux: Option<LinuxRequirements>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowsProduct {
     Client,
     Server,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsRequirements {
     #[serde(default)]
@@ -134,21 +134,21 @@ pub struct WindowsRequirements {
     pub max_build: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LibcFamily {
     Glibc,
     Musl,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LibcRequirements {
     pub family: LibcFamily,
     pub min_version: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LinuxRequirements {
     #[serde(default)]
@@ -158,7 +158,7 @@ pub struct LinuxRequirements {
     pub distributions: Option<Vec<DistributionRequirement>>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DistributionRequirement {
     pub id: String,
@@ -166,7 +166,7 @@ pub struct DistributionRequirement {
     pub versions: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TestedEnvironment {
     #[serde(default)]

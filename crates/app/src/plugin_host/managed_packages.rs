@@ -48,7 +48,57 @@ pub struct PackageCandidateReport {
     pub targets: Vec<TargetCompatibilityAssessment>,
 }
 
+/// UI diagnostics for signed packages. Only the effective execution facts used
+/// for review are returned, rather than the raw host or os-release metadata.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageCompatibilityReview {
+    pub state: CompatibilityState,
+    pub ambiguous: bool,
+    pub os: Option<String>,
+    pub release: Option<String>,
+    pub product: Option<gamenode_platform::plugin_environment::OperatingSystemKind>,
+    pub build: Option<u32>,
+    pub architecture: Option<String>,
+    pub abi: Option<String>,
+    pub libc: Option<gamenode_platform::plugin_environment::LibcIdentity>,
+    pub emulation: gamenode_platform::plugin_environment::EmulationStatus,
+    pub targets: Vec<TargetCompatibilityAssessment>,
+}
+
 impl PackageCandidateReport {
+    pub fn compatibility_review(&self) -> PackageCompatibilityReview {
+        let selected = self.selected_target();
+        let ambiguous = matches!(&selected, Err(PackageLifecycleError::AmbiguousTarget));
+        let state = if selected.is_ok() {
+            CompatibilityState::Compatible
+        } else if ambiguous {
+            CompatibilityState::Incompatible
+        } else if self
+            .targets
+            .iter()
+            .any(|target| target.verdict.state == CompatibilityState::Indeterminate)
+        {
+            CompatibilityState::Indeterminate
+        } else {
+            CompatibilityState::Incompatible
+        };
+        let userspace = self.environment.userspace.as_ref();
+        PackageCompatibilityReview {
+            state,
+            ambiguous,
+            os: userspace.map(|os| os.id.clone().unwrap_or_else(|| os.family.clone())),
+            release: userspace.and_then(|os| os.version_id.clone()),
+            product: userspace.and_then(|os| os.kind),
+            build: userspace.and_then(|os| os.build),
+            architecture: self.environment.process_architecture.clone(),
+            abi: self.environment.process_abi.clone(),
+            libc: self.environment.libc.clone(),
+            emulation: self.environment.emulation.clone(),
+            targets: self.targets.clone(),
+        }
+    }
+
     /// Return the unique compatible target. Incompatible or indeterminate candidates never
     /// select a substitute target implicitly.
     pub fn selected_target(&self) -> Result<&TargetCompatibilityAssessment, PackageLifecycleError> {

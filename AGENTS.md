@@ -12,6 +12,16 @@
 - These conventions do not authorize committing, pushing, or rewriting history;
   perform those actions only when requested.
 
+## Intermediate pushes for third-party plugins
+
+- While the third-party plugin work is in progress, before every push from
+  the integration checkout or any of the three follow-up worktrees, verify
+  that the outgoing commit at the tip of each branch being pushed contains
+  `[skip ci]` in its commit message. If the marker is missing, stop the push.
+- Keep the marker for intermediate pushes even when an individual task is
+  complete. Resume normal CI when the work is complete and ready for final
+  validation. Continue to follow the focused local validation guidance.
+
 ## Required Cargo target location
 
 - ALWAYS use the shared external `CARGO_TARGET_DIR` for Cargo builds, checks,

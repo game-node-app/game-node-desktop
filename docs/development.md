@@ -46,6 +46,28 @@ Protobuf generation uses the build-host compiler selected from the pinned
 vendored dependency; a system `protoc` installation is not required.
 Node.js (v24+) and pnpm are used for the `ui/` frontend workspace.
 
+## Intermediate pushes for third-party plugins
+
+Until the work across the four fronts is complete, use `[skip ci]` in the
+body of every commit intended as the tip of an intermediate push. This rule
+covers `integration/third-party-plugins`, `mvp-actions-configuration`,
+`mvp-custom-launch-runtimes` and `mvp-data-and-persistence`. It also applies
+to pushes that complete an individual task.
+
+Before pushing, inspect the commit message of the actual ref to be sent.
+For the current branch, run:
+
+```sh
+git log -1 --format=%B HEAD | rg -F '[skip ci]'
+```
+
+If the command finds no marker, stop before pushing. Use the explicit local
+ref instead of `HEAD` when pushing another branch. The marker skips GitHub
+Actions triggered by this push and the resulting pull request update. It
+does not change focused local tests. When all work is ready for final
+validation, push a new commit without the marker to resume CI.
+See [GitHub's skip instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs).
+
 ## Required Cargo target location
 
 All project worktrees on this Linux workstation share the external Cargo target

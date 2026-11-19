@@ -377,6 +377,23 @@ impl SharedSharingPolicies {
         )
     }
 
+    pub(crate) fn replace_recipient_policies_snapshot(
+        &self,
+        recipient: &PluginIdentity,
+        expected_revision: u64,
+        grant: ActivationReadGrant,
+        source_policies: Vec<SourceRecipientPolicy>,
+    ) -> Result<RecipientSharingSnapshot, SharingPolicyError> {
+        let mut policies = self.write()?;
+        policies.replace_recipient_policies(
+            recipient,
+            expected_revision,
+            grant,
+            source_policies,
+        )?;
+        policies.recipient_snapshot(recipient)
+    }
+
     fn read(&self) -> Result<std::sync::RwLockReadGuard<'_, SharingPolicies>, SharingPolicyError> {
         self.inner
             .read()
@@ -856,6 +873,7 @@ impl SharingPolicies {
         };
         if validate_identity(request.recipient).is_err()
             || validate_identity(request.source).is_err()
+            || request.source.profile_id != request.recipient.profile_id
             || !valid_plain_identifier(request.record_id, MAX_RECORD_ID_BYTES)
             || !valid_plain_identifier(request.dataset_id, MAX_DATASET_ID_BYTES)
         {

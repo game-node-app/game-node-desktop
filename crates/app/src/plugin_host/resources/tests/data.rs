@@ -6,31 +6,18 @@ use crate::plugin_host::{
     resources::ResourceApi,
     shared_data::{DataBroker, Publication},
     sharing_policy::{
-        AccessDecision, AccessRequest, AccessScope, Authorizer, SharingClass, SharingPolicies,
+        ActivationReadGrant, Authorizer, SharedSharingPolicies, SharingClass, SharingPolicies,
+        SourceRecipientPolicy,
     },
 };
 use gamenode_plugin_protocol::{
     capability as cap,
     prost_types::{self, Value, value::Kind},
 };
-use std::{
-    collections::BTreeSet,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Channel;
-
-fn identity(id: &str) -> PluginIdentity {
-    PluginIdentity {
-        plugin_id: format!("org.example.{id}"),
-        publisher_fingerprint: format!("SHA256:{id}"),
-        profile_id: "profile-main".into(),
-    }
-}
 
 fn value(fields: &[(&str, Value)]) -> prost_types::Struct {
     prost_types::Struct {
@@ -67,43 +54,6 @@ fn publication(owner: &PluginIdentity, fields: &[(&str, serde_json::Value)]) -> 
         session_id: None,
         publisher: None,
         expires_at: None,
-    }
-}
-
-struct SelectedRecordAuthorizer {
-    revision: AtomicU64,
-    record_ids: BTreeSet<String>,
-    dataset_ids: BTreeSet<String>,
-    fields: BTreeSet<String>,
-}
-
-impl Authorizer for SelectedRecordAuthorizer {
-    fn revision(&self, _recipient: &PluginIdentity) -> u64 {
-        self.revision.load(Ordering::SeqCst)
-    }
-
-    fn decide(&self, request: &AccessRequest<'_>) -> AccessDecision {
-        let id = match &request.scope {
-            AccessScope::SelectedRecord(id) => Some(id),
-            AccessScope::Owner | AccessScope::Category(_) | AccessScope::Dataset(_) => None,
-        };
-        let dataset_allowed = matches!(&request.scope, AccessScope::Dataset(dataset)
-            if self.dataset_ids.contains(dataset));
-        let fields = request
-            .fields
-            .intersection(&self.fields)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let allowed = request.class == SharingClass::Custom
-            && (id.is_some_and(|id| self.record_ids.contains(id)) || dataset_allowed)
-            && !fields.is_empty();
-        AccessDecision {
-            allowed,
-            fields,
-            history: allowed,
-            live: allowed,
-            revision: self.revision(request.recipient),
-        }
     }
 }
 
@@ -249,7 +199,7 @@ async fn data_publish_preserves_observation_metadata_and_host_provenance() {
     assert_eq!(record.source_observation_id, "data-metadata");
     assert!(record.received_at > 0);
     let provenance = record.provenance.as_ref().unwrap();
-    assert_eq!(provenance.producer_plugin_id, "org.example.fixture");
+    assert_eq!(provenance.producer_plugin_id, "fixture.plugin");
     assert!(!provenance.package_version.is_empty());
     assert_eq!(provenance.package_digest.len(), 32);
     server.abort();
@@ -430,200 +380,360 @@ async fn data_publish_list_get_and_watch_use_the_snapshot_revision() {
     server.abort();
 }
 
-#[tokio::test]
-async fn data_projection_filters_both_aliases_and_denial_keeps_owner_records() {
-    let fixture = Fixture::new(&[]).await;
+async fn consumer_session(fixture: &Fixture) -> Session {
+    let capabilities = [cap::CONTEXT, cap::DATA_PUBLISH, cap::STORAGE_WRITE];
+    fixture
+        .api
+        .register(Registration {
+            provider_id: "consumer".into(),
+            plugin_id: "org.example.consumer".into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Provider,
+            declared_developer: "Consumer developer".into(),
+            package_digest: vec![8; 32],
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "cd".repeat(32),
+            },
+            capabilities: capabilities.iter().map(|cap| (*cap).into()).collect(),
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(NoServices),
+        })
+        .unwrap();
+    let launch = fixture.api.begin_launch("consumer").unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&launch.credential[i..i + 2], 16).unwrap())
+        .collect();
+    let session = Session::open_with_options(
+        Launch {
+            endpoint: fixture.endpoint.clone(),
+            credential,
+            operation_id: "consumer-launch".into(),
+        },
+        "org.example.consumer",
+        "consumer",
+        "1.0",
+        &capabilities,
+        SessionOptions {
+            min_api_major: 1,
+            min_api_minor: cap::THIRD_PARTY_API_MINOR,
+            max_api_major: 1,
+            max_api_minor: gamenode_plugin_protocol::API_MINOR,
+            ..SessionOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    session
+}
+
+fn authenticated_identity(fixture: &Fixture, context: &ServiceContext) -> PluginIdentity {
     let caller = fixture
         .api
-        .authorize_resource_session(Some(&fixture.context()))
+        .authorize_resource_session(Some(context))
         .unwrap();
-    let recipient = caller.namespace.as_ref().unwrap().identity().clone();
-    let producer = identity("producer");
-    let broker = Arc::new(DataBroker::new());
-    let allowed = broker
-        .publish(
-            publication(
-                &producer,
-                &[
-                    ("fps", serde_json::json!(60)),
-                    ("device_id", serde_json::json!("filtered")),
-                ],
-            ),
-            100,
-        )
-        .unwrap();
-    let denied = broker
-        .publish(
-            publication(&producer, &[("fps", serde_json::json!(1))]),
-            100,
-        )
-        .unwrap();
-    let private = broker
-        .publish(
-            publication(
-                &recipient,
-                &[("private_note", serde_json::json!("still here"))],
-            ),
-            100,
-        )
-        .unwrap();
-    let authorizer: Arc<dyn Authorizer> = Arc::new(SelectedRecordAuthorizer {
-        revision: AtomicU64::new(0),
-        record_ids: [allowed.record_id.clone()].into_iter().collect(),
-        dataset_ids: BTreeSet::new(),
-        fields: ["fps".to_owned()].into_iter().collect(),
-    });
-    let (mut client, server) = local_client(service(&fixture, broker, authorizer)).await;
-    let selected = CommonDataSelector {
-        categories: vec![],
-        selected_record_ids: vec![allowed.record_id.clone(), denied.record_id.clone()],
-    };
-    let list = client
-        .data_list(DataListRequest {
-            page: Some(PageRequest {
-                context: Some(fixture.context()),
-                page_size: 10,
-                ..Default::default()
-            }),
-            dataset_id: "org.example.metrics.v1".into(),
-            common_data_categories: Some(selected.clone()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(list.records.len(), 2);
-    assert!(
-        list.records
-            .iter()
-            .any(|record| record.record_id == private.record_id)
-    );
-    let shared = list
-        .records
-        .iter()
-        .find(|record| record.record_id == allowed.record_id)
-        .unwrap();
-    let fields = &shared.value.as_ref().unwrap().fields;
-    assert!(fields.contains_key("fps"));
-    assert!(!fields.contains_key("device_id"));
-    assert!(
-        !list
-            .records
-            .iter()
-            .any(|record| record.record_id == denied.record_id)
-    );
+    ResourceApi::data_identity(&caller).unwrap()
+}
 
-    let fetched = client
-        .data_get(DataGetRequest {
-            context: Some(fixture.context()),
-            dataset_id: "org.example.metrics.v1".into(),
-            record_id: allowed.record_id,
-            common_data_categories: None,
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .record
-        .unwrap();
-    let fetched_fields = &fetched.value.unwrap().fields;
-    assert!(fetched_fields.contains_key("fps"));
-    assert!(!fetched_fields.contains_key("device_id"));
-    server.abort();
+fn list_request(context: &ServiceContext, dataset_id: &str) -> DataListRequest {
+    DataListRequest {
+        page: Some(PageRequest {
+            context: Some(context.clone()),
+            page_size: 10,
+            ..Default::default()
+        }),
+        dataset_id: dataset_id.into(),
+        ..Default::default()
+    }
+}
+
+fn assert_projected(record: &DataRecord, receipt: &DataMutationReply, fps: f64) {
+    assert_eq!(record.record_id, receipt.record_id);
+    assert_eq!(record.revision, receipt.revision);
+    assert_eq!(record.value, Some(value(&[("fps", number(fps))])));
+    assert!(record.opaque_payload.is_empty());
+    let provenance = record.provenance.as_ref().unwrap();
+    assert_eq!(provenance.producer_plugin_id, "fixture.plugin");
+    assert_eq!(provenance.publisher_fingerprint, "ab".repeat(32));
 }
 
 #[tokio::test]
-async fn custom_dataset_policy_authorizes_list_get_and_live_watch_only_for_that_dataset() {
-    let fixture = Fixture::new(&[]).await;
-    let producer = identity("dataset_producer");
-    let broker = Arc::new(DataBroker::new());
-    let mut first_publication = publication(&producer, &[("fps", serde_json::json!(120))]);
-    first_publication.dataset_id = "org.example.metrics.v1".into();
-    first_publication.schema_id = first_publication.dataset_id.clone();
-    let first = broker.publish(first_publication, 100).unwrap();
-    let mut other_publication = publication(&producer, &[("fps", serde_json::json!(1))]);
-    other_publication.dataset_id = "org.example.private.v1".into();
-    other_publication.schema_id = other_publication.dataset_id.clone();
-    let other = broker.publish(other_publication, 100).unwrap();
-    let authorizer: Arc<dyn Authorizer> = Arc::new(SelectedRecordAuthorizer {
-        revision: AtomicU64::new(7),
-        record_ids: BTreeSet::new(),
-        dataset_ids: ["org.example.metrics.v1".to_owned()].into_iter().collect(),
-        fields: ["fps".to_owned()].into_iter().collect(),
-    });
-    let (mut client, server) = local_client(service(&fixture, broker.clone(), authorizer)).await;
+async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revokes_access() {
+    use futures_util::StreamExt;
 
-    let listed = client
-        .data_list(DataListRequest {
-            page: Some(PageRequest {
-                context: Some(fixture.context()),
-                page_size: 10,
-                ..Default::default()
-            }),
-            dataset_id: "org.example.metrics.v1".into(),
-            ..Default::default()
-        })
+    let fixture = Fixture::new(&[cap::DATA_PUBLISH]).await;
+    let consumer = consumer_session(&fixture).await;
+    let context = consumer.host.resource_context().unwrap().clone();
+    let source = authenticated_identity(&fixture, &fixture.context());
+    let recipient = authenticated_identity(&fixture, &context);
+    let dataset = "org.example.metrics.v1";
+    let other_dataset = "org.example.private.v1";
+    let broker = Arc::new(DataBroker::new());
+    let dir = tempfile::tempdir().unwrap();
+    let policy = |history, live| {
+        SourceRecipientPolicy::new(
+            source.clone(),
+            recipient.clone(),
+            SharingClass::Custom,
+            dataset.into(),
+            ["fps".into()],
+            history,
+            live,
+        )
+        .unwrap()
+    };
+    {
+        let store = SharedSharingPolicies::open(dir.path()).unwrap();
+        store
+            .replace_recipient_policies(
+                &recipient,
+                0,
+                ActivationReadGrant::default(),
+                vec![policy(true, false)],
+            )
+            .unwrap();
+    }
+    let store = Arc::new(SharedSharingPolicies::open(dir.path()).unwrap());
+    let resource = service(&fixture, broker, store.clone());
+    let (mut consumer_rpc, server) = local_client(resource.clone()).await;
+    let mut producer_rpc = consumer_rpc.clone();
+    let publish = |sequence, fps| {
+        let key = format!("metrics-{sequence}");
+        let mut request = data_publish(
+            &fixture,
+            &key,
+            value(&[("fps", number(fps)), ("device_id", number(42.0))]),
+        );
+        request.sequence = sequence;
+        request
+    };
+    let first = producer_rpc
+        .data_publish(publish(1, 60.0))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut private = publish(1, 1.0);
+    private.dataset_id = other_dataset.into();
+    private.schema_id = other_dataset.into();
+    private.mutation = Some(fixture.mutation("private-record", 0));
+    producer_rpc.data_publish(private).await.unwrap();
+
+    let listed = consumer_rpc
+        .data_list(list_request(&context, dataset))
         .await
         .unwrap()
         .into_inner();
     assert_eq!(listed.records.len(), 1);
-    assert_eq!(listed.records[0].record_id, first.record_id);
-    assert_eq!(listed.records[0].value.as_ref().unwrap().fields.len(), 1);
-
-    let denied = client
-        .data_list(DataListRequest {
-            page: Some(PageRequest {
-                context: Some(fixture.context()),
-                page_size: 10,
-                ..Default::default()
-            }),
-            dataset_id: "org.example.private.v1".into(),
-            ..Default::default()
-        })
+    assert_projected(&listed.records[0], &first, 60.0);
+    let get = DataGetRequest {
+        context: Some(context.clone()),
+        dataset_id: dataset.into(),
+        record_id: first.record_id.clone(),
+        ..Default::default()
+    };
+    let fetched = consumer_rpc
+        .data_get(get.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_projected(&fetched.record.unwrap(), &first, 60.0);
+    let denied = consumer_rpc
+        .data_list(list_request(&context, other_dataset))
         .await
         .unwrap()
         .into_inner();
     assert!(denied.records.is_empty());
+
+    let watch = |after_revision| DataWatchRequest {
+        context: Some(context.clone()),
+        dataset_id: dataset.into(),
+        after_revision,
+        ..Default::default()
+    };
+    let mut history_only =
+        ResourceHost::data_watch(&resource, Request::new(watch(listed.revision)))
+            .await
+            .unwrap()
+            .into_inner();
+    producer_rpc.data_publish(publish(2, 65.0)).await.unwrap();
     assert!(
-        !denied
-            .records
-            .iter()
-            .any(|record| record.record_id == other.record_id)
+        tokio::time::timeout(Duration::ZERO, history_only.next())
+            .await
+            .is_err()
     );
 
-    let fetched = client
-        .data_get(DataGetRequest {
-            context: Some(fixture.context()),
-            dataset_id: "org.example.metrics.v1".into(),
-            record_id: first.record_id.clone(),
-            common_data_categories: None,
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .record
+    let revision = store.recipient_snapshot(&recipient).unwrap().revision;
+    let revision = store
+        .replace_recipient_policies(
+            &recipient,
+            revision,
+            ActivationReadGrant::default(),
+            vec![policy(false, true)],
+        )
         .unwrap();
-    assert_eq!(fetched.record_id, first.record_id);
-    assert_eq!(fetched.value.unwrap().fields.len(), 1);
-
-    let mut watch = client
-        .data_watch(DataWatchRequest {
-            context: Some(fixture.context()),
-            dataset_id: "org.example.metrics.v1".into(),
-            after_revision: listed.revision,
-            common_data_categories: None,
-        })
+    let listed = consumer_rpc
+        .data_list(list_request(&context, dataset))
         .await
         .unwrap()
         .into_inner();
-    let mut next_publication = publication(&producer, &[("fps", serde_json::json!(144))]);
-    next_publication.dataset_id = "org.example.metrics.v1".into();
-    next_publication.schema_id = next_publication.dataset_id.clone();
-    let next = broker.publish(next_publication, 101).unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(2), watch.message())
+    assert!(listed.records.is_empty());
+    let mut live = consumer_rpc
+        .data_watch(watch(listed.revision))
+        .await
+        .unwrap()
+        .into_inner();
+    let third = producer_rpc
+        .data_publish(publish(3, 70.0))
+        .await
+        .unwrap()
+        .into_inner();
+    let event = tokio::time::timeout(Duration::from_secs(2), live.message())
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(event.record.unwrap().record_id, next.record_id);
+    assert_eq!(event.event_type, "published");
+    assert_projected(&event.record.unwrap(), &third, 70.0);
+
+    let revision = store
+        .replace_recipient_policies(
+            &recipient,
+            revision,
+            ActivationReadGrant::default(),
+            vec![policy(true, true)],
+        )
+        .unwrap();
+    // Keep the ResourceHost stream unpolled so revocation precedes dequeue.
+    let mut pending = ResourceHost::data_watch(&resource, Request::new(watch(third.revision)))
+        .await
+        .unwrap()
+        .into_inner();
+    let fourth = producer_rpc
+        .data_publish(publish(4, 75.0))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut durable = publish(1, 60.0);
+    durable.mutation.as_mut().unwrap().context = Some(context.clone());
+    durable.durability = StorageDurability::Persistent as i32;
+    let error = consumer_rpc.data_publish(durable).await.unwrap_err();
+    assert_eq!(error.code(), Code::FailedPrecondition);
+    let error = consumer_rpc
+        .storage_put(StoragePutRequest {
+            mutation: Some(MutationContext {
+                context: Some(context.clone()),
+                idempotency_key: "durable-copy".into(),
+                ..Default::default()
+            }),
+            key: "copy".into(),
+            value: vec![60],
+            durability: StorageDurability::Persistent as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::PermissionDenied);
+
+    let mut page = list_request(&context, dataset);
+    page.page.as_mut().unwrap().page_size = 1;
+    let listed = consumer_rpc
+        .data_list(page.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.revision, fourth.revision);
+    assert!(!listed.next_cursor.is_empty());
+    page.page.as_mut().unwrap().cursor = listed.next_cursor;
+    store
+        .replace_recipient_policies(&recipient, revision, ActivationReadGrant::default(), vec![])
+        .unwrap();
+    assert_eq!(
+        pending.next().await.unwrap().unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+    assert!(pending.next().await.is_none());
+    assert_eq!(
+        consumer_rpc.data_list(page).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(
+        consumer_rpc.data_get(get).await.unwrap_err().code(),
+        Code::NotFound
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn persisted_common_policy_requires_explicit_selectors_on_public_reads() {
+    let fixture = Fixture::new(&[]).await;
+    let recipient = authenticated_identity(&fixture, &fixture.context());
+    let source = PluginIdentity {
+        plugin_id: "org.example.adapter".into(),
+        publisher_fingerprint: "1234".into(),
+        profile_id: recipient.profile_id.clone(),
+    };
+    let dataset = "org.example.metrics.v1";
+    let broker = Arc::new(DataBroker::new());
+    let now = unix_now().unwrap();
+    let category = CommonDataCategory::GamePerformanceHistory;
+    // DataPublish is custom-only. Stand in for a host domain adapter producing common records.
+    let mut common = publication(&source, &[("fps", serde_json::json!(60))]);
+    common.class = SharingClass::Common;
+    common.category = Some(category);
+    let first = broker.publish(common.clone(), now).unwrap();
+    let second = broker.publish(common.clone(), now).unwrap();
+    common.owner.profile_id = "different-profile".into();
+    let foreign = broker.publish(common, now).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let grant = ActivationReadGrant::new([category], [first.record_id.clone()]).unwrap();
+    SharedSharingPolicies::open(dir.path())
+        .unwrap()
+        .replace_recipient_policies(&recipient, 0, grant, vec![])
+        .unwrap();
+    let store = Arc::new(SharedSharingPolicies::open(dir.path()).unwrap());
+    let (mut client, server) = local_client(service(&fixture, broker, store)).await;
+    let context = fixture.context();
+    let mut list = list_request(&context, dataset);
+    assert!(
+        client
+            .data_list(list.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .records
+            .is_empty()
+    );
+
+    let mut get = DataGetRequest {
+        context: Some(context),
+        dataset_id: dataset.into(),
+        record_id: first.record_id.clone(),
+        ..Default::default()
+    };
+    assert_eq!(
+        client.data_get(get.clone()).await.unwrap_err().code(),
+        Code::NotFound
+    );
+    let selected = CommonDataSelector {
+        categories: vec![],
+        selected_record_ids: vec![first.record_id.clone(), second.record_id.clone()],
+    };
+    get.common_data_categories = Some(selected.clone());
+    let fetched = client.data_get(get).await.unwrap().into_inner();
+    assert_eq!(fetched.record.unwrap().record_id, first.record_id);
+
+    list.common_data_categories = Some(selected);
+    let selected = client.data_list(list.clone()).await.unwrap().into_inner();
+    assert_eq!(selected.records.len(), 1);
+    assert_eq!(selected.records[0].record_id, first.record_id);
+
+    list.common_data_categories = Some(CommonDataSelector {
+        categories: vec![category as i32],
+        selected_record_ids: vec![foreign.record_id],
+    });
+    let selected = client.data_list(list).await.unwrap().into_inner();
+    let ids: Vec<_> = selected.records.into_iter().map(|r| r.record_id).collect();
+    assert_eq!(ids, [first.record_id, second.record_id]);
     server.abort();
 }

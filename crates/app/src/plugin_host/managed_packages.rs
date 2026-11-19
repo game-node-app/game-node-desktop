@@ -71,6 +71,15 @@ impl PackageCandidateReport {
     }
 }
 
+/// Ordering boundary for host writes that change the active package, pinned publisher, or
+/// runtime registration of a plugin. Acquire it inside the worker that owns the write.
+pub(super) fn lock_publisher_identity() -> std::sync::MutexGuard<'static, ()> {
+    static PUBLISHER_IDENTITY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PUBLISHER_IDENTITY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Clone)]
 pub struct ManagedPackageLifecycle {
     registry: PluginPackageRegistry,
@@ -135,6 +144,7 @@ impl ManagedPackageLifecycle {
         let version = report.manifest.version;
         let registry = self.registry.clone();
         tokio::task::spawn_blocking(move || {
+            let _publisher = activate.then(lock_publisher_identity);
             registry
                 .install_signed(
                     &plugin_id,
@@ -180,6 +190,7 @@ impl ManagedPackageLifecycle {
         report.selected_target()?;
         let registry = self.registry.clone();
         tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
             registry
                 .set_active(&plugin_id, &version)
                 .map_err(|error| PackageLifecycleError::Registry(error.to_string()))?;
@@ -194,6 +205,7 @@ impl ManagedPackageLifecycle {
     pub async fn remove_plugin(&self, plugin_id: String) -> Result<(), PackageLifecycleError> {
         let registry = self.registry.clone();
         tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
             registry
                 .remove_plugin(&plugin_id)
                 .map_err(|error| PackageLifecycleError::Registry(error.to_string()))
@@ -308,14 +320,14 @@ fn read_signed_payload(
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use base64::Engine;
     use ring::signature::KeyPair;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
-    fn write_signed_package(
+    pub(in crate::plugin_host) fn write_signed_package(
         root: &Path,
         version: &str,
         os: &str,

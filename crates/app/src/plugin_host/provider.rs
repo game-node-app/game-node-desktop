@@ -1165,6 +1165,8 @@ impl ProviderApi {
             }
             _ => {}
         }
+        let _publisher = matches!(registration.origin, RegistrationOrigin::ThirdParty { .. })
+            .then(super::managed_packages::lock_publisher_identity);
         let mut state = lock(&self.state);
         if state.providers.contains_key(&registration.provider_id)
             || state
@@ -1639,11 +1641,17 @@ impl ProviderApi {
             drop(provider.commits.lock().await);
             self.disconnect(&provider.registration.provider_id).await;
         }
-        let mut state = lock(&self.state);
-        for provider_id in &provider_ids {
-            state.providers.remove(provider_id);
-        }
-        Ok(provider_ids)
+        let api = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _publisher = super::managed_packages::lock_publisher_identity();
+            let mut state = lock(&api.state);
+            for provider_id in &provider_ids {
+                state.providers.remove(provider_id);
+            }
+            provider_ids
+        })
+        .await
+        .map_err(|_| Status::internal("plugin registration worker failed"))
     }
 
     pub async fn disconnect(&self, provider_id: &str) {

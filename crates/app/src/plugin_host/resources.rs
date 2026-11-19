@@ -1001,7 +1001,8 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 "published shared data is session-retained; use Persistence for durable values",
             ));
         }
-        if request.value.is_some() != !request.opaque_payload.is_empty() {
+        let has_opaque_payload = !request.opaque_payload.is_empty();
+        if request.value.is_some() == has_opaque_payload {
             return Err(Status::invalid_argument(
                 "provide exactly one of value or opaque_payload",
             ));
@@ -1160,19 +1161,6 @@ impl resource_host_server::ResourceHost for ResourceApi {
             .providers
             .authorize_resource_session(request.context.as_ref())?;
         let identity = Self::data_identity(&caller)?;
-        let mut selector = request.common_data_categories.unwrap_or_default();
-        if !selector
-            .selected_record_ids
-            .iter()
-            .any(|record_id| record_id == &request.record_id)
-        {
-            if selector.selected_record_ids.len() >= 1000 {
-                return Err(Status::invalid_argument(
-                    "common-data selector has too many selected records",
-                ));
-            }
-            selector.selected_record_ids.push(request.record_id.clone());
-        }
         let result = self
             .data
             .query_data(
@@ -1181,7 +1169,7 @@ impl resource_host_server::ResourceHost for ResourceApi {
                     dataset_id: request.dataset_id,
                     record_id: Some(request.record_id.clone()),
                     category: None,
-                    selector: Some(selector),
+                    selector: request.common_data_categories,
                     delivery: Delivery::Query,
                     page_size: 1,
                     cursor: None,
@@ -1294,103 +1282,57 @@ impl resource_host_server::ResourceHost for ResourceApi {
             )
             .map_err(data_broker_status)?;
         let slot = self.watch_slot(&caller.session_id)?;
-        let (tx, rx) = mpsc::channel(WATCH_QUEUE);
         let providers = self.providers.clone();
         let grant_revision = caller.grant_revision;
-        tokio::spawn(async move {
-            let _slot = slot;
-            loop {
-                match tokio::time::timeout(
-                    WATCH_RECHECK,
-                    subscription.recv(unix_now().unwrap_or(0)),
-                )
-                .await
-                {
-                    Ok(Ok(Some(record))) => {
-                        let active = match providers.authorize_resource_session(context.as_ref()) {
-                            Ok(active) if active.grant_revision == grant_revision => active,
-                            Ok(_) => {
-                                let _ = tx
-                                    .send(Err(Status::failed_precondition(
-                                        "plugin permissions changed; list and watch again",
-                                    )))
-                                    .await;
-                                break;
-                            }
-                            Err(status) => {
-                                let _ = tx.send(Err(status)).await;
-                                break;
-                            }
-                        };
-                        drop(active);
-                        let item = Ok(DataEvent {
-                            revision: record.revision(),
-                            event_type: "published".into(),
-                            record: Some(data_record(&record)),
-                        });
-                        if tx.send(item).await.is_err() {
-                            break;
+        // Keep pending records in the broker queue until the response stream polls them.
+        // The broker rechecks the sharing revision when releasing each queued projection.
+        let stream = futures_util::stream::unfold(
+            Some((subscription, slot, providers, context)),
+            move |state| async move {
+                let (subscription, slot, providers, context) = state?;
+                loop {
+                    let received = tokio::time::timeout(
+                        WATCH_RECHECK,
+                        subscription.recv(unix_now().unwrap_or(0)),
+                    )
+                    .await;
+                    match providers.authorize_resource_session(context.as_ref()) {
+                        Ok(active) if active.grant_revision == grant_revision => {}
+                        Ok(_) => {
+                            return Some((
+                                Err(Status::failed_precondition(
+                                    "plugin permissions changed; list and watch again",
+                                )),
+                                None,
+                            ));
                         }
+                        Err(status) => return Some((Err(status), None)),
                     }
-                    Ok(Ok(None)) => continue,
-                    Ok(Err(ended)) => {
-                        let status = match ended {
-                            SubscriptionEnd::Revoked => Status::failed_precondition(
-                                "data sharing permissions changed; list and watch again",
-                            ),
-                            SubscriptionEnd::FellBehind => Status::resource_exhausted(
-                                "data watch fell behind; list and watch again",
-                            ),
-                        };
-                        let _ = tx.send(Err(status)).await;
-                        break;
-                    }
-                    Err(_) => {
-                        match providers.authorize_resource_session(context.as_ref()) {
-                            Ok(active) if active.grant_revision == grant_revision => {}
-                            Ok(_) => {
-                                let _ = tx
-                                    .send(Err(Status::failed_precondition(
-                                        "plugin permissions changed; list and watch again",
-                                    )))
-                                    .await;
-                                break;
-                            }
-                            Err(status) => {
-                                let _ = tx.send(Err(status)).await;
-                                break;
-                            }
+                    let record = match received {
+                        Ok(Ok(Some(record))) => record,
+                        Ok(Ok(None)) | Err(_) => continue,
+                        Ok(Err(ended)) => {
+                            let status = match ended {
+                                SubscriptionEnd::Revoked => Status::failed_precondition(
+                                    "data sharing permissions changed; list and watch again",
+                                ),
+                                SubscriptionEnd::FellBehind => Status::resource_exhausted(
+                                    "data watch fell behind; list and watch again",
+                                ),
+                            };
+                            return Some((Err(status), None));
                         }
-                        match subscription.next(unix_now().unwrap_or(0)) {
-                            Ok(Some(record)) => {
-                                let item = Ok(DataEvent {
-                                    revision: record.revision(),
-                                    event_type: "published".into(),
-                                    record: Some(data_record(&record)),
-                                });
-                                if tx.send(item).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(ended) => {
-                                let status = match ended {
-                                    SubscriptionEnd::Revoked => Status::failed_precondition(
-                                        "data sharing permissions changed; list and watch again",
-                                    ),
-                                    SubscriptionEnd::FellBehind => Status::resource_exhausted(
-                                        "data watch fell behind; list and watch again",
-                                    ),
-                                };
-                                let _ = tx.send(Err(status)).await;
-                                break;
-                            }
-                        }
-                    }
+                    };
+                    let event = DataEvent {
+                        revision: record.revision(),
+                        event_type: "published".into(),
+                        record: Some(data_record(&record)),
+                    };
+                    return Some((Ok(event), Some((subscription, slot, providers, context))));
                 }
-            }
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+            },
+        );
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn metadata_update(

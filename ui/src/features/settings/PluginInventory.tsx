@@ -93,6 +93,7 @@ export const PluginInventory: React.FC = () => {
     queryFn: commands.pluginRollbackAvailable,
   });
   const managedPluginId = selectedPlugin?.publisherFingerprint ? selectedPlugin.pluginId : null;
+  const publisherFingerprint = selectedPlugin?.publisherFingerprint;
   const { data: permissionSnapshot } = useQuery({
     queryKey: pluginQueryKeys.permissions(managedPluginId ?? '', profileId ?? ''),
     queryFn: async () => {
@@ -109,11 +110,12 @@ export const PluginInventory: React.FC = () => {
     enabled: managedPluginId !== null,
   });
   const { data: sharedDataSnapshot, isError: sharedDataError } = useQuery({
-    queryKey: pluginQueryKeys.sharedData(managedPluginId ?? '', profileId ?? ''),
+    queryKey: pluginQueryKeys.sharedData(managedPluginId ?? '', profileId ?? '', publisherFingerprint),
     queryFn: async () => {
       if (!managedPluginId || !profileId) throw new Error('plugin data-sharing profile is unavailable');
       const snapshot = await commands.pluginSharedDataSnapshot(managedPluginId, profileId);
       if (snapshot.profileId !== profileId) throw new Error('plugin data-sharing profile changed');
+      if (snapshot.publisherFingerprint !== publisherFingerprint) throw new Error('plugin data-sharing publisher changed');
       return snapshot;
     },
     enabled: managedPluginId !== null && profileId !== null && selectedPlugin?.pluginKind === 'provider',
@@ -311,21 +313,23 @@ export const PluginInventory: React.FC = () => {
     snapshot: PluginSharedDataSnapshot,
     value: PluginActivationPermissionsValue,
   ) => {
-    if (!profileId || snapshot.profileId !== profileId || snapshot.pluginId !== selectedPlugin?.pluginId) return;
+    if (!profileId || snapshot.profileId !== profileId || snapshot.pluginId !== managedPluginId || snapshot.publisherFingerprint !== publisherFingerprint) return;
+    const queryKey = pluginQueryKeys.sharedData(snapshot.pluginId, profileId, snapshot.publisherFingerprint);
     setBusy(true);
     setManagementError(false);
     try {
       const saved = await commands.pluginSharedDataReplace(snapshot.pluginId, {
         profileId,
+        expectedPublisherFingerprint: snapshot.publisherFingerprint,
         expectedRevision: snapshot.policyRevision,
         commonCategories: value.commonDataRead,
         selectedRecordIds: value.selectedRecordIds,
         sourcePolicies: value.sourcePolicies,
       });
-      queryClient.setQueryData(pluginQueryKeys.sharedData(snapshot.pluginId, profileId), saved);
+      queryClient.setQueryData(queryKey, saved);
     } catch {
       setManagementError(true);
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.sharedData(snapshot.pluginId, profileId) });
+      await queryClient.invalidateQueries({ queryKey });
     } finally { setBusy(false); }
   };
 
@@ -614,6 +618,7 @@ export const PluginInventory: React.FC = () => {
                     {sharedDataError && <p className="mb-compact text-sm text-warning" role="alert">{t('plugins.management.failed')}</p>}
                     {sharedDataSnapshot && sharedDataInitialValue && sharedDataSnapshot.pluginId === selectedPlugin.pluginId ? (
                       <PluginActivationPermissions
+                        key={JSON.stringify([sharedDataSnapshot.profileId, sharedDataSnapshot.pluginId, sharedDataSnapshot.publisherFingerprint])}
                         pluginId={selectedPlugin.pluginId}
                         catalog={sharedDataSnapshot.catalog}
                         initialValue={sharedDataInitialValue}

@@ -773,8 +773,25 @@ impl Engine {
         self.sync_provider_catalog(op, provider.to_owned()).await;
     }
 
-    /// Feeds an input to the state machine and launches its effects. Never blocks on I/O.
+    /// Feeds an input to the state machine and launches its effects on a worker. An account
+    /// transition can wait for an in-flight shared-data policy commit.
+    pub async fn dispatch_on_worker(&self, input: Input) {
+        let engine = self.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || engine.dispatch(input)).await {
+            tracing::error!(%error, "auth dispatch worker failed");
+        }
+    }
+
+    /// Called by blocking workers and tests. Take the profile transition lock before the engine
+    /// lock so unrelated UI work can read the engine state while a policy commit is syncing.
     pub fn dispatch(&self, input: Input) {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let transition = profiles.as_ref().map(|profiles| profiles.lock_transition());
         let mut state = self.lock();
         let is_tick = matches!(&input, Input::Tick);
         let auth_before = is_tick.then(|| (state.machine.state().clone(), state.machine.notice()));
@@ -796,7 +813,7 @@ impl Engine {
         for effect in effects {
             self.execute(effect);
         }
-        self.sync_library(&mut state);
+        self.sync_library(&mut state, transition);
         self.sync_tracker(&mut state);
         if submit_trigger {
             self.submit_totals(&mut state);
@@ -1382,34 +1399,24 @@ impl Engine {
     /// it opens the library for, so plugins see the cached last account while a restored session
     /// is unverified, and no profile at all after sign-out or a rejected session.
     pub fn set_plugin_profiles(&self, profiles: Arc<crate::plugin_host::profile::PluginProfiles>) {
+        let transition = profiles.lock_transition();
         *self
             .shared
             .plugin_profiles
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profiles);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profiles.clone());
         let mut state = self.lock();
-        self.sync_library(&mut state);
-    }
-
-    fn sync_plugin_profile(&self, account: Option<&LastAccount>, access: Access) {
-        let profiles = self
-            .shared
-            .plugin_profiles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(profiles) = profiles {
-            profiles.update(
-                account.map(|account| account.id.as_str()),
-                access == Access::Verified,
-            );
-        }
+        self.sync_library(&mut state, Some(transition));
     }
 
     /// Brings the library in line with who is signed in: opens the cached library of the last
     /// account while the session is being verified, enables GameNode features once it is, and
     /// closes the library on sign-out or a rejected session.
-    fn sync_library(&self, state: &mut State) {
+    fn sync_library(
+        &self,
+        state: &mut State,
+        transition: Option<crate::plugin_host::profile::LockedProfileTransition<'_>>,
+    ) {
         let (account, access) = match state.machine.state() {
             AuthState::SignedIn(user) => (
                 Some(LastAccount {
@@ -1425,7 +1432,12 @@ impl Engine {
             // Nothing is known yet, or a different session is being set up.
             AuthState::Starting | AuthState::Pending { .. } | AuthState::Verifying(_) => return,
         };
-        self.sync_plugin_profile(account.as_ref(), access);
+        if let Some(transition) = transition {
+            transition.update(
+                account.as_ref().map(|account| account.id.as_str()),
+                access == Access::Verified,
+            );
+        }
         match &account {
             Some(account) if state.last_account.as_ref() != Some(account) => {
                 state.last_account = Some(account.clone());
@@ -1486,9 +1498,9 @@ impl Engine {
     }
 
     /// A `401` on a library request is a rejected session, like a failed session check.
-    fn check_rejected(&self, rejected: bool) {
+    async fn check_rejected(&self, rejected: bool) {
         if rejected {
-            self.dispatch(Input::SessionRejected);
+            self.dispatch_on_worker(Input::SessionRejected).await;
         }
     }
 
@@ -1650,7 +1662,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PushFavorite {
@@ -1678,7 +1690,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PersistExcluded(excluded) => {
@@ -1720,7 +1732,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SearchGames { op, query } => {
@@ -1735,7 +1747,7 @@ impl Engine {
                     let result = api.search_games(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::MatchSearched { op, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SuggestMatches { op, key, query } => {
@@ -1751,7 +1763,7 @@ impl Engine {
                     let result = api.search_page(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::SuggestionsFound { op, key, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::CatalogSearch { op, query } => {
@@ -1767,7 +1779,7 @@ impl Engine {
                     let result = api.search_page(&credential, &query).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::CatalogSearchDone { op, query, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::FetchCover { game_id, url } => {
@@ -1805,7 +1817,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::ReadEntry { op, game_id } => {
@@ -1825,7 +1837,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::SyncAccountLibrary { op, user_id } => {
@@ -1853,7 +1865,7 @@ impl Engine {
                         result,
                         now: unix_now(),
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::PersistAccountLibrary {
@@ -1883,7 +1895,7 @@ impl Engine {
                     let result = api.list_collections(&credential, &user_id).await;
                     let rejected = matches!(result, Err(ApiError::Rejected));
                     engine.library_input(LibInput::CollectionsListed { op, result });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::CreateEntry {
@@ -1910,7 +1922,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::UpdateEntry {
@@ -1938,7 +1950,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
             LibEffect::DeleteEntry {
@@ -1962,7 +1974,7 @@ impl Engine {
                         game_id,
                         result,
                     });
-                    engine.check_rejected(rejected);
+                    engine.check_rejected(rejected).await;
                 });
             }
         }
@@ -2021,19 +2033,23 @@ impl Engine {
                     {
                         Ok(url) => url,
                         Err(reason) => {
-                            engine.dispatch(Input::SignInFailed { op, reason });
+                            engine
+                                .dispatch_on_worker(Input::SignInFailed { op, reason })
+                                .await;
                             return;
                         }
                     };
                     // Mark the browser as opened first so a prompt callback is never rejected
                     // for arriving "too early"; a launch failure then cancels the attempt.
-                    engine.dispatch(Input::BrowserOpened { op });
+                    engine.dispatch_on_worker(Input::BrowserOpened { op }).await;
                     let opened = tokio::task::spawn_blocking(move || browser.open(&url)).await;
                     if !matches!(opened, Ok(Ok(()))) {
-                        engine.dispatch(Input::SignInFailed {
-                            op,
-                            reason: SignInFailure::BrowserLaunch,
-                        });
+                        engine
+                            .dispatch_on_worker(Input::SignInFailed {
+                                op,
+                                reason: SignInFailure::BrowserLaunch,
+                            })
+                            .await;
                     }
                 });
             }
@@ -2041,7 +2057,9 @@ impl Engine {
                 let (engine, api) = (self.clone(), ports.api.clone());
                 self.shared.runtime.spawn(async move {
                     let result = api.get_session(&credential).await;
-                    engine.dispatch(Input::SessionChecked { op, result });
+                    engine
+                        .dispatch_on_worker(Input::SessionChecked { op, result })
+                        .await;
                 });
             }
             Effect::SignOut { op, credential } => self.sign_out(op, credential),
@@ -2072,11 +2090,13 @@ impl Engine {
             };
             drop(credential); // held only long enough to attempt invalidation
             let local_deleted = local_rx.await.unwrap_or(false);
-            engine.dispatch(Input::SignOutFinished {
-                op,
-                remote,
-                local_deleted,
-            });
+            engine
+                .dispatch_on_worker(Input::SignOutFinished {
+                    op,
+                    remote,
+                    local_deleted,
+                })
+                .await;
         });
     }
 }
@@ -2754,7 +2774,9 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
                     .collect())
             }
             Err(error) => {
-                engine.check_rejected(matches!(error, ApiError::Rejected));
+                engine
+                    .check_rejected(matches!(error, ApiError::Rejected))
+                    .await;
                 Err(tonic::Status::unavailable(
                     "the GameNode catalog could not answer",
                 ))

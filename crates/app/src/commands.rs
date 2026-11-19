@@ -213,7 +213,7 @@ pub async fn dispatch_auth(
     engine: tauri::State<'_, Engine>,
     input: gamenode_core::Input,
 ) -> Result<(), String> {
-    engine.dispatch(input);
+    engine.dispatch_on_worker(input).await;
     Ok(())
 }
 
@@ -605,6 +605,7 @@ pub struct SharedDataSourcePolicyDecision {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginSharedDataPolicyUpdate {
     pub profile_id: String,
+    pub expected_publisher_fingerprint: String,
     pub expected_revision: u64,
     pub common_categories: Vec<String>,
     pub selected_record_ids: Vec<String>,
@@ -681,25 +682,50 @@ pub async fn plugin_shared_data_snapshot(
         .sharing_identity(plugin_id, &expected_profile_id)
         .await
         .map_err(|status| status.message().to_owned())?;
-    plugin_shared_data_snapshot_for(identity, policies.inner().clone(), broker.inner().clone())
-        .await
+    let policy_snapshot = read_shared_data_policy(policies.inner().clone(), &identity).await?;
+    let catalog = shared_data_catalog(broker.inner().clone(), &identity.profile_id).await?;
+    Ok(plugin_shared_data_snapshot_for(
+        identity,
+        policy_snapshot,
+        catalog,
+    ))
 }
 
-async fn plugin_shared_data_snapshot_for(
-    identity: crate::plugin_host::grants::PluginIdentity,
+async fn read_shared_data_policy(
     policies: Arc<crate::plugin_host::sharing_policy::SharedSharingPolicies>,
-    broker: Arc<crate::plugin_host::shared_data::DataBroker>,
-) -> Result<PluginSharedDataSnapshot, String> {
-    let policy_snapshot = policies
-        .recipient_snapshot(&identity)
-        .map_err(|error| error.to_string())?;
-    let now = unix_timestamp()?;
-    let catalog = tokio::task::spawn_blocking(move || broker.sharing_catalog(now))
+    identity: &crate::plugin_host::grants::PluginIdentity,
+) -> Result<crate::plugin_host::sharing_policy::RecipientSharingSnapshot, String> {
+    let identity = identity.clone();
+    tokio::task::spawn_blocking(move || policies.recipient_snapshot(&identity))
         .await
-        .map_err(|_| "shared-data catalog worker failed".to_owned())?;
+        .map_err(|_| "shared-data permission worker failed".to_owned())?
+        .map_err(|error| error.to_string())
+}
+
+async fn shared_data_catalog(
+    broker: Arc<crate::plugin_host::shared_data::DataBroker>,
+    profile_id: &str,
+) -> Result<Vec<crate::plugin_host::shared_data::SharedDataCatalogRecord>, String> {
+    let now = unix_timestamp()?;
+    let profile_id = profile_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        broker
+            .sharing_catalog(now)
+            .into_iter()
+            .filter(|record| record.owner.profile_id == profile_id)
+            .collect()
+    })
+    .await
+    .map_err(|_| "shared-data catalog worker failed".to_owned())
+}
+
+fn plugin_shared_data_snapshot_for(
+    identity: crate::plugin_host::grants::PluginIdentity,
+    policy_snapshot: crate::plugin_host::sharing_policy::RecipientSharingSnapshot,
+    catalog: Vec<crate::plugin_host::shared_data::SharedDataCatalogRecord>,
+) -> PluginSharedDataSnapshot {
     let catalog = catalog
         .into_iter()
-        .filter(|record| record.owner.profile_id == identity.profile_id)
         .map(|record| SharedDataCatalogRecord {
             source_plugin_id: record.owner.plugin_id,
             source_publisher_fingerprint: record.owner.publisher_fingerprint,
@@ -723,7 +749,7 @@ async fn plugin_shared_data_snapshot_for(
             live: policy.allows_live(),
         })
         .collect();
-    Ok(PluginSharedDataSnapshot {
+    PluginSharedDataSnapshot {
         plugin_id: identity.plugin_id,
         publisher_fingerprint: identity.publisher_fingerprint,
         profile_id: identity.profile_id,
@@ -736,7 +762,7 @@ async fn plugin_shared_data_snapshot_for(
         selected_record_ids: policy_snapshot.selected_record_ids.into_iter().collect(),
         catalog,
         source_policies,
-    })
+    }
 }
 
 #[tauri::command]
@@ -747,24 +773,20 @@ pub async fn plugin_shared_data_replace(
     plugin_id: String,
     update: PluginSharedDataPolicyUpdate,
 ) -> Result<PluginSharedDataSnapshot, String> {
-    let identity = lifecycle
-        .sharing_identity(plugin_id.clone(), &update.profile_id)
+    let observation = lifecycle
+        .observe_sharing_identity(plugin_id, &update.profile_id)
         .await
         .map_err(|status| status.message().to_owned())?;
-    let existing = policies
-        .recipient_snapshot(&identity)
-        .map_err(|error| error.to_string())?;
-    if existing.revision != update.expected_revision {
+    let identity = &observation.identity;
+    if identity.publisher_fingerprint != update.expected_publisher_fingerprint {
+        return Err("plugin publisher changed; reload and review shared-data permissions".into());
+    }
+    let expected_revision = update.expected_revision;
+    let existing = read_shared_data_policy(policies.inner().clone(), identity).await?;
+    if existing.revision != expected_revision {
         return Err("shared-data permissions changed; reload and try again".into());
     }
-    let broker_handle = broker.inner().clone();
-    let now = unix_timestamp()?;
-    let catalog = tokio::task::spawn_blocking(move || broker_handle.sharing_catalog(now))
-        .await
-        .map_err(|_| "shared-data catalog worker failed".to_owned())?
-        .into_iter()
-        .filter(|record| record.owner.profile_id == identity.profile_id)
-        .collect::<Vec<_>>();
+    let catalog = shared_data_catalog(broker.inner().clone(), &identity.profile_id).await?;
     let categories = update
         .common_categories
         .iter()
@@ -787,6 +809,7 @@ pub async fn plugin_shared_data_replace(
         return Err("selected record is not present in the host sharing catalog".into());
     }
     let mut source_policies = Vec::new();
+    let mut required_sources = Vec::new();
     for decision in update.source_policies {
         let class = sharing_class(&decision.class)?;
         let source = crate::plugin_host::grants::PluginIdentity {
@@ -814,6 +837,11 @@ pub async fn plugin_shared_data_replace(
             })
             .flat_map(|record| record.fields.iter().cloned())
             .collect::<BTreeSet<_>>();
+        let within_previous_grant = existing_policy.is_some_and(|previous| {
+            decision.fields.is_subset(previous.fields())
+                && (!decision.history || previous.allows_history())
+                && (!decision.live || previous.allows_live())
+        });
         let source_is_current = !available_fields.is_empty()
             && lifecycle
                 .sharing_identity(source.plugin_id.clone(), &identity.profile_id)
@@ -823,16 +851,16 @@ pub async fn plugin_shared_data_replace(
             if !decision.fields.is_subset(&available_fields) {
                 return Err("sharing policy names fields not published by this dataset".into());
             }
-        } else {
-            let Some(previous) = existing_policy else {
-                return Err("source identity is not currently verified".into());
-            };
-            if !decision.fields.is_subset(previous.fields())
-                || (decision.history && !previous.allows_history())
-                || (decision.live && !previous.allows_live())
-            {
-                return Err("new sharing grants require a current verified source".into());
+            if !within_previous_grant && !required_sources.contains(&source) {
+                required_sources.push(source.clone());
             }
+        } else if !within_previous_grant {
+            return Err(if available_fields.is_empty() {
+                "new sharing grants require a current verified source"
+            } else {
+                "source identity is no longer verified; reload and review shared-data permissions"
+            }
+            .into());
         }
         source_policies.push(
             crate::plugin_host::sharing_policy::SourceRecipientPolicy::new(
@@ -847,33 +875,19 @@ pub async fn plugin_shared_data_replace(
             .map_err(|error| error.to_string())?,
         );
     }
-    let policies_handle = policies.inner().clone();
-    let expected_revision = update.expected_revision;
-    let identity_for_commit = identity.clone();
-    tokio::task::spawn_blocking(move || {
-        policies_handle.replace_recipient_policies(
-            &identity_for_commit,
+    let identity = identity.clone();
+    let saved = lifecycle
+        .replace_sharing_policy(
+            observation,
+            policies.inner().clone(),
             expected_revision,
             grant,
             source_policies,
+            required_sources,
         )
-    })
-    .await
-    .map_err(|_| "shared-data permission worker failed".to_owned())?
-    .map_err(|error| error.to_string())?;
-    let current_identity = lifecycle
-        .sharing_identity(plugin_id, &update.profile_id)
         .await
         .map_err(|status| status.message().to_owned())?;
-    if current_identity != identity {
-        return Err("plugin identity changed while saving shared-data permissions".into());
-    }
-    plugin_shared_data_snapshot_for(
-        current_identity,
-        policies.inner().clone(),
-        broker.inner().clone(),
-    )
-    .await
+    Ok(plugin_shared_data_snapshot_for(identity, saved, catalog))
 }
 
 #[tauri::command]

@@ -88,6 +88,7 @@ struct State {
 
 /// Host-owned source of the active plugin profile.
 pub struct PluginProfiles {
+    transition: Mutex<()>,
     state: Mutex<State>,
     layout: Mutex<Option<PluginStateLayout>>,
     changes: watch::Sender<Option<ProfileContext>>,
@@ -96,6 +97,7 @@ pub struct PluginProfiles {
 impl Default for PluginProfiles {
     fn default() -> Self {
         Self {
+            transition: Mutex::new(()),
             state: Mutex::new(State {
                 epoch: 1,
                 ..State::default()
@@ -114,16 +116,16 @@ impl std::fmt::Debug for PluginProfiles {
     }
 }
 
-impl PluginProfiles {
-    /// Supplies the host-owned root for profile-scoped plugin grants and activation.
-    pub fn set_state_layout(&self, layout: PluginStateLayout) {
-        *lock(&self.layout) = Some(layout);
-    }
+pub(crate) struct LockedProfileTransition<'a> {
+    profiles: &'a PluginProfiles,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
 
+impl LockedProfileTransition<'_> {
     /// Applies who is signed in. `account_id` is the verified account, or the cached last account
     /// while a restored session is unverified; `None` after sign-out or a rejected session.
     pub fn update(&self, account_id: Option<&str>, verified: bool) -> ProfileTransition {
-        let mut state = lock(&self.state);
+        let mut state = lock(&self.profiles.state);
         let account_id = account_id.filter(|id| !id.trim().is_empty());
         if state.account_id.as_deref() == account_id {
             if let Some(current) = state.current.as_mut()
@@ -132,7 +134,7 @@ impl PluginProfiles {
                 // Verifying the cached account keeps the same profile and its contexts.
                 current.verified = verified;
                 let current = state.current.clone();
-                self.changes.send_replace(current);
+                self.profiles.changes.send_replace(current);
             }
             return ProfileTransition::Unchanged;
         }
@@ -145,8 +147,36 @@ impl PluginProfiles {
         });
         let current = state.current.clone();
         drop(state);
-        self.changes.send_replace(current);
+        self.profiles.changes.send_replace(current);
         ProfileTransition::Fenced
+    }
+}
+
+impl PluginProfiles {
+    /// Supplies the host-owned root for profile-scoped plugin grants and activation.
+    pub fn set_state_layout(&self, layout: PluginStateLayout) {
+        *lock(&self.layout) = Some(layout);
+    }
+
+    /// Serializes account changes with a durable shared-data policy commit. Profile reads
+    /// use a separate state lock so they can still run while the commit is syncing to disk.
+    pub(crate) fn lock_transition(&self) -> LockedProfileTransition<'_> {
+        LockedProfileTransition {
+            profiles: self,
+            _guard: lock(&self.transition),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transition_is_locked(&self) -> bool {
+        matches!(
+            self.transition.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    pub fn update(&self, account_id: Option<&str>, verified: bool) -> ProfileTransition {
+        self.lock_transition().update(account_id, verified)
     }
 
     pub fn current(&self) -> Option<ProfileContext> {

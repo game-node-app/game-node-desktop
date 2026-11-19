@@ -12,6 +12,7 @@ import {
   type PluginConfigurationState,
   type PluginInfo,
   type PluginPermissionSnapshot,
+  type PluginSharedDataSnapshot,
 } from '../../api';
 import { cleanup } from '@testing-library/react';
 import { selectPluginConfiguration } from '../../api/pluginSettings';
@@ -60,6 +61,79 @@ describe('PluginInventory', () => {
     vi.restoreAllMocks();
     listenMock.mockReset();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('loads a fresh data review when the publisher changes and binds the save to that publisher', async () => {
+    const oldFingerprint = `SHA256:${'a'.repeat(64)}`;
+    const newFingerprint = `SHA256:${'b'.repeat(64)}`;
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', publisherFingerprint: oldFingerprint,
+    };
+    const review = {
+      pluginId: managed.pluginId, profileId: 'a', policyRevision: 0,
+      publisherFingerprint: oldFingerprint,
+      commonCategories: ['gamePaths' as const], selectedRecordIds: [], catalog: [], sourcePolicies: [],
+    };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginSharedDataSnapshot')
+      .mockResolvedValueOnce(review)
+      .mockResolvedValue({ ...review, publisherFingerprint: newFingerprint, commonCategories: [] });
+    const save = vi.spyOn(commands, 'pluginSharedDataReplace')
+      .mockResolvedValue({ ...review, publisherFingerprint: newFingerprint });
+
+    const { client } = renderInventory('en', 'a');
+    fireEvent.click(await screen.findByRole('button', { name: 'Review data access' }));
+    expect(await screen.findByRole('switch', { name: 'Game paths' })).toBeChecked();
+    act(() => {
+      client.setQueryData(pluginQueryKeys.inventory, [{ ...managed, publisherFingerprint: newFingerprint }]);
+    });
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Game paths' })).not.toBeChecked());
+    fireEvent.click(screen.getByRole('switch', { name: 'Game paths' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save data permissions' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(managed.pluginId, {
+      profileId: 'a', expectedPublisherFingerprint: newFingerprint, expectedRevision: 0,
+      commonCategories: ['gamePaths'], selectedRecordIds: [], sourcePolicies: [],
+    }));
+  });
+
+  it('keeps a completed save in the reviewed publisher cache after inventory changes', async () => {
+    const oldFingerprint = `SHA256:${'a'.repeat(64)}`;
+    const newFingerprint = `SHA256:${'b'.repeat(64)}`;
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', publisherFingerprint: oldFingerprint,
+    };
+    const review: PluginSharedDataSnapshot = {
+      pluginId: managed.pluginId, profileId: 'a', policyRevision: 0,
+      publisherFingerprint: oldFingerprint,
+      commonCategories: [], selectedRecordIds: [], catalog: [], sourcePolicies: [],
+    };
+    const newReview = { ...review, publisherFingerprint: newFingerprint };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([managed]);
+    vi.spyOn(commands, 'pluginSharedDataSnapshot')
+      .mockResolvedValueOnce(review)
+      .mockResolvedValue(newReview);
+    let finishSave!: (snapshot: PluginSharedDataSnapshot) => void;
+    const pendingSave = new Promise<PluginSharedDataSnapshot>((resolve) => { finishSave = resolve; });
+    const save = vi.spyOn(commands, 'pluginSharedDataReplace').mockReturnValue(pendingSave);
+    const { client } = renderInventory('en', 'a');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review data access' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Game paths' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save data permissions' }));
+    expect(save).toHaveBeenCalledOnce();
+
+    const oldKey = pluginQueryKeys.sharedData(managed.pluginId, 'a', oldFingerprint);
+    const newKey = pluginQueryKeys.sharedData(managed.pluginId, 'a', newFingerprint);
+    act(() => {
+      client.setQueryData(pluginQueryKeys.inventory, [{ ...managed, publisherFingerprint: newFingerprint }]);
+    });
+    await waitFor(() => expect(client.getQueryData(newKey)).toEqual(newReview));
+
+    const saved: PluginSharedDataSnapshot = { ...review, policyRevision: 1, commonCategories: ['gamePaths'] };
+    await act(async () => { finishSave(saved); });
+    expect(client.getQueryData(oldKey)).toEqual(saved);
+    expect(client.getQueryData(newKey)).toEqual(newReview);
+    expect(screen.getByRole('switch', { name: 'Game paths' })).not.toBeChecked();
   });
 
   it.each([

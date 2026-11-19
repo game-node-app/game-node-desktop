@@ -1472,6 +1472,7 @@ export interface SharedDataSourcePolicyDecision extends SharedDataSourcePolicy {
 
 export interface PluginSharedDataPolicyUpdate {
   profileId: string;
+  expectedPublisherFingerprint: string;
   expectedRevision: number;
   commonCategories: SharedDataCategory[];
   selectedRecordIds: string[];

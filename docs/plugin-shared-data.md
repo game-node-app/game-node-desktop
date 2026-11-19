@@ -41,7 +41,7 @@ available merely because generated bindings exist.
 | Method | Request and result | Permission and behavior |
 | --- | --- | --- |
 | `DataPublish` | `DataPublishRequest` → `DataMutationReply` | Requires `data.publish`; appends a custom dataset record and returns its host-assigned ID and revision. Publication is session-retained, so `durability` must be `SESSION_ONLY`. Use Persistence for private durable values. |
-| `DataGet` | `DataGetRequest` → `DataGetReply` | Requires the session context and an exact record ID. The owner can read its own record; a different plugin must pass the host's current record or dataset sharing policy. |
+| `DataGet` | `DataGetRequest` → `DataGetReply` | Requires the session context and an exact record ID. For a common record owned by another plugin, also select its category or record ID through `CommonDataSelector`. Sensitive and custom records use the current exact dataset policy. |
 | `DataList` | `DataListRequest` → `DataListReply` | Requires a `PageRequest` with session context. Pages one dataset; `filter` must be empty. The opaque cursor is session-bound and expires after five minutes. |
 | `DataWatch` | `DataWatchRequest` → stream of `DataEvent` | Requires session context and current live-sharing authorization. Queue capacity is bounded; revocation or falling behind ends the stream, so list and watch again. |
 
@@ -77,8 +77,9 @@ reuse a key after the earlier session's data has been removed.
    contains the record ID and broker revision.
 2. A consumer opens its own session and calls `DataList` for the same dataset.
    Put its resource context in `page.context`. To request common data, set a
-   `CommonDataSelector`; a selector is a request, not a grant. Without one, the
-   result contains only records the caller owns.
+   `CommonDataSelector` and include the category or record IDs the host
+   approved. Without a selector, common data is limited to the caller's own
+   records. Cross-plugin custom and sensitive reads use the exact dataset policy.
 3. To fetch one record, call `DataGet` with its dataset and record IDs. To follow
    new publications without a list-to-watch gap, call `DataWatch` with the
    `revision` from `DataListReply`. A stale position fails closed; repeat the
@@ -92,14 +93,12 @@ Selected record IDs are checked independently and do not imply category-wide
 access. Sensitive and custom datasets use a source-to-recipient policy scoped
 to the exact dataset, with separate field, history, and live-delivery choices.
 Revocation changes the policy revision and fences cursors and subscriptions.
-Plugins cannot create or broaden these policies through RPC. The inventory has
-a sharing review surface, but its selections are currently held only in UI
-state and are not connected to the persisted policy store. As a result, the
-default-deny installation can publish and read its own records but cannot
-complete an interactive cross-plugin grant. The consumer flow below describes
-the public request contract after a host policy has approved the recipient;
-persisting the review choices and enforcing them through the policy store remain
-an integration gap beyond the UI controls covered by task 1.18.
+Users save these choices in the plugin inventory. The host persists them for
+the verified recipient's plugin ID, publisher fingerprint and active profile.
+Only the host review can create or broaden a policy. Shared reads confer no
+durable storage permission. Shared publication is session-only, and the
+recipient retention workflow for durable shared copies is tracked separately
+under task 1.13.
 
 ## Dataset categories and exclusions
 

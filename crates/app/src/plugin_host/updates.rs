@@ -569,6 +569,7 @@ impl PluginUpdateService {
         let fingerprint = confirmed_fingerprint.to_owned();
         let trust_status = pending.review.trust.clone();
         let pinned = tokio::task::spawn_blocking(move || {
+            let _publisher = super::managed_packages::lock_publisher_identity();
             let mut trust = super::publisher_trust::PublisherTrustStore::open(private_dir)
                 .map_err(|error| error.to_string())?;
             match trust
@@ -1382,13 +1383,17 @@ impl PluginUpdateService {
             .await;
         match activated {
             Ok(active) if changed_key => {
-                let trust_result = super::publisher_trust::PublisherTrustStore::open(
-                    &self.private_dir,
-                )
-                .and_then(|mut trust| {
-                    trust.retrust_key(plugin_id, &key, &candidate.review.publisher_fingerprint)?;
-                    Ok(())
-                });
+                let trust_dir = self.private_dir.clone();
+                let id = plugin_id.to_owned();
+                let fingerprint = candidate.review.publisher_fingerprint;
+                let trust_result = tokio::task::spawn_blocking(move || {
+                    let _publisher = super::managed_packages::lock_publisher_identity();
+                    super::publisher_trust::PublisherTrustStore::open(trust_dir)
+                        .and_then(|mut trust| trust.retrust_key(&id, &key, &fingerprint))
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .unwrap_or_else(|_| Err("publisher trust worker failed".to_owned()));
                 if let Err(trust_error) = trust_result {
                     self.packages
                         .activate_version(
@@ -1403,7 +1408,7 @@ impl PluginUpdateService {
                                 "publisher re-trust failed ({trust_error}); restoring the prior package also failed ({rollback_error})"
                             )
                         })?;
-                    return Err(trust_error.to_string());
+                    return Err(trust_error);
                 }
                 Ok(active.version)
             }
@@ -1885,7 +1890,7 @@ fn restrict_private(_: &Path) -> io::Result<()> {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use base64::Engine as _;
     use gamenode_platform::{
@@ -1970,7 +1975,11 @@ mod tests {
         fs::write(root.join("signature.ed25519"), key.sign(&signed).as_ref()).unwrap();
     }
 
-    fn add_tree(zip: &mut ZipWriter<fs::File>, base: &Path, current: &Path) {
+    pub(in crate::plugin_host) fn add_tree(
+        zip: &mut ZipWriter<fs::File>,
+        base: &Path,
+        current: &Path,
+    ) {
         for entry in fs::read_dir(current).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();

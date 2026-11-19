@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "id": "org.example.target-compatibility",
+  "kind": "extension",
+  "name": "Target Compatibility Example",
+  "version": "1.0.0",
+  "api": { "min": "1.6.0", "max": "1.6.0" },
+  "publisher": { "key_id": "fixture", "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" },
+  "license": { "expression": "MIT", "files": ["licenses/LICENSE"] },
+  "targets": [
+    {
+      "os": "windows",
+      "arch": "x86_64",
+      "abi": "msvc",
+      "entrypoint": "bin/windows-x64/plugin.exe",
+      "requires": {
+        "windows": {
+          "product": "client",
+          "min_version": "10.0",
+          "min_build": 22000,
+          "max_build": 26100
+        }
+      },
+      "tested_on": [{ "product": "windows-11", "release": "23H2" }]
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "abi": "gnu",
+      "entrypoint": "bin/linux-gnu-x64/plugin",
+      "requires": {
+        "linux": {
+          "libc": { "family": "glibc", "min_version": "2.36" },
+          "distributions": [
+            { "id": "debian", "versions": ["13", "13.1"] },
+            { "id": "fedora", "versions": ["43"] }
+          ]
+        }
+      },
+      "tested_on": [{ "distribution": "debian", "version": "13" }]
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "abi": "musl",
+      "entrypoint": "bin/linux-musl-x64/python-plugin",
+      "requires": {
+        "linux": {
+          "libc": { "family": "musl", "min_version": "1.2.4" }
+        }
+      },
+      "tested_on": [{ "distribution": "alpine", "version": "3.21" }]
+    }
+  ]
+}

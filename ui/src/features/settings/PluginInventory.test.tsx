@@ -541,17 +541,20 @@ describe('PluginInventory', () => {
     await waitFor(() => expect(retrust).toHaveBeenCalledWith('changed-token', 'SHA256:new'));
   });
 
-  it('saves only manifest-declared scopes with the cached account and grant revision', async () => {
+  it('saves only selected network origins for the reviewed account, publisher and revision', async () => {
     const managed: PluginInfo = {
       ...plugin, pluginId: 'org.example.community', source: 'community',
       publisherFingerprint: `SHA256:${'a'.repeat(64)}`, runtimeAvailable: true, enabled: false,
     };
     const permissionSnapshot: PluginPermissionSnapshot = {
       pluginId: managed.pluginId, publisherFingerprint: managed.publisherFingerprint!,
-      profileId: 'account-one', grantRevision: 12,
+      profileId: 'host-profile-one', grantRevision: 12,
       requestedPermissions: [{
-        permission_id: 'library.root.read', required: false,
-        allowed_scopes: [{ scope: 'own-creator', category: 'library-root' }],
+        permission_id: 'network.fetch', required: false,
+        allowed_scopes: [
+          { scope: 'declared', value: 'https://api.example.com' },
+          { scope: 'declared', value: 'https://cdn.example.com:8443' },
+        ],
       }],
       effectiveGrants: [],
     };
@@ -563,15 +566,61 @@ describe('PluginInventory', () => {
     renderInventory('en', 'account-one');
 
     expect(await screen.findByText(/Requested scopes come from the verified package manifest/)).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('checkbox', { name: /own-creator.*library-root/ }));
-    expect(screen.getByText(/Effective host decision: Denied/)).toBeInTheDocument();
+    const apiOrigin = await screen.findByRole('checkbox', { name: /api\.example\.com.*Denied/ });
+    const cdnOrigin = screen.getByRole('checkbox', { name: /cdn\.example\.com:8443.*Denied/ });
+    expect(apiOrigin).not.toBeChecked();
+    fireEvent.click(apiOrigin);
+    expect(cdnOrigin).not.toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Save permission choices' }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith(
       managed.pluginId,
-      'account-one',
+      'host-profile-one',
+      managed.publisherFingerprint,
       12,
-      [{ permission_id: 'library.root.read', scope: { scope: 'own-creator', category: 'library-root' }, granted: true }],
+      [
+        { permission_id: 'network.fetch', scope: { scope: 'declared', value: 'https://api.example.com' }, granted: true },
+        { permission_id: 'network.fetch', scope: { scope: 'declared', value: 'https://cdn.example.com:8443' }, granted: false },
+      ],
     ));
+  });
+
+  it('keeps a completed network permission save in the reviewed publisher cache', async () => {
+    const oldFingerprint = `SHA256:${'a'.repeat(64)}`;
+    const newFingerprint = `SHA256:${'b'.repeat(64)}`;
+    const managed: PluginInfo = {
+      ...plugin, source: 'community', publisherFingerprint: oldFingerprint, runtimeAvailable: true,
+    };
+    const scope = { scope: 'declared', value: 'https://api.example.com' } as const;
+    const review: PluginPermissionSnapshot = {
+      pluginId: managed.pluginId, profileId: 'a', publisherFingerprint: oldFingerprint, grantRevision: 0,
+      requestedPermissions: [{ permission_id: 'network.fetch', required: false, allowed_scopes: [scope] }],
+      effectiveGrants: [],
+    };
+    const newReview = { ...review, publisherFingerprint: newFingerprint };
+    const newInventory = [{ ...managed, publisherFingerprint: newFingerprint }];
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValueOnce([managed]).mockResolvedValue(newInventory);
+    vi.spyOn(commands, 'pluginPermissionSnapshot').mockResolvedValueOnce(review).mockResolvedValue(newReview);
+    let finishSave!: (snapshot: PluginPermissionSnapshot) => void;
+    const pendingSave = new Promise<PluginPermissionSnapshot>((resolve) => { finishSave = resolve; });
+    const replace = vi.spyOn(commands, 'pluginPermissionsReplace').mockReturnValue(pendingSave);
+    const { client } = renderInventory('en', 'a');
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /api\.example\.com.*Denied/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save permission choices' }));
+    expect(replace).toHaveBeenCalledOnce();
+    const oldKey = pluginQueryKeys.permissions(managed.pluginId, 'a', oldFingerprint);
+    const newKey = pluginQueryKeys.permissions(managed.pluginId, 'a', newFingerprint);
+    act(() => { client.setQueryData(pluginQueryKeys.inventory, newInventory); });
+    await waitFor(() => expect(client.getQueryData(newKey)).toEqual(newReview));
+
+    const saved: PluginPermissionSnapshot = {
+      ...review, grantRevision: 1,
+      effectiveGrants: [{ permission_id: 'network.fetch', required: false, scope, state: 'granted' }],
+    };
+    await act(async () => { finishSave(saved); });
+    expect(client.getQueryData(oldKey)).toEqual(saved);
+    expect(client.getQueryData(newKey)).toEqual(newReview);
+    expect(screen.getByRole('checkbox', { name: /api\.example\.com.*Denied/ })).not.toBeChecked();
   });
 
   it('uses the shared removal modal with Escape and invokes stop-before-remove lifecycle command', async () => {
@@ -627,10 +676,10 @@ describe('PluginInventory', () => {
 
     const { client } = renderInventory('en', 'account-one');
     await waitFor(() => {
-      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId);
+      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId, 'account-one');
       expect(commands.pluginConfigurationState).toHaveBeenCalledWith(managed.pluginId);
     });
-    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-one')))
+    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-one', managed.publisherFingerprint)))
       .toEqual(permissions);
     expect(client.getQueryData(pluginQueryKeys.configuration(managed.pluginId)))
       .toEqual(configuration);
@@ -664,16 +713,16 @@ describe('PluginInventory', () => {
 
     const { client } = renderInventory('en', 'account-two', (queryClient) => {
       queryClient.setQueryData(
-        pluginQueryKeys.permissions(managed.pluginId, 'account-two'),
+        pluginQueryKeys.permissions(managed.pluginId, 'account-two', managed.publisherFingerprint),
         savedPermissions,
       );
       queryClient.setQueryData(pluginQueryKeys.configuration(managed.pluginId), savedConfiguration);
     });
     await waitFor(() => {
-      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId);
+      expect(commands.pluginPermissionSnapshot).toHaveBeenCalledWith(managed.pluginId, 'account-two');
       expect(commands.pluginConfigurationState).toHaveBeenCalledWith(managed.pluginId);
     });
-    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-two')))
+    expect(client.getQueryData(pluginQueryKeys.permissions(managed.pluginId, 'account-two', managed.publisherFingerprint)))
       .toEqual(savedPermissions);
     expect(client.getQueryData(pluginQueryKeys.configuration(managed.pluginId)))
       .toEqual(savedConfiguration);

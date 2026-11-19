@@ -547,17 +547,33 @@ impl FetchClient {
         request: Request,
         allow: impl Fn(&str) -> bool + Send + Sync,
     ) -> Result<Response, FetchError> {
+        self.fetch_with_origin_check(request, |origin| std::future::ready(allow(&origin)))
+            .await
+    }
+
+    /// Like `fetch`, with an asynchronous authorization check before each request.
+    pub async fn fetch_with_origin_check<F>(
+        &self,
+        request: Request,
+        allow: impl Fn(String) -> F + Send + Sync,
+    ) -> Result<Response, FetchError>
+    where
+        F: std::future::Future<Output = bool> + Send,
+    {
         let deadline = request.timeout;
         tokio::time::timeout(deadline, self.run(request, allow))
             .await
             .map_err(|_| FetchError::Timeout)?
     }
 
-    async fn run(
+    async fn run<F>(
         &self,
         request: Request,
-        allow: impl Fn(&str) -> bool + Send + Sync,
-    ) -> Result<Response, FetchError> {
+        allow: impl Fn(String) -> F + Send + Sync,
+    ) -> Result<Response, FetchError>
+    where
+        F: std::future::Future<Output = bool> + Send,
+    {
         let budget = request.max_response_bytes;
         let Request {
             mut url,
@@ -578,7 +594,7 @@ impl FetchClient {
             .ok_or(FetchError::Denied)?;
         for hop in 0..=MAX_REDIRECTS {
             let origin = check_target(&url, self.policy)?;
-            if !allow(&origin) {
+            if !allow(origin.clone()).await {
                 return Err(FetchError::Denied);
             }
             let mut sending = self

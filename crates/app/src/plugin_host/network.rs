@@ -3,9 +3,8 @@
 //! `network.fetch` is only half of the authority: the user also approves the exact HTTPS origins
 //! (scheme, host and port) a plugin may reach, and nothing is reachable until one is approved.
 //! The origins come from an [`OriginScopes`] source that is asked afresh for every fetch and for
-//! every redirect hop, so a revoked or narrowed approval stops a fetch already under way. The
-//! source is connected with the plugin activation code (the permission store); until it is, no
-//! origin is approved and every fetch is denied.
+//! every redirect hop and before returning a response. The production source is the active
+//! profile's permission store, read on a blocking worker.
 //!
 //! The fetching itself, with its address, redirect, size and deadline rules, is
 //! [`gamenode_platform::plugin_network`]; this module bounds how many run at once.
@@ -14,12 +13,17 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use gamenode_platform::plugin_network::{FetchClient, FetchError, Request, Response, origin_of};
+use gamenode_plugin_protocol::capability::NETWORK_FETCH;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::Status;
 use url::Url;
 
-use super::grants::PluginIdentity;
+use super::{
+    grants::{GrantScope, PermissionState, PluginIdentity},
+    profile::{PluginProfiles, PluginStateLayout},
+};
 
 /// Fetches one plugin may have in flight.
 pub const PER_PLUGIN_FETCHES: usize = 4;
@@ -27,7 +31,7 @@ pub const PER_PLUGIN_FETCHES: usize = 4;
 pub const GLOBAL_FETCHES: usize = 16;
 
 /// The check a fetch makes before every origin it is about to contact.
-pub type AllowOrigin = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+pub type AllowOrigin = Arc<dyn Fn(String) -> BoxFuture<'static, bool> + Send + Sync>;
 
 /// Whatever performs a fetch. The real one is [`FetchClient`]; tests supply their own.
 #[async_trait]
@@ -40,19 +44,84 @@ pub trait Fetcher: Send + Sync {
 #[async_trait]
 impl Fetcher for FetchClient {
     async fn fetch(&self, request: Request, allow: AllowOrigin) -> Result<Response, FetchError> {
-        FetchClient::fetch(self, request, move |origin: &str| allow(origin)).await
+        self.fetch_with_origin_check(request, move |origin| allow(origin))
+            .await
     }
 }
 
 /// The exact HTTPS origins the user has approved for a plugin, as they stand now.
+#[async_trait]
 pub trait OriginScopes: Send + Sync {
-    fn approved(&self, identity: &PluginIdentity) -> Vec<String>;
+    async fn approved(
+        &self,
+        identity: &PluginIdentity,
+        profile_epoch: u64,
+    ) -> Option<ApprovedOrigins>;
+}
+
+/// A permission-store revision and the exact origins approved at that revision.
+pub struct ApprovedOrigins {
+    pub revision: u64,
+    pub origins: BTreeSet<String>,
+}
+
+pub(super) struct PersistedOriginScopes {
+    pub profiles: Arc<PluginProfiles>,
+    pub layout: PluginStateLayout,
+}
+
+#[async_trait]
+impl OriginScopes for PersistedOriginScopes {
+    async fn approved(
+        &self,
+        identity: &PluginIdentity,
+        profile_epoch: u64,
+    ) -> Option<ApprovedOrigins> {
+        let profile = self.profiles.current().filter(|profile| {
+            profile.epoch() == profile_epoch && profile.profile_id() == identity.profile_id
+        })?;
+        let layout = self.layout.clone();
+        let identity = identity.clone();
+        let approved = tokio::task::spawn_blocking(move || {
+            let store = layout.open_grants(&profile).ok()?;
+            let origins = store
+                .effective_grants(&identity)
+                .into_iter()
+                .filter_map(|grant| {
+                    if grant.permission_id == NETWORK_FETCH
+                        && grant.state == PermissionState::Granted
+                        && let GrantScope::Declared { value } = grant.scope
+                        && canonical_origin(&value).as_ref() == Some(&value)
+                    {
+                        return Some(value);
+                    }
+                    None
+                })
+                .collect();
+            Some(ApprovedOrigins {
+                revision: store.revision(&identity),
+                origins,
+            })
+        })
+        .await
+        .ok()??;
+        self.profiles.is_current(profile_epoch).then_some(approved)
+    }
 }
 
 /// An origin as the fetch compares it: `https://host` or `https://host:port`, lowercase, with
 /// the default port left out. Anything that is not exactly an origin (a path, a query, a
 /// scheme other than https, credentials) is not one.
-fn canonical_origin(text: &str) -> Option<String> {
+pub(super) fn canonical_origin(text: &str) -> Option<String> {
+    let (scheme, authority) = text.split_once("://")?;
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    if !scheme.eq_ignore_ascii_case("https")
+        || authority.is_empty()
+        || authority.contains(['/', '\\', '@', '?', '#'])
+        || text.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return None;
+    }
     let url = Url::parse(text).ok()?;
     let plain = url.username().is_empty()
         && url.password().is_none()
@@ -109,22 +178,18 @@ impl NetworkAccess {
         self.fetcher.clone()
     }
 
-    /// The origins approved for `identity` now. Empty when no source is connected.
-    pub(crate) fn approved_origins(&self, identity: &PluginIdentity) -> BTreeSet<String> {
+    /// The origins approved for `identity` and the authenticated profile epoch now.
+    pub(crate) async fn approved_origins(
+        &self,
+        identity: &PluginIdentity,
+        profile_epoch: u64,
+    ) -> Option<ApprovedOrigins> {
         let scopes = self
             .scopes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        scopes
-            .map(|scopes| {
-                scopes
-                    .approved(identity)
-                    .iter()
-                    .filter_map(|text| canonical_origin(text))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .clone()?;
+        scopes.approved(identity, profile_epoch).await
     }
 
     /// One slot of the plugin's own allowance and one of the global one, or

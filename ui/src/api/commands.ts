@@ -191,10 +191,10 @@ export const commands = {
   pluginImportLicenseText: (token: string, file: string) =>
     safeInvoke<string>('plugin_import_license_text', { token, file }),
 
-  pluginPermissionSnapshot: (pluginId: string) =>
+  pluginPermissionSnapshot: (pluginId: string, expectedAccountId: string) =>
     safeInvoke<PluginPermissionSnapshot>(
       'plugin_permission_snapshot',
-      { pluginId },
+      { pluginId, expectedAccountId },
       () => ({
         pluginId,
         publisherFingerprint: '',
@@ -208,11 +208,13 @@ export const commands = {
   pluginPermissionsReplace: (
     pluginId: string,
     expectedProfileId: string,
+    expectedPublisherFingerprint: string,
     expectedRevision: number,
     decisions: PluginPermissionDecision[],
   ) => safeInvoke<PluginPermissionSnapshot>('plugin_permissions_replace', {
     pluginId,
     expectedProfileId,
+    expectedPublisherFingerprint,
     expectedRevision,
     decisions,
   }),

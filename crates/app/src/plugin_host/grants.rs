@@ -767,6 +767,19 @@ pub(crate) fn manifest_permission_requests(
                         return Err(GrantError::InvalidScope);
                     }
                     BTreeSet::from([GrantScope::OwnPrivateNamespace])
+                } else if request.id == gamenode_plugin_protocol::capability::NETWORK_FETCH {
+                    if request.scope.len() > 512 {
+                        return Err(GrantError::InvalidScope);
+                    }
+                    request
+                        .scope
+                        .split(',')
+                        .map(|origin| {
+                            super::network::canonical_origin(origin.trim())
+                                .map(|value| GrantScope::Declared { value })
+                                .ok_or(GrantError::InvalidScope)
+                        })
+                        .collect::<Result<_, _>>()?
                 } else if let Some((category, _)) = permission_category(&request.id) {
                     let scope = match request.scope.as_str() {
                         "own-provider" => GrantScope::OwnCreator { category },
@@ -819,18 +832,8 @@ fn validate_permission_request(request: &PermissionRequest) -> Result<(), GrantE
     if is_known_permission(&request.permission_id) && request.allowed_scopes.is_empty() {
         return Err(GrantError::InvalidRequest);
     }
-    if permission_category(&request.permission_id).is_none() {
-        if !is_known_permission(&request.permission_id) {
-            return Ok(());
-        }
-        if is_known_permission(&request.permission_id)
-            && request.allowed_scopes.iter().all(|scope| {
-                matches!(scope, GrantScope::Declared { value } if valid_identity_part(value, 512))
-            })
-        {
-            return Ok(());
-        }
-        return Err(GrantError::InvalidScope);
+    if !is_known_permission(&request.permission_id) {
+        return Ok(());
     }
     for scope in &request.allowed_scopes {
         validate_scope_for_permission(&request.permission_id, scope)?;
@@ -850,6 +853,15 @@ fn validate_scope_for_permission(
         };
     }
     let Some((category, operation)) = permission_category(permission_id_value) else {
+        if permission_id_value == gamenode_plugin_protocol::capability::NETWORK_FETCH {
+            return if matches!(scope, GrantScope::Declared { value }
+                if super::network::canonical_origin(value).as_ref() == Some(value))
+            {
+                Ok(())
+            } else {
+                Err(GrantError::InvalidScope)
+            };
+        }
         return if is_known_permission(permission_id_value)
             && matches!(scope, GrantScope::Declared { value } if valid_identity_part(value, 512))
         {

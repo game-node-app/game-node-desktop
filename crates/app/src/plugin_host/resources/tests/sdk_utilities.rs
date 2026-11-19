@@ -547,9 +547,9 @@ async fn the_fetch_recipe_says_whether_to_ask_the_user_or_retry() {
         recipes::fetch_bytes(&sdk, "http://api.example.com/", 1024).await,
         Err(recipes::FetchFailure::Other(_))
     ));
-    fixture
-        .fetcher
-        .script(|_, _| Err(gamenode_platform::plugin_network::FetchError::TooLarge));
+    fixture.fetcher.script(|_, _| {
+        std::future::ready(Err(gamenode_platform::plugin_network::FetchError::TooLarge))
+    });
     assert!(matches!(
         recipes::fetch_bytes(&sdk, "https://api.example.com/big", 1024).await,
         Err(recipes::FetchFailure::Busy(status)) if status.code() == Code::ResourceExhausted

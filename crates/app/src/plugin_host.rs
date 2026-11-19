@@ -531,6 +531,18 @@ pub struct PluginApi {
     pub fingerprints: Arc<fingerprints::Snapshots>,
 }
 
+impl PluginApi {
+    /// Connects the account-bound permission store to the host's resource adapters.
+    pub fn set_state_layout(&self, layout: profile::PluginStateLayout) {
+        self.providers.set_state_layout(layout.clone());
+        self.network
+            .set_scopes(Arc::new(network::PersistedOriginScopes {
+                profiles: self.providers.profiles(),
+                layout,
+            }));
+    }
+}
+
 const MAX_CONNECTIONS: usize = 16;
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DISCOVERY_RECORDS: usize = 50_000;

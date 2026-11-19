@@ -10,8 +10,8 @@ This follow-up is part of the delivery split documented in `../add-third-party-p
 
 - [x] 1.4 **Source 12.4.** Implement domain queries and Data projections/subscriptions over consistent authorization with revocation/cursor fencing, bounded queues and onward provenance; return the DataList snapshot revision for gap-free DataWatch resumption; verify neither alias can recover filtered fields and a two-plugin exchange shares only approved resources/data.
 
-- [ ] 1.5 **Source 12.5.** Document each dataset/method/permission/projection and safe non-shareable exclusions; after task 1.27, verify the published producer-consumer contract can be followed through public APIs without source-private RPCs or Core dashboards.
-  - Review (2026-11-18): The shared-data guide exists. Public API interoperability and documentation of supported domain routes still depend on 1.27.
+- [x] 1.5 **Source 12.5.** Document each dataset/method/permission/projection and safe non-shareable exclusions; after task 1.27, verify the published producer-consumer contract can be followed through public APIs without source-private RPCs or Core dashboards.
+  - The shared-data guide maps served and reserved routes to grants, projections and exclusions. Eight focused Data tests passed, including the public list-to-watch handoff with a persisted source-to-recipient policy and a consumer without `data.publish`.
 
 
 - [ ] 1.6 **Source 12.6.** Implement structural Struct validation, size/depth/key budgets and namespace/field projection; verify metadata cannot shadow typed execution/ownership/grant fields and unknown optional schemas do not invalidate usable base resources.

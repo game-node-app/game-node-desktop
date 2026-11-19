@@ -381,7 +381,7 @@ async fn data_publish_list_get_and_watch_use_the_snapshot_revision() {
 }
 
 async fn consumer_session(fixture: &Fixture) -> Session {
-    let capabilities = [cap::CONTEXT, cap::DATA_PUBLISH, cap::STORAGE_WRITE];
+    let capabilities = [cap::CONTEXT, cap::STORAGE_WRITE];
     fixture
         .api
         .register(Registration {
@@ -604,8 +604,20 @@ async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revok
             vec![policy(true, true)],
         )
         .unwrap();
-    // Keep the ResourceHost stream unpolled so revocation precedes dequeue.
-    let mut pending = ResourceHost::data_watch(&resource, Request::new(watch(third.revision)))
+    let listed = consumer_rpc
+        .data_list(list_request(&context, dataset))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.records.len(), 3);
+    assert_projected(&listed.records[2], &third, 70.0);
+    let mut live = consumer_rpc
+        .data_watch(watch(listed.revision))
+        .await
+        .unwrap()
+        .into_inner();
+    // Keep this second ResourceHost stream unpolled so revocation precedes dequeue.
+    let mut pending = ResourceHost::data_watch(&resource, Request::new(watch(listed.revision)))
         .await
         .unwrap()
         .into_inner();
@@ -614,10 +626,17 @@ async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revok
         .await
         .unwrap()
         .into_inner();
-    let mut durable = publish(1, 60.0);
-    durable.mutation.as_mut().unwrap().context = Some(context.clone());
+    let event = tokio::time::timeout(Duration::from_secs(2), live.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.event_type, "published");
+    assert_projected(&event.record.unwrap(), &fourth, 75.0);
+
+    let mut durable = publish(5, 60.0);
     durable.durability = StorageDurability::Persistent as i32;
-    let error = consumer_rpc.data_publish(durable).await.unwrap_err();
+    let error = producer_rpc.data_publish(durable).await.unwrap_err();
     assert_eq!(error.code(), Code::FailedPrecondition);
     let error = consumer_rpc
         .storage_put(StoragePutRequest {
@@ -661,6 +680,12 @@ async fn persisted_custom_policy_filters_authenticated_public_exchange_and_revok
         consumer_rpc.data_get(get).await.unwrap_err().code(),
         Code::NotFound
     );
+    let denied = consumer_rpc
+        .data_list(list_request(&context, dataset))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(denied.records.is_empty());
     server.abort();
 }
 

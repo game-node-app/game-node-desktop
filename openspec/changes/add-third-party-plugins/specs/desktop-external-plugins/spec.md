@@ -237,3 +237,31 @@ The manifest SHALL declare whether the plugin can identify playtime and pauses, 
 #### Scenario: Capability changes on update
 - **WHEN** an update changes pause detection or the accounting mode
 - **THEN** the host presents the changed policy and any application-open warning before activation and preserves the user's disabled-accounting preference
+
+## ADDED Requirements
+
+### Requirement: Upgrade compatibility with existing installations
+The application SHALL open the data created by every previously shipped version without loss or manual repair. A shipped schema migration SHALL keep its version, name and content, and new migrations SHALL be numbered after the latest shipped version. The host SHALL verify the recorded migration history before applying migrations and SHALL leave a mismatched, foreign or newer database unchanged. It SHALL preserve a verified snapshot before migrating a database that holds user data.
+
+#### Scenario: Update an installation created by the shipped lineage
+- **WHEN** the application starts on a database created by a shipped build with user data in every migrated table
+- **THEN** every migration of this program that the database lacks is applied in order, the complete current schema exists, and no existing row is lost or changed
+
+#### Scenario: Migration history does not match
+- **WHEN** a recorded migration name differs from the migration list for the same version, or the file is not a GameNode database
+- **THEN** the application refuses to migrate, reports the reason and leaves the database file byte-for-byte unchanged
+
+#### Scenario: A migration fails
+- **WHEN** a pending migration fails while upgrading a database with user data
+- **THEN** that migration is rolled back, earlier migrations stay committed, a snapshot taken before the upgrade remains available and the failure is reported without data loss
+
+#### Scenario: An older application opens an upgraded database
+- **WHEN** a previous build opens a database whose recorded version is newer than it supports
+- **THEN** it refuses to open it, leaves it unmodified and a later start of the newer build upgrades nothing it has already applied
+
+### Requirement: Development-only plugin state is never reinterpreted
+State that existed only in development builds of this program SHALL either be carried over idempotently or be refused without modification. A carried-over publisher pin SHALL NOT replace a different pin or make a publisher trusted by itself, and carried-over grants SHALL NOT exceed what the current manifest and review allow. Original files SHALL be retained.
+
+#### Scenario: A development-only publisher pin conflicts with the trust store
+- **WHEN** a legacy publisher pin names a plugin whose current trust-store pin has a different key
+- **THEN** the current pin is kept, the legacy key is not trusted, the publisher appears as a changed key that needs separate re-trust, and the legacy file is retained

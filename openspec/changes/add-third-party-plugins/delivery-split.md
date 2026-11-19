@@ -22,7 +22,11 @@ NetworkFetch, Files, Saves, Locations, Tools, Ports and Backups are not MVP endp
 
 ### MVP tasks retained in the original checklist
 
-`8.1–8.3`, `8.7`, `9.3`, `10.1–10.2`, `10.4–10.5`, `10.8`, `11.1–11.3`, `11.5–11.7`, `11.9`, `18.1–18.4`, and MVP-scoped `18.10`.
+`8.1–8.3`, `8.7`, `9.3`, `10.1–10.2`, `10.4–10.5`, `10.8`, `11.1–11.3`, `11.5–11.7`, `11.9`, `18.1–18.4`, and MVP-scoped `18.10`, and the new upgrade-compatibility tasks `20.1–20.4`.
+
+### Pull request gate
+
+The pull request for all four changes is not opened until the follow-up tasks it covers are done and `20.1–20.4` pass. They protect the data of existing installations: this branch's schema numbering currently collides with `main`'s, so merging `main` and renumbering this program's migrations is a precondition, not a clean-up. Remove the temporary split branches only after that pull request.
 
 ## Follow-up A: actions and configuration
 

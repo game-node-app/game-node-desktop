@@ -568,6 +568,22 @@ The confirmation can be remembered for one plugin and one game: the dialog offer
 
 Until detected targets have their own revisions (task 7.7), a launch request's `expected_revision` is the library entry's revision, which the plugin can read, and the "detected target" an intent or a remembered approval is bound to is a fingerprint the host computes of what a launch would start now: the provider's launch URI, or the approved executable with its arguments, working directory and registration revision. The fingerprint is checked again right before dispatch, so a target that changes while the dialog is open starts nothing.
 
+### 21. Upgrade compatibility with existing installations
+
+Installations that already run a shipped build must keep their data when they update. The shipped lineage is `main`: schema versions 1 to 16 with the names and SQL that `main` carries (current at `e37ccd1`) are immutable. This program's own migrations are numbered after the latest version shipped on `main` at the moment `main` is merged, and none reuses, reorders or edits a shipped version.
+
+This is a present risk, not a hypothetical one. The integration branch numbers its migrations 10 to 18 independently of `main`'s 10 to 16 (for example version 10 is `library_installations` here and `library_organization` on `main`, version 15 is `library_organization` here and `app_preferences` on `main`). The runner writes one history row per migration but reads only `MAX(version)`, and applies versions greater than that maximum without comparing names. A database created by a `main` build would therefore skip this program's versions 10 to 16, missing the library installation, display override, match source, artwork override, entry target and custom launch recipe schema, while its history rows claim those versions are applied.
+
+Rules:
+
+- The runner verifies the recorded history (version and name for every row) against the migration list before applying anything. A mismatched, foreign or newer history is refused with the database left byte-for-byte unchanged, extending the existing newer-schema refusal.
+- Before applying pending migrations to a database that already holds user data, the host keeps a verified snapshot of the database file, retains the most recent one and reports a failed migration without data loss. Each migration still runs in its own transaction.
+- Downgrade is not supported, but it is safe: an older application that opens a newer database is refused without modification (the existing newer-schema rule), so a rollback never corrupts or discards data.
+- Layouts that existed only in development builds of this program (the publisher pin file `<private_dir>/publisher-keys.json`, the grants directory `<data_dir>/plugin-state` used before the trust store and the grants shared one root, and databases numbered by the integration branch) are never shipped data. They are either carried over by an idempotent migration or refused without modification; they are never silently reinterpreted. A carried-over publisher pin never overrides a different pin already in the trust store: the conflict is kept as a changed key that needs separate re-trust. Carried-over grants never widen the permissions the current manifest and review allow. Original files are retained.
+- Schemas that are new in this program (plugin data stores, plugin persistence, package registry) have no shipped data. They still evolve forward-only and are covered by their own versioning.
+
+Validation before the pull request: a fixture database built from `main`'s migration list with representative data upgrades to the complete schema with all data preserved; a test pins the version, name and SHA-256 of every shipped migration; mismatched history, failed migration and downgrade are exercised; and an upgrade of a copy of a real profile is run on native Linux and Windows. No pull request for the plugin changes is opened until these pass.
+
 ## Risks / Trade-offs
 
 - Native plugin can bypass API restrictions or alter same-user files → explicit consent/disclosure; API checks still protect cooperative calls and prevent confused host authority, without claiming OS confinement.
@@ -576,6 +592,7 @@ Until detected targets have their own revisions (task 7.7), a launch request's `
 - Revocation races and failed updates → grant revision checks at commit, job fencing, durable transactions and fail-closed recovery.
 - GPL/MIT boundaries may include contributor code → provenance review before MIT distribution; retain GPL host internals and notices. Reference: GNU GPL FAQ on separate programs, GPL libraries and contributor permission; this design is not an automated legal finding.
 - Shared host changes affect official integrations → additive messages/paths, unchanged descriptor baselines and official conformance regression checks.
+- Schema numbering diverges from `main` and breaks existing databases on update → shipped migrations are immutable, this program's migrations follow `main`'s latest version, history is verified before applying, and the upgrade fixtures in decision 21 gate the pull request.
 
 ## Migration Plan
 
@@ -584,6 +601,7 @@ Until detected targets have their own revisions (task 7.7), a launch request's `
 3. Wire scoped Core adapters and lifecycle/update recovery; then settings, public distributions and both examples.
 4. Validate Linux and Windows transport, filesystem/credential/process behavior on their native OS. Mock UI and Rust/Go fixture checks complement rather than replace native acceptance.
 5. On application rollback, ignore unknown third-party state safely and keep official providers working. Retain external packages/state for recovery; never auto-execute them through a legacy path. Plugin-version rollback follows section 6.
+6. Before the pull request, reconcile the schema lineage with `main` and pass the upgrade validation of decision 21 (tasks 20.1 to 20.4). Existing installations must keep their data when they download the update.
 
 ## References
 

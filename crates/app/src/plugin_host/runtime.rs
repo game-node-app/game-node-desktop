@@ -3,8 +3,10 @@
 
 use super::{
     login::LoginBroker,
-    managed_packages::{ManagedPackageLifecycle, PackageLifecycleError},
-    process::{ProcessConfig, ProviderProcesses},
+    managed_packages::{ManagedPackageLifecycle, PackageLifecycleError, lock_publisher_identity},
+    process::{
+        ExtensionIntent, ExtensionLaunch, ExtensionTarget, ProcessConfig, ProviderProcesses,
+    },
     profile::PluginStateLayout,
     provider::{Completion, ProviderApi, Registration},
     services::{ExternalAccountPersistence, ProviderServices},
@@ -98,9 +100,7 @@ pub trait ProviderRuntime: Send + Sync {
     async fn start_extension(
         &self,
         _plugin_id: &str,
-        _game_id: &str,
-        _installation_id: &str,
-        _target_revision: u64,
+        _target: ExtensionTarget,
         _operation: super::intents::Operation,
     ) -> Result<(), Status> {
         Err(Status::unimplemented("extension actions are unavailable"))
@@ -180,6 +180,7 @@ pub(crate) fn managed_process_config(
         blocked_capabilities: vec![],
         integrity: Some(super::process::PackageIntegrity {
             package_root: installed.package_path.clone(),
+            version: installed.version.clone(),
             publisher_key,
             emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy::RequireNative,
         }),
@@ -271,6 +272,11 @@ impl ThirdPartyPluginLifecycle {
             .third_party_provider_ids_for_plugin(plugin_id)
             .len()
             == 1
+    }
+
+    pub(crate) fn extension_runtime_available(&self, plugin_id: &str) -> bool {
+        let slot = super::provider::extension_registration_id(plugin_id);
+        self.api.is_extension(&slot) && self.processes.extension_runtime_available(&slot)
     }
 
     pub async fn enable(&self, plugin_id: String) -> Result<(), Status> {
@@ -368,6 +374,7 @@ impl ThirdPartyPluginLifecycle {
         expected_revision: u64,
         decisions: Vec<super::grants::PermissionDecision>,
     ) -> Result<PluginPermissionSnapshot, Status> {
+        let _mutation = self.mutation.lock().await;
         let profile = self.api.profiles().require()?;
         if profile.profile_id() != expected_profile_id {
             return Err(Status::failed_precondition("plugin profile changed"));
@@ -394,6 +401,9 @@ impl ThirdPartyPluginLifecycle {
             publisher_fingerprint,
             profile_id: profile.profile_id().to_owned(),
         };
+        if self.api.is_extension(provider_id) {
+            self.processes.stop_provider(provider_id).await;
+        }
         let state = self.state.clone();
         let account = profile.clone();
         tokio::task::spawn_blocking(move || {
@@ -567,6 +577,170 @@ impl ThirdPartyPluginLifecycle {
         })
     }
 
+    /// Probes an inactive package in an Extension session before changing the active pointer.
+    async fn activate_extension_update(
+        &self,
+        previous_version: String,
+        installed: gamenode_platform::plugin_registry::InstalledPluginVersion,
+        mut config: ProcessConfig,
+        target: ExtensionTarget,
+    ) -> Result<(), Status> {
+        use super::{grants::PluginIdentity, publisher_trust};
+        let profiles = self.api.profiles();
+        let profile = profiles.require()?;
+        let validate_target = move |target: &ExtensionTarget| {
+            if !target.is_current()
+                || profiles.current().is_none_or(|profile| {
+                    !profile.verified()
+                        || profile.epoch() != target.profile_epoch
+                        || profile.profile_id() != target.context.profile_id
+                })
+            {
+                return Err(Status::failed_precondition(
+                    "selected extension target or profile changed",
+                ));
+            }
+            Ok(())
+        };
+        validate_target(&target)?;
+        let slot = config.provider_id.clone();
+        if !self.processes.extension_runtime_available(&slot) {
+            return Err(Status::unavailable("extension runtime is unavailable"));
+        }
+        let previous = self.processes.config(&slot)?;
+        let key = config
+            .integrity
+            .as_ref()
+            .filter(|integrity| {
+                integrity.version == installed.version
+                    && integrity.package_root == installed.package_path
+            })
+            .map(|integrity| integrity.publisher_key)
+            .ok_or_else(|| Status::failed_precondition("candidate package identity changed"))?;
+        let previous_root = previous
+            .integrity
+            .as_ref()
+            .filter(|integrity| {
+                integrity.version == previous_version && integrity.publisher_key == key
+            })
+            .map(|integrity| integrity.package_root.clone())
+            .ok_or_else(|| {
+                Status::failed_precondition("active extension package identity changed")
+            })?;
+        let identity = PluginIdentity {
+            plugin_id: installed.plugin_id.clone(),
+            publisher_fingerprint: publisher_trust::key_fingerprint(&key),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let validate_package = {
+            let state = self.state.clone();
+            let registry = self.registry.clone();
+            let api = self.api.clone();
+            let slot = slot.clone();
+            let installed = installed.clone();
+            let identity = identity.clone();
+            let previous_version = previous_version.clone();
+            move || {
+                let registered = api.third_party_identity(&slot);
+                let trusted = publisher_trust::PublisherTrustStore::open(state.trust_dir())
+                    .and_then(|trust| trust.is_pinned(&installed.plugin_id, &key))
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                let active = registry
+                    .active(&installed.plugin_id)
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                if !trusted
+                    || !api.is_extension(&slot)
+                    || registered.as_ref()
+                        != Some(&(
+                            identity.plugin_id.clone(),
+                            identity.publisher_fingerprint.clone(),
+                        ))
+                    || active.is_none_or(|active| {
+                        active.version != previous_version
+                            || active.package_path != previous_root
+                            || super::updates::package_key(&active.package_path).ok() != Some(key)
+                    })
+                {
+                    return Err(Status::failed_precondition(
+                        "active extension identity changed",
+                    ));
+                }
+                Ok(())
+            }
+        };
+        // Fence the old process before changing grants. An old action is never restarted.
+        self.processes
+            .replace_config(&slot, previous.clone())
+            .await?;
+        let grant_revision = {
+            let validate_package = validate_package.clone();
+            let validate_target = validate_target.clone();
+            let target = target.clone();
+            let profiles = self.api.profiles();
+            let state = self.state.clone();
+            let profile = profile.clone();
+            let identity = identity.clone();
+            let blocked = config.blocked_capabilities.iter().cloned().collect();
+            tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
+                let _profile = profiles.lock_transition();
+                validate_package()?;
+                validate_target(&target)?;
+                let mut grants = state
+                    .open_grants(&profile)
+                    .map_err(|error| Status::internal(error.to_string()))?;
+                grants
+                    .revoke_permissions(&identity, &blocked)
+                    .map_err(|error| Status::internal(error.to_string()))
+            })
+            .await
+            .map_err(|_| Status::internal("extension grant worker failed"))??
+        };
+        let ready = self
+            .processes
+            .ensure_extension_ready_for_update(&slot, target.clone(), config.clone())
+            .await;
+        // Wait for the provisional tree and fence its session before committing.
+        // The slot retains the previous configuration even if cleanup fails.
+        self.processes.replace_config(&slot, previous).await?;
+        ready?;
+        let registry = self.registry.clone();
+        let profiles = self.api.profiles();
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
+            let _profile = profiles.lock_transition();
+            validate_package()?;
+            let grants = state.open_grants(&profile)
+                .map_err(|error| Status::internal(error.to_string()))?;
+            if grants.revision(&identity) != grant_revision {
+                return Err(Status::failed_precondition("extension grants changed during readiness"));
+            }
+            validate_target(&target)?;
+            let outcome = registry.set_active(&installed.plugin_id, &installed.version)
+                .map_err(|error| Status::internal(error.to_string()))
+                // Also catch library changes while the registry write was in progress.
+                .and_then(|()| validate_target(&target));
+            if let Err(error) = outcome {
+                // set_active can report a sync error after replacing the pointer.
+                if registry.active(&installed.plugin_id).ok().flatten().as_ref() == Some(&installed) {
+                    registry.set_active(&installed.plugin_id, &previous_version)
+                        .map_err(|restore| Status::internal(format!(
+                            "extension activation failed ({error}); previous version could not be restored ({restore})"
+                        )))?;
+                }
+                return Err(error);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| Status::internal("extension activation worker failed"))??;
+        // Ordinary extension starts share the mutation lock and can only see this config
+        // once the guarded registry commit above has completed.
+        config.blocked_capabilities.clear();
+        self.processes.replace_config(&slot, config).await
+    }
+
     /// Atomically activates an already-installed candidate only after its supervised process
     /// completes the bounded Ready handshake with the account's current grants.
     pub(crate) async fn activate_update(
@@ -575,6 +749,7 @@ impl ThirdPartyPluginLifecycle {
         previous_version: String,
         installed: gamenode_platform::plugin_registry::InstalledPluginVersion,
         config: ProcessConfig,
+        extension_target: Option<ExtensionTarget>,
     ) -> Result<(), Status> {
         let _mutation = self.mutation.lock().await;
         if installed.plugin_id != plugin_id || installed.version == previous_version {
@@ -584,6 +759,19 @@ impl ThirdPartyPluginLifecycle {
         if provider_ids.len() != 1 || provider_ids[0] != config.provider_id {
             return Err(Status::failed_precondition(
                 "managed plugin has no unique registered provider runtime",
+            ));
+        }
+        if self.api.is_extension(&config.provider_id) {
+            let target = extension_target.ok_or_else(|| {
+                Status::failed_precondition("select a game for the extension readiness check")
+            })?;
+            return self
+                .activate_extension_update(previous_version, installed, config, target)
+                .await;
+        }
+        if extension_target.is_some() {
+            return Err(Status::invalid_argument(
+                "provider updates take no extension target",
             ));
         }
         let profile = self.api.profiles().require()?;
@@ -606,6 +794,7 @@ impl ThirdPartyPluginLifecycle {
         let candidate_version = installed.version.clone();
         let expected_previous = previous_version.clone();
         let transaction = tokio::task::spawn_blocking(move || {
+            let _publisher = lock_publisher_identity();
             registry.begin_activation(&candidate_id, &expected_previous, &candidate_version)
         })
         .await
@@ -649,11 +838,9 @@ impl ThirdPartyPluginLifecycle {
                     "plugin profile changed during update activation",
                 ));
             }
-            if !self.api.is_extension(&config.provider_id) {
-                self.processes
-                    .ensure_ready_for_update(&config.provider_id)
-                    .await?;
-            }
+            self.processes
+                .ensure_ready_for_update(&config.provider_id)
+                .await?;
             if !self.api.profiles().is_current(profile_epoch) {
                 return Err(Status::failed_precondition(
                     "plugin profile changed during update readiness check",
@@ -665,6 +852,7 @@ impl ThirdPartyPluginLifecycle {
             let registry = self.registry.clone();
             let transaction_to_commit = transaction.clone();
             let commit = tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
                 registry.commit_activation(transaction_to_commit)
             })
             .await;
@@ -675,10 +863,13 @@ impl ThirdPartyPluginLifecycle {
                     // idempotently in case it durably committed before its JoinError was observed.
                     let registry = self.registry.clone();
                     let retry = transaction.clone();
-                    tokio::task::spawn_blocking(move || registry.commit_activation(retry))
-                        .await
-                        .map_err(|_| Status::internal("plugin activation worker failed"))?
-                        .map_err(|error| Status::internal(error.to_string()))?;
+                    tokio::task::spawn_blocking(move || {
+                        let _publisher = lock_publisher_identity();
+                        registry.commit_activation(retry)
+                    })
+                    .await
+                    .map_err(|_| Status::internal("plugin activation worker failed"))?
+                    .map_err(|error| Status::internal(error.to_string()))?;
                 }
             }
             Ok(())
@@ -690,6 +881,7 @@ impl ThirdPartyPluginLifecycle {
             let registry = self.registry.clone();
             let transaction_to_rollback = transaction;
             let rollback = tokio::task::spawn_blocking(move || {
+                let _publisher = lock_publisher_identity();
                 registry.rollback_activation(transaction_to_rollback)
             })
             .await
@@ -763,6 +955,15 @@ impl ThirdPartyPluginLifecycle {
             ));
         }
         let process_ids = self.process_ids(&plugin_id)?;
+        for id in process_ids.iter().filter(|id| self.api.is_extension(id)) {
+            if enabled {
+                if !self.processes.extension_runtime_available(id) {
+                    return Err(Status::unavailable("extension runtime is unavailable"));
+                }
+            } else {
+                self.processes.stop_provider(id).await;
+            }
+        }
         let state = self.state.clone();
         let account = profile.clone();
         let plugin = plugin_id.clone();
@@ -779,8 +980,10 @@ impl ThirdPartyPluginLifecycle {
 
         if !enabled {
             for provider_id in process_ids {
-                self.processes.stop_provider(&provider_id).await;
-                self.api.disconnect(&provider_id).await;
+                if !self.api.is_extension(&provider_id) {
+                    self.processes.stop_provider(&provider_id).await;
+                    self.api.disconnect(&provider_id).await;
+                }
             }
             return Ok(());
         }
@@ -829,6 +1032,10 @@ impl ThirdPartyPluginLifecycle {
             return Err(Status::not_found("third-party plugin is not installed"));
         }
         let provider_ids = self.api.third_party_provider_ids_for_plugin(&plugin_id);
+        for id in provider_ids.iter().filter(|id| self.api.is_extension(id)) {
+            self.processes.stop_provider(id).await;
+        }
+
         let state = self.state.clone();
         let account = profile.clone();
         let plugin = plugin_id.clone();
@@ -842,7 +1049,7 @@ impl ThirdPartyPluginLifecycle {
         })
         .await
         .map_err(|_| Status::internal("plugin activation worker failed"))??;
-        for provider_id in &provider_ids {
+        for provider_id in provider_ids.iter().filter(|id| !self.api.is_extension(id)) {
             self.processes.stop_provider(provider_id).await;
             self.api.disconnect(provider_id).await;
         }
@@ -895,7 +1102,9 @@ impl ThirdPartyPluginLifecycle {
                 epoch = current_epoch;
                 lifecycle.api.fence_third_party_sessions().await;
                 for provider_id in lifecycle.api.third_party_provider_ids() {
-                    lifecycle.processes.stop_provider(&provider_id).await;
+                    if !lifecycle.api.is_extension(&provider_id) {
+                        lifecycle.processes.stop_provider(&provider_id).await;
+                    }
                 }
                 if lifecycle.api.profiles().current().is_some()
                     && let Err(error) = lifecycle.start_enabled_plugins().await
@@ -1081,7 +1290,7 @@ impl HostedProviders {
             };
             let provider_id = config.provider_id.clone();
             let inventory_entry = super::PluginInfo {
-                provider_id: provider_id.clone(),
+                provider_id: report.manifest.provider_id.clone().unwrap_or_default(),
                 plugin_id: installed.plugin_id.clone(),
                 plugin_kind: match report.manifest.kind {
                     super::package::PluginKind::Provider => "provider".to_owned(),
@@ -1100,18 +1309,26 @@ impl HostedProviders {
                 enabled: None,
                 runtime_available: None,
             };
-            let services = Arc::new(ProviderServices::new_external(
-                ProviderContext {
-                    provider_id: provider_id.clone(),
-                    ..Default::default()
-                },
-                paths.clone(),
-                library.clone(),
-                Arc::new(UnavailableExternalAccounts),
-                login.clone(),
-                None,
-            )?);
-            if let Err(error) = api.register(Registration {
+            let services = if report.manifest.kind == super::package::PluginKind::Provider {
+                Some(Arc::new(ProviderServices::new_external(
+                    ProviderContext {
+                        provider_id: provider_id.clone(),
+                        ..Default::default()
+                    },
+                    paths.clone(),
+                    library.clone(),
+                    Arc::new(UnavailableExternalAccounts),
+                    login.clone(),
+                    None,
+                )?))
+            } else {
+                None
+            };
+            let host_services: Arc<dyn super::provider::HostServices> = match &services {
+                Some(services) => services.clone(),
+                None => Arc::new(super::provider::ExtensionServices),
+            };
+            let registration = Registration {
                 provider_id: provider_id.clone(),
                 plugin_id: installed.plugin_id.clone(),
                 kind: match report.manifest.kind {
@@ -1130,22 +1347,30 @@ impl HostedProviders {
                 playtime: report.manifest.playtime,
                 capabilities: config.manifest_capabilities.clone(),
                 shared_catalog: false,
-                services: services.clone(),
-            }) {
+                services: host_services,
+            };
+            let registration_api = api.clone();
+            let registered =
+                tokio::task::spawn_blocking(move || registration_api.register(registration))
+                    .await
+                    .map_err(|_| Status::internal("plugin registration worker failed"))?;
+            if let Err(error) = registered {
                 tracing::warn!(plugin_id = %installed.plugin_id, %error, "managed plugin registration was rejected");
                 continue;
             }
             managed_plugins.push(inventory_entry);
             configs.push(config);
-            entries.insert(
-                provider_id,
-                Entry {
-                    services,
-                    initialized: tokio::sync::Mutex::new(None),
-                    packaged: true,
-                    initialize: true,
-                },
-            );
+            if let Some(services) = services {
+                entries.insert(
+                    provider_id,
+                    Entry {
+                        services,
+                        initialized: tokio::sync::Mutex::new(None),
+                        packaged: true,
+                        initialize: true,
+                    },
+                );
+            }
         }
         let endpoint_available = endpoint.is_some();
         let processes = ProviderProcesses::new_for_lifecycle(
@@ -1278,13 +1503,27 @@ impl ProviderRuntime for HostedProviders {
             .iter()
             .cloned()
             .map(|mut plugin| {
-                plugin.status = self.availability(&plugin.provider_id).to_owned();
-                plugin.session = if self.api.connected(&plugin.provider_id) {
+                let slot = if plugin.plugin_kind == "extension" {
+                    plugin.status = if self
+                        .lifecycle
+                        .extension_runtime_available(&plugin.plugin_id)
+                    {
+                        "installed"
+                    } else {
+                        "unavailable"
+                    }
+                    .into();
+                    super::provider::extension_registration_id(&plugin.plugin_id)
+                } else {
+                    plugin.status = self.availability(&plugin.provider_id).to_owned();
+                    plugin.provider_id.clone()
+                };
+                plugin.session = if self.api.connected(&slot) {
                     "active"
                 } else {
                     "stopped"
                 }
-                .to_owned();
+                .into();
                 plugin
             })
             .collect()
@@ -1341,9 +1580,7 @@ impl ProviderRuntime for HostedProviders {
     async fn start_extension(
         &self,
         plugin_id: &str,
-        game_id: &str,
-        installation_id: &str,
-        target_revision: u64,
+        target: ExtensionTarget,
         operation: super::intents::Operation,
     ) -> Result<(), Status> {
         let permission = match operation {
@@ -1351,11 +1588,24 @@ impl ProviderRuntime for HostedProviders {
             super::intents::Operation::Install => cap::GAMES_INSTALL,
             _ => return Err(Status::invalid_argument("unsupported extension action")),
         };
+        let _mutation = self.lifecycle.mutation.lock().await;
+        if !self.endpoint_available {
+            return Err(Status::unavailable("extension runtime is unavailable"));
+        }
         let provider_id = super::provider::extension_registration_id(plugin_id);
         if !self.api.is_extension(&provider_id) {
             return Err(Status::not_found("extension is not installed and trusted"));
         }
         let profile = self.api.profiles().require()?;
+        if !profile.verified()
+            || profile.epoch() != target.profile_epoch
+            || profile.profile_id() != target.context.profile_id
+            || !target.is_current()
+        {
+            return Err(Status::failed_precondition(
+                "selected extension target is unavailable",
+            ));
+        }
         let (registered_plugin, publisher_fingerprint) = self
             .api
             .third_party_identity(&provider_id)
@@ -1367,30 +1617,32 @@ impl ProviderRuntime for HostedProviders {
             plugin_id: registered_plugin,
             publisher_fingerprint,
             profile_epoch: profile.epoch(),
-            game_id: game_id.to_owned(),
-            installation_id: installation_id.to_owned(),
+            game_id: target.context.game_id.clone(),
+            installation_id: target.context.installation_id.clone(),
             operation,
-            target_revision,
+            target_revision: target
+                .context
+                .revision
+                .parse()
+                .map_err(|_| Status::invalid_argument("invalid target revision"))?,
             recipe_id: String::new(),
             recipe_revision: 0,
             plan_fingerprint: String::new(),
         };
-        let intent_id = self.intents.issue(binding)?;
-        let target = gamenode_plugin_protocol::proto::TargetGameContext {
-            game_id: game_id.to_owned(),
-            installation_id: installation_id.to_owned(),
-            profile_id: profile.profile_id().to_owned(),
-            revision: target_revision.to_string(),
+        let intent = ExtensionIntent {
+            id: self.intents.issue(binding)?,
+            store: self.intents.clone(),
         };
-        if let Err(error) = self
-            .processes
-            .ensure_extension_started(&provider_id, target, intent_id.clone(), permission)
+        self.processes
+            .ensure_extension_started(
+                &provider_id,
+                ExtensionLaunch {
+                    target,
+                    required_permission: permission,
+                },
+                intent,
+            )
             .await
-        {
-            self.intents.revoke_issued(&intent_id);
-            return Err(error);
-        }
-        Ok(())
     }
 
     async fn available_extensions(
@@ -1406,22 +1658,35 @@ impl ProviderRuntime for HostedProviders {
             return Ok(Vec::new());
         }
         let profile = self.api.profiles().require()?;
+        if !profile.verified() {
+            return Ok(Vec::new());
+        }
         let mut eligible = Vec::new();
         for plugin in self
             .managed_plugins
             .iter()
             .filter(|plugin| plugin.plugin_kind == "extension")
         {
-            let config = self.processes.config(&plugin.provider_id)?;
-            if !config
-                .manifest_capabilities
-                .iter()
-                .any(|capability| capability == permission)
+            let slot = super::provider::extension_registration_id(&plugin.plugin_id);
+            if !self
+                .lifecycle
+                .extension_runtime_available(&plugin.plugin_id)
             {
                 continue;
             }
-            let Some((plugin_id, publisher_fingerprint)) =
-                self.api.third_party_identity(&plugin.provider_id)
+            let config = self.processes.config(&slot)?;
+            if config
+                .blocked_capabilities
+                .iter()
+                .any(|blocked| blocked == permission)
+                || !config
+                    .manifest_capabilities
+                    .iter()
+                    .any(|capability| capability == permission)
+            {
+                continue;
+            }
+            let Some((plugin_id, publisher_fingerprint)) = self.api.third_party_identity(&slot)
             else {
                 continue;
             };
@@ -1434,6 +1699,8 @@ impl ProviderRuntime for HostedProviders {
             let account = profile.clone();
             let plugin_id_for_check = plugin_id.clone();
             let permission = permission.to_owned();
+            let mut required = config.required_capabilities;
+            required.push(permission);
             let can_start = tokio::task::spawn_blocking(move || -> Result<bool, Status> {
                 let activation = state.open_activation(&account).map_err(|error| {
                     Status::internal(format!("plugin activation state: {error}"))
@@ -1444,16 +1711,25 @@ impl ProviderRuntime for HostedProviders {
                 let grants = state
                     .open_grants(&account)
                     .map_err(|error| Status::internal(format!("plugin grants: {error}")))?;
-                Ok(grants.effective_grants(&identity).into_iter().any(|grant| {
-                    grant.permission_id == permission
-                        && grant.state == super::grants::PermissionState::Granted
+                let granted = grants.effective_grants(&identity);
+                Ok(required.iter().all(|permission| {
+                    !config.blocked_capabilities.contains(permission)
+                        && granted.iter().any(|grant| {
+                            grant.permission_id == *permission
+                                && grant.state == super::grants::PermissionState::Granted
+                        })
                 }))
             })
             .await
             .map_err(|_| Status::internal("plugin eligibility worker failed"))??;
             if can_start {
-                eligible.push(plugin.clone());
+                let mut plugin = plugin.clone();
+                plugin.runtime_available = Some(true);
+                eligible.push(plugin);
             }
+        }
+        if !self.api.profiles().is_current(profile.epoch()) {
+            return Ok(Vec::new());
         }
         Ok(eligible)
     }

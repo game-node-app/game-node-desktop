@@ -679,7 +679,7 @@ impl Engine {
                 SubmitEffect::SessionRejected => {
                     let engine = self.clone();
                     self.shared.runtime.spawn(async move {
-                        engine.dispatch(Input::SessionRejected);
+                        engine.dispatch_on_worker(Input::SessionRejected).await;
                     });
                 }
                 SubmitEffect::Send { submission, .. } => {

@@ -332,6 +332,61 @@ describe('PluginInventory', () => {
     await waitFor(() => expect(approve).toHaveBeenCalledWith(plugin.pluginId, '2.0.0'));
   });
 
+  it.each([
+    { rollback: false, version: '2.0.0', reviewButton: 'Review version 2.0.0', approval: 'Approve update', locale: 'en', chooseLabel: 'Choose a game for the readiness check', targetLabel: 'Target game' },
+    { rollback: true, version: '1.0.0', reviewButton: 'Revisar rollback para 1.0.0', approval: 'Confirmar rollback', locale: 'pt-BR', chooseLabel: 'Escolher um jogo para a verificação', targetLabel: 'Jogo alvo' },
+  ])('selects an explicit target and can cancel extension approval (rollback=$rollback)', async ({ rollback, version, reviewButton, approval, locale, chooseLabel, targetLabel }) => {
+    const pluginId = 'org.example.extension';
+    const extension = { ...plugin, pluginId, providerId: '', pluginKind: 'extension' as const, session: 'stopped' as const, enabled: true };
+    const target = { installationId: 'installation-42', revision: '7', profileEpoch: '3' };
+    vi.spyOn(commands, 'pluginInventory').mockResolvedValue([extension]);
+    vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue(rollback ? [] : [{
+      pluginId, name: 'Test extension', installedVersion: '1.0.0', versions: [version],
+    }]);
+    vi.spyOn(commands, 'pluginRollbackAvailable').mockResolvedValue(rollback ? [{
+      pluginId, name: 'Test extension', activeVersion: '2.0.0', versions: [version],
+    }] : []);
+    const readReview = rollback ? commands.pluginRollbackReview : commands.pluginUpdateReview;
+    const review = await readReview(pluginId, version);
+    vi.spyOn(commands, rollback ? 'pluginRollbackReview' : 'pluginUpdateReview').mockResolvedValue({
+      ...review, extensionTargets: [{ name: 'Example Game', providerId: 'steam', selection: target }],
+    });
+    const approveUpdate = vi.spyOn(commands, 'pluginUpdateApprove').mockResolvedValue(version);
+    const approveRollback = vi.spyOn(commands, 'pluginRollbackApprove').mockResolvedValue(version);
+    const decline = vi.spyOn(commands, 'pluginUpdateDecline').mockResolvedValue(undefined);
+    renderInventory(locale, 'signed-in');
+
+    async function openTargetPicker() {
+      fireEvent.click(await screen.findByRole('button', { name: reviewButton }));
+      const choose = await screen.findByRole('button', { name: chooseLabel });
+      if (rollback) {
+        expect(choose).toBeDisabled();
+        fireEvent.click(screen.getByRole('checkbox', { name: /Entendo que isso ativará/ }));
+      }
+      fireEvent.click(choose);
+      return within(await screen.findByRole('dialog', { name: chooseLabel }));
+    }
+
+    const firstPicker = await openTargetPicker();
+    expect(firstPicker.getByRole('button', { name: approval })).toBeDisabled();
+    fireEvent.change(firstPicker.getByRole('combobox', { name: targetLabel }), { target: { value: target.installationId } });
+    await userEvent.setup().keyboard('{Escape}');
+    await waitFor(() => expect(decline).toHaveBeenCalledWith(pluginId));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(approveUpdate).not.toHaveBeenCalled();
+    expect(approveRollback).not.toHaveBeenCalled();
+
+    const secondPicker = await openTargetPicker();
+    expect(secondPicker.getByRole('button', { name: approval })).toBeDisabled();
+    fireEvent.change(secondPicker.getByRole('combobox', { name: targetLabel }), { target: { value: target.installationId } });
+    fireEvent.click(secondPicker.getByRole('button', { name: approval }));
+    if (rollback) {
+      await waitFor(() => expect(approveRollback).toHaveBeenCalledWith(pluginId, version, true, target));
+    } else {
+      await waitFor(() => expect(approveUpdate).toHaveBeenCalledWith(pluginId, version, target));
+    }
+  });
+
   it('keeps the saved opt-in authoritative when persistence fails', async () => {
     vi.spyOn(commands, 'pluginInventory').mockResolvedValue([plugin]);
     vi.spyOn(commands, 'pluginUpdateAvailable').mockResolvedValue([]);

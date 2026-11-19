@@ -65,6 +65,7 @@ fn source(key: &str, folder: &Path) -> LibrarySource {
         metadata_revision: 0,
         artwork_revision: 0,
         install_dir: folder.to_string_lossy().into_owned(),
+        detected_target: None,
     }
 }
 

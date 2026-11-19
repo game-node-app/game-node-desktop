@@ -1314,6 +1314,12 @@ export interface AvailablePluginRollback {
   versions: string[];
 }
 
+export interface ExtensionReadinessSelection {
+  installationId: string;
+  revision: string;
+  profileEpoch: string;
+}
+
 export interface PluginUpdateReview {
   pluginId: string;
   installedVersion: string;
@@ -1351,6 +1357,11 @@ export interface PluginUpdateReview {
   preservesPriorData: boolean;
   isDowngrade: boolean;
   requiresManualApproval: boolean;
+  extensionTargets?: Array<{
+    name: string;
+    providerId: string;
+    selection: ExtensionReadinessSelection;
+  }>;
 }
 
 export interface PluginInfo {

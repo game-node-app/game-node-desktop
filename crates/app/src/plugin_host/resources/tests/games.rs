@@ -1112,7 +1112,7 @@ async fn extension_custom_overlay_targets_selected_steam_without_read_or_provide
         game_id: "5".into(),
         installation_id: "id-steam:1".into(),
         profile_id: "account-a".into(),
-        revision: "steam-target-r1".into(),
+        revision: "1".into(),
     };
     let (fixture, host, _) =
         Fixture::extension_game(&[cap::GAME_CUSTOM_LAUNCH], target, None).await;
@@ -1217,7 +1217,7 @@ async fn extension_custom_overlay_targets_selected_steam_without_read_or_provide
         context: Some(context),
         game_id: "5".into(),
         installation_id: "id-steam:1".into(),
-        expected_revision: revision,
+        expected_revision: 1,
         user_intent_id: intent,
         idempotency_key: "extension-custom-execution".into(),
         recipe_id: recipe.recipe_id.clone(),
@@ -1270,7 +1270,7 @@ async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
         game_id: "5".into(),
         installation_id: "id-steam:1".into(),
         profile_id: "account-a".into(),
-        revision: "steam-target-r1".into(),
+        revision: "1".into(),
     };
     let (fixture, host, _) = Fixture::extension_game(&[cap::GAME_LAUNCH], target, None).await;
     host.launch_target.store(1, Ordering::SeqCst);
@@ -1304,7 +1304,7 @@ async fn normal_and_custom_launch_permissions_are_independent_for_extensions() {
             context: Some(fixture.context()),
             game_id: "5".into(),
             installation_id: "id-steam:1".into(),
-            expected_revision: revision,
+            expected_revision: 1,
             user_intent_id: intent,
             idempotency_key: "normal-launch".into(),
         })

@@ -718,7 +718,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         eng_for_setup.start();
         if let ipc::Message::AuthCallback { url } = incoming {
-            eng_for_setup.dispatch(Input::CallbackReceived(url));
+            let engine = eng_for_setup.clone();
+            tauri::async_runtime::spawn(async move {
+                engine.dispatch_on_worker(Input::CallbackReceived(url)).await;
+            });
         }
 
         // Single-instance IPC listener
@@ -727,7 +730,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tauri::async_runtime::spawn(async move {
             while let Some(msg) = owner_messages.recv().await {
                 if let ipc::Message::AuthCallback { url } = msg {
-                    eng_for_ipc.dispatch(Input::CallbackReceived(url));
+                    eng_for_ipc.dispatch_on_worker(Input::CallbackReceived(url)).await;
                 }
                 let _ = win_for_ipc.unminimize();
                 let _ = win_for_ipc.show();
@@ -747,7 +750,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                eng_for_ticker.dispatch(Input::Tick);
+                eng_for_ticker.dispatch_on_worker(Input::Tick).await;
                 eng_for_ticker.maintenance();
 
                 let title = eng_for_ticker.running_title().unwrap_or_default();

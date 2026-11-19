@@ -1171,6 +1171,7 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
             publisher_fingerprint: "ef".repeat(32),
         },
         capabilities: vec![
+            cap::CONTEXT.into(),
             cap::GAME_CUSTOM_LAUNCH.into(),
             cap::GAME_SESSIONS_REPORT.into(),
         ],
@@ -1277,54 +1278,18 @@ async fn provider_free_extension_gets_only_its_host_selected_launch_context() {
     api.replace_session_grants(&resource_context.session_id, BTreeSet::new())
         .await
         .unwrap();
-    let revoked_report = RuntimeSessionReport {
-        correlation_id: "runtime-report-2".into(),
-        sequence: 2,
-        source_observation_id: "observation:two".into(),
-        ..report
-    };
-    session
-        .host
-        .report_runtime_session(revoked_report)
-        .await
-        .unwrap();
-    let denied = tokio::time::timeout(Duration::from_secs(2), session.commands.message())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        denied.operation,
-        ProviderOperation::RuntimeSessionResult as i32
-    );
-    assert_eq!(denied.target_operation_id, "runtime-report-2");
-    let result = denied.runtime_session_result.unwrap();
-    assert_eq!(result.correlation_id, "runtime-report-2");
-    assert_eq!(
-        result.outcome,
-        RuntimeSessionOutcome::RejectedUnauthorized as i32
+    assert!(!api.connected(&internal_id));
+    assert!(
+        api.authorize_resource_session(Some(&resource_context))
+            .is_err()
     );
     assert_eq!(runtime_sessions.reports.load(Ordering::Relaxed), 1);
 
     drop(session);
     api.disconnect(&internal_id).await;
-    let launch = api.begin_launch(&internal_id).unwrap();
-    let credential = (0..launch.credential.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&launch.credential[index..index + 2], 16).unwrap())
-        .collect();
-    let provider_session = gamenode_plugin_sdk::Session::open(
-        gamenode_plugin_sdk::Launch {
-            endpoint,
-            credential,
-            operation_id: "provider-impersonation".into(),
-        },
-        plugin_id,
-        "steam",
-        "1.0.0",
-        &[cap::GAME_CUSTOM_LAUNCH],
-    )
-    .await;
-    assert!(provider_session.is_err());
+    assert!(matches!(
+        api.begin_launch(&internal_id),
+        Err(error) if error.code() == tonic::Code::PermissionDenied
+    ));
     drop(server);
 }

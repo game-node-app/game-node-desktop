@@ -11,6 +11,7 @@ fn source(key: &str, game_id: Option<u64>, name: &str) -> LibrarySource {
         metadata_revision: 0,
         artwork_revision: 0,
         install_dir: String::new(),
+        detected_target: None,
     }
 }
 

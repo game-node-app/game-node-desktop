@@ -11,8 +11,14 @@ use gamenode_platform::plugin_network::{FetchError, Request as Fetch, Response a
 use gamenode_plugin_protocol::prost::Message;
 
 use super::*;
-use crate::plugin_host::grants::PluginIdentity;
-use crate::plugin_host::network::{AllowOrigin, Fetcher, OriginScopes};
+use crate::plugin_host::grants::{
+    PermissionDecision, PluginIdentity, manifest_permission_requests,
+};
+use crate::plugin_host::network::{
+    AllowOrigin, ApprovedOrigins, Fetcher, OriginScopes, canonical_origin,
+};
+use crate::plugin_host::profile::PluginStateLayout;
+use futures_util::future::BoxFuture;
 
 const NETWORK: &[&str] = &[cap::NETWORK_FETCH];
 
@@ -27,7 +33,8 @@ pub(super) struct Seen {
     pub(super) timeout: Duration,
 }
 
-type Script = Arc<dyn Fn(&Seen, &AllowOrigin) -> Result<Fetched, FetchError> + Send + Sync>;
+type Script =
+    Arc<dyn Fn(Seen, AllowOrigin) -> BoxFuture<'static, Result<Fetched, FetchError>> + Send + Sync>;
 
 #[derive(Default)]
 pub(super) struct FakeFetcher {
@@ -56,10 +63,10 @@ impl Fetcher for FakeFetcher {
         }
         let script = self.script.lock().unwrap().clone();
         match script {
-            Some(script) => script(&seen, &allow),
+            Some(script) => script(seen, allow).await,
             None => {
                 let origin = request.origin().unwrap();
-                if !allow(&origin) {
+                if !allow(origin.clone()).await {
                     return Err(FetchError::Denied);
                 }
                 Ok(Fetched {
@@ -78,11 +85,12 @@ impl FakeFetcher {
         self.calls.lock().unwrap().clone()
     }
 
-    pub(super) fn script(
-        &self,
-        script: impl Fn(&Seen, &AllowOrigin) -> Result<Fetched, FetchError> + Send + Sync + 'static,
-    ) {
-        *self.script.lock().unwrap() = Some(Arc::new(script));
+    pub(super) fn script<F>(&self, script: impl Fn(Seen, AllowOrigin) -> F + Send + Sync + 'static)
+    where
+        F: Future<Output = Result<Fetched, FetchError>> + Send + 'static,
+    {
+        *self.script.lock().unwrap() =
+            Some(Arc::new(move |seen, allow| Box::pin(script(seen, allow))));
     }
 }
 
@@ -93,10 +101,20 @@ pub(super) struct Origins {
     asked_for: StdMutex<Vec<PluginIdentity>>,
 }
 
+#[async_trait]
 impl OriginScopes for Origins {
-    fn approved(&self, identity: &PluginIdentity) -> Vec<String> {
+    async fn approved(&self, identity: &PluginIdentity, _: u64) -> Option<ApprovedOrigins> {
         self.asked_for.lock().unwrap().push(identity.clone());
-        self.approved.lock().unwrap().clone()
+        Some(ApprovedOrigins {
+            revision: 0,
+            origins: self
+                .approved
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|origin| canonical_origin(origin))
+                .collect(),
+        })
     }
 }
 
@@ -147,6 +165,182 @@ impl Fixture {
 
 fn denial(status: &Status) -> DenialDetail {
     DenialDetail::decode(status.details()).unwrap()
+}
+
+const API_ORIGIN: &str = "https://api.example.com";
+const CDN_ORIGIN: &str = "https://cdn.example.com:8443";
+
+fn persist_origins(fixture: &Fixture, plugin: &str, publisher: &str, approved: &[&str]) {
+    let profile = fixture.api.profiles().current().unwrap();
+    let identity = PluginIdentity {
+        plugin_id: plugin.into(),
+        publisher_fingerprint: publisher.into(),
+        profile_id: profile.profile_id().into(),
+    };
+    let requests =
+        manifest_permission_requests(&[crate::plugin_host::package::PermissionRequest {
+            id: cap::NETWORK_FETCH.into(),
+            required: false,
+            scope: format!("{API_ORIGIN}, {CDN_ORIGIN}"),
+            reason: "Fetch fixtures".into(),
+        }])
+        .unwrap();
+    let decisions: Vec<_> = approved
+        .iter()
+        .map(|origin| PermissionDecision {
+            permission_id: cap::NETWORK_FETCH.into(),
+            scope: crate::plugin_host::grants::GrantScope::Declared {
+                value: (*origin).into(),
+            },
+            granted: true,
+        })
+        .collect();
+    PluginStateLayout::new(&fixture.plugin_data)
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity, &requests, &decisions)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn persisted_network_origins_require_separate_approval_for_the_authenticated_identity() {
+    let fixture = Fixture::new(NETWORK).await;
+    let publisher = "ab".repeat(32);
+    for (plugin, key) in [
+        ("other.plugin", publisher.clone()),
+        ("fixture.plugin", "ef".repeat(32)),
+    ] {
+        persist_origins(&fixture, plugin, &key, &[API_ORIGIN]);
+    }
+    assert_eq!(
+        fixture.fetch_url_text(API_ORIGIN).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    assert!(fixture.fetcher.calls().is_empty());
+
+    persist_origins(&fixture, "fixture.plugin", &publisher, &[API_ORIGIN]);
+    fixture.fetch_url_text(API_ORIGIN).await.unwrap();
+    assert_eq!(
+        fixture.fetch_url_text(CDN_ORIGIN).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    persist_origins(
+        &fixture,
+        "fixture.plugin",
+        &publisher,
+        &[API_ORIGIN, CDN_ORIGIN],
+    );
+    fixture.fetch_url_text(CDN_ORIGIN).await.unwrap();
+    assert_eq!(
+        fixture
+            .fetch_url_text("https://cdn.example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+
+    let restarted = Fixture::restarted(NETWORK, fixture.plugin_data.clone()).await;
+    restarted.fetch_url_text(CDN_ORIGIN).await.unwrap();
+    restarted.api.profiles().update(Some("new-account"), true);
+    assert_eq!(
+        restarted
+            .fetch_url_text(CDN_ORIGIN)
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+}
+
+#[tokio::test]
+async fn persisted_network_revocation_and_profile_switch_cancel_an_in_flight_request() {
+    for change_profile in [false, true] {
+        let fixture = Fixture::new(NETWORK).await;
+        let publisher = "ab".repeat(32);
+        persist_origins(&fixture, "fixture.plugin", &publisher, &[API_ORIGIN]);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let in_flight = started.clone();
+        fixture.fetcher.script(move |_, allow| {
+            let in_flight = in_flight.clone();
+            async move {
+                assert!(allow(API_ORIGIN.into()).await);
+                in_flight.notify_one();
+                std::future::pending().await
+            }
+        });
+        let mut client = fixture.client();
+        let context = fixture.context();
+        let request = tokio::spawn(async move {
+            client
+                .network_fetch(NetworkFetchRequest {
+                    context: Some(context),
+                    url: API_ORIGIN.into(),
+                    ..Default::default()
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .unwrap();
+        let expected = if change_profile {
+            fixture.api.profiles().update(Some("new-account"), true);
+            Code::FailedPrecondition
+        } else {
+            persist_origins(&fixture, "fixture.plugin", &publisher, &[]);
+            fixture.api.profiles().notify_permissions_changed();
+            Code::PermissionDenied
+        };
+        let status = tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(status.code(), expected);
+        assert_eq!(
+            fixture.fetch_url_text(API_ORIGIN).await.unwrap_err().code(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn persisted_network_revision_blocks_a_response_after_reapproval() {
+    let fixture = Fixture::new(NETWORK).await;
+    let publisher = "ab".repeat(32);
+    persist_origins(&fixture, "fixture.plugin", &publisher, &[API_ORIGIN]);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let finished = Arc::new(tokio::sync::Notify::new());
+    fixture.fetcher.script({
+        let (started, finished) = (started.clone(), finished.clone());
+        move |_, allow| {
+            let (started, finished) = (started.clone(), finished.clone());
+            async move {
+                assert!(allow(API_ORIGIN.into()).await);
+                started.notify_one();
+                finished.notified().await;
+                Ok(Fetched {
+                    status: 200,
+                    headers: vec![],
+                    body: b"stale".to_vec(),
+                    final_origin: API_ORIGIN.into(),
+                })
+            }
+        }
+    });
+    let fetch = fixture.fetch_url_text(API_ORIGIN);
+    let change_grants = async {
+        started.notified().await;
+        persist_origins(&fixture, "fixture.plugin", &publisher, &[]);
+        persist_origins(&fixture, "fixture.plugin", &publisher, &[API_ORIGIN]);
+        finished.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(fetch, change_grants)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err().code(), Code::PermissionDenied);
 }
 
 #[tokio::test]
@@ -331,13 +525,17 @@ async fn widening_or_revoking_an_origin_takes_effect_on_the_next_call_and_at_eve
     let hops = Arc::new(StdMutex::new(Vec::new()));
     let recorded = hops.clone();
     fixture.fetcher.script(move |_, allow| {
-        for origin in ["https://api.example.com", "https://evil.example.com"] {
-            recorded.lock().unwrap().push((origin, allow(origin)));
-            if !allow(origin) {
-                return Err(FetchError::Denied);
+        let recorded = recorded.clone();
+        async move {
+            for origin in ["https://api.example.com", "https://evil.example.com"] {
+                let allowed = allow(origin.into()).await;
+                recorded.lock().unwrap().push((origin, allowed));
+                if !allowed {
+                    return Err(FetchError::Denied);
+                }
             }
+            unreachable!("the unapproved origin must stop the fetch")
         }
-        unreachable!("the unapproved origin must stop the fetch")
     });
     let status = fixture
         .fetch_url_text("https://api.example.com/")
@@ -362,26 +560,21 @@ async fn a_grant_revoked_while_a_fetch_runs_stops_its_next_hop() {
     fixture.user_approving_origins(&["https://api.example.com"]);
     let api = fixture.api.clone();
     fixture.fetcher.script(move |_, allow| {
-        assert!(allow("https://api.example.com"));
-        // The permission is revoked before the redirect is followed.
-        let runtime = tokio::runtime::Handle::current();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    runtime.block_on(api.revoke_session_permission("fixture", cap::NETWORK_FETCH))
-                })
-                .join()
-                .unwrap();
-        });
-        if allow("https://api.example.com") {
-            return Ok(Fetched {
-                status: 200,
-                headers: vec![],
-                body: b"leaked".to_vec(),
-                final_origin: "https://api.example.com".into(),
-            });
+        let api = api.clone();
+        async move {
+            assert!(allow("https://api.example.com".into()).await);
+            api.revoke_session_permission("fixture", cap::NETWORK_FETCH)
+                .await;
+            if allow("https://api.example.com".into()).await {
+                return Ok(Fetched {
+                    status: 200,
+                    headers: vec![],
+                    body: b"leaked".to_vec(),
+                    final_origin: "https://api.example.com".into(),
+                });
+            }
+            Err(FetchError::Denied)
         }
-        Err(FetchError::Denied)
     });
     let status = fixture
         .fetch_url_text("https://api.example.com/")
@@ -477,7 +670,9 @@ async fn failures_map_to_distinct_codes_and_never_say_where_the_destination_is()
         (FetchError::BadResponse, Code::Unavailable),
         (FetchError::Denied, Code::PermissionDenied),
     ] {
-        fixture.fetcher.script(move |_, _| Err(error));
+        fixture
+            .fetcher
+            .script(move |_, _| std::future::ready(Err(error)));
         let status = fixture
             .fetch_url_text("https://api.example.com/")
             .await

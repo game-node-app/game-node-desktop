@@ -28,8 +28,8 @@ function statusLabel(status: PluginInfo['status'], t: (key: string) => string): 
   return t(`plugins.status.${status}`);
 }
 
-function scopeChoiceKey(pluginId: string, profileId: string, permissionId: string, scope: unknown): string {
-  return `${pluginId}:${profileId}:${permissionId}:${JSON.stringify(scope)}`;
+function scopeChoiceKey(snapshot: PluginPermissionSnapshot, permissionId: string, scope: unknown): string {
+  return JSON.stringify([snapshot.pluginId, snapshot.publisherFingerprint, snapshot.profileId, snapshot.grantRevision, permissionId, scope]);
 }
 
 export const PluginInventory: React.FC = () => {
@@ -95,11 +95,11 @@ export const PluginInventory: React.FC = () => {
   const managedPluginId = selectedPlugin?.publisherFingerprint ? selectedPlugin.pluginId : null;
   const publisherFingerprint = selectedPlugin?.publisherFingerprint;
   const { data: permissionSnapshot } = useQuery({
-    queryKey: pluginQueryKeys.permissions(managedPluginId ?? '', profileId ?? ''),
+    queryKey: pluginQueryKeys.permissions(managedPluginId ?? '', profileId ?? '', publisherFingerprint),
     queryFn: async () => {
       if (!managedPluginId || !profileId) throw new Error('plugin permission profile is unavailable');
-      const snapshot = await commands.pluginPermissionSnapshot(managedPluginId);
-      if (snapshot.profileId !== profileId) throw new Error('plugin permission profile changed');
+      const snapshot = await commands.pluginPermissionSnapshot(managedPluginId, profileId);
+      if (snapshot.publisherFingerprint !== publisherFingerprint) throw new Error('plugin permission publisher changed');
       return snapshot;
     },
     enabled: managedPluginId !== null && profileId !== null,
@@ -289,23 +289,24 @@ export const PluginInventory: React.FC = () => {
   };
 
   const savePermissions = async (snapshot: PluginPermissionSnapshot) => {
-    if (!profileId || snapshot.profileId !== profileId) return;
+    if (!profileId || snapshot.pluginId !== managedPluginId || snapshot.publisherFingerprint !== publisherFingerprint) return;
+    const queryKey = pluginQueryKeys.permissions(snapshot.pluginId, profileId, snapshot.publisherFingerprint);
     const decisions = snapshot.requestedPermissions.flatMap((request) => request.allowed_scopes.map((scope) => {
-      const key = scopeChoiceKey(snapshot.pluginId, profileId, request.permission_id, scope);
+      const key = scopeChoiceKey(snapshot, request.permission_id, scope);
       const persisted = snapshot.effectiveGrants.some((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope) && grant.state === 'granted');
       return { permission_id: request.permission_id, scope, granted: scopeChoices[key] ?? persisted };
     }));
     setBusy(true);
     setUpdateError(false);
     try {
-      const saved = await commands.pluginPermissionsReplace(snapshot.pluginId, profileId, snapshot.grantRevision, decisions);
+      const saved = await commands.pluginPermissionsReplace(snapshot.pluginId, snapshot.profileId, snapshot.publisherFingerprint, snapshot.grantRevision, decisions);
       setScopeChoices({});
-      queryClient.setQueryData(pluginQueryKeys.permissions(snapshot.pluginId, profileId), saved);
+      queryClient.setQueryData(queryKey, saved);
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.inventory });
     } catch {
       setManagementError(true);
       setScopeChoices({});
-      await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.permissions(snapshot.pluginId, profileId) });
+      await queryClient.invalidateQueries({ queryKey });
     } finally { setBusy(false); }
   };
 
@@ -585,7 +586,7 @@ export const PluginInventory: React.FC = () => {
                 {permissionSnapshot.requestedPermissions.map((request) => <fieldset key={request.permission_id} className="mt-compact">
                   <legend className={settingsRowDescription}>{request.permission_id}{request.required ? ` · ${t('plugins.required')}` : ''} · {t('plugins.permissionRequested')}</legend>
                   {request.allowed_scopes.map((scope) => {
-                    const key = scopeChoiceKey(permissionSnapshot.pluginId, profileId!, request.permission_id, scope);
+                    const key = scopeChoiceKey(permissionSnapshot, request.permission_id, scope);
                     const effective = permissionSnapshot.effectiveGrants.find((grant) => grant.permission_id === request.permission_id && JSON.stringify(grant.scope) === JSON.stringify(scope));
                     const active = effective?.state === 'granted';
                     return <label key={key} className="flex items-center gap-compact py-1 text-sm">

@@ -329,9 +329,13 @@ folders already approved work.
 "Network fetch" in `docs/plugin-api-permissions.md` for the rules, limits and errors. The practical
 points:
 
-- Declare `network.fetch` and name the exact origins you need (scheme, host and port; no
-  wildcards or paths). The user approves them; an origin you did not declare, or the user did not
-  approve, is `PERMISSION_DENIED` and nothing is sent.
+- Declare `network.fetch` with a comma-separated list of exact HTTPS origins in the permission's
+  `scope` string, for example `https://api.example.com, https://cdn.example.com:8443`. Each origin
+  is a separate choice in the account's permission review. Requests to undeclared or unapproved
+  origins return `PERMISSION_DENIED` before anything is sent.
+- The host negotiates the `network.fetch` grant when the plugin starts. New origin decisions take
+  effect immediately in sessions that already hold the grant. A package that changes its network
+  declaration requires a new review of its origins.
 - The host never connects to loopback, private, link-local or similar addresses, even for an
   approved origin, and it follows redirects only to approved origins. A plugin that must talk to a
   local service does so over its own native IPC, not through this API.

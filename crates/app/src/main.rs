@@ -186,9 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         ..Default::default()
     };
-    plugin_api.providers.set_state_layout(
-        gamenode_app::plugin_host::profile::PluginStateLayout::new(paths.plugin_data_dir()),
-    );
+    plugin_api
+        .set_state_layout(gamenode_app::plugin_host::profile::PluginStateLayout::managed(&paths));
     #[cfg(target_os = "linux")]
     let plugin_api_server = match gamenode_app::plugin_host::PluginApiServer::start(
         runtime.handle(),

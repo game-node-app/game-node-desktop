@@ -161,6 +161,9 @@ impl Fixture {
             notifications: notifications.clone(),
             ..Default::default()
         };
+        root.set_state_layout(crate::plugin_host::profile::PluginStateLayout::new(
+            &plugin_data,
+        ));
         let jobs = root.jobs.clone();
         let intents = root.intents.clone();
         let saves = root.saves.clone();

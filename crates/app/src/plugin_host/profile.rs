@@ -92,6 +92,7 @@ pub struct PluginProfiles {
     state: Mutex<State>,
     layout: Mutex<Option<PluginStateLayout>>,
     changes: watch::Sender<Option<ProfileContext>>,
+    permission_changes: watch::Sender<()>,
 }
 
 impl Default for PluginProfiles {
@@ -104,6 +105,7 @@ impl Default for PluginProfiles {
             }),
             layout: Mutex::new(None),
             changes: watch::Sender::new(None),
+            permission_changes: watch::Sender::new(()),
         }
     }
 }
@@ -158,8 +160,8 @@ impl PluginProfiles {
         *lock(&self.layout) = Some(layout);
     }
 
-    /// Serializes account changes with a durable shared-data policy commit. Profile reads
-    /// use a separate state lock so they can still run while the commit is syncing to disk.
+    /// Serializes account changes with durable plugin permission and shared-data commits.
+    /// Profile reads use a separate state lock so they can still run while the commit is syncing to disk.
     pub(crate) fn lock_transition(&self) -> LockedProfileTransition<'_> {
         LockedProfileTransition {
             profiles: self,
@@ -318,6 +320,15 @@ impl PluginProfiles {
     pub fn subscribe(&self) -> watch::Receiver<Option<ProfileContext>> {
         self.changes.subscribe()
     }
+
+    pub(crate) fn subscribe_permissions(&self) -> watch::Receiver<()> {
+        self.permission_changes.subscribe()
+    }
+
+    /// Wake in-flight work after a permission decision has been persisted.
+    pub(crate) fn notify_permissions_changed(&self) {
+        self.permission_changes.send_replace(());
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -345,6 +356,18 @@ pub struct PluginStateLayout {
 impl PluginStateLayout {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    /// The desktop runtime's existing state directory for managed plugins.
+    pub fn managed(paths: &gamenode_platform::paths::DataPaths) -> Self {
+        Self::new(paths.plugin_data_dir().join("state"))
+    }
+
+    pub(super) fn prepare_managed(paths: &gamenode_platform::paths::DataPaths) -> io::Result<Self> {
+        let layout = Self::managed(paths);
+        ensure_private_dir(&paths.plugin_data_dir())?;
+        ensure_private_dir(&layout.root)?;
+        Ok(layout)
     }
 
     /// Installed packages, shared by every account of this OS user.
@@ -393,33 +416,7 @@ impl PluginStateLayout {
         {
             return Err(GrantError::InvalidIdentity);
         }
-        match fs::symlink_metadata(&self.root) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => return Err(GrantError::InvalidStore("unsafe plugin state root".into())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
-        }
-        let accounts = self.root.join("accounts");
-        match fs::symlink_metadata(&accounts) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => return Err(GrantError::InvalidStore("unsafe accounts directory".into())),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
-        }
-        let entries = match fs::read_dir(&accounts) {
-            Ok(entries) => entries,
-            Err(error) => return Err(error.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            let account_dir = entry.path();
-            let metadata = fs::symlink_metadata(&account_dir)?;
-            if metadata.file_type().is_symlink() {
-                return Err(GrantError::InvalidStore("unsafe account directory".into()));
-            }
-            if !metadata.is_dir() {
-                continue;
-            }
+        for account_dir in self.account_dirs()? {
             let mut activation = AccountActivationStore::open(account_dir.clone())?;
             if activation.is_enabled(plugin_id) {
                 activation.set_enabled(plugin_id, false)?;
@@ -428,6 +425,59 @@ impl PluginStateLayout {
             grants.remove_plugin(plugin_id)?;
         }
         Ok(())
+    }
+
+    /// Invalidates changed network declarations even in profiles that were inactive at update.
+    pub(super) fn revoke_network_for_package(
+        &self,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+    ) -> Result<(), GrantError> {
+        let network =
+            BTreeSet::from([gamenode_plugin_protocol::capability::NETWORK_FETCH.to_owned()]);
+        for account_dir in self.account_dirs()? {
+            let mut grants = PermissionGrantStore::open(&account_dir)?;
+            for identity in grants.identities().into_iter().filter(|identity| {
+                identity.plugin_id == plugin_id
+                    && identity.publisher_fingerprint == publisher_fingerprint
+            }) {
+                grants.revoke_permissions(&identity, &network)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn account_dirs(&self) -> Result<Vec<PathBuf>, GrantError> {
+        match fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(GrantError::InvalidStore("unsafe plugin state root".into())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        }
+        let accounts = self.root.join("accounts");
+        match fs::symlink_metadata(&accounts) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(GrantError::InvalidStore("unsafe accounts directory".into())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        }
+        let entries = match fs::read_dir(&accounts) {
+            Ok(entries) => entries,
+            Err(error) => return Err(error.into()),
+        };
+        let mut directories = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let account_dir = entry.path();
+            let metadata = fs::symlink_metadata(&account_dir)?;
+            if metadata.file_type().is_symlink() {
+                return Err(GrantError::InvalidStore("unsafe account directory".into()));
+            }
+            if metadata.is_dir() {
+                directories.push(account_dir);
+            }
+        }
+        Ok(directories)
     }
 }
 

@@ -531,23 +531,37 @@ pub async fn plugin_import_license_text(
 pub async fn plugin_permission_snapshot(
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
+    expected_account_id: String,
 ) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
-    updates
+    let snapshot = updates
         .permission_snapshot(plugin_id)
         .await
-        .map_err(|error| error.message().to_owned())
+        .map_err(|error| error.message().to_owned())?;
+    if snapshot.profile_id
+        != crate::plugin_host::profile::profile_id_for_account(&expected_account_id)
+    {
+        return Err("plugin profile changed while reading permissions".into());
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
 pub async fn plugin_permissions_replace(
-    lifecycle: tauri::State<'_, Arc<crate::plugin_host::runtime::ThirdPartyPluginLifecycle>>,
+    updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
     expected_profile_id: String,
+    expected_publisher_fingerprint: String,
     expected_revision: u64,
     decisions: Vec<crate::plugin_host::grants::PermissionDecision>,
 ) -> Result<crate::plugin_host::runtime::PluginPermissionSnapshot, String> {
-    lifecycle
-        .replace_permissions(plugin_id, expected_profile_id, expected_revision, decisions)
+    updates
+        .replace_permissions(
+            plugin_id,
+            expected_profile_id,
+            expected_publisher_fingerprint,
+            expected_revision,
+            decisions,
+        )
         .await
         .map_err(|error| error.message().to_owned())
 }

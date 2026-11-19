@@ -69,33 +69,74 @@ impl ResourceApi {
         let origin = fetch
             .origin()
             .ok_or_else(|| Status::invalid_argument("url must be an https URL"))?;
-        if !self.network.approved_origins(&identity).contains(&origin) {
-            return Err(self
-                .providers
-                .deny_resource_scope(&caller, cap::NETWORK_FETCH));
-        }
         let _slots = self.network.permits(owner)?;
+        let profiles = self.providers.profiles();
+        let mut profile_changes = profiles.subscribe();
+        let mut permission_changes = profiles.subscribe_permissions();
+        let approved = self
+            .network
+            .approved_origins(&identity, caller.profile_epoch)
+            .await
+            .filter(|approved| approved.origins.contains(&origin))
+            .ok_or_else(|| self.deny_scope(&caller))?;
 
-        // Asked before the first request and before every redirect: revoking the grant or the
-        // origin stops a fetch that is already running.
+        // Pin the permission revision so even revoke-then-reapprove fences this fetch.
+        let profile_epoch = caller.profile_epoch;
+        let session_revision = caller.grant_revision;
         let allow: AllowOrigin = {
             let providers = self.providers.clone();
             let network = self.network.clone();
-            let context = context.clone().unwrap_or_default();
-            Arc::new(move |origin: &str| {
-                providers
-                    .authorize_resource(Some(&context), cap::NETWORK_FETCH)
-                    .is_ok()
-                    && network.approved_origins(&identity).contains(origin)
+            let context = context.clone();
+            Arc::new(move |origin| {
+                let (providers, network, context, identity) = (
+                    providers.clone(),
+                    network.clone(),
+                    context.clone(),
+                    identity.clone(),
+                );
+                let revision = approved.revision;
+                Box::pin(async move {
+                    network
+                        .approved_origins(&identity, profile_epoch)
+                        .await
+                        .is_some_and(|current| {
+                            current.revision == revision && current.origins.contains(&origin)
+                        })
+                        && providers
+                            .authorize_resource(context.as_ref(), cap::NETWORK_FETCH)
+                            .is_ok_and(|current| current.grant_revision == session_revision)
+                })
             })
         };
-        let response = fetcher
-            .fetch(fetch, allow)
-            .await
-            .map_err(|error| fetch_status(error, || self.deny_scope(&caller)))?;
-        // The bytes were fetched for a call that may since have lost its permission.
+        let revoked = async {
+            loop {
+                tokio::select! {
+                    _ = profile_changes.changed() => {},
+                    _ = permission_changes.changed() => {},
+                }
+                if !allow(origin.clone()).await {
+                    break;
+                }
+            }
+        };
+        let response = tokio::select! {
+            _ = revoked => {
+                self.providers.authorize_resource(context.as_ref(), cap::NETWORK_FETCH)?;
+                return Err(self.deny_scope(&caller));
+            }
+            response = fetcher.fetch(fetch, allow.clone()) => response,
+        };
+        // Recheck even when the current hop completed without a redirect.
         self.providers
             .authorize_resource(context.as_ref(), cap::NETWORK_FETCH)?;
+        if !allow(origin.clone()).await {
+            return Err(self.deny_scope(&caller));
+        }
+        let response =
+            response.map_err(|error| fetch_status(error, || self.deny_scope(&caller)))?;
+        if response.final_origin != origin && !allow(response.final_origin.clone()).await {
+            return Err(self.deny_scope(&caller));
+        }
         Ok(Response::new(NetworkFetchReply {
             status_code: u32::from(response.status),
             headers: response.headers.into_iter().collect::<HashMap<_, _>>(),

@@ -69,7 +69,12 @@ impl plugin_host_server::PluginHost for ReferenceHost {
             && hello.requested_capabilities == [capability::CONTEXT, capability::CONFIGURE];
         let valid_extension = hello.session_kind == SessionKind::Extension as i32
             && hello.target_game.is_some()
-            && hello.requested_capabilities == [capability::GAME_LAUNCH, capability::CONFIGURE];
+            && hello.requested_capabilities
+                == [
+                    capability::CONTEXT,
+                    capability::GAME_LAUNCH,
+                    capability::CONFIGURE,
+                ];
         if hello.plugin_id != "fixture.plugin"
             || hello.session_credential != [9; 32]
             || !(valid_provider || valid_extension)

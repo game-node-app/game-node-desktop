@@ -287,16 +287,11 @@ fn evaluate_windows(
     environment: &PluginEnvironment,
     reasons: &mut Vec<CompatibilityReason>,
 ) -> bool {
-    let Some(userspace) = environment.userspace.as_ref() else {
-        reasons.push(CompatibilityReason::WindowsProductUnknown);
-        reasons.push(CompatibilityReason::WindowsVersionUnknown);
-        reasons.push(CompatibilityReason::WindowsBuildUnknown);
-        return true;
-    };
+    let userspace = environment.userspace.as_ref();
     let mut unknown = false;
 
     if let Some(required) = requirements.product {
-        let actual = userspace.kind;
+        let actual = userspace.and_then(|identity| identity.kind);
         let matches = matches!(
             (required, actual),
             (WindowsProduct::Client, Some(OperatingSystemKind::Client))
@@ -312,35 +307,30 @@ fn evaluate_windows(
         }
     }
 
-    if requirements.min_version.is_some() || requirements.max_version.is_some() {
-        let Some(actual) = userspace.version_id.as_deref() else {
-            reasons.push(CompatibilityReason::WindowsVersionUnknown);
-            unknown = true;
-            return unknown;
-        };
-        for (bound, is_minimum) in [
-            (requirements.min_version.as_deref(), true),
-            (requirements.max_version.as_deref(), false),
-        ] {
-            let Some(bound) = bound else { continue };
-            match compare_numeric_versions(actual, bound) {
-                Some(ordering) if is_minimum && ordering.is_lt() => {
-                    reasons.push(CompatibilityReason::WindowsVersionTooOld)
-                }
-                Some(ordering) if !is_minimum && ordering.is_gt() => {
-                    reasons.push(CompatibilityReason::WindowsVersionTooNew)
-                }
-                Some(_) => {}
-                None => {
-                    reasons.push(CompatibilityReason::WindowsVersionUnknown);
-                    unknown = true;
-                }
+    let actual_version = userspace.and_then(|identity| identity.version_id.as_deref());
+    for (bound, is_minimum) in [
+        (requirements.min_version.as_deref(), true),
+        (requirements.max_version.as_deref(), false),
+    ] {
+        let Some(bound) = bound else { continue };
+        match actual_version.and_then(|actual| compare_numeric_versions(actual, bound)) {
+            Some(ordering) if is_minimum && ordering.is_lt() => {
+                reasons.push(CompatibilityReason::WindowsVersionTooOld)
+            }
+            Some(ordering) if !is_minimum && ordering.is_gt() => {
+                reasons.push(CompatibilityReason::WindowsVersionTooNew)
+            }
+            Some(_) => {}
+            None => {
+                reasons.push(CompatibilityReason::WindowsVersionUnknown);
+                unknown = true;
+                break;
             }
         }
     }
 
     if requirements.min_build.is_some() || requirements.max_build.is_some() {
-        let Some(actual) = userspace.build else {
+        let Some(actual) = userspace.and_then(|identity| identity.build) else {
             reasons.push(CompatibilityReason::WindowsBuildUnknown);
             return true;
         };
@@ -395,24 +385,25 @@ fn evaluate_linux(
     }
 
     if let Some(alternatives) = &requirements.distributions {
-        let Some(userspace) = environment.userspace.as_ref() else {
+        let userspace = environment.userspace.as_ref();
+        let Some(id) = userspace.and_then(|identity| identity.id.as_deref()) else {
             reasons.push(CompatibilityReason::LinuxDistributionUnknown);
             return true;
         };
-        let (Some(id), Some(version)) = (userspace.id.as_deref(), userspace.version_id.as_deref())
-        else {
-            reasons.push(CompatibilityReason::LinuxDistributionUnknown);
-            return true;
-        };
-        if alternatives
-            .iter()
-            .any(|entry| entry.id == id && entry.versions.iter().any(|v| v == version))
-        {
-            // At least one author-declared OS/version alternative matches.
-        } else if alternatives.iter().any(|entry| entry.id == id) {
-            reasons.push(CompatibilityReason::LinuxDistributionVersionMismatch);
-        } else {
+        let Some(alternative) = alternatives.iter().find(|entry| entry.id == id) else {
             reasons.push(CompatibilityReason::LinuxDistributionMismatch);
+            return unknown;
+        };
+        let Some(version) = userspace.and_then(|identity| identity.version_id.as_deref()) else {
+            reasons.push(CompatibilityReason::LinuxDistributionUnknown);
+            return true;
+        };
+        if !alternative
+            .versions
+            .iter()
+            .any(|allowed| allowed == version)
+        {
+            reasons.push(CompatibilityReason::LinuxDistributionVersionMismatch);
         }
     }
     unknown
@@ -471,19 +462,16 @@ fn compare_numeric_versions(left: &str, right: &str) -> Option<std::cmp::Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_host::package::{
-        DistributionRequirement, LibcRequirements, LinuxRequirements, Target, TargetRequirements,
-    };
     use gamenode_platform::plugin_environment::{HostIdentity, LibcIdentity, UserspaceIdentity};
     use std::collections::BTreeMap;
 
-    fn target(os: &str, arch: &str, abi: &str, requires: Option<TargetRequirements>) -> Target {
+    fn linux_target(arch: &str) -> Target {
         Target {
-            os: os.into(),
+            os: "linux".into(),
             arch: arch.into(),
-            abi: abi.into(),
+            abi: "gnu".into(),
             entrypoint: "bin/plugin".into(),
-            requires,
+            requires: None,
             tested_on: vec![],
         }
     }
@@ -542,39 +530,164 @@ mod tests {
         }
     }
 
-    #[test]
-    fn linux_requirements_and_alternative_distributions_are_evaluated() {
-        let requirements = TargetRequirements {
-            windows: None,
-            linux: Some(LinuxRequirements {
-                libc: Some(LibcRequirements {
-                    family: LibcFamily::Glibc,
-                    min_version: "2.34".into(),
-                }),
-                distributions: Some(vec![DistributionRequirement {
-                    id: "debian".into(),
-                    versions: vec!["13".into(), "13.1".into()],
-                }]),
-            }),
-        };
-        let verdict = evaluate_target(
-            &target("linux", "amd64", "gnu", Some(requirements)),
-            &linux_environment(),
+    const DOCUMENTED_MANIFEST: &[u8] =
+        include_bytes!("../../../../docs/fixtures/plugin-target-compatibility.json");
+
+    fn assert_documented_verdict(
+        entrypoint: &str,
+        environment: &PluginEnvironment,
+        state: CompatibilityState,
+        reasons: &[CompatibilityReason],
+    ) {
+        let assessments = assess_manifest_targets(
+            DOCUMENTED_MANIFEST,
+            environment,
             EmulationPolicy::RequireNative,
+        )
+        .unwrap();
+        let assessment = assessments
+            .iter()
+            .find(|assessment| assessment.target.entrypoint == entrypoint)
+            .unwrap();
+        assert_eq!(
+            assessment.verdict,
+            CompatibilityVerdict {
+                state,
+                reasons: reasons.to_vec(),
+                unknown_facts: environment.unknown_facts.clone(),
+            },
+            "{entrypoint}: {environment:?}",
         );
-        assert_eq!(verdict.state, CompatibilityState::Compatible);
+    }
+
+    #[test]
+    fn documented_glibc_target_requires_libc_and_an_exact_distribution_alternative() {
+        use CompatibilityReason::*;
+        use CompatibilityState::*;
+
+        let mut environment = linux_environment();
+        environment.process_architecture = Some("amd64".into());
+        environment
+            .userspace
+            .as_mut()
+            .unwrap()
+            .extra
+            .insert("ID_LIKE".into(), "debian".into());
+        for (id, version, libc, state, reason) in [
+            (
+                "debian",
+                Some("13"),
+                "2.36",
+                Compatible,
+                RequirementsSatisfied,
+            ),
+            (
+                "debian",
+                Some("13.1"),
+                "2.36",
+                Compatible,
+                RequirementsSatisfied,
+            ),
+            (
+                "fedora",
+                Some("43"),
+                "2.40",
+                Compatible,
+                RequirementsSatisfied,
+            ),
+            (
+                "debian",
+                Some("13.0"),
+                "2.36",
+                Incompatible,
+                LinuxDistributionVersionMismatch,
+            ),
+            (
+                "debian",
+                Some("12"),
+                "2.36",
+                Incompatible,
+                LinuxDistributionVersionMismatch,
+            ),
+            (
+                "ubuntu",
+                Some("24.04"),
+                "2.36",
+                Incompatible,
+                LinuxDistributionMismatch,
+            ),
+            (
+                "ubuntu",
+                None,
+                "2.36",
+                Incompatible,
+                LinuxDistributionMismatch,
+            ),
+            (
+                "debian",
+                None,
+                "2.36",
+                Indeterminate,
+                LinuxDistributionUnknown,
+            ),
+            (
+                "debian",
+                Some("13"),
+                "2.35",
+                Incompatible,
+                LinuxLibcVersionTooOld,
+            ),
+        ] {
+            let userspace = environment.userspace.as_mut().unwrap();
+            userspace.id = Some(id.into());
+            userspace.version_id = version.map(str::to_owned);
+            environment.libc = Some(LibcIdentity::Gnu(Some(libc.into())));
+            assert_documented_verdict("bin/linux-gnu-x64/plugin", &environment, state, &[reason]);
+        }
+    }
+
+    #[test]
+    fn documented_interpreted_target_rechecks_native_dependency_without_an_allowlist() {
+        use CompatibilityReason::*;
+        use CompatibilityState::*;
+
+        let mut environment = linux_environment();
+        environment.userspace = None;
+        environment.process_abi = Some("musl".into());
+        environment.unknown_facts =
+            vec!["distribution.id".into(), "distribution.version_id".into()];
+        let entrypoint = "bin/linux-musl-x64/python-plugin";
+        for (libc, state, reason) in [
+            (Some("1.2.4"), Compatible, RequirementsSatisfied),
+            (Some("1.2.10"), Compatible, RequirementsSatisfied),
+            (Some("1.2.3"), Incompatible, LinuxLibcVersionTooOld),
+            (None, Indeterminate, LinuxLibcUnknown),
+        ] {
+            environment.libc = Some(LibcIdentity::Musl(libc.map(str::to_owned)));
+            assert_documented_verdict(entrypoint, &environment, state, &[reason]);
+        }
+
+        // Hold the target ABI fact constant to isolate the libc-family comparison.
+        environment.libc = Some(LibcIdentity::Gnu(Some("2.36".into())));
+        assert_documented_verdict(entrypoint, &environment, Incompatible, &[LinuxLibcMismatch]);
+        assert_documented_verdict(
+            entrypoint,
+            &linux_environment(),
+            Incompatible,
+            &[AbiMismatch],
+        );
     }
 
     #[test]
     fn incompatible_and_indeterminate_are_distinct() {
         let mismatch = evaluate_target(
-            &target("linux", "x86_64", "gnu", None),
+            &linux_target("x86_64"),
             &linux_environment(),
             EmulationPolicy::RequireNative,
         );
         assert_eq!(mismatch.state, CompatibilityState::Compatible);
         let incompatible = evaluate_target(
-            &target("linux", "aarch64", "gnu", None),
+            &linux_target("aarch64"),
             &linux_environment(),
             EmulationPolicy::RequireNative,
         );
@@ -584,7 +697,7 @@ mod tests {
             ..Default::default()
         };
         let indeterminate = evaluate_target(
-            &target("linux", "x86_64", "gnu", None),
+            &linux_target("x86_64"),
             &unknown,
             EmulationPolicy::AllowUnknown,
         );
@@ -594,7 +707,7 @@ mod tests {
 
     #[test]
     fn tested_coverage_is_not_a_runtime_requirement_and_emulation_is_explicit() {
-        let mut target = target("linux", "x86_64", "gnu", None);
+        let mut target = linux_target("x86_64");
         target
             .tested_on
             .push(super::super::package::TestedEnvironment {
@@ -672,42 +785,121 @@ mod tests {
     }
 
     #[test]
-    fn windows_product_version_and_build_bounds_are_checked() {
-        let requirements = TargetRequirements {
-            windows: Some(super::super::package::WindowsRequirements {
-                product: Some(WindowsProduct::Client),
-                min_version: Some("10.0".into()),
-                max_version: Some("10.0.30000".into()),
-                min_build: Some(22000),
-                max_build: Some(30000),
-            }),
-            linux: None,
-        };
-        let target = target("windows", "x86_64", "msvc", Some(requirements));
-        assert_eq!(
-            evaluate_target(
-                &target,
+    fn documented_windows_target_checks_product_version_and_inclusive_build_bounds() {
+        use CompatibilityReason::*;
+        use CompatibilityState::*;
+        use OperatingSystemKind::{Client, Server, Unknown};
+
+        let mut environment = windows_environment();
+        let entrypoint = "bin/windows-x64/plugin.exe";
+        for (product, version, build, state, reason) in [
+            (
+                Client,
+                Some("10.0.22000"),
+                Some(22000),
+                Compatible,
+                RequirementsSatisfied,
+            ),
+            (
+                Client,
+                Some("10.0.26100"),
+                Some(26100),
+                Compatible,
+                RequirementsSatisfied,
+            ),
+            (
+                Server,
+                Some("10.0.22631"),
+                Some(22631),
+                Incompatible,
+                WindowsProductMismatch,
+            ),
+            (
+                Client,
+                Some("6.3"),
+                Some(22000),
+                Incompatible,
+                WindowsVersionTooOld,
+            ),
+            (
+                Client,
+                Some("10.0.19045"),
+                Some(19045),
+                Incompatible,
+                WindowsBuildTooOld,
+            ),
+            (
+                Client,
+                Some("10.0.26101"),
+                Some(26101),
+                Incompatible,
+                WindowsBuildTooNew,
+            ),
+            (
+                Client,
+                Some("10.0"),
+                None,
+                Indeterminate,
+                WindowsBuildUnknown,
+            ),
+            (
+                Unknown,
+                Some("10.0"),
+                Some(22631),
+                Indeterminate,
+                WindowsProductUnknown,
+            ),
+            (
+                Client,
+                None,
+                Some(22631),
+                Indeterminate,
+                WindowsVersionUnknown,
+            ),
+        ] {
+            let userspace = environment.userspace.as_mut().unwrap();
+            userspace.kind = Some(product);
+            userspace.version_id = version.map(str::to_owned);
+            userspace.build = build;
+            assert_documented_verdict(entrypoint, &environment, state, &[reason]);
+        }
+
+        let userspace = environment.userspace.as_mut().unwrap();
+        userspace.build = Some(19045);
+        assert_documented_verdict(
+            entrypoint,
+            &environment,
+            Incompatible,
+            &[WindowsVersionUnknown, WindowsBuildTooOld],
+        );
+    }
+
+    #[test]
+    fn manifest_assessment_rejects_unknown_selectors_and_ambiguous_targets() {
+        let manifest: serde_json::Value = serde_json::from_slice(DOCUMENTED_MANIFEST).unwrap();
+        let mut ambiguous = manifest.clone();
+        let mut server = ambiguous["targets"][0].clone();
+        server["entrypoint"] = "bin/windows-x64/server.exe".into();
+        server["requires"]["windows"]["product"] = "server".into();
+        ambiguous["targets"].as_array_mut().unwrap().push(server);
+
+        let mut malformed = manifest;
+        malformed["targets"][0]["requires"]["windows"]["release"] = "23H2".into();
+
+        for (manifest, expected) in [
+            (ambiguous, "ambiguous target selection"),
+            (malformed, "unknown field `release`"),
+        ] {
+            let error = assess_manifest_targets(
+                &serde_json::to_vec(&manifest).unwrap(),
                 &windows_environment(),
                 EmulationPolicy::RequireNative,
             )
-            .state,
-            CompatibilityState::Compatible
-        );
-
-        let mut old_build = windows_environment();
-        let userspace = old_build.userspace.as_mut().unwrap();
-        userspace.version_id = Some("10.0.19045".into());
-        userspace.build = Some(19045);
-        assert_eq!(
-            evaluate_target(&target, &old_build, EmulationPolicy::RequireNative).state,
-            CompatibilityState::Incompatible
-        );
-
-        let mut unknown_build = windows_environment();
-        unknown_build.userspace.as_mut().unwrap().build = None;
-        assert_eq!(
-            evaluate_target(&target, &unknown_build, EmulationPolicy::RequireNative).state,
-            CompatibilityState::Indeterminate
-        );
+            .unwrap_err();
+            let PackageCompatibilityError::InvalidManifest(error) = error else {
+                panic!("expected manifest rejection, got {error:?}");
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 }

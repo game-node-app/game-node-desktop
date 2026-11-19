@@ -127,45 +127,47 @@ allowlist permits any distribution meeting the other requirements.
 `product` plus `release`; Linux entries have `distribution` plus `version`. They do not
 add eligibility requirements or change how `requires` is evaluated.
 
-```json
-{
-  "targets": [
-    {
-      "os": "windows",
-      "arch": "x86_64",
-      "abi": "msvc",
-      "entrypoint": "bin/windows-x64/plugin.exe",
-      "requires": {
-        "windows": {
-          "product": "client",
-          "min_version": "10.0",
-          "min_build": 22000
-        }
-      },
-      "tested_on": [{ "product": "windows-11", "release": "23H2" }]
-    },
-    {
-      "os": "linux",
-      "arch": "x86_64",
-      "abi": "gnu",
-      "entrypoint": "bin/linux-x64/plugin",
-      "requires": {
-        "linux": {
-          "libc": { "family": "glibc", "min_version": "2.36" },
-          "distributions": [
-            { "id": "debian", "versions": ["13"] },
-            { "id": "fedora", "versions": ["43"] }
-          ]
-        }
-      },
-      "tested_on": [{ "distribution": "debian", "version": "13" }]
-    }
-  ]
-}
-```
+### Target examples
 
-This schema validation does not detect the current execution environment or decide
-compatibility. That host-side detection and requirement evaluation are separate stages.
+The [example manifest](fixtures/plugin-target-compatibility.json) contains three targets
+with illustrative requirements and placeholder publisher and payload values. The evaluator
+tests load this file and supply fixed environment facts. Native acceptance exercises
+[host detection](plugin-environment-detection.md) separately.
+
+| Target | Example effective environment | Verdict |
+| --- | --- | --- |
+| Windows x86-64 MSVC, client, version at least `10.0`, builds `22000`–`26100` inclusive | Client build `22000` or `26100` with a matching version | Compatible |
+| Same Windows target | Server at build `22631`, or client outside the build bounds | Incompatible |
+| Linux x86-64 GNU, glibc `2.36` or newer, Debian `13` or `13.1` or Fedora `43` | Debian `13.1` with glibc `2.36` | Compatible even though author coverage only lists Debian `13` |
+| Same glibc target | Debian `12`, a Debian-derived distribution whose own ID is absent from the allowlist, or glibc `2.35` | Incompatible |
+| Linux x86-64 musl, minimum musl `1.2.4`, no distribution allowlist | Matching ABI and musl `1.2.4` with unknown distribution ID and release | Compatible |
+| Same musl target | musl `1.2.3`, or a GNU userspace with glibc | Incompatible |
+| Same musl target | musl family detected but version unknown, with the other required facts matching | Indeterminate |
+
+Distribution allowlists match the effective userspace's `ID` and exact `VERSION_ID`.
+For example, listing `"13"` does not include `"13.1"` unless both are declared.
+`ID_LIKE` describes ancestry and never expands the allowlist. Compare libc versions
+numerically component by component, with absent trailing components treated as zero.
+
+The musl entry illustrates an interpreted plugin whose package ships an executable
+launcher, a Python runtime and a native Python extension. Declare the OS, architecture,
+ABI and minimum libc version required by the launcher, interpreter and loaded native
+code. In this example the native extension requires musl `1.2.4`, so portable Python
+source still needs a musl target with that minimum. Package the required files as
+verified payload and test the actual runtime and dependencies as the author. Schema 1
+evaluates the declared platform requirements and has no selectors for Python versions
+or individual shared libraries. Compatibility checks leave runtime provisioning and
+installation hooks outside the decision. The host evaluates environment facts without
+starting the interpreter, installing dependencies or running package-supplied hooks.
+
+A compatible verdict means every declared requirement passed. A known required
+mismatch yields incompatible even when another required fact is unknown. If there
+is no known mismatch and a required fact is unknown, the verdict is indeterminate.
+Only a unique compatible target can be selected. A duplicate OS/architecture/ABI
+tuple is rejected at manifest validation, even if its entrypoint and requirements
+differ. The author test matrix records observed coverage, while the verdict describes
+eligibility under the declared constraints. Successful launch depends on the actual
+payload and runtime as well as the host's ordinary integrity, API and permission checks.
 
 ## ZIP staging limits
 

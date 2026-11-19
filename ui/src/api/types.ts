@@ -1379,6 +1379,12 @@ export interface PluginCompatibilityDetails {
   targets: PluginTargetAssessment[];
 }
 
+export interface ExtensionReadinessSelection {
+  installationId: string;
+  revision: string;
+  profileEpoch: string;
+}
+
 export interface PluginUpdateReview {
   pluginId: string;
   installedVersion: string;
@@ -1417,6 +1423,11 @@ export interface PluginUpdateReview {
   isDowngrade: boolean;
   requiresManualApproval: boolean;
   compatibilityDetails?: PluginCompatibilityDetails;
+  extensionTargets?: Array<{
+    name: string;
+    providerId: string;
+    selection: ExtensionReadinessSelection;
+  }>;
 }
 
 export interface PluginInfo {

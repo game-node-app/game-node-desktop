@@ -108,6 +108,7 @@ impl Fixture {
                     metadata_revision: 0,
                     artwork_revision: 0,
                     install_dir: dir.to_string_lossy().into_owned(),
+                    detected_target: None,
                 })
                 .collect(),
         );

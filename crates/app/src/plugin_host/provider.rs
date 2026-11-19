@@ -121,6 +121,38 @@ pub trait HostServices: Send + Sync {
     }
 }
 
+/// Extension registrations have no provider-owned services.
+pub(crate) struct ExtensionServices;
+
+#[tonic::async_trait]
+impl HostServices for ExtensionServices {
+    async fn context(&self, _: Lease) -> Result<ProviderContext, Status> {
+        Err(Status::permission_denied(
+            "extensions have no provider context",
+        ))
+    }
+    async fn account(&self, _: Lease, _: account_request::Action) -> Result<AccountReply, Status> {
+        Err(Status::permission_denied(
+            "extensions have no provider account",
+        ))
+    }
+    async fn secret(&self, _: Lease, _: SecretRequest) -> Result<SecretReply, Status> {
+        Err(Status::permission_denied(
+            "extensions have no provider secrets",
+        ))
+    }
+    async fn login(&self, _: Lease, _: LoginRequest) -> Result<LoginReply, Status> {
+        Err(Status::permission_denied(
+            "extensions have no provider login",
+        ))
+    }
+    async fn actions(&self, _: Lease, _: ActionDeclaration) -> Result<ActionReply, Status> {
+        Err(Status::permission_denied(
+            "extensions have no provider actions",
+        ))
+    }
+}
+
 /// Who composed a registration. Official providers are bundled with GameNode; third-party
 /// providers come from managed packages and are bound to the active GameNode account profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,6 +229,16 @@ struct Pending {
     session_kind: i32,
     target_game: Option<TargetGameContext>,
     ready: oneshot::Sender<()>,
+    closed: oneshot::Sender<()>,
+    extension: Option<SupervisedExtension>,
+}
+
+pub(crate) struct SupervisedExtension {
+    pub target: super::process::ExtensionTarget,
+    pub required_permission: Option<&'static str>,
+    pub expected_version: Option<String>,
+    pub intent: Option<super::process::ExtensionIntent>,
+    pub playtime: Option<PlaytimeCapabilities>,
 }
 
 struct Session {
@@ -210,11 +252,34 @@ struct Session {
     permission_watchers: Vec<mpsc::Sender<Result<PermissionChange, Status>>>,
     commands: Option<mpsc::Sender<Result<ProviderCommand, Status>>>,
     ready: Option<oneshot::Sender<()>>,
+    _closed: oneshot::Sender<()>,
+    extension: Option<SupervisedExtension>,
+    revoked: bool,
     completed: VecDeque<String>,
     /// The operation id of the session's resource context (API 1.6+); `None` for sessions that
     /// negotiated an earlier minor, which cannot call resource services.
     resource_operation: Option<String>,
     resource_context: Option<ServiceContext>,
+}
+
+impl Session {
+    fn extension_authority(&self) -> bool {
+        !self.revoked
+            && self.extension.as_ref().is_none_or(|extension| {
+                // Readiness uses an Extension handshake without a host-issued action intent.
+                extension.intent.is_some()
+                    && self.commands.is_some()
+                    && extension.target.is_current()
+                    && self
+                        .provider
+                        .profiles
+                        .as_ref()
+                        .and_then(|profiles| profiles.current())
+                        .is_some_and(|profile| {
+                            profile.verified() && profile.epoch() == extension.target.profile_epoch
+                        })
+            })
+    }
 }
 
 /// An authorized plugin-initiated resource call. It snapshots the session's scope at check time;
@@ -302,6 +367,7 @@ pub struct ConfigurationModes {
 pub struct Launch {
     pub credential: String,
     pub ready: oneshot::Receiver<()>,
+    pub(crate) closed: oneshot::Receiver<()>,
 }
 
 #[derive(Debug)]
@@ -701,6 +767,11 @@ impl ProviderApi {
                     "provider session credential is invalid",
                 ));
             }
+            if !session.extension_authority() {
+                return Err(Status::permission_denied(
+                    "extension session has no active target authority",
+                ));
+            }
             if session.resource_context.as_ref() != Some(&context)
                 || session.kind != SessionKind::Extension as i32
                 || session.provider.registration.kind != RegistrationKind::Extension
@@ -723,12 +794,12 @@ impl ProviderApi {
                     "runtime reports require an authenticated plugin",
                 ));
             };
-            if !session
-                .provider
-                .registration
-                .playtime
-                .can_report_runtime_sessions()
-            {
+            let playtime = session
+                .extension
+                .as_ref()
+                .and_then(|extension| extension.playtime)
+                .unwrap_or(session.provider.registration.playtime);
+            if !playtime.can_report_runtime_sessions() {
                 return Err(Status::permission_denied(
                     "runtime reporting is disabled by the signed package policy",
                 ));
@@ -767,6 +838,11 @@ impl ProviderApi {
             {
                 return Err(Status::unauthenticated(
                     "provider session context is invalid",
+                ));
+            }
+            if !session.extension_authority() {
+                return Err(Status::permission_denied(
+                    "extension session has no active target authority",
                 ));
             }
             let has_grant = session.grants.contains(cap::GAME_SESSIONS_REPORT);
@@ -978,7 +1054,7 @@ impl ProviderApi {
             .get(session_id)
             .map(|session| session.provider.clone())
             .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
-        let (revision, runtime_reporting_revoked, close_configuration) = {
+        let (revision, runtime_reporting_revoked, close_configuration, stop_extension) = {
             let commit = provider.commits.lock().await;
             let mut state = lock(&self.state);
             let session = state
@@ -987,6 +1063,8 @@ impl ProviderApi {
                 .ok_or_else(|| Status::unauthenticated("unknown plugin session"))?;
             let removed: BTreeSet<_> = session.grants.difference(&grants).cloned().collect();
             let revoked = !removed.is_empty();
+            let stop_extension = revoked && session.kind == SessionKind::Extension as i32;
+            session.revoked |= stop_extension;
             session.grants = grants;
             session.grant_revision = session.grant_revision.saturating_add(1);
             let change = permission_change(session, revoked);
@@ -1026,8 +1104,24 @@ impl ProviderApi {
             let close_configuration = removed.contains(cap::CONFIGURE);
             drop(state);
             drop(commit);
-            (revision, runtime_reporting_revoked, close_configuration)
+            (
+                revision,
+                runtime_reporting_revoked,
+                close_configuration,
+                stop_extension,
+            )
         };
+        if stop_extension {
+            self.disconnect_session(session_id).await;
+            // A removed report grant is no longer in the session's grant set when it closes.
+            let handler = { lock(&self.runtime_session_handler).clone() };
+            if runtime_reporting_revoked && let Some(handler) = handler {
+                handler
+                    .disconnected(provider.registration.plugin_id.clone())
+                    .await;
+            }
+            return Ok(revision);
+        }
         if close_configuration {
             let api = self.clone();
             let session_id = session_id.to_owned();
@@ -1056,42 +1150,41 @@ impl ProviderApi {
     pub fn request_shutdown(&self, provider_id: &str) {
         let state = lock(&self.state);
         for (id, session) in &state.sessions {
-            if session.provider.registration.provider_id != provider_id {
-                continue;
+            if session.provider.registration.provider_id == provider_id {
+                Self::send_shutdown(id, session);
             }
-            if let Some(commands) = &session.commands {
-                let (account_epoch, profile_epoch) = epoch(&session.provider);
-                if let Ok(operation_id) = super::random_session_id() {
-                    let _ = commands.try_send(Ok(ProviderCommand {
-                        context: Some(ServiceContext {
-                            session_id: id.clone(),
-                            session_credential: session.credential.to_vec(),
-                            provider_id: context_provider_id(&session.provider.registration).into(),
-                            operation_id,
-                            account_epoch,
-                            profile_epoch,
-                            session_kind: session.kind,
-                            target_game: session.target_game.clone(),
-                        }),
-                        operation: ProviderOperation::Shutdown as i32,
-                        target_operation_id: String::new(),
-                        settings: None,
-                        runtime_session_result: None,
-                        achievements: None,
-                    }));
-                }
-            }
+        }
+    }
+
+    fn send_shutdown(session_id: &str, session: &Session) {
+        if let Some(commands) = &session.commands
+            && let Ok(operation_id) = super::random_session_id()
+        {
+            let (account_epoch, profile_epoch) = epoch(&session.provider);
+            let _ = commands.try_send(Ok(ProviderCommand {
+                context: Some(ServiceContext {
+                    session_id: session_id.to_owned(),
+                    session_credential: session.credential.to_vec(),
+                    provider_id: context_provider_id(&session.provider.registration).into(),
+                    operation_id,
+                    account_epoch,
+                    profile_epoch,
+                    session_kind: session.kind,
+                    target_game: session.target_game.clone(),
+                }),
+                operation: ProviderOperation::Shutdown as i32,
+                target_operation_id: String::new(),
+                settings: None,
+                runtime_session_result: None,
+                achievements: None,
+            }));
         }
     }
 
     /// Requests a graceful shutdown of the process that owns a terminal one-shot extension job.
     pub(crate) fn request_shutdown_session(&self, session_id: &str) {
-        let provider_id = lock(&self.state)
-            .sessions
-            .get(session_id)
-            .map(|session| session.provider.registration.provider_id.clone());
-        if let Some(provider_id) = provider_id {
-            self.request_shutdown(&provider_id);
+        if let Some(session) = lock(&self.state).sessions.get(session_id) {
+            Self::send_shutdown(session_id, session);
         }
     }
 
@@ -1207,9 +1300,11 @@ impl ProviderApi {
             expected_profile_epoch,
             SessionKind::Provider as i32,
             None,
+            None,
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_extension_launch(
         &self,
         provider_id: &str,
@@ -1223,6 +1318,29 @@ impl ProviderApi {
             Some(expected_profile_epoch),
             SessionKind::Extension as i32,
             Some(target_game),
+            None,
+        )
+    }
+
+    pub(crate) fn begin_supervised_extension(
+        &self,
+        slot_id: &str,
+        extension: SupervisedExtension,
+    ) -> Result<Launch, Status> {
+        let target = &extension.target;
+        cap::validate_target(&target.context)
+            .map_err(|_| Status::invalid_argument("invalid target game context"))?;
+        if !target.is_current() {
+            return Err(Status::failed_precondition(
+                "selected extension target is unavailable",
+            ));
+        }
+        self.begin_scoped_launch(
+            slot_id,
+            Some(target.profile_epoch),
+            SessionKind::Extension as i32,
+            Some(target.context.clone()),
+            Some(extension),
         )
     }
 
@@ -1232,6 +1350,7 @@ impl ProviderApi {
         expected_profile_epoch: Option<u64>,
         session_kind: i32,
         target_game: Option<TargetGameContext>,
+        extension: Option<SupervisedExtension>,
     ) -> Result<Launch, Status> {
         let mut state = lock(&self.state);
         let provider = state
@@ -1239,12 +1358,29 @@ impl ProviderApi {
             .get(provider_id)
             .cloned()
             .ok_or_else(|| Status::not_found("provider is unavailable"))?;
+        if (session_kind == SessionKind::Extension as i32)
+            != (provider.registration.kind == RegistrationKind::Extension)
+        {
+            return Err(Status::permission_denied(
+                "process launch kind does not match registration",
+            ));
+        }
         // A third-party process runs only inside an active GameNode account profile.
         let profile_epoch = if let Some(profiles) = provider.profiles.as_ref() {
             let profile = profiles.require()?;
             if expected_profile_epoch.is_some_and(|expected| expected != profile.epoch()) {
                 return Err(Status::failed_precondition(
                     "plugin profile changed during startup",
+                ));
+            }
+            if extension.is_some()
+                && (!profile.verified()
+                    || target_game
+                        .as_ref()
+                        .is_none_or(|target| target.profile_id != profile.profile_id()))
+            {
+                return Err(Status::failed_precondition(
+                    "extension target belongs to another profile",
                 ));
             }
             Some(profile.epoch())
@@ -1271,6 +1407,7 @@ impl ProviderApi {
         getrandom::fill(&mut credential)
             .map_err(|_| Status::internal("could not create launch credential"))?;
         let (ready, receiver) = oneshot::channel();
+        let (closed, disconnected) = oneshot::channel();
         state.pending.push(Pending {
             provider,
             credential,
@@ -1278,10 +1415,13 @@ impl ProviderApi {
             session_kind,
             target_game,
             ready,
+            closed,
+            extension,
         });
         Ok(Launch {
             credential: super::hex(&credential),
             ready: receiver,
+            closed: disconnected,
         })
     }
 
@@ -1316,6 +1456,22 @@ impl ProviderApi {
         }
         if hello.plugin_version.is_empty() || hello.plugin_version.len() > 128 {
             return Err(Status::invalid_argument("invalid plugin version"));
+        }
+        if let Some(extension) = &pending.extension {
+            if !extension.target.is_current() {
+                return Err(Status::failed_precondition(
+                    "selected extension target is unavailable",
+                ));
+            }
+            if extension
+                .expected_version
+                .as_ref()
+                .is_some_and(|version| *version != hello.plugin_version)
+            {
+                return Err(Status::unauthenticated(
+                    "extension version does not match the verified package",
+                ));
+            }
         }
         let current_capabilities = pending
             .provider
@@ -1420,6 +1576,14 @@ impl ProviderApi {
         if !granted.contains(cap::CONTEXT) {
             return Err(denial(DenialReason::NotGranted, cap::CONTEXT, 0));
         }
+        if let Some(permission) = pending
+            .extension
+            .as_ref()
+            .and_then(|extension| extension.required_permission)
+            && !granted.contains(permission)
+        {
+            return Err(denial(DenialReason::NotGranted, permission, 0));
+        }
         let granted_capabilities = granted.iter().cloned().collect::<Vec<_>>();
         let minor = cap::negotiate(
             selection.api_major,
@@ -1452,7 +1616,7 @@ impl ProviderApi {
                 provider_id: context_provider_id(&pending.provider.registration).into(),
                 operation_id: super::random_session_id()?,
                 account_epoch,
-                profile_epoch,
+                profile_epoch: pending.profile_epoch.unwrap_or(profile_epoch),
                 session_kind: hello.session_kind,
                 target_game: pending.target_game.clone(),
             })
@@ -1472,6 +1636,9 @@ impl ProviderApi {
                 permission_watchers: Vec::new(),
                 commands: None,
                 ready: Some(pending.ready),
+                _closed: pending.closed,
+                extension: pending.extension,
+                revoked: false,
                 completed: VecDeque::new(),
                 resource_context: resource_context.clone(),
                 resource_operation: resource_context
@@ -1651,7 +1818,7 @@ impl ProviderApi {
             provider_ids
         })
         .await
-        .map_err(|_| Status::internal("plugin registration worker failed"))
+        .map_err(|_| Status::internal("plugin unregistration worker failed"))
     }
 
     pub async fn disconnect(&self, provider_id: &str) {
@@ -1685,18 +1852,18 @@ impl ProviderApi {
         let sessions: Vec<_> = lock(&self.state)
             .sessions
             .iter()
-            .filter(|(_, session)| session.provider.profiles.is_some())
-            .map(|(id, session)| {
-                (
-                    id.clone(),
-                    session.provider.registration.provider_id.clone(),
-                )
+            .filter(|(_, session)| {
+                session.provider.profiles.is_some()
+                    && session.extension.as_ref().is_none_or(|extension| {
+                        !self.profiles.is_current(extension.target.profile_epoch)
+                    })
             })
+            .map(|(id, _)| id.clone())
             .collect();
-        for (session_id, provider_id) in sessions {
+        for session_id in sessions {
             let _ = self.close_configuration_for_session(&session_id).await;
-            self.request_shutdown(&provider_id);
-            self.disconnect(&provider_id).await;
+            self.request_shutdown_session(&session_id);
+            self.disconnect_session(&session_id).await;
         }
     }
 
@@ -1947,6 +2114,11 @@ impl ProviderApi {
         let Some(session) = state.sessions.get(&context.session_id) else {
             return Err(Status::unauthenticated("plugin session expired"));
         };
+        if !session.extension_authority() {
+            return Err(Status::permission_denied(
+                "extension session has no active target authority",
+            ));
+        }
         let scope_denied = |session: &Session| {
             let event = denial_event(session, label, DenialReason::ScopeDenied);
             let revision = event.grant_revision;
@@ -3066,6 +3238,17 @@ impl provider_host_server::ProviderHost for ProviderApi {
                 drop(state);
                 self.record_authorization_denial(event);
                 return Err(detail);
+            }
+            if session.revoked
+                || (session.kind == SessionKind::Extension as i32
+                    && (context.session_kind != session.kind
+                        || context.target_game != session.target_game
+                        || session.extension.as_ref().is_some_and(|extension| {
+                            !self.profiles.is_current(extension.target.profile_epoch)
+                                || !extension.target.is_current()
+                        })))
+            {
+                return Err(Status::permission_denied("invalid extension Ready context"));
             }
             if session.commands.is_some() {
                 return Err(Status::failed_precondition(

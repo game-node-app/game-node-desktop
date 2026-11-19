@@ -92,6 +92,9 @@ pub struct UpdateReview {
     pub requires_manual_approval: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compatibility_details: Option<super::managed_packages::PackageCompatibilityReview>,
+    /// The command bridge populates choices from the active account's library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_targets: Option<Vec<crate::engine::ExtensionReadinessChoice>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -218,6 +221,9 @@ impl UpdateReview {
             changed_data_schemas,
             requires_manual_approval,
             compatibility_details: None,
+            extension_targets: (installed.kind == super::package::PluginKind::Extension
+                && candidate.kind == super::package::PluginKind::Extension)
+                .then(Vec::new),
         }
     }
 }
@@ -817,6 +823,11 @@ impl PluginUpdateService {
         })
         .await
         .map_err(|_| "publisher trust worker failed".to_owned())??;
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let mut inventory = Vec::new();
         for package in installed {
             let key = match package_key(&package.package_path) {
@@ -842,10 +853,22 @@ impl PluginUpdateService {
                 super::package::PluginKind::Provider => "provider",
                 super::package::PluginKind::Extension => "extension",
             };
+            let is_extension = plugin_kind == "extension";
+            let compatible = report.selected_target().is_ok();
+            let runtime_available = compatible
+                && (!is_extension
+                    || lifecycle.as_ref().is_some_and(|lifecycle| {
+                        lifecycle.extension_runtime_available(&package.plugin_id)
+                    }));
+            let enabled = match &lifecycle {
+                Some(lifecycle) if is_extension => lifecycle
+                    .enabled(package.plugin_id.clone())
+                    .await
+                    .unwrap_or(false),
+                _ => false,
+            };
             inventory.push(super::PluginInfo {
-                provider_id: report.manifest.provider_id.clone().unwrap_or_else(|| {
-                    super::provider::extension_registration_id(&report.manifest.id)
-                }),
+                provider_id: report.manifest.provider_id.clone().unwrap_or_default(),
                 plugin_id: report.manifest.id.clone(),
                 plugin_kind: plugin_kind.to_owned(),
                 name: report.manifest.name.clone(),
@@ -855,8 +878,8 @@ impl PluginUpdateService {
                 session: "stopped".to_owned(),
                 native_access: report.manifest.native_access.clone(),
                 version: Some(package.version),
-                enabled: Some(false),
-                runtime_available: Some(report.selected_target().is_ok()),
+                enabled: Some(enabled),
+                runtime_available: Some(runtime_available),
                 compatibility_details: Some(report.compatibility_review()),
                 publisher_fingerprint: Some(super::publisher_trust::key_fingerprint(&key)),
             });
@@ -1251,8 +1274,13 @@ impl PluginUpdateService {
         Ok(review)
     }
 
-    pub async fn approve(&self, plugin_id: &str, version: &str) -> Result<String, String> {
-        self.approve_reviewed(plugin_id, version, false, false)
+    pub async fn approve(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        target: Option<super::process::ExtensionTarget>,
+    ) -> Result<String, String> {
+        self.approve_reviewed(plugin_id, version, false, false, target)
             .await
     }
 
@@ -1262,11 +1290,13 @@ impl PluginUpdateService {
         plugin_id: &str,
         version: &str,
         confirmed: bool,
+        target: Option<super::process::ExtensionTarget>,
     ) -> Result<String, String> {
         if !confirmed {
             return Err("rollback requires explicit user confirmation".into());
         }
-        self.approve_reviewed(plugin_id, version, true, true).await
+        self.approve_reviewed(plugin_id, version, true, true, target)
+            .await
     }
 
     async fn approve_reviewed(
@@ -1275,6 +1305,7 @@ impl PluginUpdateService {
         version: &str,
         is_rollback: bool,
         explicit_downgrade: bool,
+        target: Option<super::process::ExtensionTarget>,
     ) -> Result<String, String> {
         let _activation = self.activations.lock().await;
         let candidate = self
@@ -1299,6 +1330,25 @@ impl PluginUpdateService {
         {
             return Err("the reviewed package has no compatible target".into());
         }
+        if candidate.review.extension_targets.is_some() != target.is_some() {
+            self.pending
+                .lock()
+                .await
+                .insert(plugin_id.to_owned(), candidate);
+            return Err("extension approval requires a selected game".into());
+        }
+        // Refuse a stale review before installing anything; the activation worker re-checks
+        // under the publisher lock.
+        let registry = self.registry.clone();
+        let id = plugin_id.to_owned();
+        let active = tokio::task::spawn_blocking(move || registry.active(&id))
+            .await
+            .map_err(|_| "plugin registry worker failed".to_owned())?
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "plugin is no longer installed".to_owned())?;
+        if active.version != candidate.installed_version {
+            return Err("the active plugin changed after review; review the update again".into());
+        }
         // New and rescaled requests never receive a grant from package activation.
         if candidate.review.publisher_changed && !candidate.confirmed_retrust {
             self.pending
@@ -1307,11 +1357,12 @@ impl PluginUpdateService {
                 .insert(plugin_id.to_owned(), candidate);
             return Err("the changed publisher key must be re-trusted separately".into());
         }
+
         if candidate.is_rollback && (!candidate.review.is_downgrade || !explicit_downgrade) {
             return Err("the reviewed package is not a downgrade".into());
         }
         let version = self
-            .activate_selected_candidate(plugin_id, candidate)
+            .activate_selected_candidate(plugin_id, candidate, target)
             .await?;
         let mut available = self
             .available
@@ -1349,33 +1400,68 @@ impl PluginUpdateService {
         &self,
         plugin_id: &str,
         candidate: PendingCandidate,
+        target: Option<super::process::ExtensionTarget>,
     ) -> Result<String, String> {
+        use super::package::PluginKind;
+        let extension = candidate.installed_manifest.kind == PluginKind::Extension
+            || candidate.candidate_manifest.kind == PluginKind::Extension;
+        if extension && candidate.installed_manifest.kind != candidate.candidate_manifest.kind {
+            return Err("an update cannot change the extension's registration kind".into());
+        }
+        if extension && candidate.review.publisher_changed {
+            return Err("the extension must be installed and granted access under its new publisher identity".into());
+        }
         let key = candidate.candidate_publisher_key;
         let version = candidate.version.clone();
-        let installed = if let Some(work) = candidate.work {
-            self.packages
-                .install_candidate(
-                    &work.path.join("package"),
-                    key,
-                    EmulationPolicy::RequireNative,
-                    false,
-                )
-                .await
-                .map_err(|error| error.to_string())?
-        } else {
+        let retained = if extension || candidate.work.is_none() {
             let registry = self.registry.clone();
             let id = plugin_id.to_owned();
             let wanted = version.clone();
             tokio::task::spawn_blocking(move || {
                 registry
                     .versions(&id)
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .find(|item| item.version == wanted)
-                    .ok_or_else(|| "rollback package was removed after review".to_owned())
+                    .map(|versions| versions.into_iter().find(|item| item.version == wanted))
+                    .map_err(|error| error.to_string())
             })
             .await
             .map_err(|_| "plugin registry worker failed".to_owned())??
+        } else {
+            None
+        };
+        let installed = match (candidate.work, retained) {
+            (Some(work), Some(installed)) => {
+                // A failed readiness check retains the inactive package. Reuse it on retry
+                // only if it contains the same authenticated payload the user just reviewed.
+                let root = installed.package_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    use gamenode_platform::plugin_packages::verify_package_directory;
+                    let staged = verify_package_directory(&work.path.join("package"), &key)
+                        .map_err(|error| error.to_string())?;
+                    let retained =
+                        verify_package_directory(&root, &key).map_err(|error| error.to_string())?;
+                    if staged.files.0 != retained.files.0 {
+                        return Err(
+                            "an installed version differs from the reviewed package".to_owned()
+                        );
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|_| "plugin package worker failed".to_owned())??;
+                installed
+            }
+            (Some(work), None) => self
+                .packages
+                .install_candidate(
+                    work.path.join("package"),
+                    key,
+                    EmulationPolicy::RequireNative,
+                    false,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            (None, Some(installed)) => installed,
+            (None, None) => return Err("rollback package was removed after review".into()),
         };
         let verified = self
             .packages
@@ -1396,6 +1482,39 @@ impl PluginUpdateService {
         verified
             .selected_target()
             .map_err(|error| error.to_string())?;
+        if extension {
+            let lifecycle = self
+                .lifecycle
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .ok_or_else(|| "extension runtime is unavailable".to_owned())?;
+            if verified.manifest != candidate.candidate_manifest {
+                return Err("the extension package changed after review".into());
+            }
+            let mut config = super::runtime::managed_process_config(&installed, &verified, key)
+                .map_err(|error| error.message().to_owned())?;
+            config.blocked_capabilities = candidate.review.removed_permissions;
+            config.blocked_capabilities.extend(
+                candidate
+                    .review
+                    .permission_changes
+                    .into_iter()
+                    .filter(|change| change.installed_scope != change.candidate_scope)
+                    .map(|change| change.id),
+            );
+            let plugin_id = plugin_id.to_owned();
+            let active_version = candidate.installed_version;
+            tokio::spawn(async move {
+                lifecycle
+                    .activate_update(plugin_id, active_version, installed, config, target)
+                    .await
+            })
+            .await
+            .map_err(|_| "extension update task failed".to_owned())?
+            .map_err(|error| error.message().to_owned())?;
+            return Ok(version);
+        }
 
         let registry = self.registry.clone();
         let trust_dir = self.trust_dir.clone();
@@ -1493,8 +1612,50 @@ impl PluginUpdateService {
         .map_err(|_| "plugin activation worker failed".to_owned())?
     }
 
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) async fn stage_extension_update_for_test(
+        &self,
+        previous: &InstalledPluginVersion,
+        candidate: &Path,
+    ) {
+        let work = UpdateWorkDir::create().unwrap();
+        let package = work.path.join("package");
+        fs::create_dir(&package).unwrap();
+        for entry in fs::read_dir(candidate).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), package.join(entry.file_name())).unwrap();
+        }
+        let read = |root: &Path| {
+            Manifest::parse_json(&fs::read(root.join("plugin.json")).unwrap())
+                .unwrap()
+                .manifest()
+                .clone()
+        };
+        let installed_manifest = read(&previous.package_path);
+        let candidate_manifest = read(&package);
+        let review = UpdateReview::compare(&installed_manifest, &candidate_manifest);
+        self.pending.lock().await.insert(
+            previous.plugin_id.clone(),
+            PendingCandidate {
+                work: Some(work),
+                version: candidate_manifest.version.clone(),
+                installed_version: previous.version.clone(),
+                publisher_key: package_key(&previous.package_path).unwrap(),
+                candidate_publisher_key: package_key(&package).unwrap(),
+                confirmed_retrust: false,
+                is_rollback: false,
+                installed_manifest,
+                candidate_manifest,
+                review,
+            },
+        );
+    }
+
     pub async fn decline(&self, plugin_id: &str) {
-        self.pending.lock().await.remove(plugin_id);
+        let candidate = self.pending.lock().await.remove(plugin_id);
+        if let Some(candidate) = candidate {
+            let _ = tokio::task::spawn_blocking(move || drop(candidate)).await;
+        }
     }
 }
 
@@ -2355,7 +2516,10 @@ pub(super) mod tests {
             },
         );
         assert!(!review.publisher_changed);
-        assert_eq!(service.approve(plugin_id, "2.0.0").await.unwrap(), "2.0.0");
+        assert_eq!(
+            service.approve(plugin_id, "2.0.0", None).await.unwrap(),
+            "2.0.0"
+        );
         assert_eq!(
             service.playtime_inventory().await.unwrap()[0].version,
             "2.0.0"
@@ -2365,7 +2529,7 @@ pub(super) mod tests {
         assert!(!review.publisher_changed);
         assert_eq!(
             service
-                .approve_rollback(plugin_id, "1.0.0", true)
+                .approve_rollback(plugin_id, "1.0.0", true, None)
                 .await
                 .unwrap(),
             "1.0.0"
@@ -2459,7 +2623,7 @@ pub(super) mod tests {
                 reason: "Fetch metadata".into(),
             });
         let error = service
-            .approve_rollback("org.example.update", "1.0.0", true)
+            .approve_rollback("org.example.update", "1.0.0", true, None)
             .await
             .unwrap_err();
         assert!(
@@ -2517,13 +2681,13 @@ pub(super) mod tests {
         assert!(review.is_downgrade && review.publisher_changed);
         assert!(
             service
-                .approve_rollback("org.example.update", "1.0.0", false)
+                .approve_rollback("org.example.update", "1.0.0", false, None)
                 .await
                 .is_err()
         );
         assert_eq!(
             service
-                .approve_rollback("org.example.update", "1.0.0", true)
+                .approve_rollback("org.example.update", "1.0.0", true, None)
                 .await
                 .unwrap_err(),
             "the changed publisher key must be re-trusted separately"
@@ -2544,7 +2708,7 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(
             service
-                .approve_rollback("org.example.update", "1.0.0", true)
+                .approve_rollback("org.example.update", "1.0.0", true, None)
                 .await
                 .unwrap(),
             "1.0.0"
@@ -2699,7 +2863,7 @@ pub(super) mod tests {
             .unwrap();
         assert!(review.is_downgrade && review.preserves_prior_data);
         service
-            .approve_rollback("org.example.update", "1.0.0", true)
+            .approve_rollback("org.example.update", "1.0.0", true, None)
             .await
             .unwrap();
 

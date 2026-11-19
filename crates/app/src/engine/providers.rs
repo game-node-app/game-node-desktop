@@ -190,7 +190,108 @@ fn category(
     })
 }
 
+/// A reference to a library choice shown in the extension package review. The host resolves
+/// it against the current library; paths and permission decisions never come from this input.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionReadinessSelection {
+    installation_id: String,
+    revision: String,
+    profile_epoch: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionReadinessChoice {
+    name: String,
+    provider_id: String,
+    selection: ExtensionReadinessSelection,
+}
+
 impl Engine {
+    fn extension_readiness_library(
+        &self,
+    ) -> Result<
+        (
+            crate::plugin_host::profile::ProfileContext,
+            Arc<crate::plugin_host::library::LibraryFeed>,
+        ),
+        tonic::Status,
+    > {
+        let profiles = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("plugin profiles are unavailable"))?;
+        let feed = self
+            .shared
+            .library_feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("the game library is unavailable"))?;
+        let profile = profiles.require()?;
+        if !profile.verified() {
+            return Err(tonic::Status::failed_precondition(
+                "a verified account is required",
+            ));
+        }
+        Ok((profile, feed))
+    }
+
+    pub fn extension_readiness_choices(&self) -> Vec<ExtensionReadinessChoice> {
+        // A profile transition publishes the new library under the engine lock.
+        let _state = self.lock();
+        let Ok((profile, feed)) = self.extension_readiness_library() else {
+            return Vec::new();
+        };
+        feed.readiness_targets()
+            .into_iter()
+            .map(
+                |(installation_id, name, provider_id, revision)| ExtensionReadinessChoice {
+                    name,
+                    provider_id,
+                    selection: ExtensionReadinessSelection {
+                        installation_id,
+                        revision: revision.to_string(),
+                        profile_epoch: profile.epoch().to_string(),
+                    },
+                },
+            )
+            .collect()
+    }
+
+    pub fn resolve_extension_readiness(
+        &self,
+        selection: ExtensionReadinessSelection,
+    ) -> Result<crate::plugin_host::process::ExtensionTarget, tonic::Status> {
+        let _state = self.lock();
+        let (profile, feed) = self.extension_readiness_library()?;
+        let stale = || tonic::Status::failed_precondition("the selected extension target changed");
+        if selection.profile_epoch != profile.epoch().to_string() {
+            return Err(stale());
+        }
+        let revision = selection.revision.parse().map_err(|_| stale())?;
+        let game_id = feed
+            .readiness_game(&selection.installation_id, revision)
+            .ok_or_else(stale)?;
+        let installation_id = selection.installation_id;
+        Ok(crate::plugin_host::process::ExtensionTarget {
+            context: gamenode_plugin_protocol::proto::TargetGameContext {
+                game_id: game_id.to_string(),
+                installation_id: installation_id.clone(),
+                profile_id: profile.profile_id().to_owned(),
+                revision: revision.to_string(),
+            },
+            profile_epoch: profile.epoch(),
+            still_selected: Arc::new(move || {
+                feed.readiness_game(&installation_id, revision) == Some(game_id)
+            }),
+        })
+    }
+
     pub async fn available_extensions(
         &self,
         operation: crate::plugin_host::intents::Operation,
@@ -207,6 +308,14 @@ impl Engine {
         plugin_id: &str,
         operation: crate::plugin_host::intents::Operation,
     ) -> Result<(), tonic::Status> {
+        let profile = self
+            .shared
+            .plugin_profiles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| tonic::Status::unavailable("plugin profiles are unavailable"))?
+            .require()?;
         let feed = self
             .shared
             .library_feed
@@ -245,12 +354,33 @@ impl Engine {
         let runtime = self
             .provider_runtime()
             .ok_or_else(|| tonic::Status::unavailable("plugin runtime is unavailable"))?;
+        let selected_key = entry_key.to_owned();
+        let installation_id = projected.installation_id.clone();
+        let still_selected = Arc::new(move || {
+            feed.projected_entry(&selected_key)
+                .is_some_and(|(current, entry)| {
+                    entry.installation_id == installation_id
+                        && current.provider_id == source.provider_id
+                        && current.game_id == source.game_id
+                        && current.install_dir == source.install_dir
+                        && (operation != crate::plugin_host::intents::Operation::Launch
+                            || current.install_state
+                                == crate::plugin_host::library::InstallState::Installed)
+                })
+        });
         runtime
             .start_extension(
                 plugin_id,
-                &game_id,
-                &projected.installation_id,
-                target_revision,
+                crate::plugin_host::process::ExtensionTarget {
+                    context: gamenode_plugin_protocol::proto::TargetGameContext {
+                        game_id,
+                        installation_id: projected.installation_id,
+                        profile_id: profile.profile_id().to_owned(),
+                        revision: target_revision.to_string(),
+                    },
+                    profile_epoch: profile.epoch(),
+                    still_selected,
+                },
                 operation,
             )
             .await

@@ -72,6 +72,8 @@ pub struct LibrarySource {
     /// Where the entry is installed, or empty when unknown. Host-only: it is never part of the
     /// projection a plugin reads; it lets file approvals find the games that share a folder.
     pub install_dir: String,
+    /// Host-only revision and availability of the detected launch target.
+    pub detected_target: Option<(u64, bool, bool)>,
 }
 
 /// One entry's install folder, for file approvals. Host-only.
@@ -182,6 +184,8 @@ struct FeedState {
     revision: u64,
     /// The engine's latest rows by entry key.
     sources: BTreeMap<String, LibrarySource>,
+    source_revision: u64,
+    source_revisions: HashMap<String, u64>,
     /// Durable installation ids by entry key.
     ids: HashMap<String, String>,
     /// The entry key of each installation id.
@@ -249,7 +253,22 @@ impl LibraryFeed {
             .map(|source| (source.entry_key.clone(), source))
             .collect();
         let changed = sources != state.sources;
-        state.sources = sources;
+        if changed {
+            state.source_revision += 1;
+            let revision = state.source_revision;
+            let mut previous = std::mem::take(&mut state.source_revisions);
+            state.source_revisions = sources
+                .iter()
+                .map(|(key, source)| {
+                    let revision = previous
+                        .remove(key)
+                        .filter(|_| state.sources.get(key) == Some(source))
+                        .unwrap_or(revision);
+                    (key.clone(), revision)
+                })
+                .collect();
+            state.sources = sources;
+        }
         let waiting = state
             .retry_after
             .is_some_and(|at| std::time::Instant::now() < at);
@@ -441,6 +460,37 @@ impl LibraryFeed {
         let installation_id = state.ids.get(entry_key)?;
         let projected = state.entries.get(installation_id)?.clone();
         Some((source, projected))
+    }
+
+    /// Readiness can use any visible entry matched to a GameNode game. It neither opens
+    /// the game nor needs an installed executable, so catalog-only entries are eligible.
+    pub(crate) fn readiness_targets(&self) -> Vec<(String, String, String, u64)> {
+        let state = self.lock();
+        state
+            .sources
+            .values()
+            .filter(|source| source.game_id.is_some())
+            .filter_map(|source| {
+                let id = state.ids.get(&source.entry_key)?;
+                let revision = *state.source_revisions.get(&source.entry_key)?;
+                let title = source.display_name.as_ref().unwrap_or(&source.name);
+                Some((
+                    id.clone(),
+                    title.clone(),
+                    source.provider_id.clone(),
+                    revision,
+                ))
+            })
+            .collect()
+    }
+
+    pub(crate) fn readiness_game(&self, installation_id: &str, revision: u64) -> Option<u64> {
+        let state = self.lock();
+        let key = state.keys.get(installation_id)?;
+        if state.source_revisions.get(key) != Some(&revision) {
+            return None;
+        }
+        state.sources.get(key)?.game_id
     }
 
     /// The entry key and projection of `installation_id`, if the scope admits it. Host-side only:

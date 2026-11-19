@@ -21,6 +21,7 @@ import type {
   AvailablePluginUpdate,
   AvailablePluginRollback,
   PluginUpdateReview,
+  ExtensionReadinessSelection,
   PlaytimeSource,
   Registration,
   Snapshot,
@@ -315,10 +316,10 @@ export const commands = {
     })),
   pluginUpdateRetrustPublisher: (pluginId: string, version: string, fingerprint: string) =>
     safeInvoke<void>('plugin_update_retrust_publisher', { pluginId, version, fingerprint }, () => undefined),
-  pluginRollbackApprove: (pluginId: string, version: string, confirmed: boolean) =>
-    safeInvoke<string>('plugin_rollback_approve', { pluginId, version, confirmed }, () => version),
-  pluginUpdateApprove: (pluginId: string, version: string) =>
-    safeInvoke<string>('plugin_update_approve', { pluginId, version }, () => version),
+  pluginRollbackApprove: (pluginId: string, version: string, confirmed: boolean, target?: ExtensionReadinessSelection) =>
+    safeInvoke<string>('plugin_rollback_approve', { pluginId, version, confirmed, target }, () => version),
+  pluginUpdateApprove: (pluginId: string, version: string, target?: ExtensionReadinessSelection) =>
+    safeInvoke<string>('plugin_update_approve', { pluginId, version, target }, () => version),
   pluginUpdateDecline: (pluginId: string) =>
     safeInvoke<void>('plugin_update_decline', { pluginId }, () => undefined),
 

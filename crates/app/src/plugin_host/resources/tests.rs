@@ -198,7 +198,13 @@ impl Fixture {
             services: Arc::new(NoServices),
         })
         .unwrap();
-        let launch = api.begin_launch(&registration_id).unwrap();
+        let launch = match &target {
+            Some(target) => {
+                api.begin_extension_launch(&registration_id, api.profiles().epoch(), target.clone())
+            }
+            None => api.begin_launch(&registration_id),
+        }
+        .unwrap();
         let credential = launch
             .credential
             .as_bytes()
@@ -293,6 +299,7 @@ impl Fixture {
                     metadata_revision: 0,
                     artwork_revision: 0,
                     install_dir: String::new(),
+                    detected_target: None,
                 })
                 .collect(),
         );

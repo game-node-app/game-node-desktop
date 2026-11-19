@@ -1,4 +1,4 @@
-//! Supervision for persistent provider processes. Executable configurations are
+//! Supervision for provider and scoped extension processes. Executable configurations are
 //! supplied only by trusted desktop composition, never by plugin RPCs.
 
 use std::collections::{BTreeSet, HashMap};
@@ -13,7 +13,7 @@ use gamenode_plugin_protocol::proto::TargetGameContext;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tonic::Status;
 
-use super::provider::{Completion, ProviderApi};
+use super::provider::{Completion, ProviderApi, SupervisedExtension};
 
 #[derive(Clone)]
 pub struct ProcessConfig {
@@ -35,15 +35,20 @@ pub struct ProcessConfig {
 #[derive(Clone)]
 pub struct PackageIntegrity {
     pub package_root: PathBuf,
+    pub version: String,
     pub publisher_key: [u8; 32],
     pub emulation_policy: gamenode_platform::plugin_environment::EmulationPolicy,
 }
 
-async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
+async fn verify_before_launch(
+    config: &ProcessConfig,
+    extension_trust_dir: Option<PathBuf>,
+) -> Result<Option<super::package::PlaytimeCapabilities>, Status> {
     let Some(integrity) = config.integrity.clone() else {
-        return Ok(());
+        return Ok(None);
     };
     let executable = config.executable.clone();
+    let config_id = config.provider_id.clone();
     let environment = gamenode_platform::plugin_environment::detect()
         .await
         .map_err(|_| Status::unavailable("plugin execution environment could not be detected"))?;
@@ -91,7 +96,57 @@ async fn verify_before_launch(config: &ProcessConfig) -> Result<(), Status> {
                 verdict.state, verdict.reasons
             )));
         }
-        Ok(())
+        let playtime = if let Some(plugin_id) = config_id.strip_prefix("extension:") {
+            let trust = super::publisher_trust::PublisherTrustStore::open(
+                extension_trust_dir
+                    .ok_or_else(|| Status::failed_precondition("extension trust is unavailable"))?,
+            )
+            .map_err(|_| Status::failed_precondition("extension publisher trust is unavailable"))?;
+            if !trust
+                .is_pinned(plugin_id, &integrity.publisher_key)
+                .unwrap_or(false)
+            {
+                return Err(Status::permission_denied(
+                    "extension publisher is no longer trusted",
+                ));
+            }
+            let manifest = super::package::Manifest::parse_json(&manifest).map_err(|_| {
+                Status::failed_precondition("verified extension manifest is invalid")
+            })?;
+            let manifest = manifest.manifest();
+            if manifest.id != plugin_id
+                || manifest.kind != super::package::PluginKind::Extension
+                || manifest.version != integrity.version
+            {
+                return Err(Status::failed_precondition(
+                    "verified extension identity changed",
+                ));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // The package registry copies verified bytes into a private directory.
+                // Only the signed, selected entrypoint needs owner execute permission.
+                use std::os::unix::fs::PermissionsExt;
+                let file = std::fs::File::open(&target).map_err(|_| {
+                    Status::failed_precondition("extension executable is unavailable")
+                })?;
+                let metadata = file.metadata().map_err(|_| {
+                    Status::failed_precondition("extension executable is unavailable")
+                })?;
+                if metadata.permissions().mode() & 0o7777 != 0o700 {
+                    file.set_permissions(std::fs::Permissions::from_mode(0o700))
+                        .map_err(|_| {
+                            Status::failed_precondition(
+                                "extension executable permissions could not be set",
+                            )
+                        })?;
+                }
+            }
+            Some(manifest.playtime)
+        } else {
+            None
+        };
+        Ok(playtime)
     })
     .await
     .map_err(|_| Status::unavailable("plugin integrity worker failed"))?
@@ -103,12 +158,60 @@ struct ChildProcess {
     stopped: Arc<Notify>,
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
+    is_extension: bool,
 }
 
-struct ExtensionLaunch {
-    target: TargetGameContext,
-    intent_id: String,
-    required_permission: &'static str,
+/// A selection made by the host against the active library and account.
+#[derive(Clone)]
+pub struct ExtensionTarget {
+    pub(crate) context: TargetGameContext,
+    pub(crate) profile_epoch: u64,
+    pub(crate) still_selected: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl ExtensionTarget {
+    pub(crate) fn is_current(&self) -> bool {
+        (self.still_selected)()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ExtensionLaunch {
+    pub target: ExtensionTarget,
+    pub required_permission: &'static str,
+}
+
+pub(crate) struct ExtensionIntent {
+    pub id: String,
+    pub store: Arc<super::intents::Intents>,
+}
+
+impl Drop for ExtensionIntent {
+    fn drop(&mut self) {
+        self.store.revoke_issued(&self.id);
+    }
+}
+
+async fn wait_for_invalid_target(api: &ProviderApi, target: Option<&ExtensionTarget>) {
+    let Some(target) = target else {
+        return std::future::pending().await;
+    };
+    let profiles = api.profiles();
+    let mut changes = profiles.subscribe();
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        if !target.is_current()
+            || profiles.current().is_none_or(|profile| {
+                !profile.verified() || profile.epoch() != target.profile_epoch
+            })
+        {
+            return;
+        }
+        tokio::select! {
+            _ = changes.changed() => {},
+            _ = interval.tick() => {},
+        }
+    }
 }
 
 /// Owns the OS-level process group assigned to a supervised plugin. Dropping this guard kills
@@ -340,46 +443,69 @@ impl ProviderProcesses {
         self.inner.slots.contains_key(id)
     }
 
+    pub(crate) fn extension_runtime_available(&self, slot_id: &str) -> bool {
+        !self.inner.endpoint.as_os_str().is_empty()
+            && !*self.inner.shutdown.borrow()
+            && self.has_provider(slot_id)
+    }
+
     pub async fn ensure_started(&self, provider_id: &str) -> Result<(), Status> {
-        self.ensure_started_inner(provider_id, false, None).await
+        self.ensure_started_inner(provider_id, false, None, None, None)
+            .await
     }
 
     /// Starts an extension only for a host-selected game and passes its one-use user intent to
     /// that child. Extension launches never join a previously running process session.
     pub(crate) async fn ensure_extension_started(
         &self,
-        provider_id: &str,
-        target: TargetGameContext,
-        intent_id: String,
-        required_permission: &'static str,
+        slot_id: &str,
+        launch: ExtensionLaunch,
+        intent: ExtensionIntent,
     ) -> Result<(), Status> {
-        if intent_id.is_empty() || intent_id.len() > 128 {
+        if intent.id.is_empty() || intent.id.len() > 128 {
             return Err(Status::invalid_argument("invalid user intent"));
         }
         self.ensure_started_inner(
-            provider_id,
+            slot_id,
             false,
-            Some(ExtensionLaunch {
-                target,
-                intent_id,
-                required_permission,
-            }),
+            Some(launch.target),
+            Some((intent, launch.required_permission)),
+            None,
         )
         .await
+    }
+
+    /// Negotiate an Extension session for readiness without issuing a user intent.
+    pub(crate) async fn ensure_extension_ready_for_update(
+        &self,
+        slot_id: &str,
+        target: ExtensionTarget,
+        candidate: ProcessConfig,
+    ) -> Result<(), Status> {
+        if candidate.provider_id != slot_id || candidate.startup_timeout.is_zero() {
+            return Err(Status::invalid_argument(
+                "invalid extension readiness configuration",
+            ));
+        }
+        self.ensure_started_inner(slot_id, true, Some(target), None, Some(candidate))
+            .await
     }
 
     /// One-shot readiness check used only after explicit update approval. It may start a plugin
     /// whose account activation is disabled, but still requires an active profile and current
     /// grants. Callers must stop it again after readiness when the user had disabled it.
     pub(crate) async fn ensure_ready_for_update(&self, provider_id: &str) -> Result<(), Status> {
-        self.ensure_started_inner(provider_id, true, None).await
+        self.ensure_started_inner(provider_id, true, None, None, None)
+            .await
     }
 
     async fn ensure_started_inner(
         &self,
         provider_id: &str,
         allow_disabled: bool,
-        extension: Option<ExtensionLaunch>,
+        extension: Option<ExtensionTarget>,
+        action: Option<(ExtensionIntent, &'static str)>,
+        candidate: Option<ProcessConfig>,
     ) -> Result<(), Status> {
         if *self.inner.shutdown.borrow() {
             return Err(Status::unavailable("desktop is shutting down"));
@@ -389,6 +515,14 @@ impl ProviderProcesses {
             .slots
             .get(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
+        if extension.is_some() != self.inner.api.is_extension(provider_id) {
+            return Err(Status::failed_precondition(
+                "extension startup requires a selected game",
+            ));
+        }
+        if extension.is_some() && self.inner.endpoint.as_os_str().is_empty() {
+            return Err(Status::unavailable("extension runtime is unavailable"));
+        }
         let activation_layout = self
             .inner
             .activation
@@ -400,6 +534,17 @@ impl ProviderProcesses {
         let mut active_profile_epoch = None;
         if let Some((plugin_id, _)) = third_party_identity.as_ref() {
             let profile = self.inner.api.profiles().require()?;
+            if let Some(target) = &extension
+                && (!profile.verified()
+                    || profile.epoch() != target.profile_epoch
+                    || profile.profile_id() != target.context.profile_id
+                    || !target.is_current()
+                    || activation_layout.is_none())
+            {
+                return Err(Status::failed_precondition(
+                    "selected extension target is unavailable",
+                ));
+            }
             active_profile_epoch = Some(profile.epoch());
             if !allow_disabled {
                 if let Some(layout) = activation_layout.as_ref() {
@@ -437,7 +582,8 @@ impl ProviderProcesses {
                 if let Some(stop) = child.stop.take() {
                     let _ = stop.send(());
                 }
-                let stopped = child.stopped.notified();
+                let mut stopped = std::pin::pin!(child.stopped.notified());
+                stopped.as_mut().enable();
                 if child.running.load(Ordering::Acquire)
                     && tokio::time::timeout(Duration::from_secs(4), stopped)
                         .await
@@ -448,11 +594,12 @@ impl ProviderProcesses {
             }
         }
         stored.take();
-        let config = slot
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let config = candidate.unwrap_or_else(|| {
+            slot.config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
         if let (Some((plugin_id, publisher_fingerprint)), Some(profile), Some(layout)) = (
             third_party_identity,
             active_profile,
@@ -501,10 +648,8 @@ impl ProviderProcesses {
             })
             .await
             .map_err(|_| Status::internal("plugin permission worker failed"))??;
-            if extension.as_ref().is_some_and(|launch| {
-                !effective
-                    .iter()
-                    .any(|permission| permission == launch.required_permission)
+            if action.as_ref().is_some_and(|(_, permission)| {
+                !effective.iter().any(|granted| granted == *permission)
             }) {
                 return Err(Status::permission_denied(
                     "extension action permission is not granted",
@@ -521,20 +666,31 @@ impl ProviderProcesses {
                 &effective,
             )?;
         }
-        verify_before_launch(&config).await?;
+        let trust_dir = activation_layout.as_ref().map(|layout| layout.trust_dir());
+        let playtime = verify_before_launch(&config, trust_dir).await?;
         if active_profile_epoch.is_some_and(|epoch| !self.inner.api.profiles().is_current(epoch)) {
             return Err(Status::failed_precondition(
                 "plugin profile changed during startup",
             ));
         }
-        let launch = if let Some(extension) = extension.as_ref() {
-            let profile_epoch = active_profile_epoch.ok_or_else(|| {
-                Status::failed_precondition("extension launch requires an active account")
-            })?;
-            self.inner.api.begin_extension_launch(
+        let (intent, required_permission) = match action {
+            Some((intent, permission)) => (Some(intent), Some(permission)),
+            None => (None, None),
+        };
+        let intent_id = intent.as_ref().map(|intent| intent.id.clone());
+        let launch = if let Some(target) = extension.as_ref() {
+            self.inner.api.begin_supervised_extension(
                 provider_id,
-                profile_epoch,
-                extension.target.clone(),
+                SupervisedExtension {
+                    target: target.clone(),
+                    required_permission,
+                    expected_version: config
+                        .integrity
+                        .as_ref()
+                        .map(|integrity| integrity.version.clone()),
+                    intent,
+                    playtime,
+                },
             )?
         } else {
             self.inner
@@ -557,22 +713,21 @@ impl ProviderProcesses {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        if let Some(extension) = extension.as_ref() {
-            command.env("GAMENODE_PLUGIN_USER_INTENT_ID", &extension.intent_id);
+        if let Some(target) = extension.as_ref() {
+            if let Some(intent) = intent_id {
+                command.env("GAMENODE_PLUGIN_USER_INTENT_ID", intent);
+            }
             command
-                .env("GAMENODE_PLUGIN_TARGET_GAME_ID", &extension.target.game_id)
+                .env("GAMENODE_PLUGIN_TARGET_GAME_ID", &target.context.game_id)
                 .env(
                     "GAMENODE_PLUGIN_TARGET_INSTALLATION_ID",
-                    &extension.target.installation_id,
+                    &target.context.installation_id,
                 )
                 .env(
                     "GAMENODE_PLUGIN_TARGET_PROFILE_ID",
-                    &extension.target.profile_id,
+                    &target.context.profile_id,
                 )
-                .env(
-                    "GAMENODE_PLUGIN_TARGET_REVISION",
-                    &extension.target.revision,
-                );
+                .env("GAMENODE_PLUGIN_TARGET_REVISION", &target.context.revision);
         }
         #[cfg(target_os = "linux")]
         command.process_group(0);
@@ -609,6 +764,8 @@ impl ProviderProcesses {
                 api: self.inner.api.clone(),
                 provider_id: provider_id.into(),
                 ready: launch.ready,
+                closed: launch.closed,
+                target: extension.clone(),
                 startup_timeout: config.startup_timeout,
                 startup,
                 stop: stop_receiver,
@@ -624,20 +781,11 @@ impl ProviderProcesses {
             stopped,
             stop: Some(stop),
             task,
+            is_extension: extension.is_some(),
         });
-        let result = started
+        started
             .await
-            .map_err(|_| Status::unavailable("provider startup failed"))??;
-        if extension.is_some() {
-            drop(stored);
-            let processes = self.clone();
-            let provider_id = provider_id.to_owned();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(5 * 60)).await;
-                processes.stop_provider(&provider_id).await;
-            });
-        }
-        Ok(result)
+            .map_err(|_| Status::unavailable("plugin startup failed"))?
     }
 
     pub async fn execute(
@@ -679,18 +827,25 @@ impl ProviderProcesses {
     }
 
     pub async fn stop_provider(&self, provider_id: &str) {
-        let _ = self
-            .inner
-            .api
-            .close_configuration_before_stop(provider_id)
-            .await;
+        if !self.inner.api.is_extension(provider_id) {
+            let _ = self
+                .inner
+                .api
+                .close_configuration_before_stop(provider_id)
+                .await;
+        }
         if let Some(slot) = self.inner.slots.get(provider_id) {
             let mut child = slot.child.lock().await;
             if let Some(mut child) = child.take() {
+                if child.is_extension {
+                    self.inner.api.request_shutdown(provider_id);
+                    self.inner.api.disconnect(provider_id).await;
+                }
                 if let Some(stop) = child.stop.take() {
                     let _ = stop.send(());
                 }
-                let stopped = child.stopped.notified();
+                let mut stopped = std::pin::pin!(child.stopped.notified());
+                stopped.as_mut().enable();
                 if child.running.load(Ordering::Acquire) {
                     let _ = tokio::time::timeout(Duration::from_secs(4), stopped).await;
                 }
@@ -716,11 +871,16 @@ impl ProviderProcesses {
             .get(provider_id)
             .ok_or_else(|| Status::not_found("provider process is not registered"))?;
         let mut child = slot.child.lock().await;
-        if let Some(mut child) = child.take() {
+        if let Some(child) = child.as_mut() {
+            if child.is_extension {
+                self.inner.api.request_shutdown(provider_id);
+                self.inner.api.disconnect(provider_id).await;
+            }
             if let Some(stop) = child.stop.take() {
                 let _ = stop.send(());
             }
-            let stopped = child.stopped.notified();
+            let mut stopped = std::pin::pin!(child.stopped.notified());
+            stopped.as_mut().enable();
             if child.running.load(Ordering::Acquire)
                 && tokio::time::timeout(Duration::from_secs(4), stopped)
                     .await
@@ -729,6 +889,7 @@ impl ProviderProcesses {
                 return Err(Status::unavailable("provider cleanup is still in progress"));
             }
         }
+        child.take();
         *slot
             .config
             .lock()
@@ -802,6 +963,8 @@ struct Supervision {
     api: ProviderApi,
     provider_id: String,
     ready: oneshot::Receiver<()>,
+    closed: oneshot::Receiver<()>,
+    target: Option<ExtensionTarget>,
     startup_timeout: Duration,
     startup: oneshot::Sender<Result<(), Status>>,
     stop: oneshot::Receiver<()>,
@@ -816,6 +979,8 @@ async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
         api,
         provider_id,
         mut ready,
+        mut closed,
+        target,
         startup_timeout,
         startup,
         mut stop,
@@ -824,27 +989,40 @@ async fn supervise(mut child: tokio::process::Child, supervision: Supervision) {
         stopped,
         tree,
     } = supervision;
+    let invalid_target = wait_for_invalid_target(&api, target.as_ref());
+    tokio::pin!(invalid_target);
     let opened = tokio::select! {
-        ready = tokio::time::timeout(startup_timeout, &mut ready) => ready.is_ok_and(|r| r.is_ok()),
+        biased;
+        _ = &mut invalid_target => false,
+        _ = &mut closed, if target.is_some() => false,
         _ = child.wait() => false,
         _ = &mut stop => false,
         _ = shutdown.changed() => false,
+        ready = tokio::time::timeout(startup_timeout, &mut ready) => ready.is_ok_and(|r| r.is_ok()),
     };
     let _ = startup.send(if opened {
         Ok(())
     } else {
         Err(Status::unavailable(
-            "provider did not establish its command session",
+            "plugin did not establish its command session",
         ))
     });
     if opened {
         let exited = tokio::select! {
             _ = child.wait() => true,
+            _ = &mut closed, if target.is_some() => false,
+            _ = &mut invalid_target => false,
+            _ = tokio::time::sleep(Duration::from_secs(5 * 60)), if target.is_some() => false,
             _ = &mut stop => false,
             _ = shutdown.changed() => false,
         };
         if !exited {
             api.request_shutdown(&provider_id);
+        }
+        if target.is_some() {
+            api.disconnect(&provider_id).await;
+        }
+        if !exited {
             if tokio::time::timeout(Duration::from_secs(1), child.wait())
                 .await
                 .is_err()

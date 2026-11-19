@@ -1160,13 +1160,28 @@ pub async fn plugin_update_check(
     updates.check_updates().await
 }
 
+async fn add_extension_readiness_targets(
+    engine: &Engine,
+    mut review: crate::plugin_host::updates::UpdateReview,
+) -> Result<crate::plugin_host::updates::UpdateReview, String> {
+    if let Some(targets) = &mut review.extension_targets {
+        let engine = engine.clone();
+        *targets = tokio::task::spawn_blocking(move || engine.extension_readiness_choices())
+            .await
+            .map_err(|_| "extension target lookup worker failed".to_owned())?;
+    }
+    Ok(review)
+}
+
 #[tauri::command]
 pub async fn plugin_update_review(
+    engine: tauri::State<'_, Engine>,
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
     version: String,
 ) -> Result<crate::plugin_host::updates::UpdateReview, String> {
-    updates.review(&plugin_id, &version).await
+    let review = updates.review(&plugin_id, &version).await?;
+    add_extension_readiness_targets(&engine, review).await
 }
 
 #[tauri::command]
@@ -1178,11 +1193,13 @@ pub async fn plugin_rollback_available(
 
 #[tauri::command]
 pub async fn plugin_rollback_review(
+    engine: tauri::State<'_, Engine>,
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
     version: String,
 ) -> Result<crate::plugin_host::updates::UpdateReview, String> {
-    updates.review_rollback(&plugin_id, &version).await
+    let review = updates.review_rollback(&plugin_id, &version).await?;
+    add_extension_readiness_targets(&engine, review).await
 }
 
 #[tauri::command]
@@ -1197,25 +1214,49 @@ pub async fn plugin_update_retrust_publisher(
         .await
 }
 
+/// Resolving a readiness target takes the engine lock, so it runs on a blocking worker.
+async fn resolve_extension_target(
+    engine: Engine,
+    selection: Option<crate::engine::ExtensionReadinessSelection>,
+) -> Result<Option<crate::plugin_host::process::ExtensionTarget>, String> {
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    tokio::task::spawn_blocking(move || engine.resolve_extension_readiness(selection))
+        .await
+        .map_err(|_| "extension target worker failed".to_owned())?
+        .map(Some)
+        .map_err(|error| error.message().to_owned())
+}
+
 #[tauri::command]
 pub async fn plugin_rollback_approve(
+    engine: tauri::State<'_, Engine>,
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
     version: String,
     confirmed: bool,
+    target: Option<crate::engine::ExtensionReadinessSelection>,
 ) -> Result<String, String> {
+    if !confirmed {
+        return Err("rollback requires explicit user confirmation".into());
+    }
+    let target = resolve_extension_target(engine.inner().clone(), target).await?;
     updates
-        .approve_rollback(&plugin_id, &version, confirmed)
+        .approve_rollback(&plugin_id, &version, confirmed, target)
         .await
 }
 
 #[tauri::command]
 pub async fn plugin_update_approve(
+    engine: tauri::State<'_, Engine>,
     updates: tauri::State<'_, crate::plugin_host::updates::PluginUpdateService>,
     plugin_id: String,
     version: String,
+    target: Option<crate::engine::ExtensionReadinessSelection>,
 ) -> Result<String, String> {
-    updates.approve(&plugin_id, &version).await
+    let target = resolve_extension_target(engine.inner().clone(), target).await?;
+    updates.approve(&plugin_id, &version, target).await
 }
 
 #[tauri::command]

@@ -1818,6 +1818,57 @@ async fn a_rejected_restore_issues_no_plugin_profile() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn extension_readiness_resolves_only_current_account_library_choices() {
+    use crate::plugin_host::{library::LibraryFeed, profile::PluginProfiles};
+    let api = FakeApi::new();
+    *api.lookup_result.lock().unwrap() = Some(Ok(vec![portal_2_match()]));
+    let mut h = harness(api, FakeCreds::with(None));
+    let profiles = Arc::new(PluginProfiles::default());
+    let feed = LibraryFeed::new();
+    h.engine.set_plugin_profiles(profiles.clone());
+    h.engine.set_library_feed(feed.clone());
+    h.signed_out().await;
+    assert!(h.engine.extension_readiness_choices().is_empty());
+    h.sign_in("token").await;
+    eventually("matched entry is selectable for readiness", || {
+        h.engine.extension_readiness_choices().len() == 1
+    })
+    .await;
+
+    let choices = serde_json::to_value(h.engine.extension_readiness_choices()).unwrap();
+    let choice = &choices[0];
+    assert_eq!(choice["name"], "Portal 2");
+    let selection = choice["selection"].clone();
+    let resolve = |selection| {
+        h.engine
+            .resolve_extension_readiness(serde_json::from_value(selection).unwrap())
+    };
+    let target = resolve(selection.clone()).unwrap();
+    assert_eq!(target.context.game_id, "7");
+    assert_eq!(
+        target.context.profile_id,
+        profiles.require().unwrap().profile_id()
+    );
+    assert!(target.is_current());
+
+    let mut foreign = selection.clone();
+    foreign["installationId"] = "foreign-installation".into();
+    assert!(resolve(foreign).is_err());
+
+    let (mut source, _) = feed.projected_entry("steam:620").unwrap();
+    source.detected_target = Some((99, true, true));
+    feed.sync(vec![source]);
+    assert!(!target.is_current());
+    assert!(resolve(selection).is_err());
+
+    let choices = serde_json::to_value(h.engine.extension_readiness_choices()).unwrap();
+    let selection = choices[0]["selection"].clone();
+    profiles.update(Some("another-account"), true);
+    profiles.update(Some("u1"), true);
+    assert!(resolve(selection).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn plugins_see_entries_with_a_durable_id_and_a_game_id_that_follows_the_match() {
     use crate::plugin_host::library::LibraryFeed;
     let api = FakeApi::new();

@@ -40,6 +40,7 @@ mod providers;
 mod tools;
 
 pub use pc_ports::{PortProgressPublisher, PortsService};
+pub use providers::{ExtensionReadinessChoice, ExtensionReadinessSelection};
 
 /// Longest the app waits for the server to confirm a sign-out.
 const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -585,6 +586,10 @@ impl Engine {
                             .artwork_override(&entry.key)
                             .map_or(0, |over| over.revision),
                         install_dir: entry.install_dir.clone(),
+                        detected_target: entry
+                            .target
+                            .as_ref()
+                            .map(|target| (target.revision, target.approved, target.available)),
                         install_state: if entry.installed {
                             InstallState::Installed
                         } else if entry.owned {

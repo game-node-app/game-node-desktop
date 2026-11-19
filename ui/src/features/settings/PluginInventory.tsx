@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuth } from '../../api/useSnapshot';
-import { commands, isTauriRuntime, type AvailablePluginUpdate, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
+import { commands, isTauriRuntime, type AvailablePluginUpdate, type ExtensionReadinessSelection, type PluginImportReview, type PluginInfo, type PluginPermissionSnapshot, type PluginPlaytimeInfo, type PluginSharedDataSnapshot, type PluginUpdateReview } from '../../api';
 import { AppModal } from '../../components/AppModal';
 import { pluginQueryKeys } from '../../api/pluginQueryKeys';
 import { useI18n } from '../../i18n';
@@ -59,6 +59,8 @@ export const PluginInventory: React.FC = () => {
   const profileId = typeof auth === 'object' && auth !== null && 'signedIn' in auth
     ? auth.signedIn.user.id
     : null;
+  const [choosingReadinessTarget, setChoosingReadinessTarget] = useState(false);
+  const [readinessTargetId, setReadinessTargetId] = useState('');
   const [reviewIsRollback, setReviewIsRollback] = useState(false);
   const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
   const [retrustFingerprint, setRetrustFingerprint] = useState('');
@@ -236,15 +238,25 @@ export const PluginInventory: React.FC = () => {
     finally { setUpdateOperation(null); }
   };
 
-  const approveUpdate = async () => {
-    if (!review) return;
+  const readinessTarget = review?.extensionTargets?.find(
+    ({ selection }) => selection.installationId === readinessTargetId,
+  )?.selection;
+  const approveLabel = t(reviewIsRollback ? 'plugins.updates.rollbackApprove' : 'plugins.updates.approve');
+
+  const approveUpdate = async (target?: ExtensionReadinessSelection) => {
+    if (!review || (review.extensionTargets && !target)) return;
     setUpdateOperation('approve');
     setActivationResult(null);
     setUpdateError(false);
     try {
-      const version = reviewIsRollback
-        ? await commands.pluginRollbackApprove(review.pluginId, review.candidateVersion, rollbackConfirmed)
-        : await commands.pluginUpdateApprove(review.pluginId, review.candidateVersion);
+      let version: string;
+      if (reviewIsRollback) {
+        const args = [review.pluginId, review.candidateVersion, rollbackConfirmed] as const;
+        version = await (target ? commands.pluginRollbackApprove(...args, target) : commands.pluginRollbackApprove(...args));
+      } else {
+        const args = [review.pluginId, review.candidateVersion] as const;
+        version = await (target ? commands.pluginUpdateApprove(...args, target) : commands.pluginUpdateApprove(...args));
+      }
       setActivationResult({ version, rollback: reviewIsRollback, failed: false });
     } catch (error) {
       const reason = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
@@ -255,6 +267,7 @@ export const PluginInventory: React.FC = () => {
       }).catch(() => undefined);
       setActivationResult({ failed: true, reason, version: active?.find((plugin) => plugin.pluginId === review.pluginId)?.version });
     } finally {
+      setChoosingReadinessTarget(false);
       setReview(null);
       setReviewIsRollback(false);
       setRollbackConfirmed(false);
@@ -266,6 +279,7 @@ export const PluginInventory: React.FC = () => {
 
   const declineUpdate = async () => {
     if (!review) return;
+    setChoosingReadinessTarget(false);
     setUpdateOperation('decline');
     setActivationResult(null);
     setUpdateError(false);
@@ -554,7 +568,14 @@ export const PluginInventory: React.FC = () => {
             <p className={settingsRowDescription}>{t('plugins.updates.newPermissionsDenied')}</p>
             <div className="mt-compact flex gap-compact">
               <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm hover:bg-[#2e2e2e]" disabled={updateOperation !== null} onClick={() => void declineUpdate()}>{t('plugins.updates.decline')}</button>
-              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={updateOperation !== null || (reviewIsRollback && !rollbackConfirmed) || (review.publisherChanged && !publisherRetrusted)} onClick={() => void approveUpdate()}>{reviewIsRollback ? t('plugins.updates.rollbackApprove') : t('plugins.updates.approve')}</button>
+              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white hover:brightness-110" disabled={updateOperation !== null || (reviewIsRollback && !rollbackConfirmed) || (review.publisherChanged && !publisherRetrusted)} onClick={() => {
+                if (review.extensionTargets) {
+                  setReadinessTargetId('');
+                  setChoosingReadinessTarget(true);
+                } else {
+                  void approveUpdate();
+                }
+              }}>{review.extensionTargets ? t('plugins.updates.chooseTarget') : approveLabel}</button>
             </div>
           </article>
         )}
@@ -705,6 +726,41 @@ export const PluginInventory: React.FC = () => {
           )}
         </div>
       )}
+      <AppModal.Root opened={choosingReadinessTarget} onClose={() => void declineUpdate()} closeOnEscape={updateOperation === null} closeOnClickOutside={updateOperation === null}>
+        <AppModal.Overlay />
+        <AppModal.Content className="max-w-md bg-[var(--settings-bg-base)] p-md">
+          <AppModal.Header>
+            <AppModal.Title>{t('plugins.updates.chooseTarget')}</AppModal.Title>
+            <AppModal.CloseButton aria-label={t('plugins.cancel')} disabled={updateOperation !== null} />
+          </AppModal.Header>
+          <AppModal.Body className="pt-md">
+            <p className={settingsRowDescription}>{t('plugins.updates.targetDescription')}</p>
+            {review?.extensionTargets?.length ? (
+              <label className="flex flex-col gap-compact text-sm">
+                {t('plugins.updates.targetGame')}
+                <select
+                  className="w-full rounded-sm border border-border-subtle bg-raised px-sm py-1 text-sm"
+                  value={readinessTargetId}
+                  disabled={updateOperation !== null}
+                  onChange={(event) => setReadinessTargetId(event.currentTarget.value)}
+                >
+                  <option value="">{t('plugins.updates.selectGame')}</option>
+                  {review.extensionTargets.map(({ name, providerId, selection }) => (
+                    <option key={selection.installationId} value={selection.installationId}>
+                      {name} ({providerLabel(providerId, undefined, t)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : <p role="status" className={settingsRowDescription}>{t('plugins.updates.noTargets')}</p>}
+            <div className="flex justify-end gap-compact">
+              <button type="button" className="rounded-sm border border-border-subtle px-sm py-1 text-sm" disabled={updateOperation !== null} onClick={() => void declineUpdate()}>{t('plugins.cancel')}</button>
+              <button type="button" className="rounded-sm border border-brand bg-brand px-sm py-1 text-sm text-white" disabled={updateOperation !== null || !readinessTarget} onClick={() => void approveUpdate(readinessTarget)}>{approveLabel}</button>
+            </div>
+          </AppModal.Body>
+        </AppModal.Content>
+      </AppModal.Root>
+
       <AppModal.Root opened={confirmRemove} onClose={() => setConfirmRemove(false)}>
         <AppModal.Overlay />
         <AppModal.Content className="max-w-md bg-[var(--settings-bg-base)] p-md">

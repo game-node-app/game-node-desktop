@@ -2132,7 +2132,10 @@ pub(super) mod tests {
         plugin_updates::{INDEX_SIGNATURE_DOMAIN, UpdateRelease},
     };
     use ring::signature::KeyPair;
-    use std::{collections::BTreeMap, io::Write};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        io::Write,
+    };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     #[test]
@@ -2496,6 +2499,12 @@ pub(super) mod tests {
     }
 
     fn import_service(paths: &gamenode_platform::paths::DataPaths) -> PluginUpdateService {
+        import_service_with_profiles(paths).0
+    }
+
+    fn import_service_with_profiles(
+        paths: &gamenode_platform::paths::DataPaths,
+    ) -> (PluginUpdateService, std::sync::Arc<PluginProfiles>) {
         use crate::plugin_host::{
             PluginApi, process::ProviderProcesses, runtime::ThirdPartyPluginLifecycle,
         };
@@ -2503,7 +2512,8 @@ pub(super) mod tests {
         let service = PluginUpdateService::open(paths).unwrap();
         let api = PluginApi::default();
         api.set_state_layout(service.grant_layout.clone());
-        api.providers.profiles().update(Some("account-a"), true);
+        let profiles = api.providers.profiles();
+        profiles.update(Some("account-a"), true);
         let processes = ProviderProcesses::new_for_lifecycle(
             api.providers.clone(),
             paths.data_dir().join("provider.sock"),
@@ -2518,7 +2528,68 @@ pub(super) mod tests {
             service.registry.clone(),
             service.packages.clone(),
         )));
-        service
+        service.set_profiles(profiles.clone());
+        (service, profiles)
+    }
+
+    /// Stages the pending review the update/downgrade flow would build for a version that is
+    /// already installed. It reuses the production comparison and activation path so focused
+    /// tests can exercise approval without a live update feed.
+    async fn stage_installed_update(
+        service: &PluginUpdateService,
+        plugin_id: &str,
+        installed_version: &str,
+        candidate_version: &str,
+    ) -> UpdateReview {
+        let active = service.registry.active(plugin_id).unwrap().unwrap();
+        assert_eq!(active.version, installed_version);
+        let candidate = service
+            .registry
+            .versions(plugin_id)
+            .unwrap()
+            .into_iter()
+            .find(|version| version.version == candidate_version)
+            .expect("candidate version is installed");
+        let publisher_key = package_key(&active.package_path).unwrap();
+        let candidate_publisher_key = package_key(&candidate.package_path).unwrap();
+        let installed = service
+            .packages
+            .inspect_candidate(
+                &active.package_path,
+                publisher_key,
+                EmulationPolicy::RequireNative,
+            )
+            .await
+            .unwrap();
+        let selected = service
+            .packages
+            .inspect_candidate(
+                &candidate.package_path,
+                candidate_publisher_key,
+                EmulationPolicy::RequireNative,
+            )
+            .await
+            .unwrap();
+        let mut review = UpdateReview::compare(&installed.manifest, &selected.manifest);
+        review.compatibility_details = Some(selected.compatibility_review());
+        review.publisher_fingerprint =
+            super::super::publisher_trust::key_fingerprint(&candidate_publisher_key);
+        service.pending.lock().await.insert(
+            plugin_id.to_owned(),
+            PendingCandidate {
+                work: None,
+                version: candidate_version.to_owned(),
+                installed_version: installed_version.to_owned(),
+                publisher_key,
+                candidate_publisher_key,
+                confirmed_retrust: false,
+                is_rollback: false,
+                installed_manifest: installed.manifest,
+                candidate_manifest: selected.manifest,
+                review: review.clone(),
+            },
+        );
+        review
     }
 
     async fn import_review_and_pin(
@@ -2951,6 +3022,312 @@ pub(super) mod tests {
                 .unwrap()
                 .is_pinned("org.example.update", &old_public)
                 .unwrap()
+        );
+    }
+
+    /// Re-trusting a changed publisher key establishes a distinct identity. Both keys' approved
+    /// origins are revoked, so a stale approval recorded under either fingerprint cannot resurface,
+    /// and the new identity still needs its own origin review before it can fetch.
+    #[tokio::test]
+    async fn changed_publisher_key_revokes_previous_grants_and_origin_approvals() {
+        use crate::plugin_host::{
+            grants::{
+                GrantScope, PermissionDecision, PermissionState, PluginIdentity,
+                manifest_permission_requests,
+            },
+            network::{OriginScopes as _, PersistedOriginScopes},
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        paths.ensure_data_dir().unwrap();
+        let (service, profiles) = import_service_with_profiles(&paths);
+        let plugin_id = "org.example.update";
+        let key_a = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[61; 32]).unwrap();
+        let key_b = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[62; 32]).unwrap();
+        let public_a: [u8; 32] = key_a.public_key().as_ref().try_into().unwrap();
+        let public_b: [u8; 32] = key_b.public_key().as_ref().try_into().unwrap();
+        let first_origin = "https://first.example";
+        let second_origin = "https://second.example";
+        let permissions = || {
+            vec![
+                serde_json::json!({
+                    "id": "network.fetch", "required": false,
+                    "scope": format!("{first_origin}, {second_origin}"),
+                    "reason": "Fetch the plugin's service data"
+                }),
+                serde_json::json!({
+                    "id": "storage.persist", "required": false, "scope": "own-provider",
+                    "reason": "Store plugin preferences"
+                }),
+            ]
+        };
+
+        let v1 = base.path().join("v1");
+        signed_package_with_permissions(&v1, "1.0.0", &key_a, permissions());
+        service
+            .packages
+            .install_candidate(&v1, public_a, EmulationPolicy::RequireNative, true)
+            .await
+            .unwrap();
+        let fingerprint_a = super::super::publisher_trust::key_fingerprint(&public_a);
+        super::super::publisher_trust::PublisherTrustStore::open(&service.trust_dir)
+            .unwrap()
+            .confirm_first_key(plugin_id, &public_a, &fingerprint_a)
+            .unwrap();
+
+        let profile = profiles.current().unwrap();
+        let identity_a = PluginIdentity {
+            plugin_id: plugin_id.into(),
+            publisher_fingerprint: fingerprint_a,
+            profile_id: profile.profile_id().to_owned(),
+        };
+        let installed_manifest = service
+            .packages
+            .inspect_candidate(&v1, public_a, EmulationPolicy::RequireNative)
+            .await
+            .unwrap()
+            .manifest;
+        let requests = manifest_permission_requests(&installed_manifest.permissions).unwrap();
+        service
+            .grant_layout
+            .open_grants(&profile)
+            .unwrap()
+            .replace_grants(
+                identity_a.clone(),
+                &requests,
+                &[
+                    PermissionDecision {
+                        permission_id: "network.fetch".into(),
+                        scope: GrantScope::Declared {
+                            value: first_origin.into(),
+                        },
+                        granted: true,
+                    },
+                    PermissionDecision {
+                        permission_id: "network.fetch".into(),
+                        scope: GrantScope::Declared {
+                            value: second_origin.into(),
+                        },
+                        granted: true,
+                    },
+                    PermissionDecision {
+                        permission_id: "storage.persist".into(),
+                        scope: GrantScope::OwnPrivateNamespace,
+                        granted: true,
+                    },
+                ],
+            )
+            .unwrap();
+        let fingerprint_b = super::super::publisher_trust::key_fingerprint(&public_b);
+        let identity_b = PluginIdentity {
+            plugin_id: plugin_id.into(),
+            publisher_fingerprint: fingerprint_b.clone(),
+            profile_id: profile.profile_id().to_owned(),
+        };
+        // A stale approval recorded under the incoming key (for example from an install of that
+        // publisher before the current one) must not resurface when the key is re-trusted.
+        service
+            .grant_layout
+            .open_grants(&profile)
+            .unwrap()
+            .replace_grants(
+                identity_b.clone(),
+                &requests,
+                &[PermissionDecision {
+                    permission_id: "network.fetch".into(),
+                    scope: GrantScope::Declared {
+                        value: first_origin.into(),
+                    },
+                    granted: true,
+                }],
+            )
+            .unwrap();
+        let scopes = PersistedOriginScopes {
+            profiles: profiles.clone(),
+            layout: service.grant_layout.clone(),
+        };
+        assert_eq!(
+            scopes
+                .approved(&identity_a, profile.epoch())
+                .await
+                .unwrap()
+                .origins,
+            BTreeSet::from([first_origin.to_owned(), second_origin.to_owned()])
+        );
+        assert_eq!(
+            scopes
+                .approved(&identity_b, profile.epoch())
+                .await
+                .unwrap()
+                .origins,
+            BTreeSet::from([first_origin.to_owned()])
+        );
+
+        // The update flow presents a package signed by the new key. Activation waits for the
+        // separate re-trust decision bound to that exact fingerprint.
+        let v2 = base.path().join("v2");
+        signed_package_with_permissions(&v2, "2.0.0", &key_b, permissions());
+        service
+            .packages
+            .install_candidate(&v2, public_b, EmulationPolicy::RequireNative, false)
+            .await
+            .unwrap();
+        let review = stage_installed_update(&service, plugin_id, "1.0.0", "2.0.0").await;
+        assert!(review.publisher_changed);
+        assert!(
+            service
+                .approve(plugin_id, "2.0.0", None)
+                .await
+                .unwrap_err()
+                .contains("re-trusted separately")
+        );
+        service
+            .confirm_publisher_retrust(plugin_id, "2.0.0", &fingerprint_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.approve(plugin_id, "2.0.0", None).await.unwrap(),
+            "2.0.0"
+        );
+
+        // Neither identity keeps a granted origin, nobody holds a granted permission under the
+        // new key yet (the user must review it), and only the new key remains pinned.
+        let grants = service.grant_layout.open_grants(&profile).unwrap();
+        let previous = grants.effective_grants(&identity_a);
+        assert!(!previous.is_empty());
+        for grant in previous.iter().filter(|grant| {
+            grant.permission_id == gamenode_plugin_protocol::capability::NETWORK_FETCH
+        }) {
+            assert_eq!(grant.state, PermissionState::Denied);
+        }
+        let current = grants.effective_grants(&identity_b);
+        assert!(!current.is_empty());
+        assert!(
+            current
+                .iter()
+                .all(|grant| grant.state != PermissionState::Granted)
+        );
+        assert!(
+            scopes
+                .approved(&identity_a, profile.epoch())
+                .await
+                .unwrap()
+                .origins
+                .is_empty()
+        );
+        let new_identity = scopes.approved(&identity_b, profile.epoch()).await.unwrap();
+        assert!(new_identity.origins.is_empty());
+        assert!(new_identity.revision > 0);
+        let trust =
+            super::super::publisher_trust::PublisherTrustStore::open(&service.trust_dir).unwrap();
+        assert!(trust.is_pinned(plugin_id, &public_b).unwrap());
+        assert!(!trust.is_pinned(plugin_id, &public_a).unwrap());
+    }
+
+    /// Removes a read-only mode on drop so a failing assertion cannot leave the test's temporary
+    /// registry unwritable during cleanup.
+    #[cfg(unix)]
+    struct RestoreDirectoryMode {
+        path: PathBuf,
+        restore: u32,
+    }
+
+    #[cfg(unix)]
+    impl Drop for RestoreDirectoryMode {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.restore));
+        }
+    }
+
+    /// A failed active-pointer write must leave the previous version in place and usable. The
+    /// candidate stays installed but inactive, nothing reports it active, and a later review of
+    /// the same payload can activate it once the registry is writable again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_active_pointer_write_keeps_the_previous_version_active_and_usable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = tempfile::tempdir().unwrap();
+        let paths = gamenode_platform::paths::DataPaths::at(base.path().join("app"));
+        paths.ensure_data_dir().unwrap();
+        let (service, _profiles) = import_service_with_profiles(&paths);
+        let plugin_id = "org.example.update";
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[71; 32]).unwrap();
+        let public: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+        let fingerprint = super::super::publisher_trust::key_fingerprint(&public);
+
+        let v1 = base.path().join("v1");
+        signed_package(&v1, "1.0.0", &key);
+        service
+            .packages
+            .install_candidate(&v1, public, EmulationPolicy::RequireNative, true)
+            .await
+            .unwrap();
+        super::super::publisher_trust::PublisherTrustStore::open(&service.trust_dir)
+            .unwrap()
+            .confirm_first_key(plugin_id, &public, &fingerprint)
+            .unwrap();
+        let v2 = base.path().join("v2");
+        signed_package(&v2, "2.0.0", &key);
+        service
+            .packages
+            .install_candidate(&v2, public, EmulationPolicy::RequireNative, false)
+            .await
+            .unwrap();
+
+        // The reviewed update is approved while the active-pointer directory rejects writes.
+        let active_dir = paths.plugin_packages_dir().join("active");
+        let locked = RestoreDirectoryMode {
+            path: active_dir.clone(),
+            restore: 0o700,
+        };
+        fs::set_permissions(&active_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        stage_installed_update(&service, plugin_id, "1.0.0", "2.0.0").await;
+        let error = service.approve(plugin_id, "2.0.0", None).await.unwrap_err();
+        assert!(!error.is_empty());
+
+        // The write failed before the pointer rename: no package reports itself active except
+        // the previous version, which is still intact.
+        let reported: Vec<_> = service
+            .registry
+            .active_versions()
+            .unwrap()
+            .into_iter()
+            .filter(|version| version.plugin_id == plugin_id)
+            .collect();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].version, "1.0.0");
+        assert_eq!(
+            service
+                .registry
+                .verify_active_package(plugin_id, &public)
+                .unwrap()
+                .expect("the previous version is still usable")
+                .version,
+            "1.0.0"
+        );
+        assert!(
+            service
+                .registry
+                .versions(plugin_id)
+                .unwrap()
+                .iter()
+                .any(|version| version.version == "2.0.0"),
+            "the failed candidate stays installed but inactive"
+        );
+
+        // A fresh review can replace the failed candidate once the registry is writable.
+        drop(locked);
+        stage_installed_update(&service, plugin_id, "1.0.0", "2.0.0").await;
+        assert_eq!(
+            service.approve(plugin_id, "2.0.0", None).await.unwrap(),
+            "2.0.0"
+        );
+        assert_eq!(
+            service.registry.active(plugin_id).unwrap().unwrap().version,
+            "2.0.0"
         );
     }
 

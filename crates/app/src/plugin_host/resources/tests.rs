@@ -1166,7 +1166,7 @@ impl LibraryHost for FakeHost {
         recipe: gamenode_core::library::CustomLaunchRecipe,
         _executable_path: Option<String>,
         working_directory_path: Option<String>,
-        _runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
+        runtime: Option<crate::plugin_host::library::ResolvedRuntimeLaunch>,
     ) -> Result<crate::plugin_host::library::CustomLaunchDispatch, Status> {
         use crate::plugin_host::library::CustomLaunchDispatch;
         if !recipe.uri.is_empty() {
@@ -1177,6 +1177,38 @@ impl LibraryHost for FakeHost {
                 arguments: recipe.arguments,
                 working_directory: working_directory_path.unwrap_or_default(),
                 environment,
+            });
+        }
+        if let Some(runtime) = runtime {
+            use gamenode_core::library::RuntimeArgumentTemplate;
+
+            let environment = recipe.environment();
+            let mut arguments = runtime
+                .arguments
+                .iter()
+                .map(|argument| match argument {
+                    RuntimeArgumentTemplate::Literal(value) => Ok(value.clone()),
+                    RuntimeArgumentTemplate::ContentPath => runtime
+                        .content_path
+                        .clone()
+                        .ok_or_else(|| Status::failed_precondition("content path is unavailable")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            arguments.extend(recipe.arguments);
+            return Ok(CustomLaunchDispatch::Runtime {
+                command: gamenode_core::drm_free::CustomLaunchCommand {
+                    executable: runtime.executable,
+                    file_identity: "fixture-runtime-identity".into(),
+                    arguments,
+                    working_directory: working_directory_path.unwrap_or_default(),
+                    environment,
+                },
+                runtime_id: runtime.runtime_id,
+                runtime_version: runtime.version,
+                runtime_revision: runtime.runtime_revision,
+                content_id: runtime.content_id,
+                binding_revision: runtime.binding_revision,
+                lease_keys: runtime.lease_keys,
             });
         }
         Err(Status::unimplemented("fixture supports URI recipes only"))

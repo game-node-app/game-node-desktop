@@ -609,6 +609,233 @@ async fn user_play_reviews_selected_recipe_remembers_exact_plan_and_never_falls_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn user_play_reviews_runtime_overlay_and_reprompts_when_runtime_revision_changes() {
+    use crate::plugin_host::profile::PluginStateLayout;
+    use gamenode_plugin_protocol::proto::{
+        ContentPathArgument, RuntimeArgumentTemplate as RuntimeArgumentProto, RuntimeRecord,
+        runtime_argument_template::Value as RuntimeArgumentValue,
+    };
+
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, dialog) = Fixture::extension_game(
+        &[
+            cap::DISCOVERY,
+            cap::FILES_READ,
+            cap::GAME_CUSTOM_LAUNCH,
+            cap::GAME_RUNTIME_CREATE,
+        ],
+        target,
+        Some(answering(&[
+            APPROVE_AND_REMEMBER,
+            Answer {
+                approved: false,
+                remember: false,
+            },
+        ])),
+    )
+    .await;
+    let dialog = dialog.unwrap();
+    host.launch_target.store(1, Ordering::SeqCst);
+
+    let content_root = fixture.game_dir(
+        "steam-runtime",
+        &[("zelda.sfc", b"rom"), ("emulator", b"runtime")],
+    );
+    fixture.library_in(&[("steam:1", Some(5), "Selected Steam game", &content_root)]);
+    fixture.user_approving(&content_root);
+    let root = fixture.root_handle("id-steam:1", &["read"]).await;
+    let runtime_executable = fixture.child(&root, "emulator").await;
+    let content_handle = fixture.child(&root, "zelda.sfc").await;
+    let context = fixture.context();
+    let caller = fixture
+        .api
+        .authorize_resource(Some(&context), cap::GAME_RUNTIME_CREATE)
+        .unwrap();
+    let owner = super::super::mutations::mutation_owner(&caller);
+
+    fixture
+        .client()
+        .runtimes_register(RuntimeRegisterRequest {
+            mutation: Some(fixture.mutation("register-runtime-for-play", 0)),
+            runtime: Some(RuntimeRecord {
+                id: "runtime:snes".into(),
+                name: "SNES runtime".into(),
+                version: "1.0".into(),
+                executable_handle: runtime_executable,
+                supported_formats: vec!["snes-rom".into()],
+                platform: std::env::consts::OS.into(),
+                argument_template: vec![RuntimeArgumentProto {
+                    value: Some(RuntimeArgumentValue::ContentPath(ContentPathArgument {})),
+                }],
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap();
+    fixture
+        .client()
+        .games_register_content(ContentRegistrationRequest {
+            mutation: Some(fixture.mutation("register-content-for-play", 0)),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            content_handle,
+            content_kind: "snes-rom".into(),
+            runtime_id: "runtime:snes".into(),
+            supported_platforms: vec![std::env::consts::OS.into()],
+            content_id: "rom:zelda".into(),
+        })
+        .await
+        .unwrap();
+
+    let revision = fixture.feed.revision_of("steam:1").unwrap();
+    let recipe = fixture
+        .client()
+        .games_propose_custom_launch(CustomLaunchRequest {
+            context: Some(context),
+            game_id: "5".into(),
+            installation_id: "id-steam:1".into(),
+            expected_revision: revision,
+            idempotency_key: "runtime-recipe-for-play".into(),
+            runtime_handle: "runtime:snes".into(),
+            content_id: "rom:zelda".into(),
+            argv: vec!["--pixel-perfect".into()],
+            environment_set: [("GAME_MODE".into(), "fixture".into())].into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let profiles = fixture.api.profiles();
+    let layout = PluginStateLayout::new(fixture.plugin_data.join("host-runtime-play-profile"));
+    profiles.set_state_layout(layout.clone());
+    let profile = profiles.current().unwrap();
+    let identity = crate::plugin_host::grants::PluginIdentity {
+        plugin_id: "fixture.plugin".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        profile_id: profile.profile_id().to_owned(),
+    };
+    let scope = crate::plugin_host::grants::GrantScope::Declared {
+        value: "host-selected-game".into(),
+    };
+    let requests = [cap::GAME_CUSTOM_LAUNCH, cap::FILES_READ]
+        .into_iter()
+        .map(
+            |permission_id| crate::plugin_host::grants::PermissionRequest {
+                permission_id: permission_id.into(),
+                required: false,
+                allowed_scopes: [scope.clone()].into(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let decisions = [cap::GAME_CUSTOM_LAUNCH, cap::FILES_READ]
+        .into_iter()
+        .map(
+            |permission_id| crate::plugin_host::grants::PermissionDecision {
+                permission_id: permission_id.into(),
+                scope: scope.clone(),
+                granted: true,
+            },
+        )
+        .collect::<Vec<_>>();
+    layout
+        .open_grants(&profile)
+        .unwrap()
+        .replace_grants(identity.clone(), &requests, &decisions)
+        .unwrap();
+    layout
+        .open_activation(&profile)
+        .unwrap()
+        .set_enabled("fixture.plugin", true)
+        .unwrap();
+    let resolver = profiles
+        .resolver("fixture.plugin", &"ab".repeat(32), None)
+        .unwrap();
+    let stored_recipe = host
+        .custom_launch_recipe(
+            resolver.library_recipe_owner_key(),
+            recipe.recipe_id.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    host.launch_recipe_selections.lock().unwrap().insert(
+        "steam:1".into(),
+        gamenode_core::library::LaunchRecipeSelection {
+            entry_key: "steam:1".into(),
+            owner_key: resolver.library_recipe_owner_key(),
+            plugin_id: identity.plugin_id,
+            publisher_fingerprint: identity.publisher_fingerprint,
+            recipe_id: stored_recipe.recipe_id.clone(),
+            recipe_revision: stored_recipe.revision,
+            base_target_revision: stored_recipe.base_target_revision,
+            approved_plan_fingerprint: String::new(),
+        },
+    );
+
+    let api = fixture._server.resource_api();
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    let first_review = dialog.shown.lock().unwrap()[0].launch_plan.clone().unwrap();
+    assert_eq!(first_review.source_id, "steam");
+    assert_eq!(first_review.requester_plugin_id, "fixture.plugin");
+    assert_eq!(first_review.arguments.len(), 2);
+    assert!(first_review.arguments[0].ends_with("/zelda.sfc"));
+    assert_eq!(first_review.arguments[1], "--pixel-perfect");
+    assert_eq!(first_review.environment_set["GAME_MODE"], "fixture");
+    assert!(
+        first_review
+            .components
+            .iter()
+            .any(|component| component.kind == "runtime" && component.id == "runtime:snes")
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"known-components".into())
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"custom-arguments".into())
+    );
+    assert!(
+        first_review
+            .differences
+            .contains(&"environment-changes".into())
+    );
+
+    // The same immutable plan reuses its approval and dispatches without a second dialog.
+    assert!(api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 1);
+
+    // A changed runtime revision changes the reviewed plan and a user refusal stops dispatch.
+    let mut updated = host
+        .runtime_resource(owner.clone(), "runtime:snes".into())
+        .await
+        .unwrap()
+        .unwrap();
+    updated.version = "1.1".into();
+    updated.revision += 1;
+    host.save_runtime_resource(owner, updated).await.unwrap();
+    assert!(!api.launch_selected_recipe("steam:1".into()).await.unwrap());
+    assert_eq!(dialog.shown.lock().unwrap().len(), 2);
+    assert_eq!(host.custom_launch_dispatches.lock().unwrap().len(), 2);
+    let stored = host
+        .custom_launch_recipes
+        .lock()
+        .unwrap()
+        .values()
+        .find(|stored| stored.recipe_id == recipe.recipe_id)
+        .cloned()
+        .unwrap();
+    assert!(stored.validate());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn custom_launch_recipe_removal_during_confirmation_blocks_dispatch() {
     let (dialog, gate) = held(&[APPROVE]);
     let (fixture, host, dialog) =

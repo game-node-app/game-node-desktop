@@ -769,6 +769,10 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("JobsGet", 0),
             ("JobsWatch", 0),
             ("JobsCancel", 0),
+            ("DataPublish", 0),
+            ("DataGet", 0),
+            ("DataList", MAX_PAGE_SIZE as u32),
+            ("DataWatch", 0),
         ]
     );
     // A job needs the permission of the operation that made it, so the jobs methods name none.

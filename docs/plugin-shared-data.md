@@ -34,9 +34,25 @@ the six common categories into the broker.
 | Content availability (`CONTENT_AVAILABILITY`) | `GamesRegisterContent` with `library.discovery`, `files.read` and an approved content handle | `LibraryList`, `LibraryGet`, `LibraryWatch` with `library.read` and `library.read.all` for whole-library scope | Registration binds content to a scoped game/installation and the caller's runtime. Library reads return logical game/installation and display metadata. `LibraryEntry.runtime_availability` is empty in this build. Common-data selectors on these reads return `UNIMPLEMENTED`. |
 | Logical library roots (`LIBRARY_ROOTS`) | `LibrariesCreate`, `LibrariesAddRoot` with `library.roots.create`. `LibrariesUpdate`, `LibrariesUpdateRoot` with `library.roots.update`. `LibrariesRemove`, `LibrariesRemoveRoot` with `library.roots.delete`. Adding a root requires folder approval. | `LibrariesList`, `LibrariesGet`, `LibrariesWatch` with `library.roots.read` | The caller's logical library IDs, names, descriptions and revisions. Roots include IDs, names, availability, watching/discovery state and approved session-bound handles. Common-data selectors return `UNIMPLEMENTED`. |
 | Save profiles (`SAVE_PROFILES`) | `Saves.CreateProfile`, `Saves.UpdateProfile`, `Saves.RemoveProfile` with `game.saves.create`, `game.saves.update`, `game.saves.delete` respectively | `Saves.ListProfiles`, `Saves.GetProfile` with `game.saves.read` and game/resource scope | Logical profile metadata, runtime/format, revision, naming rules and handles for currently approved folders. Current desktop reads are owner-only. Category selectors on these routes return `UNIMPLEMENTED`. |
+| Storage diagnostics | `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart` with `storage.diagnostics.publish` | `StorageDiagnostics.List`, `Get`, `Watch` with `storage.diagnostics.read` and the current sensitive-data projection policy | Host-attributed benchmark/SMART report, schema/version, observation time, revision, projected measurements/attributes and the opaque volume token only when approved. Reports are session-retained. |
 | Private plugin storage | `StoragePut` with `storage.write` and additionally `storage.persist` for `PERSISTENT`. `StorageDelete` with `storage.delete`. | `StorageGet` with `storage.read` | Private bytes, revision, durability and expiration in the authenticated plugin/publisher/profile namespace. Shared-data grants cannot address these keys. |
 
-### Reserved routes
+### Storage diagnostics
+
+Storage diagnostics reports are session-retained producer claims. The host derives the volume
+identity token from the caller's approved file handle, validates report structure, and never
+starts benchmark or SMART tools. `projection_id` is `benchmark.v1` or `smart.v1`; the matching
+dataset policy selects the report fields visible to another plugin. The opaque volume token is
+itself a projected field, so a report reader receives it only when that field is approved. A new
+volume token is a distinct resource binding and does not match reports from a replaced disk.
+
+Benchmark fields include tool/version, units, named measurements, per-measurement units and
+conditions. SMART fields carry model/firmware and named attributes with units. Both accept
+explicit `available`, `unavailable`, `unsupported`, `access_denied` and `error` states; missing
+measurements are not encoded as zero. Reports remain in the authenticated session and disappear
+when it closes; this does not grant durable storage.
+
+### Other reserved routes
 
 Both the writes and reads in this table are `UNIMPLEMENTED`. Grants and
 projections here describe the published contract for the follow-up tasks.
@@ -44,7 +60,6 @@ Where a request has `projection_id`, it selects a host-defined projection.
 
 | Dataset or information family | Write methods and grants | Read methods and grants | Contracted projection |
 | --- | --- | --- | --- |
-| Storage diagnostics (1.9) | `StorageDiagnosticsPublishBenchmark`, `StorageDiagnosticsPublishSmart` with `storage.diagnostics.publish` | `StorageDiagnostics.List`, `Get`, `Watch` with `storage.diagnostics.read` and explicit sensitive-data review | Report ID and kind, host-attributed owner, opaque volume token, schema/version, typed measurements, approved extension, observation time and revision. |
 | Computer hardware (1.10) | `ComputerPublishHardware` with `computer.hardware.publish` | `Computer.List`, `Get`, `Watch` with `computer.hardware.read` and explicit sensitive-data review | Record ID and computer context, host-attributed owner, schema/version, typed observations, approved extension, observation time and revision. Exclude raw serials and leave missing identifiers absent. |
 | Game presence (1.10) | `GamePresencePublish`, `GamePresenceClear` with `game.presence.publish` | `GamePresence.List`, `Get`, `Watch` with `game.presence.read` and explicit sensitive-data review | Presence ID, game/session scope, host-attributed owner, sequence, observation/expiry, approved details and revision. Presence is an observation and grants no authority over online status or host process state. |
 | Performance history (`GAME_PERFORMANCE_HISTORY`, 1.11) | `GamePerformancePublishSamples`, `GamePerformanceEndSeries` with `game.performance.publish` | `GamePerformance.List`, `Get`, `Watch`, `QuerySeries`, `Aggregate` with `game.performance.read` and explicit common category/record selection backed by a grant, or exact sensitive projection review | Series ID, game/install/computer/session context, host-attributed owner, revision and typed samples (FPS, CPU percent, memory bytes). Queries include coverage and dropped samples. Aggregates include units, count, coverage and provenance. |

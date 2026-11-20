@@ -25,6 +25,7 @@ mod artwork_handles;
 mod backups;
 mod data;
 mod declared_locations;
+mod diagnostics;
 mod files;
 mod fingerprints;
 mod games;

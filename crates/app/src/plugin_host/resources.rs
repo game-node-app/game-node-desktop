@@ -25,6 +25,7 @@ use tonic::{Request, Response, Status};
 mod artwork;
 mod backups;
 mod custom_launch;
+mod diagnostics;
 mod files;
 mod games;
 mod jobs;
@@ -113,6 +114,18 @@ pub const SERVED: &[Served] = &[
         cap::BACKUPS_RESTORE,
         false,
         "approved save profile; confirmation required",
+    ),
+    Served::new(
+        "StorageDiagnosticsPublishBenchmark",
+        cap::STORAGE_DIAGNOSTICS_PUBLISH,
+        false,
+        "host-attributed volume report; Core starts no benchmark process",
+    ),
+    Served::new(
+        "StorageDiagnosticsPublishSmart",
+        cap::STORAGE_DIAGNOSTICS_PUBLISH,
+        false,
+        "host-attributed volume report; Core starts no SMART process",
     ),
     Served::new(
         "LibrariesList",
@@ -304,6 +317,9 @@ pub const SAVES_SERVED: &[Served] = saves::SERVED;
 
 /// The `Locations` service methods this build serves, for `DescribeApi`.
 pub const LOCATIONS_SERVED: &[Served] = locations::SERVED;
+
+/// The `StorageDiagnostics` service methods this build serves, for `DescribeApi`.
+pub const DIAGNOSTICS_SERVED: &[Served] = diagnostics::SERVED;
 
 /// A served method's `DescribeApi` facts.
 pub struct Served {
@@ -1739,9 +1755,19 @@ impl resource_host_server::ResourceHost for ResourceApi {
     ) -> Result<Response<MutationReply>, Status> {
         self.register_content(request).await
     }
+    async fn storage_diagnostics_publish_benchmark(
+        &self,
+        request: Request<BenchmarkReportRequest>,
+    ) -> Result<Response<ReportMutationReply>, Status> {
+        self.publish_benchmark(request).await
+    }
+    async fn storage_diagnostics_publish_smart(
+        &self,
+        request: Request<SmartReportRequest>,
+    ) -> Result<Response<ReportMutationReply>, Status> {
+        self.publish_smart(request).await
+    }
     not_served! {
-        storage_diagnostics_publish_benchmark(BenchmarkReportRequest) -> ReportMutationReply;
-        storage_diagnostics_publish_smart(SmartReportRequest) -> ReportMutationReply;
         computer_publish_hardware(HardwareReportRequest) -> ReportMutationReply;
         game_presence_publish(PresencePublishRequest) -> ReportMutationReply;
         game_presence_clear(PresenceClearRequest) -> MutationReply;

@@ -884,6 +884,7 @@ async fn the_default_channel_preselects_the_install_channel() {
     th.harness
         .engine
         .open_tools(Some("manual:game1".to_string()));
+    eventually(|| th.harness.engine.snapshot().tools.modal.is_some()).await;
     let modal = th.harness.engine.snapshot().tools.modal.unwrap();
     assert_eq!(modal.selected_channel, ToolChannel::Nightly);
 

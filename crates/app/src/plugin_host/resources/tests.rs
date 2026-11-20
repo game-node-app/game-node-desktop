@@ -769,8 +769,23 @@ async fn custom_launch_without_its_own_grant_is_denied_and_describe_lists_the_ro
             ("JobsGet", 0),
             ("JobsWatch", 0),
             ("JobsCancel", 0),
+            ("DataPublish", 0),
+            ("DataGet", 0),
+            ("DataList", MAX_PAGE_SIZE as u32),
+            ("DataWatch", 0),
         ]
     );
+    // `DescribeApi` is a set: advertising the same route twice would make a client see two
+    // conflicting descriptions of it.
+    let mut routes: Vec<_> = described
+        .methods
+        .iter()
+        .map(|method| (method.service.as_str(), method.method.as_str()))
+        .collect();
+    let advertised = routes.len();
+    routes.sort_unstable();
+    routes.dedup();
+    assert_eq!(advertised, routes.len(), "DescribeApi repeats a route");
     // A job needs the permission of the operation that made it, so the jobs methods name none.
     assert!(
         described

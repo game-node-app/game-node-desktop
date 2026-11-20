@@ -60,6 +60,71 @@ async fn third_party_processes_start_only_inside_an_account_profile() {
 }
 
 #[test]
+fn official_providers_keep_host_launch_accounting_outside_plugin_runtime_reports() {
+    let api = ProviderApi::default();
+    let registration = official_registration("bundled");
+    assert_eq!(registration.playtime, Default::default());
+    api.register(registration).unwrap();
+
+    // Bundled providers continue through the existing host-managed provider launch path.
+    assert!(api.begin_launch("bundled").is_ok());
+
+    // Plugin-reported runtime accounting is an extension-only feature and cannot change the
+    // official provider's existing accounting policy.
+    let error = api
+        .begin_extension_launch(
+            "bundled",
+            0,
+            gamenode_plugin_protocol::proto::TargetGameContext {
+                game_id: "42".into(),
+                installation_id: "steam:123".into(),
+                profile_id: "account-a".into(),
+                revision: "revision-1".into(),
+            },
+        )
+        .err()
+        .expect("official providers cannot open extension reporting sessions");
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+}
+
+#[test]
+fn runtime_reporting_requires_a_compatible_signed_playtime_declaration() {
+    let api = ProviderApi::default();
+    let mut registration = third_party_registration("community");
+    registration
+        .capabilities
+        .push(cap::GAME_SESSIONS_REPORT.into());
+
+    let error = api
+        .register(registration)
+        .expect_err("default-disabled packages cannot report runtime sessions");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+
+    let mut application_open = third_party_registration("community");
+    application_open
+        .capabilities
+        .push(cap::GAME_SESSIONS_REPORT.into());
+    let application_open_policy = crate::plugin_host::package::PlaytimeCapabilities {
+        identifies_gameplay: true,
+        identifies_pauses: false,
+        without_pause_detection:
+            crate::plugin_host::package::PlaytimeAccountingMode::ApplicationOpen,
+    };
+    assert!(
+        application_open_policy.can_report_transition(RuntimeSessionTransition::Started as i32)
+    );
+    assert!(
+        !application_open_policy.can_report_transition(RuntimeSessionTransition::Paused as i32)
+    );
+    assert!(
+        !application_open_policy.can_report_transition(RuntimeSessionTransition::Resumed as i32)
+    );
+    application_open.playtime = application_open_policy;
+    api.register(application_open)
+        .expect("signed application-open declaration supports reporting without pause detection");
+}
+
+#[test]
 fn pending_third_party_launch_is_rejected_after_profile_changes() {
     let api = ProviderApi::default();
     api.register(third_party_registration("community")).unwrap();

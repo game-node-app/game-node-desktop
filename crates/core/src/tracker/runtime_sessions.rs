@@ -542,6 +542,40 @@ mod tests {
     }
 
     #[test]
+    fn identification_loss_closes_confirmed_playtime_and_identification_does_not_reopen_it() {
+        let mut tracker = RuntimeSessions::default();
+        apply(
+            &mut tracker,
+            report(1, Transition::Started, 100, "rom-a"),
+            "session-a",
+            100,
+        );
+
+        let (_, lost) = apply(
+            &mut tracker,
+            report(2, Transition::IdentificationLost, 120, "rom-a"),
+            "unused",
+            120,
+        );
+        assert!(matches!(
+            lost.as_slice(),
+            [Effect::Close {
+                ended_at: 120,
+                game_id: Some(42),
+                ..
+            }]
+        ));
+
+        let (_, unidentified) = apply(
+            &mut tracker,
+            report(3, Transition::Identified, 180, "rom-a"),
+            "unused",
+            180,
+        );
+        assert!(unidentified.is_empty());
+    }
+
+    #[test]
     fn new_arbiter_after_restart_never_backfills_and_disconnect_fences_last_observation() {
         let mut old = RuntimeSessions::default();
         apply(

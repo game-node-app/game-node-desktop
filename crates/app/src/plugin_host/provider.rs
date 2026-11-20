@@ -195,6 +195,19 @@ impl PlaytimeCapabilities {
                 || self.without_pause_detection
                     == super::package::PlaytimeAccountingMode::ApplicationOpen)
     }
+
+    fn can_report_transition(self, transition: i32) -> bool {
+        if !self.can_report_runtime_sessions() {
+            return false;
+        }
+        if matches!(
+            RuntimeSessionTransition::try_from(transition),
+            Ok(RuntimeSessionTransition::Paused | RuntimeSessionTransition::Resumed)
+        ) {
+            return self.identifies_pauses;
+        }
+        true
+    }
 }
 
 /// Internal lookup key for one provider-free extension. It is not a provider id and is never
@@ -1039,7 +1052,7 @@ impl ProviderApi {
                 .as_ref()
                 .and_then(|extension| extension.playtime)
                 .unwrap_or(session.provider.registration.playtime);
-            if !playtime.can_report_runtime_sessions() {
+            if !playtime.can_report_transition(report.transition) {
                 return Err(Status::permission_denied(
                     "runtime reporting is disabled by the signed package policy",
                 ));

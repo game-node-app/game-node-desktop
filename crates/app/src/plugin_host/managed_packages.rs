@@ -383,12 +383,22 @@ pub(super) mod tests {
         os: &str,
         key: &ring::signature::Ed25519KeyPair,
     ) {
+        write_signed_package_with_playtime(root, version, os, key, None);
+    }
+
+    fn write_signed_package_with_playtime(
+        root: &Path,
+        version: &str,
+        os: &str,
+        key: &ring::signature::Ed25519KeyPair,
+        playtime: Option<serde_json::Value>,
+    ) {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir_all(root.join("licenses")).unwrap();
         fs::write(root.join("bin/plugin"), b"fixture executable").unwrap();
         fs::write(root.join("licenses/LICENSE"), b"fixture license").unwrap();
         let abi = if os == "windows" { "msvc" } else { "gnu" };
-        let manifest = serde_json::to_vec(&serde_json::json!({
+        let mut manifest_value = serde_json::json!({
             "schema": 1,
             "id": "org.example.lifecycle",
             "kind": "provider",
@@ -402,8 +412,11 @@ pub(super) mod tests {
                 "public_key": base64::engine::general_purpose::STANDARD.encode(key.public_key().as_ref())
             },
             "license": {"expression": "MIT", "files": ["licenses/LICENSE"]}
-        }))
-        .unwrap();
+        });
+        if let Some(playtime) = playtime {
+            manifest_value["playtime"] = playtime;
+        }
+        let manifest = serde_json::to_vec(&manifest_value).unwrap();
         fs::write(root.join("plugin.json"), &manifest).unwrap();
         let files = [
             ("plugin.json", manifest.as_slice()),
@@ -424,6 +437,38 @@ pub(super) mod tests {
         signed.extend_from_slice(&integrity);
         fs::write(root.join("integrity.json"), integrity).unwrap();
         fs::write(root.join("signature.ed25519"), key.sign(&signed).as_ref()).unwrap();
+    }
+
+    #[test]
+    fn playtime_disclosure_is_part_of_the_verified_package_manifest() {
+        let base = tempdir().unwrap();
+        let package = base.path().join("signed-playtime");
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+        let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+        write_signed_package_with_playtime(
+            &package,
+            "1.0.0",
+            "linux",
+            &key,
+            Some(serde_json::json!({
+                "identifies_gameplay": true,
+                "identifies_pauses": true,
+                "without_pause_detection": "disabled"
+            })),
+        );
+
+        let integrity = verify_package_directory(&package, &public_key).unwrap();
+        let manifest_bytes = read_signed_manifest(&package, &integrity).unwrap();
+        let manifest = Manifest::parse_json(&manifest_bytes).unwrap();
+        assert!(manifest.manifest().playtime.identifies_gameplay);
+        assert!(manifest.manifest().playtime.identifies_pauses);
+
+        let manifest_path = package.join("plugin.json");
+        let mut edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        edited["playtime"]["identifies_pauses"] = serde_json::Value::Bool(false);
+        fs::write(&manifest_path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        assert!(verify_package_directory(&package, &public_key).is_err());
     }
 
     #[tokio::test]

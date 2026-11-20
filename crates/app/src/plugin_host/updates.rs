@@ -1833,6 +1833,23 @@ mod review_tests {
     }
 
     #[test]
+    fn review_discloses_signed_playtime_policy_changes() {
+        let before = manifest("1.0.0", "game:data", &[], "MIT", "1.4.0");
+        let mut after = manifest("1.1.0", "game:data", &[], "MIT", "1.4.0");
+        after.playtime = PlaytimeCapabilities {
+            identifies_gameplay: true,
+            identifies_pauses: false,
+            without_pause_detection: super::super::package::PlaytimeAccountingMode::ApplicationOpen,
+        };
+
+        let review = UpdateReview::compare(&before, &after);
+        assert!(review.playtime_changed);
+        assert_eq!(review.installed_playtime, before.playtime);
+        assert_eq!(review.candidate_playtime, after.playtime);
+        assert!(review.requires_manual_approval);
+    }
+
+    #[test]
     fn even_metadata_only_updates_still_require_explicit_approval() {
         let before = manifest("1.0.0", "game:data", &[], "MIT", "1.4.0");
         let after = manifest("1.1.0", "game:data", &[], "MIT", "1.4.0");

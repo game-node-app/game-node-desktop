@@ -526,6 +526,35 @@ pub trait LibraryStore: Send + Sync {
         ))
     }
 
+    /// Lists every owner's runtimes for an authorized common-category read.
+    fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, super::runtime::RuntimeResource)>, StorageError> {
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Combined catalog revision across every owner, for a shared read subscription.
+    fn shared_runtime_catalog_revision(&self) -> Result<u64, StorageError> {
+        Err(StorageError::Failed(
+            "runtime resources are unavailable in this store".into(),
+        ))
+    }
+
+    /// Safe availability rows for the named installations. `owner_key` limits the projection to
+    /// the caller's private bindings; `None` includes every owner for an authorized category read.
+    fn runtime_availability(
+        &self,
+        owner_key: Option<&str>,
+        installation_ids: &[String],
+    ) -> Result<Vec<super::runtime::RuntimeAvailabilityEntry>, StorageError> {
+        let _ = (owner_key, installation_ids);
+        Err(StorageError::Failed(
+            "runtime availability is unavailable in this store".into(),
+        ))
+    }
+
     /// Looks up one runtime without exposing another plugin owner's private record.
     fn runtime_resource(
         &self,

@@ -772,6 +772,28 @@ pub trait LibraryHost: Send + Sync {
         Err(Status::unavailable("runtime catalog is unavailable"))
     }
 
+    /// Every owner's runtimes for an authorized common-category read.
+    async fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, gamenode_core::library::RuntimeResource)>, Status> {
+        Err(Status::unavailable("runtime catalog is unavailable"))
+    }
+
+    /// Combined catalog revision across every owner.
+    async fn shared_runtime_catalog_revision(&self) -> Result<u64, Status> {
+        Err(Status::unavailable("runtime catalog is unavailable"))
+    }
+
+    /// Safe availability rows for the named installations. `owner_key` limits the projection to
+    /// the caller's private bindings; `None` includes every owner after authorization.
+    async fn runtime_availability(
+        &self,
+        _owner_key: Option<String>,
+        _installation_ids: Vec<String>,
+    ) -> Result<Vec<gamenode_core::library::RuntimeAvailabilityEntry>, Status> {
+        Err(Status::unavailable("runtime availability is unavailable"))
+    }
+
     /// Durable recipes stay under the authenticated plugin/profile namespace.
     async fn custom_launch_recipe(
         &self,

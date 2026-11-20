@@ -11,9 +11,9 @@ use gamenode_core::library::{
     AccountLibrary, ArtworkOverride, ArtworkWrite, AutoMatch, CatalogError, CatalogRecord,
     CatalogUpdate, ChoiceSource, ChosenMatch, DisplayOverride, DisplayWrite, EntryStatus,
     FavoriteRecord, GameRecord, LastAccount, LaunchRecipeSelection, LaunchRecipeSelectionWrite,
-    LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, RuntimeContentBinding,
-    RuntimeMutation, RuntimeResource, SavedView, SavedViewPayload, StoreAccount, StoredEntry,
-    entry_key,
+    LibraryCache, LibraryLayout, LibraryStore, ProviderScanState, RuntimeAvailabilityEntry,
+    RuntimeContentBinding, RuntimeMutation, RuntimeResource, SavedView, SavedViewPayload,
+    StoreAccount, StoredEntry, entry_key,
 };
 use gamenode_core::ports::StorageError;
 use gamenode_core::provider::Record;
@@ -1338,6 +1338,125 @@ impl LibraryStore for SqliteLibraryStore {
         Ok(RuntimeMutation::Applied {
             revision: expected_revision,
         })
+    }
+
+    fn shared_runtime_resources(&self) -> Result<Vec<(String, RuntimeResource)>, StorageError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT owner_key, runtime_json FROM plugin_runtime_resources
+                 ORDER BY owner_key, runtime_id",
+            )
+            .map_err(failed)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(failed)?;
+        rows.map(|row| {
+            let (owner_key, json) = row.map_err(failed)?;
+            let runtime: RuntimeResource = serde_json::from_str(&json).map_err(failed)?;
+            if !runtime.validate() {
+                return Err(failed("stored runtime resource is invalid"));
+            }
+            Ok((owner_key, runtime))
+        })
+        .collect()
+    }
+
+    fn shared_runtime_catalog_revision(&self) -> Result<u64, StorageError> {
+        let conn = self.conn();
+        let revision: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(catalog_revision), 0) FROM plugin_runtime_catalog_state",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(failed)?;
+        u64::try_from(revision).map_err(failed)
+    }
+
+    fn runtime_availability(
+        &self,
+        owner_key: Option<&str>,
+        installation_ids: &[String],
+    ) -> Result<Vec<RuntimeAvailabilityEntry>, StorageError> {
+        if installation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if installation_ids.len() > 1024 {
+            return Err(failed("too many installations requested"));
+        }
+        let placeholders = std::iter::repeat_n("?", installation_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let owner_clause = if owner_key.is_some() {
+            " AND b.owner_key = ?"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT b.installation_id, b.binding_json, r.runtime_json
+             FROM plugin_runtime_content_bindings b
+             LEFT JOIN plugin_runtime_resources r
+               ON r.owner_key = b.owner_key
+              AND r.runtime_id = json_extract(b.binding_json, '$.runtimeId')
+             WHERE b.installation_id IN ({placeholders}){owner_clause}
+             ORDER BY b.installation_id, b.owner_key, b.content_id, b.runtime_id"
+        );
+        let conn = self.conn();
+        let mut statement = conn.prepare(&sql).map_err(failed)?;
+        let mut values: Vec<rusqlite::types::Value> = installation_ids
+            .iter()
+            .map(|id| rusqlite::types::Value::Text(id.clone()))
+            .collect();
+        if let Some(owner_key) = owner_key {
+            values.push(rusqlite::types::Value::Text(owner_key.to_owned()));
+        }
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(failed)?;
+        let mut availability = Vec::new();
+        for row in rows {
+            let (installation_id, binding_json, runtime_json) = row.map_err(failed)?;
+            let binding: RuntimeContentBinding =
+                serde_json::from_str(&binding_json).map_err(failed)?;
+            if !binding.validate() {
+                return Err(failed("stored runtime binding is invalid"));
+            }
+            let runtime = runtime_json
+                .map(|json| serde_json::from_str::<RuntimeResource>(&json))
+                .transpose()
+                .map_err(failed)?;
+            let runtime = runtime.filter(RuntimeResource::validate);
+            availability.push(RuntimeAvailabilityEntry {
+                installation_id,
+                content_id: binding.content_id,
+                content_kind: binding.content_kind,
+                runtime_id: binding.runtime_id,
+                runtime_name: runtime
+                    .as_ref()
+                    .map(|value| value.name.clone())
+                    .unwrap_or_default(),
+                platform: runtime
+                    .as_ref()
+                    .map(|value| value.platform.clone())
+                    .or_else(|| binding.supported_platforms.first().cloned())
+                    .unwrap_or_default(),
+                publisher_id: runtime
+                    .as_ref()
+                    .map(|value| value.provenance.plugin_id.clone())
+                    .unwrap_or_default(),
+                revision: binding.revision,
+            });
+        }
+        Ok(availability)
     }
 
     fn runtime_content_bindings(

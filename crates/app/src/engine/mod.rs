@@ -2788,6 +2788,41 @@ impl crate::plugin_host::library::LibraryHost for PluginLibraryHost {
             .map_err(|_| tonic::Status::internal("could not read runtime catalog revision"))
     }
 
+    async fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, gamenode_core::library::RuntimeResource)>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.shared_runtime_resources())
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read shared runtime resources"))
+    }
+
+    async fn shared_runtime_catalog_revision(&self) -> Result<u64, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || store.shared_runtime_catalog_revision())
+            .await
+            .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+            .map_err(|_| tonic::Status::internal("could not read shared runtime catalog revision"))
+    }
+
+    async fn runtime_availability(
+        &self,
+        owner_key: Option<String>,
+        installation_ids: Vec<String>,
+    ) -> Result<Vec<gamenode_core::library::RuntimeAvailabilityEntry>, tonic::Status> {
+        let engine = self.engine()?;
+        let store = engine.shared.ports.library.clone();
+        tokio::task::spawn_blocking(move || {
+            store.runtime_availability(owner_key.as_deref(), &installation_ids)
+        })
+        .await
+        .map_err(|_| tonic::Status::unavailable("library worker stopped"))?
+        .map_err(|_| tonic::Status::internal("could not read runtime availability"))
+    }
+
     async fn custom_launch_recipe(
         &self,
         owner_key: String,

@@ -841,6 +841,8 @@ struct FakeHost {
     runtime_resources: Mutex<HashMap<(String, String), gamenode_core::library::RuntimeResource>>,
     runtime_bindings:
         Mutex<HashMap<(String, u64, String), Vec<gamenode_core::library::RuntimeContentBinding>>>,
+    /// Monotonic catalog revision for runtime list/watch fixtures.
+    runtime_catalog_revision: std::sync::atomic::AtomicU64,
 }
 
 impl FakeHost {
@@ -853,6 +855,7 @@ impl FakeHost {
             .lock()
             .unwrap()
             .insert((owner_key, runtime.id.clone()), runtime);
+        self.runtime_catalog_revision.fetch_add(1, Ordering::SeqCst);
     }
 
     fn hook(&self) -> Option<(ProviderApi, &'static str)> {
@@ -1008,6 +1011,78 @@ impl LibraryHost for FakeHost {
             .cloned())
     }
 
+    async fn runtime_resources(
+        &self,
+        owner_key: String,
+    ) -> Result<Vec<gamenode_core::library::RuntimeResource>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((owner, _), _)| *owner == owner_key)
+            .map(|(_, runtime)| runtime.clone())
+            .collect())
+    }
+
+    async fn shared_runtime_resources(
+        &self,
+    ) -> Result<Vec<(String, gamenode_core::library::RuntimeResource)>, Status> {
+        Ok(self
+            .runtime_resources
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|((owner, _), runtime)| (owner.clone(), runtime.clone()))
+            .collect())
+    }
+
+    async fn runtime_catalog_revision(&self, _owner_key: String) -> Result<u64, Status> {
+        Ok(self.runtime_catalog_revision.load(Ordering::SeqCst))
+    }
+
+    async fn shared_runtime_catalog_revision(&self) -> Result<u64, Status> {
+        Ok(self.runtime_catalog_revision.load(Ordering::SeqCst))
+    }
+
+    async fn runtime_availability(
+        &self,
+        owner_key: Option<String>,
+        installation_ids: Vec<String>,
+    ) -> Result<Vec<gamenode_core::library::RuntimeAvailabilityEntry>, Status> {
+        let resources = self.runtime_resources.lock().unwrap();
+        let bindings = self.runtime_bindings.lock().unwrap();
+        let mut availability = Vec::new();
+        for ((owner, game_id, _), rows) in bindings.iter() {
+            if owner_key.as_ref().is_some_and(|key| key != owner) {
+                continue;
+            }
+            for row in rows.iter().filter(|row| {
+                row.game_id == *game_id && installation_ids.contains(&row.installation_id)
+            }) {
+                let runtime = resources.get(&(owner.clone(), row.runtime_id.clone()));
+                availability.push(gamenode_core::library::RuntimeAvailabilityEntry {
+                    installation_id: row.installation_id.clone(),
+                    content_id: row.content_id.clone(),
+                    content_kind: row.content_kind.clone(),
+                    runtime_id: row.runtime_id.clone(),
+                    runtime_name: runtime
+                        .map(|runtime| runtime.name.clone())
+                        .unwrap_or_default(),
+                    platform: runtime
+                        .map(|runtime| runtime.platform.clone())
+                        .or_else(|| row.supported_platforms.first().cloned())
+                        .unwrap_or_default(),
+                    publisher_id: runtime
+                        .map(|runtime| runtime.provenance.plugin_id.clone())
+                        .unwrap_or_default(),
+                    revision: row.revision,
+                });
+            }
+        }
+        Ok(availability)
+    }
+
     async fn save_runtime_resource(
         &self,
         owner_key: String,
@@ -1024,6 +1099,7 @@ impl LibraryHost for FakeHost {
         }
         let revision = runtime.revision;
         resources.insert(key, runtime);
+        self.runtime_catalog_revision.fetch_add(1, Ordering::SeqCst);
         Ok(RuntimeMutation::Applied { revision })
     }
 

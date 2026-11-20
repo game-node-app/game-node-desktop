@@ -2361,8 +2361,8 @@ fn selected_launch_recipe_is_revision_checked_persistent_and_never_falls_back_si
 #[test]
 fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_removal() {
     use gamenode_core::library::{
-        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeMutation,
-        RuntimeResource,
+        ApprovedFileReference, RuntimeArgumentTemplate, RuntimeContentBinding, RuntimeExtension,
+        RuntimeMutation, RuntimeProvenance, RuntimeResource,
     };
 
     let dir = TempDir::new().unwrap();
@@ -2406,6 +2406,8 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
         ],
         revision: 1,
         observed_at: 100,
+        provenance: Default::default(),
+        extensions: Default::default(),
     };
     let plugin = "plugin-a/profile-1";
     let runtime_a = runtime("runtime-a");
@@ -2434,6 +2436,23 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
     let mut updated_runtime = runtime_a.clone();
     updated_runtime.revision = 2;
     updated_runtime.version = "1.1".into();
+    updated_runtime.provenance = RuntimeProvenance {
+        plugin_id: "org.example.runtime".into(),
+        declared_developer: "Example developer".into(),
+        origin: "example".into(),
+        publisher_fingerprint: "ab".repeat(32),
+        package_version: "1.1.0".into(),
+        package_digest: vec![5; 32],
+    };
+    updated_runtime.extensions.insert(
+        "org.example.compatibility".into(),
+        RuntimeExtension {
+            schema_id: "org.example.compatibility.v1".into(),
+            schema_version: 1,
+            schema_digest: vec![3; 32],
+            data: serde_json::json!({"console": "snes"}),
+        },
+    );
     assert_eq!(
         store
             .save_runtime_resource(plugin, &updated_runtime)
@@ -2499,6 +2518,41 @@ fn runtime_resources_and_content_bindings_keep_identity_and_survive_runtime_remo
             .unwrap(),
         RuntimeMutation::Applied { revision: 1 }
     );
+
+    // The shared catalog exposes every owner's typed metadata, while the safe availability
+    // projection joins bindings to runtime names without a path or handle.
+    let shared = store.shared_runtime_resources().unwrap();
+    assert_eq!(shared.len(), 4);
+    let stored = shared
+        .iter()
+        .find(|(owner, runtime)| owner == plugin && runtime.id == "runtime-a")
+        .map(|(_, runtime)| runtime)
+        .unwrap();
+    assert_eq!(stored.provenance.plugin_id, "org.example.runtime");
+    assert_eq!(
+        stored.extensions["org.example.compatibility"].schema_version,
+        1
+    );
+    assert!(store.shared_runtime_catalog_revision().unwrap() >= 3);
+
+    let private = store
+        .runtime_availability(Some(plugin), &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(private.len(), 3);
+    assert!(private.iter().all(
+        |entry| entry.publisher_id == "org.example.runtime" || entry.runtime_id != "runtime-a"
+    ));
+    let all = store
+        .runtime_availability(None, &["steam:72".to_owned()])
+        .unwrap();
+    assert_eq!(all.len(), 5);
+    let melonds = all
+        .iter()
+        .find(|entry| entry.runtime_id == "melonds")
+        .unwrap();
+    assert_eq!(melonds.runtime_name, "Runtime melonds");
+    assert_eq!(melonds.content_id, "content-a");
+    assert_eq!(melonds.platform, "linux");
 
     // Moving a file updates its approved location under the same stable content identity.
     let mut moved_content = content_a_runtime_a.clone();

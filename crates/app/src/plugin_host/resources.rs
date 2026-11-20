@@ -175,19 +175,19 @@ pub const SERVED: &[Served] = &[
         "RuntimesList",
         cap::GAME_RUNTIME_READ,
         true,
-        PRIVATE_NAMESPACE,
+        RUNTIME_READ_SCOPE,
     ),
     Served::new(
         "RuntimesGet",
         cap::GAME_RUNTIME_READ,
         false,
-        PRIVATE_NAMESPACE,
+        RUNTIME_READ_SCOPE,
     ),
     Served::new(
         "RuntimesWatch",
         cap::GAME_RUNTIME_READ,
         false,
-        PRIVATE_NAMESPACE,
+        RUNTIME_READ_SCOPE,
     ),
     Served::new(
         "RuntimesRegister",
@@ -290,6 +290,9 @@ const READ_SCOPE: &str = "own provider; library.read.all for every provider";
 const OWN_ENTRIES: &str = "own provider entries";
 const CATALOG: &str = "GameNode catalog (title search)";
 const PRIVATE_NAMESPACE: &str = "own plugin/publisher/profile namespace";
+/// Runtime reads stay owner-private unless the query explicitly selects the common catalog.
+const RUNTIME_READ_SCOPE: &str =
+    "own runtimes; granted runtime catalog category for other plugins' shared records";
 const OWN_NOTICES: &str = "plain text attributed to the calling plugin";
 const APPROVED_ORIGINS: &str = "exact HTTPS origins the user approved for this plugin";
 const APPROVED_FOLDERS: &str = "folder the user approved for this plugin and installation";
@@ -600,6 +603,140 @@ fn no_common_data(selector: Option<&CommonDataSelector>) -> Result<(), Status> {
     }
 }
 
+/// Projection names a common content-availability reader may see. No path, handle, byte payload
+/// or private owner key is part of it.
+const LIBRARY_AVAILABILITY_FIELDS: &[&str] = &[
+    "content_id",
+    "content_kind",
+    "runtime_id",
+    "runtime_name",
+    "platform",
+    "publisher_id",
+    "revision",
+];
+
+impl ResourceApi {
+    /// Returns whether this Library query explicitly selected the content-availability category
+    /// and is currently granted. An empty selector keeps the query owner-private.
+    fn shared_content_availability(
+        &self,
+        caller: &ResourceCaller,
+        selector: Option<&CommonDataSelector>,
+    ) -> Result<bool, Status> {
+        let Some(selector) = selector else {
+            return Ok(false);
+        };
+        if !selector.selected_record_ids.is_empty() {
+            return Err(Status::unimplemented(
+                "selected-record content availability is not available in this build",
+            ));
+        }
+        if selector.categories.is_empty() {
+            return Ok(false);
+        }
+        if selector.categories != [CommonDataCategory::ContentAvailability as i32] {
+            return Err(Status::unimplemented(
+                "common-data projections for Library support only content availability",
+            ));
+        }
+        let recipient = caller
+            .namespace
+            .as_ref()
+            .map(|namespace| namespace.identity().clone())
+            .ok_or_else(|| {
+                Status::failed_precondition(
+                    "a third-party plugin identity is required for shared catalog reads",
+                )
+            })?;
+        let fields = LIBRARY_AVAILABILITY_FIELDS
+            .iter()
+            .map(|field| (*field).to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        if !self
+            .shared_authorizer
+            .common_category(&recipient, CommonDataCategory::ContentAvailability, &fields)
+            .allowed
+        {
+            return Err(Status::permission_denied(
+                "common content-availability access is not granted",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Loads the safe availability projection for the requested installations and groups it by
+    /// installation id. `include_shared` requires a previously authorized category query.
+    async fn runtime_availability_map(
+        &self,
+        caller: &ResourceCaller,
+        include_shared: bool,
+        installation_ids: Vec<String>,
+    ) -> Result<HashMap<String, Vec<RuntimeAvailability>>, Status> {
+        if installation_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let Some(host) = self.library.host() else {
+            // Private reads keep working without a connected host; availability is additive.
+            if include_shared {
+                return Err(mutations::unavailable());
+            }
+            return Ok(HashMap::new());
+        };
+        let owner = if include_shared {
+            None
+        } else {
+            Some(mutations::mutation_owner(caller))
+        };
+        let rows = host.runtime_availability(owner, installation_ids).await?;
+        let mut grouped: HashMap<String, Vec<RuntimeAvailability>> = HashMap::new();
+        for row in rows {
+            grouped
+                .entry(row.installation_id)
+                .or_default()
+                .push(RuntimeAvailability {
+                    content_id: row.content_id,
+                    content_kind: row.content_kind,
+                    runtime_id: row.runtime_id,
+                    runtime_name: row.runtime_name,
+                    platform: row.platform,
+                    publisher_id: row.publisher_id,
+                    revision: row.revision,
+                });
+        }
+        Ok(grouped)
+    }
+
+    async fn library_event(
+        &self,
+        caller: &ResourceCaller,
+        include_shared: bool,
+        change: &Change,
+    ) -> Result<LibraryEvent, Status> {
+        Ok(LibraryEvent {
+            revision: change.revision,
+            event_type: change.kind.as_str().to_owned(),
+            entry: Some(
+                self.entry_with_availability(caller, include_shared, change.entry.to_proto())
+                    .await?,
+            ),
+        })
+    }
+
+    async fn entry_with_availability(
+        &self,
+        caller: &ResourceCaller,
+        include_shared: bool,
+        mut entry: LibraryEntry,
+    ) -> Result<LibraryEntry, Status> {
+        let installation_id = entry.installation_id.clone();
+        let mut map = self
+            .runtime_availability_map(caller, include_shared, vec![installation_id.clone()])
+            .await?;
+        entry.runtime_availability = map.remove(&installation_id).unwrap_or_default();
+        Ok(entry)
+    }
+}
+
 fn not_served(method: &str) -> Status {
     Status::unimplemented(format!(
         "ResourceHost.{method} is not available in this GameNode build"
@@ -608,14 +745,6 @@ fn not_served(method: &str) -> Status {
 
 fn stale_cursor() -> Status {
     Status::failed_precondition("library cursor is stale; restart the list")
-}
-
-fn event(change: &Change) -> LibraryEvent {
-    LibraryEvent {
-        revision: change.revision,
-        event_type: change.kind.as_str().to_owned(),
-        entry: Some(change.entry.to_proto()),
-    }
 }
 
 const MAX_DATA_VALUE_DEPTH: usize = 32;
@@ -808,7 +937,8 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(page.context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(page.common_data_categories.as_ref())?;
+        let include_shared =
+            self.shared_content_availability(&caller, page.common_data_categories.as_ref())?;
         let scope = Self::scope(&caller, &request.provider_id)?;
         let search = request.search.trim();
         if search.len() > MAX_SEARCH_BYTES {
@@ -860,8 +990,23 @@ impl resource_host_server::ResourceHost for ResourceApi {
             }
             _ => String::new(),
         };
+        let installation_ids = entries
+            .iter()
+            .map(|entry| entry.installation_id.clone())
+            .collect::<Vec<_>>();
+        let mut availability = self
+            .runtime_availability_map(&caller, include_shared, installation_ids)
+            .await?;
+        let mut projected = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let mut proto = entry.to_proto();
+            proto.runtime_availability = availability
+                .remove(&entry.installation_id)
+                .unwrap_or_default();
+            projected.push(proto);
+        }
         Ok(Response::new(LibraryListReply {
-            entries: entries.iter().map(|entry| entry.to_proto()).collect(),
+            entries: projected,
             next_cursor,
             revision,
         }))
@@ -875,7 +1020,8 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(request.context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(request.common_data_categories.as_ref())?;
+        let include_shared =
+            self.shared_content_availability(&caller, request.common_data_categories.as_ref())?;
         let scope = Self::scope(&caller, "")?;
         let game_id = match request.game_id.as_str() {
             "" => None,
@@ -906,8 +1052,11 @@ impl resource_host_server::ResourceHost for ResourceApi {
                 "installation_id or game_id is required",
             ));
         };
+        let entry = self
+            .entry_with_availability(&caller, include_shared, entry.to_proto())
+            .await?;
         Ok(Response::new(LibraryGetReply {
-            entry: Some(entry.to_proto()),
+            entry: Some(entry),
             revision,
         }))
     }
@@ -921,7 +1070,8 @@ impl resource_host_server::ResourceHost for ResourceApi {
         let caller = self
             .providers
             .authorize_resource(context.as_ref(), cap::LIBRARY_READ)?;
-        no_common_data(request.common_data_categories.as_ref())?;
+        let include_shared =
+            self.shared_content_availability(&caller, request.common_data_categories.as_ref())?;
         Self::scope(&caller, &request.provider_id)?;
         let slot = self.watch_slot(&caller.session_id)?;
         let (_, backlog, mut live) = self.library.subscribe(request.after_revision).map_err(
@@ -934,7 +1084,9 @@ impl resource_host_server::ResourceHost for ResourceApi {
         )?;
         let (tx, rx) = mpsc::channel(WATCH_QUEUE);
         let providers = self.providers.clone();
+        let resource = self.clone();
         let provider_filter = request.provider_id;
+        let selector = request.common_data_categories;
         tokio::spawn(async move {
             let _slot = slot;
             // Every delivery rechecks the session, profile and grants; a grant change ends the
@@ -946,10 +1098,14 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         "plugin permissions changed; list again",
                     ));
                 }
+                if resource.shared_content_availability(&current, selector.as_ref())?
+                    != include_shared
+                {
+                    return Err(Status::failed_precondition(
+                        "common-data permissions changed; list again",
+                    ));
+                }
                 Self::scope(&current, &provider_filter)
-            };
-            let deliver = |change: &Change, scope: &Scope| {
-                scope.admits(&change.entry).then(|| Ok(event(change)))
             };
             for change in &backlog {
                 let scope = match check() {
@@ -959,9 +1115,13 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         return;
                     }
                 };
-                if let Some(item) = deliver(change, &scope)
-                    && tx.send(item).await.is_err()
-                {
+                if !scope.admits(&change.entry) {
+                    continue;
+                }
+                let item = resource
+                    .library_event(&caller, include_shared, change)
+                    .await;
+                if tx.send(item).await.is_err() {
                     return;
                 }
             }
@@ -991,10 +1151,15 @@ impl resource_host_server::ResourceHost for ResourceApi {
                         return;
                     }
                 };
-                if let Some(item) = change.as_ref().and_then(|change| deliver(change, &scope))
-                    && tx.send(item).await.is_err()
+                if let Some(change) = change.as_ref()
+                    && scope.admits(&change.entry)
                 {
-                    return;
+                    let item = resource
+                        .library_event(&caller, include_shared, change)
+                        .await;
+                    if tx.send(item).await.is_err() {
+                        return;
+                    }
                 }
             }
         });

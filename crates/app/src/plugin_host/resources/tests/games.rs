@@ -1503,6 +1503,8 @@ async fn runtime_plugins_reconcile_observations_as_selectable_bindings_on_one_ga
                 launch_arguments: vec![RuntimeArgumentTemplate::ContentPath],
                 revision: 1,
                 observed_at: 1,
+                provenance: Default::default(),
+                extensions: Default::default(),
             },
         );
     }
@@ -1599,6 +1601,8 @@ async fn provider_content_discovery_keeps_legacy_owner_scope_and_requires_host_c
             launch_arguments: vec![RuntimeArgumentTemplate::ContentPath],
             revision: 1,
             observed_at: 1,
+            provenance: Default::default(),
+            extensions: Default::default(),
         },
     );
 
@@ -2026,4 +2030,480 @@ async fn custom_launch_revoked_before_approval_never_dispatches() {
     let done = fixture.ended_for(&owner, &reply.job_id).await;
     assert_ne!(done.state(), JobState::Succeeded);
     assert!(host.custom_launch_dispatches.lock().unwrap().is_empty());
+}
+
+/// A second plugin session that may read the shared runtime catalog and the common content
+/// availability projection, but has no runtime mutation or discovery authority.
+async fn runtime_catalog_consumer(fixture: &Fixture) -> Session {
+    let capabilities = [
+        cap::CONTEXT,
+        cap::LIBRARY_READ,
+        cap::LIBRARY_READ_ALL,
+        cap::GAME_RUNTIME_READ,
+        cap::FILES_READ,
+    ];
+    fixture
+        .api
+        .register(Registration {
+            provider_id: "runtime-consumer".into(),
+            plugin_id: "org.example.runtime-consumer".into(),
+            kind: crate::plugin_host::provider::RegistrationKind::Provider,
+            declared_developer: "Runtime consumer developer".into(),
+            package_digest: vec![7; 32],
+            origin: RegistrationOrigin::ThirdParty {
+                publisher_fingerprint: "cd".repeat(32),
+            },
+            capabilities: capabilities.iter().map(|cap| (*cap).into()).collect(),
+            shared_catalog: false,
+            playtime: Default::default(),
+            services: Arc::new(NoServices),
+        })
+        .unwrap();
+    let launch = fixture.api.begin_launch("runtime-consumer").unwrap();
+    let credential = (0..launch.credential.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&launch.credential[i..i + 2], 16).unwrap())
+        .collect();
+    let session = Session::open_with_options(
+        Launch {
+            endpoint: fixture.endpoint.clone(),
+            credential,
+            operation_id: "runtime-consumer-launch".into(),
+        },
+        "org.example.runtime-consumer",
+        "runtime-consumer",
+        "1.0",
+        &capabilities,
+        SessionOptions {
+            min_api_major: 1,
+            min_api_minor: cap::THIRD_PARTY_API_MINOR,
+            max_api_major: 1,
+            max_api_minor: gamenode_plugin_protocol::API_MINOR,
+            ..SessionOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    launch.ready.await.unwrap();
+    session
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_runtime_catalog_and_content_availability_need_no_pairwise_grant() {
+    use crate::plugin_host::resources::ResourceApi;
+    use crate::plugin_host::shared_data::DataBroker;
+    use crate::plugin_host::sharing_policy::{ActivationReadGrant, SharedSharingPolicies};
+    use gamenode_plugin_protocol::{
+        prost_types,
+        proto::{
+            CommonDataCategory, ContentPathArgument, ExtensionPayload,
+            RuntimeArgumentTemplate as RuntimeArgumentProto,
+            runtime_argument_template::Value as RuntimeArgumentValue,
+        },
+    };
+    use tokio::task::JoinHandle;
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    async fn serve(service: ResourceApi) -> (ResourceHostClient<Channel>, JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(resource_host_server::ResourceHostServer::new(service))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        let client = ResourceHostClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        (client, server)
+    }
+
+    let target = TargetGameContext {
+        game_id: "5".into(),
+        installation_id: "id-steam:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    };
+    let (fixture, host, _) = Fixture::extension_game(
+        &[
+            cap::DISCOVERY,
+            cap::FILES_READ,
+            cap::GAME_CUSTOM_LAUNCH,
+            cap::GAME_RUNTIME_CREATE,
+            cap::GAME_RUNTIME_READ,
+        ],
+        target,
+        Some(answering(&[APPROVE])),
+    )
+    .await;
+    let content_root = fixture.game_dir("steam-runtime-catalog", &[("emulator", b"runtime")]);
+    fixture.user_approving(&content_root);
+    let root = fixture.root_handle("id-steam:1", &["read"]).await;
+    let runtime_executable = fixture.child(&root, "emulator").await;
+
+    // A registers an owned runtime with a plugin-declared compatibility namespace.
+    let registration = fixture
+        .client()
+        .runtimes_register(RuntimeRegisterRequest {
+            mutation: Some(fixture.mutation("register-catalog-runtime", 0)),
+            runtime: Some(RuntimeRecord {
+                id: "runtime:catalog-snes".into(),
+                name: "Catalog SNES".into(),
+                version: "2.0".into(),
+                executable_handle: runtime_executable,
+                supported_formats: vec!["snes-rom".into(), "org.example.snes-patch".into()],
+                platform: std::env::consts::OS.into(),
+                argument_template: vec![RuntimeArgumentProto {
+                    value: Some(RuntimeArgumentValue::ContentPath(ContentPathArgument {})),
+                }],
+                extensions: [(
+                    "org.example.compatibility".into(),
+                    ExtensionPayload {
+                        schema_id: "org.example.compatibility.v1".into(),
+                        schema_version: 1,
+                        schema_digest: vec![3; 32],
+                        data: Some(prost_types::Struct {
+                            fields: [(
+                                "console".into(),
+                                prost_types::Value {
+                                    kind: Some(prost_types::value::Kind::StringValue(
+                                        "snes".into(),
+                                    )),
+                                },
+                            )]
+                            .into(),
+                        }),
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(registration.outcome, MutationOutcome::Applied as i32);
+    assert_eq!(
+        registration
+            .runtime
+            .as_ref()
+            .unwrap()
+            .provenance
+            .as_ref()
+            .unwrap()
+            .producer_plugin_id,
+        "fixture.plugin"
+    );
+    let context_a = fixture.context();
+    let caller_a = fixture
+        .api
+        .authorize_resource(Some(&context_a), cap::GAME_RUNTIME_CREATE)
+        .unwrap();
+    let owner_a = super::super::mutations::mutation_owner(&caller_a);
+    host.runtime_bindings.lock().unwrap().insert(
+        (owner_a, 5, "id-steam:1".into()),
+        vec![gamenode_core::library::RuntimeContentBinding {
+            game_id: 5,
+            installation_id: "id-steam:1".into(),
+            content_id: "rom:zelda".into(),
+            content: gamenode_core::library::ApprovedFileReference {
+                approval_id: "content-approval".into(),
+                relative_path: vec!["zelda.sfc".into()],
+            },
+            content_kind: "snes-rom".into(),
+            runtime_id: "runtime:catalog-snes".into(),
+            supported_platforms: vec![std::env::consts::OS.into()],
+            revision: 1,
+        }],
+    );
+
+    // B gets only the two common category reads, with no source-to-recipient policy.
+    let consumer = runtime_catalog_consumer(&fixture).await;
+    let context_b = consumer.host.resource_context().unwrap().clone();
+    let identity_b = {
+        let caller = fixture
+            .api
+            .authorize_resource_session(Some(&context_b))
+            .unwrap();
+        ResourceApi::data_identity(&caller).unwrap()
+    };
+    let policies = Arc::new(SharedSharingPolicies::default());
+    policies
+        .set_activation_grants(
+            &identity_b,
+            ActivationReadGrant::new(
+                [
+                    CommonDataCategory::RuntimeCatalog,
+                    CommonDataCategory::ContentAvailability,
+                ],
+                [],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let service = ResourceApi::new(
+        fixture.api.clone(),
+        fixture.feed.clone(),
+        fixture.storage.clone(),
+        fixture.files.clone(),
+        fixture.network.clone(),
+        fixture.notifications.clone(),
+        fixture.jobs.clone(),
+        fixture.intents.clone(),
+        fixture.saves.clone(),
+        fixture.snapshots.clone(),
+    )
+    .with_shared_data(Arc::new(DataBroker::new()), policies.clone());
+    let (mut client, server) = serve(service).await;
+
+    // Private-only default: B sees no foreign runtime and no availability.
+    let private = client
+        .runtimes_list(DomainListRequest {
+            page: Some(PageRequest {
+                context: Some(context_b.clone()),
+                page_size: 10,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(private.runtimes.is_empty());
+    let private_entry = client
+        .library_get(LibraryGetRequest {
+            context: Some(context_b.clone()),
+            installation_id: "id-steam:1".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .entry
+        .unwrap();
+    assert!(private_entry.runtime_availability.is_empty());
+
+    // Without the current category grant, the explicit selector is denied rather than narrowed.
+    let selector = CommonDataSelector {
+        categories: vec![CommonDataCategory::RuntimeCatalog as i32],
+        selected_record_ids: Vec::new(),
+    };
+    policies.clear_activation_grants(&identity_b).unwrap();
+    let denied = client
+        .runtimes_list(DomainListRequest {
+            page: Some(PageRequest {
+                context: Some(context_b.clone()),
+                page_size: 10,
+                common_data_categories: Some(selector.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    policies
+        .set_activation_grants(
+            &identity_b,
+            ActivationReadGrant::new(
+                [
+                    CommonDataCategory::RuntimeCatalog,
+                    CommonDataCategory::ContentAvailability,
+                ],
+                [],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    // The explicit common selector returns A's runtime with provenance and its metadata, but no
+    // executable handle and no filesystem path.
+    let shared = client
+        .runtimes_list(DomainListRequest {
+            page: Some(PageRequest {
+                context: Some(context_b.clone()),
+                page_size: 10,
+                common_data_categories: Some(selector.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(shared.runtimes.len(), 1);
+    let runtime = &shared.runtimes[0];
+    assert_eq!(runtime.id, "runtime:catalog-snes");
+    assert_eq!(runtime.name, "Catalog SNES");
+    assert_eq!(runtime.version, "2.0");
+    assert_eq!(
+        runtime.supported_formats,
+        ["snes-rom", "org.example.snes-patch"]
+    );
+    assert!(runtime.executable_handle.is_empty());
+    assert_eq!(runtime.argument_template.len(), 1);
+    let provenance = runtime.provenance.as_ref().unwrap();
+    assert_eq!(provenance.producer_plugin_id, "fixture.plugin");
+    assert_eq!(provenance.publisher_fingerprint, "ab".repeat(32));
+    let compatibility = runtime.extensions.get("org.example.compatibility").unwrap();
+    assert_eq!(compatibility.schema_id, "org.example.compatibility.v1");
+    assert_eq!(compatibility.schema_version, 1);
+    let field = &compatibility.data.as_ref().unwrap().fields["console"];
+    assert_eq!(
+        field.kind,
+        Some(prost_types::value::Kind::StringValue("snes".into()))
+    );
+
+    // The same runtime is reachable by id, and a watch replays it after a reset.
+    let by_id = client
+        .runtimes_get(DomainGetRequest {
+            context: Some(context_b.clone()),
+            resource_id: "runtime:catalog-snes".into(),
+            shared_records: Some(selector.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        by_id
+            .runtime
+            .unwrap()
+            .provenance
+            .unwrap()
+            .producer_plugin_id,
+        "fixture.plugin"
+    );
+    let mut watch = client
+        .runtimes_watch(DomainWatchRequest {
+            context: Some(context_b.clone()),
+            after_revision: 0,
+            shared_records: Some(selector.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let reset = tokio::time::timeout(std::time::Duration::from_secs(2), watch.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.event_type, "reset");
+    let upserted = tokio::time::timeout(std::time::Duration::from_secs(2), watch.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(upserted.event_type, "upserted");
+    assert_eq!(upserted.runtime.unwrap().id, "runtime:catalog-snes");
+
+    // Common content availability reaches B's Library projection without a path or handle.
+    let availability_selector = CommonDataSelector {
+        categories: vec![CommonDataCategory::ContentAvailability as i32],
+        selected_record_ids: Vec::new(),
+    };
+    let entry = client
+        .library_get(LibraryGetRequest {
+            context: Some(context_b.clone()),
+            installation_id: "id-steam:1".into(),
+            common_data_categories: Some(availability_selector),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .entry
+        .unwrap();
+    assert_eq!(entry.runtime_availability.len(), 1);
+    let available = &entry.runtime_availability[0];
+    assert_eq!(available.content_id, "rom:zelda");
+    assert_eq!(available.content_kind, "snes-rom");
+    assert_eq!(available.runtime_id, "runtime:catalog-snes");
+    assert_eq!(available.runtime_name, "Catalog SNES");
+    assert_eq!(available.publisher_id, "fixture.plugin");
+    assert_eq!(available.platform, std::env::consts::OS);
+
+    // A Library watch delivers the same safe projection when an entry changes.
+    let listed = client
+        .library_list(LibraryListRequest {
+            provider_id: "steam".into(),
+            page: Some(PageRequest {
+                context: Some(context_b.clone()),
+                page_size: 10,
+                common_data_categories: Some(CommonDataSelector {
+                    categories: vec![CommonDataCategory::ContentAvailability as i32],
+                    selected_record_ids: Vec::new(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut availability_watch = client
+        .library_watch(LibraryWatchRequest {
+            context: Some(context_b.clone()),
+            after_revision: listed.revision,
+            provider_id: "steam".into(),
+            common_data_categories: Some(CommonDataSelector {
+                categories: vec![CommonDataCategory::ContentAvailability as i32],
+                selected_record_ids: Vec::new(),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    fixture.library(&[
+        ("steam:1", Some(5), "Selected Steam game renamed"),
+        ("steam:2", Some(6), "Other Steam game"),
+        ("manual:1", Some(9), "Manual game"),
+    ]);
+    let changed = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        availability_watch.message(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(changed.event_type, "upserted");
+    let watched = changed.entry.unwrap();
+    assert_eq!(watched.name, "Selected Steam game renamed");
+    assert_eq!(watched.runtime_availability.len(), 1);
+    assert_eq!(
+        watched.runtime_availability[0].runtime_id,
+        "runtime:catalog-snes"
+    );
+
+    // A category read is not a mutation authority.
+    let update = client
+        .runtimes_update(RuntimeUpdateRequest {
+            mutation: Some(fixture.mutation("consumer-updates-runtime", 1)),
+            runtime: Some(RuntimeRecord {
+                id: "runtime:catalog-snes".into(),
+                name: "Hijacked".into(),
+                ..Default::default()
+            }),
+            field_mask: vec!["name".into()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(update.code(), Code::PermissionDenied);
+    let remove = client
+        .runtimes_remove(DomainRemoveRequest {
+            mutation: Some(fixture.mutation("consumer-removes-runtime", 1)),
+            resource_id: "runtime:catalog-snes".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(remove.code(), Code::PermissionDenied);
+
+    let snapshot = policies.recipient_snapshot(&identity_b).unwrap();
+    assert!(snapshot.source_recipient_policies.is_empty());
+    server.abort();
 }

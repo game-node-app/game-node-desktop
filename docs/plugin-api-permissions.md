@@ -94,7 +94,13 @@ requires the host to check each requested scope on every query. Activation
 grants only make queries eligible and do not trigger reads or delivery.
 Sensitive/custom datasets still require their separate sharing review, and
 secrets remain excluded. `Data.Get`, `Data.List` and `Data.Watch` accept this
-selector in the current host. `Data.Publish` creates custom-class records and
+selector in the current host. `Runtimes.List`, `Runtimes.Get` and
+`Runtimes.Watch` accept only `RUNTIME_CATALOG`; the shared projection includes
+producer provenance and extension namespaces but never an executable handle.
+`Library.List`, `Library.Get` and `Library.Watch` accept only
+`CONTENT_AVAILABILITY`; the projection adds safe content/runtime identities
+without paths, handles or bytes. Every other category on those domain routes is
+`UNIMPLEMENTED`. `Data.Publish` creates custom-class records and
 does not classify them as one of the common categories. The category enum is a
 set of consent scopes, not a guarantee that every domain data source is
 currently populated; see [Shared plugin data](plugin-shared-data.md) for the
@@ -1172,8 +1178,9 @@ observations, not a record of every transient mount change.
   type-checked, never run on Windows.**
 - **A profile's lost folder** (its approval revoked or changed) is reported as `MISSING` in
   `GetAccess`, as a partial total in `GetSize`, and is left out of `GetLastModified`.
-- **Not covered.** Runtime resources (section 14) do not exist yet. An approved installation,
-  save or prefix folder and a save profile are the currently supported places.
+- **Not covered.** Runtime resources are catalog records, not inspectable places: runtime
+  availability is projected through Library reads, and an approved installation, save or prefix
+  folder and a save profile are the currently supported inspection places.
 
 ### Consistency, availability and interpretation
 

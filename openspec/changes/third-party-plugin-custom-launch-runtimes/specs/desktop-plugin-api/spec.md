@@ -32,6 +32,32 @@ The Linux host MUST execute supported direct-executable and wrapper-based custom
 - **WHEN** the wrapper is missing, its invocation form is unsupported, or a requested environment operation cannot be applied
 - **THEN** the host returns an explicit unsupported/failed outcome and does not dispatch the detected default or a partial plan
 
+### Requirement: Custom launch process trees retain host ownership
+The host MUST transfer each custom-launch child to a process supervisor and track its descendants. Any attached shared-resource use lease MUST remain held until the complete tree is confirmed exited or explicitly terminated and fenced. Unknown tree state MUST remain busy.
+
+#### Scenario: A wrapper exits while its game process remains active
+- **WHEN** a custom runtime wrapper exits but a descendant remains in the supervised launch tree
+- **THEN** the host retains process-tree ownership and the shared-resource use lease, and backup/restore remains blocked
+
+#### Scenario: The user explicitly stops a custom launch
+- **WHEN** the user requests stop for a supervised launch
+- **THEN** the host terminates and fences the complete process tree, waits until exit is confirmed, and only then releases the use lease
+
+#### Scenario: The process tree cannot be inspected
+- **WHEN** the supervisor cannot determine whether a process or descendant still uses the resource
+- **THEN** it reports the resource busy/unknown and does not release the lease or permit an unsafe backup/restore
+
+### Requirement: Custom launch and exclusive resource operations are serialized
+The host MUST acquire a shared-resource use lease before spawning a launch that uses that resource. An exclusive backup/restore lease MUST block the launch. Revoking launch permission MUST block new launches without terminating an already-running game under the current launch policy.
+
+#### Scenario: An exclusive backup or restore is active
+- **WHEN** a custom launch requires a resource whose exclusive backup/restore lease is held
+- **THEN** the host refuses to spawn the child until the exclusive operation commits or aborts
+
+#### Scenario: Permission is revoked while a custom launch is running
+- **WHEN** launch permission is revoked after the process tree has started
+- **THEN** the host denies new launches but leaves the existing game running; its use lease remains until the tree exits or is explicitly stopped
+
 ### Requirement: Per-game launch choices are explicit
 The host MUST keep one active launch recipe per library entry and profile. No active custom recipe means the detected default is selected; returning to that default requires an explicit user choice. User-initiated launches MUST use the shared host review before dispatch.
 

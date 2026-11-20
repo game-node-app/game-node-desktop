@@ -1336,6 +1336,120 @@ async fn runtime_plugins_reconcile_observations_as_selectable_bindings_on_one_ga
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn provider_content_discovery_keeps_legacy_owner_scope_and_requires_host_context() {
+    use gamenode_core::library::{ApprovedFileReference, RuntimeArgumentTemplate, RuntimeResource};
+
+    let (fixture, host, _) = Fixture::game(&[cap::DISCOVERY, cap::FILES_READ], None).await;
+    let content_root = fixture.game_dir("provider-content", &[("game.rom", b"fixture bytes")]);
+    fixture.library_in(&[("fixture:1", Some(3), "Provider game", &content_root)]);
+    fixture.user_approving(&content_root);
+    let root = fixture.root_handle("id-fixture:1", &["read"]).await;
+    let content_handle = fixture.child(&root, "game.rom").await;
+    let context = fixture.context();
+
+    // Legacy provider sessions have their provider identity and no selected-game extension
+    // authority. RegisterContent remains available through the host-issued resource context.
+    assert_eq!(context.session_kind(), SessionKind::Unspecified);
+    assert!(context.target_game.is_none());
+    let caller = fixture
+        .api
+        .authorize_resource(Some(&context), cap::DISCOVERY)
+        .unwrap();
+    let owner = super::super::mutations::mutation_owner(&caller);
+    host.seed_runtime_resource(
+        owner,
+        RuntimeResource {
+            id: "provider-runtime".into(),
+            name: "Provider runtime".into(),
+            version: "1.0".into(),
+            executable: ApprovedFileReference {
+                approval_id: "runtime-approval-provider".into(),
+                relative_path: vec!["bin".into(), "runtime".into()],
+            },
+            platform: "linux".into(),
+            supported_formats: vec!["fixture-rom".into()],
+            launch_arguments: vec![RuntimeArgumentTemplate::ContentPath],
+            revision: 1,
+            observed_at: 1,
+        },
+    );
+
+    let registration = |context: Option<ServiceContext>, game_id: &str, installation_id: &str| {
+        ContentRegistrationRequest {
+            mutation: Some(MutationContext {
+                context,
+                operation_id: String::new(),
+                idempotency_key: format!("provider-content-{game_id}-{installation_id}"),
+                expected_revision: 0,
+            }),
+            game_id: game_id.into(),
+            installation_id: installation_id.into(),
+            content_handle: content_handle.clone(),
+            content_kind: "fixture-rom".into(),
+            runtime_id: "provider-runtime".into(),
+            supported_platforms: vec!["linux".into()],
+            content_id: "provider-game:content".into(),
+        }
+    };
+
+    let applied = fixture
+        .client()
+        .games_register_content(registration(Some(context.clone()), "3", "id-fixture:1"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(applied.outcome, MutationOutcome::Applied as i32);
+    assert_eq!(applied.resource_id, "provider-game:content");
+
+    // The provider may only discover content for its own catalog, even when it supplies a valid
+    // host-issued context and a file handle. A missing or altered context cannot use this route.
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(registration(Some(context.clone()), "5", "id-steam:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::NotFound
+    );
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(registration(None, "3", "id-fixture:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::InvalidArgument
+    );
+    let mut altered = context.clone();
+    altered.target_game = Some(TargetGameContext {
+        game_id: "3".into(),
+        installation_id: "id-fixture:1".into(),
+        profile_id: "account-a".into(),
+        revision: "1".into(),
+    });
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(registration(Some(altered), "3", "id-fixture:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let foreign = Fixture::new(&[cap::DISCOVERY, cap::FILES_READ]).await;
+    assert_eq!(
+        fixture
+            .client()
+            .games_register_content(registration(Some(foreign.context()), "3", "id-fixture:1"))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn extension_custom_overlay_targets_selected_steam_without_read_or_provider_identity() {
     let target = TargetGameContext {
         game_id: "5".into(),

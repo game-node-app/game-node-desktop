@@ -85,6 +85,22 @@ host can grant the configuration and persistent-storage scopes its Configure win
    `shared/` helpers; the preference is saved through host-owned storage, not a plugin file. The
    example never starts a game.
 
+### Native run: configuration while the provider keeps working
+
+With the plugin installed and `ui.configure` plus `storage.*` granted:
+
+1. Choose **Configure**. The example starts one native window in a child process and returns the
+   Open result immediately, leaving the provider stream free.
+2. While the window is open, ask GameNode for a library refresh or counter read. It completes
+   normally; the window never blocks provider dispatch.
+3. Choose **Configure** again: the existing window is focused, not duplicated. Save a label,
+   close and reopen to confirm the host-owned persistent value survived.
+4. A host close request stops the window process. Switching account profiles starts a fresh
+   plugin session with its own storage context.
+
+The command-line fixture covers the same lifecycle without a display. Native window execution on
+Windows remains part of 18.3.
+
 ## Regenerate protocol bindings
 
 Generation reads the canonical workspace proto, but the checked-in generated code lets this module
